@@ -73,7 +73,7 @@ runAll db =
     "-- order by age desc, name asc --"
     (withOrderBy "name" True (withOrderBy "age" False (selectFrom "users")))
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main =
   let _ = println "-- CREATE users (in-memory) --"
   match buildDatabase "users" usersSql 4 ipk usersRows

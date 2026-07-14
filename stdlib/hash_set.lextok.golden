@@ -263,9 +263,6 @@ ARROW
 UPPER "HashSet"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "insert"
@@ -335,9 +332,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "insertAt"
@@ -409,9 +403,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "maybeResize"
@@ -461,9 +452,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "resize"
@@ -538,9 +526,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "reinsertAll"
@@ -606,9 +591,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "reinsertBucket"
@@ -661,9 +643,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "putRaw"
@@ -726,9 +705,6 @@ FAT_ARROW
 UPPER "List"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "HashSet"
 IDENT "a"
 NEWLINE
@@ -767,9 +743,6 @@ ARROW
 UPPER "HashSet"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "insertAll"
@@ -815,9 +788,6 @@ ARROW
 UPPER "HashSet"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "delete"
@@ -877,9 +847,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "deleteAt"

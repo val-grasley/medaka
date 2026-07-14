@@ -354,7 +354,7 @@ parseLet : Parser Expr
 parseLetGroupDecl : Bool -> Parser Decl
 parseLetStmt : Parser DoStmt
 parseListE : Parser Expr
-parseLocated : String -> <Mut> List Decl
+parseLocated : String -> List Decl
 parseMatch : Parser Expr
 parseMul : Parser Expr
 parseNamedFields : Parser (List Field)
@@ -443,7 +443,7 @@ sectionTail : String -> Token -> Parser Expr
 semicolonMsg : String
 sepBy1 : Parser a -> Parser b -> Parser (List a)
 sepThen : Parser a -> Parser b -> Parser b
-setLocState : String -> Array (Int, Int) -> <Mut> Unit
+setLocState : String -> Array (Int, Int) -> Unit
 skipNewlines : Parser Unit
 skipNlFor : Token -> Parser Unit
 skipNoise : Parser Unit

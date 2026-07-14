@@ -70,7 +70,7 @@ definesPrintln (_::rest) = definesPrintln rest
 -- Auto-print fires iff main's inferred type is neither Unit nor `Async _`, the
 -- entry `main` is a zero-arg VALUE (empty param list), AND `println` is in scope.
 -- Requires the caller to have run an elaborate first (populates mainSchemeRef).
-export shouldAutoPrintMain : List Decl -> List (String, List Decl) -> <Mut> Bool
+export shouldAutoPrintMain : List Decl -> List (String, List Decl) -> Bool
 shouldAutoPrintMain coreDecls modules =
   if mainTypeIsUnit () || mainTypeIsAsync () then False
   else
@@ -123,7 +123,7 @@ wrapPrintln body = EApp (EVar "println") body
 -- multi-module gate deliberately avoids, so it is skipped there (best-effort —
 -- the compiler graph never wraps, so this never affects the fixpoint).  Returns
 -- the raw `(code, msg, Option Loc)` type-error tuples for the caller to render.
-export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, String, Option Loc)
+export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, String, Option Loc)
 underivedMainDiags runtimeDecls coreDecls [(_, entryDecls)] =
   let _ = setCoherenceUserDecls entryDecls
   let (tcErrs, _) = checkProgramDiags runtimeDecls coreDecls entryDecls
@@ -146,7 +146,7 @@ underivedMainDiags _ _ _ = []
 (DFunDef false "definesPrintln" ((PCons (PCon "DAttrib" PWild (PVar "d")) (PVar "rest"))) (EApp (EVar "definesPrintln") (EBinOp "::" (EVar "d") (EVar "rest"))))
 (DFunDef false "definesPrintln" ((PCons (PCon "DFunDef" PWild (PLit (LString "println")) PWild PWild) PWild)) (EVar "True"))
 (DFunDef false "definesPrintln" ((PCons PWild (PVar "rest"))) (EApp (EVar "definesPrintln") (EVar "rest")))
-(DTypeSig true "shouldAutoPrintMain" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyCon "Bool")))))
+(DTypeSig true "shouldAutoPrintMain" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "Bool"))))
 (DFunDef false "shouldAutoPrintMain" ((PVar "coreDecls") (PVar "modules")) (EIf (EBinOp "||" (EApp (EVar "mainTypeIsUnit") (ELit LUnit)) (EApp (EVar "mainTypeIsAsync") (ELit LUnit))) (EVar "False") (EIf (EApp (EVar "not") (EApp (EVar "definesPrintln") (EBinOp "++" (EVar "coreDecls") (EApp (EApp (EVar "flatMap") (EVar "snd")) (EVar "modules"))))) (EVar "False") (EMatch (EApp (EVar "entryPair") (EVar "modules")) (arm (PCon "None") () (EVar "False")) (arm (PCon "Some" (PTuple PWild (PVar "decls"))) () (EMatch (EApp (EVar "findMainParams") (EVar "decls")) (arm (PCon "Some" (PList)) () (EVar "True")) (arm PWild () (EVar "False"))))))))
 (DTypeSig false "isMainTypeSig" (TyFun (TyCon "Decl") (TyCon "Bool")))
 (DFunDef false "isMainTypeSig" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "isMainTypeSig") (EVar "d")))
@@ -163,7 +163,7 @@ underivedMainDiags _ _ _ = []
 (DTypeSig false "wrapPrintln" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "wrapPrintln" ((PCon "ELoc" (PVar "l") (PVar "inner"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "inner")))))
 (DFunDef false "wrapPrintln" ((PVar "body")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EVar "body")))
-(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))))
+(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
 (DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "entryDecls"))) (DoExpr (EVar "tcErrs"))))
 (DFunDef false "underivedMainDiags" (PWild PWild PWild) (EListLit))
 # MARK
@@ -183,7 +183,7 @@ underivedMainDiags _ _ _ = []
 (DFunDef false "definesPrintln" ((PCons (PCon "DAttrib" PWild (PVar "d")) (PVar "rest"))) (EApp (EVar "definesPrintln") (EBinOp "::" (EVar "d") (EVar "rest"))))
 (DFunDef false "definesPrintln" ((PCons (PCon "DFunDef" PWild (PLit (LString "println")) PWild PWild) PWild)) (EVar "True"))
 (DFunDef false "definesPrintln" ((PCons PWild (PVar "rest"))) (EApp (EVar "definesPrintln") (EVar "rest")))
-(DTypeSig true "shouldAutoPrintMain" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyCon "Bool")))))
+(DTypeSig true "shouldAutoPrintMain" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "Bool"))))
 (DFunDef false "shouldAutoPrintMain" ((PVar "coreDecls") (PVar "modules")) (EIf (EBinOp "||" (EApp (EVar "mainTypeIsUnit") (ELit LUnit)) (EApp (EVar "mainTypeIsAsync") (ELit LUnit))) (EVar "False") (EIf (EApp (EVar "not") (EApp (EVar "definesPrintln") (EBinOp "++" (EVar "coreDecls") (EApp (EApp (EDictApp "flatMap") (EVar "snd")) (EVar "modules"))))) (EVar "False") (EMatch (EApp (EVar "entryPair") (EVar "modules")) (arm (PCon "None") () (EVar "False")) (arm (PCon "Some" (PTuple PWild (PVar "decls"))) () (EMatch (EApp (EVar "findMainParams") (EVar "decls")) (arm (PCon "Some" (PList)) () (EVar "True")) (arm PWild () (EVar "False"))))))))
 (DTypeSig false "isMainTypeSig" (TyFun (TyCon "Decl") (TyCon "Bool")))
 (DFunDef false "isMainTypeSig" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "isMainTypeSig") (EVar "d")))
@@ -200,6 +200,6 @@ underivedMainDiags _ _ _ = []
 (DTypeSig false "wrapPrintln" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "wrapPrintln" ((PCon "ELoc" (PVar "l") (PVar "inner"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "inner")))))
 (DFunDef false "wrapPrintln" ((PVar "body")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EVar "body")))
-(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))))
+(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
 (DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "entryDecls"))) (DoExpr (EVar "tcErrs"))))
 (DFunDef false "underivedMainDiags" (PWild PWild PWild) (EListLit))

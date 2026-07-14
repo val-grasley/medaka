@@ -78,7 +78,7 @@ runAll db =
     (t3 tText (tOption tInt) (tOption tInt))
     ((d, mn, mx) => "\{d}|\{showOptI mn}|\{showOptI mx}")
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main =
   let _ = println "-- CREATE emp (in-memory) --"
   match buildDatabase "emp" empSql 4 ipk empRows

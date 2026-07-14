@@ -39,7 +39,7 @@ import hash_map.{HashMap, new, set, has, findWithDefault}
 -- ── entry point ────────────────────────────────────────────────────────────
 -- Filter `decls` (the flattened, elaborated whole-program decl list) to retain
 -- every non-DFunDef decl plus the DFunDefs reachable from main + impls/interfaces.
-export dceFilter : List Decl -> <Mut> List Decl
+export dceFilter : List Decl -> List Decl
 dceFilter decls = filterReachable (reachableNames decls) decls
 
 -- Drop only unreachable DFunDefs; keep everything else verbatim, in order.
@@ -71,13 +71,13 @@ canonRef defined n
   | otherwise = n
 
 -- set of all DFunDef names defined in the program (the only DCE-droppable decls).
-definedFnNames : List Decl -> <Mut> HashMap String Unit
+definedFnNames : List Decl -> HashMap String Unit
 definedFnNames decls =
   let s = new ()
   let _ = definedFnNamesInto decls s
   s
 
-definedFnNamesInto : List Decl -> HashMap String Unit -> <Mut> Unit
+definedFnNamesInto : List Decl -> HashMap String Unit -> Unit
 definedFnNamesInto [] _ = ()
 definedFnNamesInto ((DFunDef _ n _ _)::rest) s =
   let _ = set n () s
@@ -89,7 +89,7 @@ definedFnNamesInto (_::rest) s = definedFnNamesInto rest s
 -- HashMap-as-set (consumed only by `filterReachable`'s membership test — order
 -- and duplicates are irrelevant).  O(1)-average membership + O(1) graph lookup
 -- turn the old O(N²) list dedup/closure/scan into ~O(reachable + edges).
-reachableNames : List Decl -> <Mut> HashMap String Unit
+reachableNames : List Decl -> HashMap String Unit
 reachableNames decls =
   let defined = definedFnNames decls
   let graph = funGraph defined decls
@@ -101,13 +101,13 @@ reachableNames decls =
 -- replaces the old O(N²) assoc-list `addRefs`. Ref-list order is irrelevant (fed
 -- to the membership-only closure).  Each ref is canonicalized against the defined
 -- set so a post-mangle bare prelude reference (`not`) resolves to `core__not`.
-funGraph : HashMap String Unit -> List Decl -> <Mut> HashMap String (List String)
+funGraph : HashMap String Unit -> List Decl -> HashMap String (List String)
 funGraph defined decls =
   let g = new ()
   let _ = funGraphInto defined decls g
   g
 
-funGraphInto : HashMap String Unit -> List Decl -> HashMap String (List String) -> <Mut> Unit
+funGraphInto : HashMap String Unit -> List Decl -> HashMap String (List String) -> Unit
 funGraphInto _ [] _ = ()
 funGraphInto defined ((DFunDef _ n ps body)::rest) g =
   let _ = set n (map (canonRef defined) (declRefs (DFunDef False n ps body)) ++ findWithDefault [] n g) g
@@ -139,7 +139,7 @@ isEmittingDecl _ = False
 -- refs.  `has` skips already-processed names, so every name is inserted once
 -- → O(reachable + edges) with O(1)-average membership and O(1) graph lookup.
 -- The resulting `seen` set is the same set the old list-based closure produced.
-closure : HashMap String (List String) -> HashMap String Unit -> List String -> <Mut> Unit
+closure : HashMap String (List String) -> HashMap String Unit -> List String -> Unit
 closure _ _ [] = ()
 closure graph seen (w::work)
   | has w seen = closure graph seen work

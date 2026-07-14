@@ -217,7 +217,7 @@ ppRequireOne (Require iface tys) = match tys
 
 -- Look up the inferred scheme for [name]; fall back to the AST annotation when
 -- typecheck produced no scheme (partial results).  Mirror value_sig.
-valueSig : String -> List (String, Scheme) -> Option Ty -> <Mut> String
+valueSig : String -> List (String, Scheme) -> Option Ty -> String
 valueSig name schemes fallbackTy = match lookupScheme name schemes
   Some s => "\{name} : \{ppScheme s}"
   None => match fallbackTy
@@ -245,7 +245,7 @@ ppIfaceMethod : IfaceMethod -> String
 ppIfaceMethod (IfaceMethod mname mty _) = "  \{mname} : \{ppTyDoc mty}"
 
 -- Compute (name, sig) for a public decl, or None to skip it.  Mirror render_sig.
-renderSig : Decl -> List (String, Scheme) -> <Mut> Option (String, String)
+renderSig : Decl -> List (String, Scheme) -> Option (String, String)
 renderSig (DTypeSig True name ty) schemes =
   Some (name, valueSig name schemes (Some ty))
 renderSig (DFunDef True name _ _) schemes =
@@ -289,13 +289,13 @@ dataVisPrivate _ = False
 -- ── entry extraction (mirror lib/doc.ml) ────────────────────────────────────
 
 -- Expand a public DLetGroup into one (name, DocEntry) per binding.
-allLetgroupEntries : Bool -> List LetBind -> Int -> List (String, Scheme) -> List (Int, String) -> <Mut> List (String, DocEntry)
+allLetgroupEntries : Bool -> List LetBind -> Int -> List (String, Scheme) -> List (Int, String) -> List (String, DocEntry)
 allLetgroupEntries False _ _ _ _ = []
 allLetgroupEntries True bindings line schemes tbl =
   let doc = findDocForLine tbl line
   letgroupEntriesGo bindings schemes doc
 
-letgroupEntriesGo : List LetBind -> List (String, Scheme) -> String -> <Mut> List (String, DocEntry)
+letgroupEntriesGo : List LetBind -> List (String, Scheme) -> String -> List (String, DocEntry)
 letgroupEntriesGo [] _ _ = []
 letgroupEntriesGo ((LetBind name _)::rest) schemes doc =
   let sigStr = valueSig name schemes None
@@ -303,7 +303,7 @@ letgroupEntriesGo ((LetBind name _)::rest) schemes doc =
 
 -- The driver: zip decls with their positions, fold collecting entries, dedup by
 -- name (first wins), emit in source order.  Mirror extract_entries.
-extractEntries : List Decl -> List DeclPos -> List (String, Scheme) -> List Comment -> <Mut> List DocEntry
+extractEntries : List Decl -> List DeclPos -> List (String, Scheme) -> List Comment -> List DocEntry
 extractEntries decls positions schemes comments =
   let tbl = buildCommentTbl comments
   let pairs = zipDoc decls positions
@@ -311,7 +311,7 @@ extractEntries decls positions schemes comments =
   reverseL (fst result)
 
 -- Fold over (decl, pos) pairs.  State: (revEntries, seenNames).  Returns it.
-extractFold : List (Decl, DeclPos) -> List (String, Scheme) -> List (Int, String) -> List DocEntry -> List String -> <Mut> (List DocEntry, List String)
+extractFold : List (Decl, DeclPos) -> List (String, Scheme) -> List (Int, String) -> List DocEntry -> List String -> (List DocEntry, List String)
 extractFold [] _ _ revEntries seen = (revEntries, seen)
 extractFold ((decl, dp)::rest) schemes tbl revEntries seen =
   let line = declPosLine dp
@@ -378,7 +378,7 @@ renderEntry (DocEntry name sig doc) =
 -- runtimeSrc / coreSrc are the prelude sources (runtime.mdk + core.mdk), read
 -- by the caller from MEDAKA_ROOT; src is the target file; filename gives the
 -- module-name basename.
-export runDoc : String -> String -> String -> String -> <Mut> String
+export runDoc : String -> String -> String -> String -> String
 runDoc runtimeSrc coreSrc src filename =
   let parsed = parseWithPositions src
   let rawDecls = fst parsed
@@ -396,7 +396,7 @@ runDoc runtimeSrc coreSrc src filename =
 -- gets inferred types for the names that DID typecheck (OCaml falls to [] on a
 -- hard error — divergence only for files with type errors, which are not the
 -- doc happy path).
-docSchemesFor : String -> String -> List Decl -> <Mut> List (String, Scheme)
+docSchemesFor : String -> String -> List Decl -> List (String, Scheme)
 docSchemesFor runtimeSrc coreSrc rawUser =
   let runtimeDecls = desugar (fst (parseWithPositions runtimeSrc))
   let coreDecls = desugar (fst (parseWithPositions coreSrc))

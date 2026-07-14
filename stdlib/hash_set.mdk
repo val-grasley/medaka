@@ -73,13 +73,13 @@ bucketRemove x (y::rest)
 
 {- | Add an element, in place. A no-op when already present. Resizes (doubling)
    past load factor 0.75. -}
-export insert : (Eq a, Hashable a) => a -> HashSet a -> <Mut> Unit
+export insert : (Eq a, Hashable a) => a -> HashSet a -> Unit
 insert x (HashSet buckets count) =
   let arr = buckets.value
   let idx = slotOf x (arrayLength arr)
   insertAt x arr idx buckets count
 
-insertAt : (Eq a, Hashable a) => a -> Array (List a) -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+insertAt : (Eq a, Hashable a) => a -> Array (List a) -> Int -> Ref (Array (List a)) -> Ref Int -> Unit
 insertAt x arr idx buckets count
   | bucketHas x (arrayGetUnsafe idx arr) = ()
   | otherwise =
@@ -87,12 +87,12 @@ insertAt x arr idx buckets count
     setRef count (count.value + 1)
     maybeResize buckets count
 
-maybeResize : Hashable a => Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+maybeResize : Hashable a => Ref (Array (List a)) -> Ref Int -> Unit
 maybeResize buckets count
   | count.value * 4 > arrayLength buckets.value * 3 = resize buckets count
   | otherwise = ()
 
-resize : Hashable a => Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+resize : Hashable a => Ref (Array (List a)) -> Ref Int -> Unit
 resize buckets count =
   let oldArr = buckets.value
   let newArr = arrayMake (arrayLength oldArr * 2) []
@@ -100,20 +100,20 @@ resize buckets count =
   setRef count 0
   reinsertAll oldArr 0 (arrayLength oldArr) buckets count
 
-reinsertAll : Hashable a => Array (List a) -> Int -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+reinsertAll : Hashable a => Array (List a) -> Int -> Int -> Ref (Array (List a)) -> Ref Int -> Unit
 reinsertAll oldArr i n buckets count
   | i >= n = ()
   | otherwise =
     reinsertBucket (arrayGetUnsafe i oldArr) buckets count
     reinsertAll oldArr (i + 1) n buckets count
 
-reinsertBucket : Hashable a => List a -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+reinsertBucket : Hashable a => List a -> Ref (Array (List a)) -> Ref Int -> Unit
 reinsertBucket [] _ _ = ()
 reinsertBucket (x::rest) buckets count =
   putRaw x buckets count
   reinsertBucket rest buckets count
 
-putRaw : Hashable a => a -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+putRaw : Hashable a => a -> Ref (Array (List a)) -> Ref Int -> Unit
 putRaw x buckets count =
   let arr = buckets.value
   let idx = slotOf x (arrayLength arr)
@@ -124,26 +124,26 @@ putRaw x buckets count =
 
    > size (fromList [1, 2, 3, 4, 5, 6, 7, 8, 8, 1])
    8 -}
-export fromList : (Eq a, Hashable a) => List a -> <Mut> HashSet a
+export fromList : (Eq a, Hashable a) => List a -> HashSet a
 fromList xs =
   let s = new ()
   insertAll xs s
   s
 
-insertAll : (Eq a, Hashable a) => List a -> HashSet a -> <Mut> Unit
+insertAll : (Eq a, Hashable a) => List a -> HashSet a -> Unit
 insertAll [] _ = ()
 insertAll (x::rest) s =
   insert x s
   insertAll rest s
 
 {- | Remove an element, in place. A no-op when absent. -}
-export delete : (Eq a, Hashable a) => a -> HashSet a -> <Mut> Unit
+export delete : (Eq a, Hashable a) => a -> HashSet a -> Unit
 delete x (HashSet buckets count) =
   let arr = buckets.value
   let idx = slotOf x (arrayLength arr)
   deleteAt x arr idx count
 
-deleteAt : (Eq a, Hashable a) => a -> Array (List a) -> Int -> Ref Int -> <Mut> Unit
+deleteAt : (Eq a, Hashable a) => a -> Array (List a) -> Int -> Ref Int -> Unit
 deleteAt x arr idx count =
   if bucketHas x (arrayGetUnsafe idx arr) then
     arraySetUnsafe idx (bucketRemove x (arrayGetUnsafe idx arr)) arr

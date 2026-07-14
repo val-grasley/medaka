@@ -34,7 +34,7 @@ import support.timer.{
 import support.util.{listLen}
 import support.path.{dirOf}
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = match args ()
   runtimeP::coreP::entry::roots =>
     run runtimeP coreP entry (rootsOrDefault entry roots)
@@ -47,7 +47,7 @@ rootsOrDefault _ roots = roots
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
 
-run : String -> String -> String -> List String -> <IO, Mut> Unit
+run : String -> String -> String -> List String -> <IO> Unit
 run runtimeP coreP entry roots = match readFile runtimeP
   Err e => ePutStrLn e
   Ok rsrc => match readFile coreP
@@ -56,7 +56,7 @@ run runtimeP coreP entry roots = match readFile runtimeP
 
 -- Time each pipeline stage with wall-clock and allocation deltas.
 -- Stages: parse, load, desugar, mark, typecheck.  No eval (measurement only).
-runStaged : Bool -> String -> String -> String -> List String -> <IO, Mut> Unit
+runStaged : Bool -> String -> String -> String -> List String -> <IO> Unit
 runStaged on rsrc csrc entry roots =
   let tTotal = now ()
   let aTotal = allocSnap ()

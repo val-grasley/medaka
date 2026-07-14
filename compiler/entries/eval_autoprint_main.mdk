@@ -34,7 +34,7 @@ main = driveModules runElab
 -- shouldAutoPrintMain reads), wrap a bare non-Unit value main, then elaborate the
 -- (possibly wrapped) graph for real and force it.  The double elaborate mirrors
 -- entry_support.runEmitWith / playground_main.doEmit, which do exactly this.
-runElab : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runElab : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 runElab runtimeDecls coreDecls modules =
   let _ = elaborateModules runtimeDecls coreDecls modules
   let modulesW = match shouldAutoPrintMain coreDecls modules

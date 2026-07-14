@@ -45,7 +45,7 @@ readUsers path = match openDb path
     Err e => println "scan error: \{e}"
     Ok found => printRows display found
 
-runProbe : String -> <IO, FileRead, FileWrite, Mut> Unit
+runProbe : String -> <IO, FileRead, FileWrite> Unit
 runProbe path =
   let _ = println "-- WRITE users, READ back --"
   match writeDatabase path "users" usersSql 3 (Some 0) baseRows
@@ -63,7 +63,7 @@ runProbe path =
         Err e => println "update error: \{e}"
         Ok n  => let _ = println "updated \{n} rows" in readUsers path
 
-main : <IO, FileRead, FileWrite, Mut> Unit
+main : <IO, FileRead, FileWrite> Unit
 main = match args ()
   [path] => runProbe path
   _ => println "usage: file_roundtrip_probe <path>"

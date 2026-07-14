@@ -90,7 +90,7 @@ runAll db =
     "-- SELECT DISTINCT a*0 --"
     (withColumns [unExpr (eMul (eColInt "a") (eLitI 0))] (selectFrom "nums"))
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main =
   let _ = println "-- CREATE nums (in-memory) --"
   match buildDatabase "nums" numsSql 4 ipk numsRows

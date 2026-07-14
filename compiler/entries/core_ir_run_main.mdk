@@ -24,7 +24,7 @@ import entries.entry_support.{drivePrelude}
 
 main = drivePrelude emit
 
-emit : List Decl -> List Decl -> <IO, Mut> Unit
+emit : List Decl -> List Decl -> <IO> Unit
 emit preludeDecls userDecls =
   putStr (cevalOutput (lowerProgram (annotateProgram
     (dropShadowedExp (funNamesOf userDecls) preludeDecls ++ userDecls))))

@@ -95,7 +95,7 @@ outChanged OutOk = 0
 --   (No doctest: it needs a live database file.  Every statement kind, and every
 --   rejection, is gated end-to-end against the real `sqlite3` CLI by
 --   `sqlite/test/dml_oracle.sh`.)
-export execSql : String -> String -> <FileRead, FileWrite, Mut> Result String ExecOut
+export execSql : String -> String -> <FileRead, FileWrite> Result String ExecOut
 execSql path sql = do
   st <- parseStmt sql
   execStmt path st
@@ -103,7 +103,7 @@ execSql path sql = do
 -- | Run an already-parsed `Stmt` against the database at `path`.
 --
 --   (No doctest: it needs a live database file — see `execSql`.)
-export execStmt : String -> Stmt -> <FileRead, FileWrite, Mut> Result String ExecOut
+export execStmt : String -> Stmt -> <FileRead, FileWrite> Result String ExecOut
 execStmt path (SSelect sel) = do
   db <- openDb path
   rows <- runSelect db sel tCells

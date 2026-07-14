@@ -17,7 +17,7 @@ import driver.build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, envOr}
 import support.util.{reverseL}
 import support.path.{baseOf, chopExt}
 
-main : <IO, Mut, Panic> Unit
+main : <IO> Unit
 main = match parseArgs (args ())
   Err msg =>
     let _ = ePutStrLn msg

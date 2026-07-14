@@ -58,7 +58,7 @@ import backend.llvm_emit.{
 import ir.dce.{dceFilter}
 import entries.entry_support.{driveModules, runEmitWith}
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = driveModules (runEmitWith emitTail)
 
 -- COMPOSITE-MAIN AUTO-PRINT: the shared mangle+elaborate+auto-print-wrap glue
@@ -86,7 +86,7 @@ emitHalfOfEnv = match getEnv "MEDAKA_EMIT_HALF"
 -- Lowering core.mdk's decls ON THEIR OWN is what makes this a question of where a
 -- decl was DEFINED rather than a guess at its emitted name.  Only ever run in mode
 -- 2, so the default emit path is untouched (and pays nothing for it).
-installPreludeSymsOf : List Decl -> <IO, Mut> Unit
+installPreludeSymsOf : List Decl -> <IO> Unit
 installPreludeSymsOf coreD = match lowerProgramEmit coreD
   CProgram groups _ _ impls =>
     installPreludeSyms (map cbindNameOf groups) (implKeysOf impls)
@@ -104,7 +104,7 @@ implKeysOf ((CImplEntry m _ (CImplTagged tag _ _ _ _ _))::rest) =
 implKeysOf (_::rest) = implKeysOf rest
 
 -- Install the emitter side-tables + emit, from an already-elaborated program.
-emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 emitTail runtimeDecls coreD modules2 =
   let half = emitHalfOfEnv
   let _ = installEmitHalf half

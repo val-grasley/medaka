@@ -112,19 +112,19 @@ realsRows = [
 -- Dispatch
 -- ---------------------------------------------------------------------------
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = match args ()
   [cmd, out] => dispatch cmd out
   _ => println "usage: writer_api_demo <users|kv|blob|reals> <out.db>"
 
-dispatch : String -> String -> <IO, Mut> Unit
+dispatch : String -> String -> <IO> Unit
 dispatch "users" out = run usersSchema usersRows out
 dispatch "kv" out = run kvSchema kvRows out
 dispatch "blob" out = run blobSchema blobRows out
 dispatch "reals" out = run realsSchema realsRows out
 dispatch cmd _ = println "unknown command: \{cmd}"
 
-run : TableSchema -> List (List Cell) -> String -> <IO, Mut> Unit
+run : TableSchema -> List (List Cell) -> String -> <IO> Unit
 run schema rows out = match writeTable out schema rows
   Err e => println "Error: \{e}"
   Ok _ => println "wrote \{out}"

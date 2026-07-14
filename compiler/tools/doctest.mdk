@@ -266,7 +266,7 @@ buildSynthGo i (ex::rest) = desugar (parse (synthSrc i ex))
 -- env is the post-run binding environment (Ok env) or a single whole-program
 -- error (Err msg) applying to every example.
 
-export buildDetails : Result String (List (String, Value e)) -> List Example -> <Mut | e> RunResult
+export buildDetails : Result String (List (String, Value e)) -> List Example -> <e> RunResult
 buildDetails envResult examples =
   let details = detailsGo envResult 0 examples
   let passed = countResult isPass details
@@ -274,12 +274,12 @@ buildDetails envResult examples =
   let errors = countResult isErr details
   RunResult (listLen examples) passed failed errors details
 
-detailsGo : Result String (List (String, Value e)) -> Int -> List Example -> <Mut | e> List (Example, ExResult)
+detailsGo : Result String (List (String, Value e)) -> Int -> List Example -> <e> List (Example, ExResult)
 detailsGo _ _ [] = []
 detailsGo envResult i (ex::rest) =
   (ex, oneResult envResult i ex) :: detailsGo envResult (i + 1) rest
 
-oneResult : Result String (List (String, Value e)) -> Int -> Example -> <Mut | e> ExResult
+oneResult : Result String (List (String, Value e)) -> Int -> Example -> <e> ExResult
 oneResult (Err msg) i ex = Errored msg
 oneResult (Ok env) i ex = match lookupBinding (synthName i) env
   None => Errored ("could not evaluate: " ++ exampleInput ex)

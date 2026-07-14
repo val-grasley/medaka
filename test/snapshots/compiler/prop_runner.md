@@ -45,7 +45,7 @@ import support.util.{listLen, lookupAssoc, reverseL, isEmptyL, filterList, zipL}
 -- shared `rngStateRef`, keeping generation in this module rather than threading
 -- an eval env through every generator.
 
-rngNextLocal : Unit -> <Mut> Int
+rngNextLocal : Unit -> Int
 -- Intentional cross-file duplicate of the same helper in eval.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
 rngNextLocal _ =
@@ -53,12 +53,12 @@ rngNextLocal _ =
   let _ = setRef rngStateRef s
   s
 
-randIntRange : Int -> Int -> <Mut> Int
+randIntRange : Int -> Int -> Int
 randIntRange lo hi =
   let range = hi - lo + 1
   if range <= 0 then lo else lo + rngNextLocal () % range
 
-randBoolL : Unit -> <Mut> Bool
+randBoolL : Unit -> Bool
 randBoolL _ = rngNextLocal () % 2 == 1
 
 -- ── tydef registry (built from the program's data/record decls) ─────────────
@@ -96,7 +96,7 @@ tySpineGo _ _ = None
 
 -- ── value generation ─────────────────────────────────────────────────────────
 
-genForType : List (String, TyDef) -> List (String, Ty) -> Ty -> <Mut | e> Value e
+genForType : List (String, TyDef) -> List (String, Ty) -> Ty -> <e> Value e
 genForType tydefs subst (TyVar v) = match lookupAssoc v subst
   Some t => genForType tydefs subst t
   None => panic ("prop_runner: cannot generate values for unbound type variable '" ++ v ++ "'")
@@ -123,22 +123,22 @@ genForType tydefs subst (TyApp (TyApp (TyCon "Result" _) e) a) =
 genForType tydefs subst (TyTuple ts) = VTuple (genTuple tydefs subst ts)
 genForType tydefs subst ty = genUserOrFail tydefs subst ty
 
-genTuple : List (String, TyDef) -> List (String, Ty) -> List Ty -> <Mut | e> List (Value e)
+genTuple : List (String, TyDef) -> List (String, Ty) -> List Ty -> <e> List (Value e)
 genTuple _ _ [] = []
 genTuple tydefs subst (t::rest) =
   genForType tydefs subst t :: genTuple tydefs subst rest
 
-genList : List (String, TyDef) -> List (String, Ty) -> Ty -> Int -> <Mut | e> List (Value e)
+genList : List (String, TyDef) -> List (String, Ty) -> Ty -> Int -> <e> List (Value e)
 genList _ _ _ 0 = []
 genList tydefs subst t n =
   genForType tydefs subst t :: genList tydefs subst t (n - 1)
 
-genFloat : Unit -> <Mut | e> Value e
+genFloat : Unit -> <e> Value e
 genFloat _ =
   let r = rngNextLocal () % 2000001
   VFloat (intToFloat r * (1.0 / 1000000.0) - 1.0)
 
-genCharStr : Unit -> <Mut> String
+genCharStr : Unit -> String
 genCharStr _ = charToStr (charFromCodeU (32 + rngNextLocal () % 95))
 
 charFromCodeU : Int -> Char
@@ -149,21 +149,21 @@ charFromCodeU n = match charFromCode n
   None => ' '
 
 -- random String of printable ASCII, length 0..10
-genString : Unit -> <Mut> String
+genString : Unit -> String
 genString _ = stringConcat (genStringGo (randIntRange 0 10))
 
-genStringGo : Int -> <Mut> List String
+genStringGo : Int -> List String
 genStringGo 0 = []
 genStringGo n = genCharStr () :: genStringGo (n - 1)
 
-genUserOrFail : List (String, TyDef) -> List (String, Ty) -> Ty -> <Mut | e> Value e
+genUserOrFail : List (String, TyDef) -> List (String, Ty) -> Ty -> <e> Value e
 genUserOrFail tydefs subst ty = match tySpine ty
   Some (name, args) => match lookupAssoc name tydefs
     Some tydef => genUser tydefs subst name tydef args
     None => panic ("prop_runner: no Arbitrary instance for type '" ++ name ++ "'. Add 'deriving (Arbitrary)' or an explicit impl.")
   None => panic "prop_runner: cannot generate values for type"
 
-genUser : List (String, TyDef) -> List (String, Ty) -> String -> TyDef -> List Ty -> <Mut | e> Value e
+genUser : List (String, TyDef) -> List (String, Ty) -> String -> TyDef -> List Ty -> <e> Value e
 genUser tydefs subst name tydef args =
   let args2 = map (substTy subst) args
   match tydef
@@ -175,12 +175,12 @@ genUser tydefs subst name tydef args =
       let v = nthList variants (randIntRange 0 (listLen variants - 1))
       genVariant tydefs subst2 v
 
-genVariant : List (String, TyDef) -> List (String, Ty) -> Variant -> <Mut | e> Value e
+genVariant : List (String, TyDef) -> List (String, Ty) -> Variant -> <e> Value e
 genVariant tydefs subst (Variant cname payload) = match payload
   ConPos tys => VCon cname (map (genForType tydefs subst) tys)
   ConNamed fields _ => VCon cname (map (genFieldTy tydefs subst) fields)
 
-genFieldTy : List (String, TyDef) -> List (String, Ty) -> Field -> <Mut | e> Value e
+genFieldTy : List (String, TyDef) -> List (String, Ty) -> Field -> <e> Value e
 genFieldTy tydefs subst (Field _ fty) = genForType tydefs subst fty
 
 nthList : List a -> Int -> a
@@ -220,7 +220,7 @@ shrinkInt n =
 -- evalEnv is the program's binding environment (List (String, Value)); each
 -- prop body is evaluated in a frame extending it with the generated inputs.
 
-checkProp : List (String, Value e) -> Expr -> List (String, Value e) -> <Mut | e> Bool
+checkProp : List (String, Value e) -> Expr -> List (String, Value e) -> <e> Bool
 checkProp evalEnv body inputs =
   let env = extendEnv (EvalEnv [[]]) (inputs ++ evalEnv)
   match force (eval env body)
@@ -235,7 +235,7 @@ public export data PropOutcome v =
   | PropPassed
   | PropFailed Int (List (String, v))
 
-runProp : List (String, TyDef) -> List (String, Value e) -> Decl -> Int -> <IO, Mut> Bool
+runProp : List (String, TyDef) -> List (String, Value e) -> Decl -> Int -> <IO> Bool
 runProp tydefs evalEnv (DProp _ name params body) maxTests =
   let _ = putStr ("Testing " ++ escStrLocal name ++ " ... ")
   match findFailure tydefs evalEnv params body maxTests 1
@@ -249,7 +249,7 @@ runProp tydefs evalEnv (DProp _ name params body) maxTests =
       False
 runProp tydefs evalEnv _ maxTests = True
 
-findFailure : List (String, TyDef) -> List (String, Value e) -> List PropParam -> Expr -> Int -> Int -> <Mut | e> PropOutcome (Value e)
+findFailure : List (String, TyDef) -> List (String, Value e) -> List PropParam -> Expr -> Int -> Int -> <e> PropOutcome (Value e)
 findFailure tydefs evalEnv params body maxTests run
   | run > maxTests = PropPassed
   | otherwise =
@@ -264,13 +264,13 @@ findFailure tydefs evalEnv params body maxTests run
       inputs
       (checkProp evalEnv body inputs)
 
-findFailureStep : List (String, TyDef) -> List (String, Value e) -> List PropParam -> Expr -> Int -> Int -> List (String, Value e) -> Bool -> <Mut | e> PropOutcome (Value e)
+findFailureStep : List (String, TyDef) -> List (String, Value e) -> List PropParam -> Expr -> Int -> Int -> List (String, Value e) -> Bool -> <e> PropOutcome (Value e)
 findFailureStep tydefs evalEnv params body maxTests run _ True =
   findFailure tydefs evalEnv params body maxTests (run + 1)
 findFailureStep _ evalEnv params body _ run inputs False =
   PropFailed run (shrinkLoop evalEnv params body inputs)
 
-genInputs : List (String, TyDef) -> List PropParam -> <Mut | e> List (String, Value e)
+genInputs : List (String, TyDef) -> List PropParam -> <e> List (String, Value e)
 genInputs _ [] = []
 genInputs tydefs ((PropParam x ty)::rest) =
   (x, genForType tydefs [] ty) :: genInputs tydefs rest
@@ -286,14 +286,14 @@ escStrLocal s = "\"" ++ s ++ "\""
 
 -- ── greedy shrink (mirror lib/prop_runner.ml shrink_loop) ────────────────────
 
-shrinkLoop : List (String, Value e) -> List PropParam -> Expr -> List (String, Value e) -> <Mut | e> List (String, Value e)
+shrinkLoop : List (String, Value e) -> List PropParam -> Expr -> List (String, Value e) -> <e> List (String, Value e)
 shrinkLoop evalEnv params body candidate = match tryShrinkOne evalEnv params body candidate 0
   Some better => shrinkLoop evalEnv params body better
   None => candidate
 
 -- Try each param in order; return the first candidate where some smaller value
 -- still fails the prop.
-tryShrinkOne : List (String, Value e) -> List PropParam -> Expr -> List (String, Value e) -> Int -> <Mut | e> Option (List (String, Value e))
+tryShrinkOne : List (String, Value e) -> List PropParam -> Expr -> List (String, Value e) -> Int -> <e> Option (List (String, Value e))
 tryShrinkOne evalEnv params body candidate i
   | i >= listLen params = None
   | otherwise =
@@ -304,7 +304,7 @@ tryShrinkOne evalEnv params body candidate i
       Some better => Some better
       None => tryShrinkOne evalEnv params body candidate (i + 1)
 
-findSmaller : List (String, Value e) -> List PropParam -> Expr -> List (String, Value e) -> String -> List (Value e) -> <Mut | e> Option (List (String, Value e))
+findSmaller : List (String, Value e) -> List PropParam -> Expr -> List (String, Value e) -> String -> List (Value e) -> <e> Option (List (String, Value e))
 findSmaller _ _ _ _ _ [] = None
 findSmaller evalEnv params body candidate x (sv::rest) =
   let candidate2 = replaceVal x sv candidate
@@ -342,7 +342,7 @@ filterDecls p (d::rest)
 -- Run every prop; print the trailing summary; return True iff all passed.
 -- Output exactly mirrors lib/prop_runner.ml's run_all (no leading line; one
 -- `Testing … OK/FAILED` per prop; a blank line then `N passed, M failed`).
-export runAllProps : List (String, Value e) -> List Decl -> <IO, Mut> Bool
+export runAllProps : List (String, Value e) -> List Decl -> <IO> Bool
 runAllProps evalEnv program =
   let props = filterProps program
   if isEmptyL props then True
@@ -354,7 +354,7 @@ runAllProps evalEnv program =
     let _ = putStrLn "\n\{intToString nPass} passed, \{intToString nFail} failed"
     nFail == 0
 
-runEach : List (String, TyDef) -> List (String, Value e) -> List Decl -> <IO, Mut> List Bool
+runEach : List (String, TyDef) -> List (String, Value e) -> List Decl -> <IO> List Bool
 runEach _ _ [] = []
 runEach tydefs evalEnv (p::rest) =
   runProp tydefs evalEnv p 100 :: runEach tydefs evalEnv rest
@@ -374,11 +374,11 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "Expr" false) (mem "DProp" false) (mem "DData" false) (mem "DNewtype" false) (mem "PropParam" false) (mem "Ty" true) (mem "Variant" true) (mem "Field" true) (mem "ConPayload" true))))
 (DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "EvalEnv" true) (mem "eval" false) (mem "extendEnv" false) (mem "force" false) (mem "ppValue" false) (mem "rngStateRef" false))))
 (DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "isEmptyL" false) (mem "filterList" false) (mem "zipL" false))))
-(DTypeSig false "rngNextLocal" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Int"))))
+(DTypeSig false "rngNextLocal" (TyFun (TyCon "Unit") (TyCon "Int")))
 (DFunDef false "rngNextLocal" (PWild) (EBlock (DoLet false false (PVar "s") (EBinOp "%" (EBinOp "+" (EBinOp "*" (EFieldAccess (EVar "rngStateRef") "value") (ELit (LInt 1103515245))) (ELit (LInt 12345))) (ELit (LInt 2147483648)))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "rngStateRef")) (EVar "s"))) (DoExpr (EVar "s"))))
-(DTypeSig false "randIntRange" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Int")))))
+(DTypeSig false "randIntRange" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
 (DFunDef false "randIntRange" ((PVar "lo") (PVar "hi")) (EBlock (DoLet false false (PVar "range") (EBinOp "+" (EBinOp "-" (EVar "hi") (EVar "lo")) (ELit (LInt 1)))) (DoExpr (EIf (EBinOp "<=" (EVar "range") (ELit (LInt 0))) (EVar "lo") (EBinOp "+" (EVar "lo") (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (EVar "range")))))))
-(DTypeSig false "randBoolL" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DTypeSig false "randBoolL" (TyFun (TyCon "Unit") (TyCon "Bool")))
 (DFunDef false "randBoolL" (PWild) (EBinOp "==" (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (ELit (LInt 2))) (ELit (LInt 1))))
 (DData Public "TyDef" () ((variant "TDData" (ConPos (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Variant"))))) ())
 (DTypeSig false "buildTyDefs" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef")))))
@@ -396,7 +396,7 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "tySpineGo" ((PVar "acc") (PCon "TyApp" (PVar "f") (PVar "a"))) (EApp (EApp (EVar "tySpineGo") (EBinOp "::" (EVar "a") (EVar "acc"))) (EVar "f")))
 (DFunDef false "tySpineGo" ((PVar "acc") (PCon "TyCon" (PVar "n") PWild)) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "acc"))))
 (DFunDef false "tySpineGo" (PWild PWild) (EVar "None"))
-(DTypeSig false "genForType" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genForType" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyVar" (PVar "v"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "v")) (EVar "subst")) (arm (PCon "Some" (PVar "t")) () (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "t"))) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (ELit (LString "prop_runner: cannot generate values for unbound type variable '")) (EVar "v")) (ELit (LString "'")))))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyCon" (PLit (LString "Int")) PWild)) (EApp (EVar "VInt") (EApp (EApp (EVar "randIntRange") (EUnOp "-" (ELit (LInt 1000)))) (ELit (LInt 1000)))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyCon" (PLit (LString "Bool")) PWild)) (EApp (EVar "VBool") (EApp (EVar "randBoolL") (ELit LUnit))))
@@ -410,30 +410,30 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyApp" (PCon "TyApp" (PCon "TyCon" (PLit (LString "Result")) PWild) (PVar "e")) (PVar "a"))) (EIf (EApp (EVar "randBoolL") (ELit LUnit)) (EApp (EApp (EVar "VCon") (ELit (LString "Ok"))) (EListLit (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "a")))) (EApp (EApp (EVar "VCon") (ELit (LString "Err"))) (EListLit (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "e"))))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyTuple" (PVar "ts"))) (EApp (EVar "VTuple") (EApp (EApp (EApp (EVar "genTuple") (EVar "tydefs")) (EVar "subst")) (EVar "ts"))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PVar "ty")) (EApp (EApp (EApp (EVar "genUserOrFail") (EVar "tydefs")) (EVar "subst")) (EVar "ty")))
-(DTypeSig false "genTuple" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DTypeSig false "genTuple" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "genTuple" (PWild PWild (PList)) (EListLit))
 (DFunDef false "genTuple" ((PVar "tydefs") (PVar "subst") (PCons (PVar "t") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "t")) (EApp (EApp (EApp (EVar "genTuple") (EVar "tydefs")) (EVar "subst")) (EVar "rest"))))
-(DTypeSig false "genList" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyFun (TyCon "Int") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
+(DTypeSig false "genList" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "genList" (PWild PWild PWild (PLit (LInt 0))) (EListLit))
 (DFunDef false "genList" ((PVar "tydefs") (PVar "subst") (PVar "t") (PVar "n")) (EBinOp "::" (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "t")) (EApp (EApp (EApp (EApp (EVar "genList") (EVar "tydefs")) (EVar "subst")) (EVar "t")) (EBinOp "-" (EVar "n") (ELit (LInt 1))))))
-(DTypeSig false "genFloat" (TyFun (TyCon "Unit") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
+(DTypeSig false "genFloat" (TyFun (TyCon "Unit") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "genFloat" (PWild) (EBlock (DoLet false false (PVar "r") (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (ELit (LInt 2000001)))) (DoExpr (EApp (EVar "VFloat") (EBinOp "-" (EBinOp "*" (EApp (EVar "intToFloat") (EVar "r")) (EBinOp "/" (ELit (LFloat 1.0)) (ELit (LFloat 1000000.0)))) (ELit (LFloat 1.0)))))))
-(DTypeSig false "genCharStr" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "String"))))
+(DTypeSig false "genCharStr" (TyFun (TyCon "Unit") (TyCon "String")))
 (DFunDef false "genCharStr" (PWild) (EApp (EVar "charToStr") (EApp (EVar "charFromCodeU") (EBinOp "+" (ELit (LInt 32)) (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (ELit (LInt 95)))))))
 (DTypeSig false "charFromCodeU" (TyFun (TyCon "Int") (TyCon "Char")))
 (DFunDef false "charFromCodeU" ((PVar "n")) (EMatch (EApp (EVar "charFromCode") (EVar "n")) (arm (PCon "Some" (PVar "c")) () (EVar "c")) (arm (PCon "None") () (ELit (LChar " ")))))
-(DTypeSig false "genString" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "String"))))
+(DTypeSig false "genString" (TyFun (TyCon "Unit") (TyCon "String")))
 (DFunDef false "genString" (PWild) (EApp (EVar "stringConcat") (EApp (EVar "genStringGo") (EApp (EApp (EVar "randIntRange") (ELit (LInt 0))) (ELit (LInt 10))))))
-(DTypeSig false "genStringGo" (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))
+(DTypeSig false "genStringGo" (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "genStringGo" ((PLit (LInt 0))) (EListLit))
 (DFunDef false "genStringGo" ((PVar "n")) (EBinOp "::" (EApp (EVar "genCharStr") (ELit LUnit)) (EApp (EVar "genStringGo") (EBinOp "-" (EVar "n") (ELit (LInt 1))))))
-(DTypeSig false "genUserOrFail" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genUserOrFail" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genUserOrFail" ((PVar "tydefs") (PVar "subst") (PVar "ty")) (EMatch (EApp (EVar "tySpine") (EVar "ty")) (arm (PCon "Some" (PTuple (PVar "name") (PVar "args"))) () (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EVar "tydefs")) (arm (PCon "Some" (PVar "tydef")) () (EApp (EApp (EApp (EApp (EApp (EVar "genUser") (EVar "tydefs")) (EVar "subst")) (EVar "name")) (EVar "tydef")) (EVar "args"))) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (ELit (LString "prop_runner: no Arbitrary instance for type '")) (EVar "name")) (ELit (LString "'. Add 'deriving (Arbitrary)' or an explicit impl."))))))) (arm (PCon "None") () (EApp (EVar "panic") (ELit (LString "prop_runner: cannot generate values for type"))))))
-(DTypeSig false "genUser" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "String") (TyFun (TyCon "TyDef") (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
+(DTypeSig false "genUser" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "String") (TyFun (TyCon "TyDef") (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "genUser" ((PVar "tydefs") (PVar "subst") (PVar "name") (PVar "tydef") (PVar "args")) (EBlock (DoLet false false (PVar "args2") (EApp (EApp (EVar "map") (EApp (EVar "substTy") (EVar "subst"))) (EVar "args"))) (DoExpr (EMatch (EVar "tydef") (arm (PCon "TDData" (PVar "params") (PVar "variants")) () (EBlock (DoLet false false (PVar "subst2") (EIf (EBinOp "==" (EApp (EVar "listLen") (EVar "params")) (EApp (EVar "listLen") (EVar "args2"))) (EApp (EApp (EVar "zipL") (EVar "params")) (EVar "args2")) (EListLit))) (DoLet false false (PVar "v") (EApp (EApp (EVar "nthList") (EVar "variants")) (EApp (EApp (EVar "randIntRange") (ELit (LInt 0))) (EBinOp "-" (EApp (EVar "listLen") (EVar "variants")) (ELit (LInt 1)))))) (DoExpr (EApp (EApp (EApp (EVar "genVariant") (EVar "tydefs")) (EVar "subst2")) (EVar "v")))))))))
-(DTypeSig false "genVariant" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Variant") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genVariant" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Variant") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genVariant" ((PVar "tydefs") (PVar "subst") (PCon "Variant" (PVar "cname") (PVar "payload"))) (EMatch (EVar "payload") (arm (PCon "ConPos" (PVar "tys")) () (EApp (EApp (EVar "VCon") (EVar "cname")) (EApp (EApp (EVar "map") (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst"))) (EVar "tys")))) (arm (PCon "ConNamed" (PVar "fields") PWild) () (EApp (EApp (EVar "VCon") (EVar "cname")) (EApp (EApp (EVar "map") (EApp (EApp (EVar "genFieldTy") (EVar "tydefs")) (EVar "subst"))) (EVar "fields"))))))
-(DTypeSig false "genFieldTy" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Field") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genFieldTy" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Field") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genFieldTy" ((PVar "tydefs") (PVar "subst") (PCon "Field" PWild (PVar "fty"))) (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "fty")))
 (DTypeSig false "nthList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyCon "Int") (TyVar "a"))))
 (DFunDef false "nthList" ((PCons (PVar "x") PWild) (PLit (LInt 0))) (EVar "x"))
@@ -443,18 +443,18 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "shrinkValue" ((PVar "ty") (PVar "v")) (EMatch (ETuple (EVar "ty") (EVar "v")) (arm (PTuple (PCon "TyCon" (PLit (LString "Int")) PWild) (PCon "VInt" (PVar "n"))) () (EApp (EVar "shrinkInt") (EVar "n"))) (arm (PTuple (PCon "TyCon" (PLit (LString "Bool")) PWild) (PCon "VBool" (PCon "True"))) () (EListLit (EApp (EVar "VBool") (EVar "False")))) (arm (PTuple (PCon "TyCon" (PLit (LString "Bool")) PWild) (PCon "VBool" (PCon "False"))) () (EListLit)) (arm (PTuple (PCon "TyCon" (PLit (LString "Float")) PWild) (PCon "VFloat" (PVar "x"))) () (EIf (EBinOp "==" (EVar "x") (ELit (LFloat 0.0))) (EListLit) (EListLit (EApp (EVar "VFloat") (ELit (LFloat 0.0))) (EApp (EVar "VFloat") (EBinOp "/" (EVar "x") (ELit (LFloat 2.0))))))) (arm (PTuple (PCon "TyCon" (PLit (LString "String")) PWild) (PCon "VString" (PVar "s"))) () (EIf (EBinOp "==" (EVar "s") (ELit (LString ""))) (EListLit) (EListLit (EApp (EVar "VString") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "/" (EApp (EVar "stringLength") (EVar "s")) (ELit (LInt 2)))) (EVar "s")))))) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "List")) PWild) PWild) (PCon "VList" (PList))) () (EListLit)) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "List")) PWild) PWild) (PCon "VList" (PCons PWild (PVar "rest")))) () (EListLit (EApp (EVar "VList") (EVar "rest")))) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "Option")) PWild) PWild) (PCon "VCon" (PLit (LString "None")) (PList))) () (EListLit)) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "Option")) PWild) PWild) (PCon "VCon" (PLit (LString "Some")) PWild)) () (EListLit (EApp (EApp (EVar "VCon") (ELit (LString "None"))) (EListLit)))) (arm PWild () (EListLit))))
 (DTypeSig false "shrinkInt" (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "shrinkInt" ((PVar "n")) (EBlock (DoLet false false (PVar "cands") (EListLit (ELit (LInt 0)) (EBinOp "/" (EVar "n") (ELit (LInt 2))) (EBinOp "+" (EVar "n") (EIf (EBinOp ">" (EVar "n") (ELit (LInt 0))) (EUnOp "-" (ELit (LInt 1))) (ELit (LInt 1)))))) (DoExpr (EApp (EApp (EVar "map") (EVar "VInt")) (EApp (EApp (EVar "filterList") (ELam ((PVar "_s")) (EBinOp "!=" (EVar "_s") (EVar "n")))) (EVar "cands"))))))
-(DTypeSig false "checkProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect ("Mut") (Some "e") (TyCon "Bool"))))))
+(DTypeSig false "checkProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect () (Some "e") (TyCon "Bool"))))))
 (DFunDef false "checkProp" ((PVar "evalEnv") (PVar "body") (PVar "inputs")) (EBlock (DoLet false false (PVar "env") (EApp (EApp (EVar "extendEnv") (EApp (EVar "EvalEnv") (EListLit (EListLit)))) (EBinOp "++" (EVar "inputs") (EVar "evalEnv")))) (DoExpr (EMatch (EApp (EVar "force") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "body"))) (arm (PCon "VBool" (PVar "b")) () (EVar "b")) (arm PWild () (EVar "False"))))))
 (DData Public "PropOutcome" ("v") ((variant "PropPassed" (ConPos)) (variant "PropFailed" (ConPos (TyCon "Int") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyVar "v")))))) ())
-(DTypeSig false "runProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyEffect ("IO" "Mut") None (TyCon "Bool")))))))
+(DTypeSig false "runProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyEffect ("IO") None (TyCon "Bool")))))))
 (DFunDef false "runProp" ((PVar "tydefs") (PVar "evalEnv") (PCon "DProp" PWild (PVar "name") (PVar "params") (PVar "body")) (PVar "maxTests")) (EBlock (DoLet false false PWild (EApp (EVar "putStr") (EBinOp "++" (EBinOp "++" (ELit (LString "Testing ")) (EApp (EVar "escStrLocal") (EVar "name"))) (ELit (LString " ... "))))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findFailure") (EVar "tydefs")) (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "maxTests")) (ELit (LInt 1))) (arm (PCon "PropPassed") () (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "OK (")) (EApp (EVar "intToString") (EVar "maxTests"))) (ELit (LString " tests)"))))) (DoExpr (EVar "True")))) (arm (PCon "PropFailed" (PVar "run") (PVar "shrunk")) () (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "FAILED after ")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "run")))) (ELit (LString ""))) (EApp (EVar "display") (EIf (EBinOp "==" (EVar "run") (ELit (LInt 1))) (ELit (LString " test")) (ELit (LString " tests"))))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "  Counterexample:")))) (DoLet false false PWild (EApp (EVar "printCounterexample") (EVar "shrunk"))) (DoExpr (EVar "False"))))))))
 (DFunDef false "runProp" ((PVar "tydefs") (PVar "evalEnv") PWild (PVar "maxTests")) (EVar "True"))
-(DTypeSig false "findFailure" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))
+(DTypeSig false "findFailure" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))
 (DFunDef false "findFailure" ((PVar "tydefs") (PVar "evalEnv") (PVar "params") (PVar "body") (PVar "maxTests") (PVar "run")) (EIf (EBinOp ">" (EVar "run") (EVar "maxTests")) (EVar "PropPassed") (EIf (EVar "otherwise") (EBlock (DoLet false false (PVar "inputs") (EApp (EApp (EVar "genInputs") (EVar "tydefs")) (EVar "params"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findFailureStep") (EVar "tydefs")) (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "maxTests")) (EVar "run")) (EVar "inputs")) (EApp (EApp (EApp (EVar "checkProp") (EVar "evalEnv")) (EVar "body")) (EVar "inputs"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "findFailureStep" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Bool") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
+(DTypeSig false "findFailureStep" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Bool") (TyEffect () (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
 (DFunDef false "findFailureStep" ((PVar "tydefs") (PVar "evalEnv") (PVar "params") (PVar "body") (PVar "maxTests") (PVar "run") PWild (PCon "True")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findFailure") (EVar "tydefs")) (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "maxTests")) (EBinOp "+" (EVar "run") (ELit (LInt 1)))))
 (DFunDef false "findFailureStep" (PWild (PVar "evalEnv") (PVar "params") (PVar "body") PWild (PVar "run") (PVar "inputs") (PCon "False")) (EApp (EApp (EVar "PropFailed") (EVar "run")) (EApp (EApp (EApp (EApp (EVar "shrinkLoop") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "inputs"))))
-(DTypeSig false "genInputs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DTypeSig false "genInputs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "genInputs" (PWild (PList)) (EListLit))
 (DFunDef false "genInputs" ((PVar "tydefs") (PCons (PCon "PropParam" (PVar "x") (PVar "ty")) (PVar "rest"))) (EBinOp "::" (ETuple (EVar "x") (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EListLit)) (EVar "ty"))) (EApp (EApp (EVar "genInputs") (EVar "tydefs")) (EVar "rest"))))
 (DTypeSig false "printCounterexample" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect ("IO") None (TyCon "Unit"))))
@@ -462,11 +462,11 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "printCounterexample" ((PCons (PTuple (PVar "x") (PVar "v")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "    ")) (EApp (EVar "display") (EVar "x"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "ppValue") (EVar "v")))) (ELit (LString ""))))) (DoExpr (EApp (EVar "printCounterexample") (EVar "rest")))))
 (DTypeSig false "escStrLocal" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "escStrLocal" ((PVar "s")) (EBinOp "++" (EBinOp "++" (ELit (LString "\"")) (EVar "s")) (ELit (LString "\""))))
-(DTypeSig false "shrinkLoop" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))
+(DTypeSig false "shrinkLoop" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))
 (DFunDef false "shrinkLoop" ((PVar "evalEnv") (PVar "params") (PVar "body") (PVar "candidate")) (EMatch (EApp (EApp (EApp (EApp (EApp (EVar "tryShrinkOne") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (ELit (LInt 0))) (arm (PCon "Some" (PVar "better")) () (EApp (EApp (EApp (EApp (EVar "shrinkLoop") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "better"))) (arm (PCon "None") () (EVar "candidate"))))
-(DTypeSig false "tryShrinkOne" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Int") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))))
+(DTypeSig false "tryShrinkOne" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))))
 (DFunDef false "tryShrinkOne" ((PVar "evalEnv") (PVar "params") (PVar "body") (PVar "candidate") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "listLen") (EVar "params"))) (EVar "None") (EIf (EVar "otherwise") (EBlock (DoLet false false (PCon "PropParam" (PVar "x") (PVar "ty")) (EApp (EApp (EVar "nthList") (EVar "params")) (EVar "i"))) (DoLet false false (PVar "currentV") (EApp (EApp (EVar "assocVal") (EVar "x")) (EVar "candidate"))) (DoLet false false (PVar "smaller") (EApp (EApp (EVar "shrinkValue") (EVar "ty")) (EVar "currentV"))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findSmaller") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (EVar "x")) (EVar "smaller")) (arm (PCon "Some" (PVar "better")) () (EApp (EVar "Some") (EVar "better"))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EApp (EVar "tryShrinkOne") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "findSmaller" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
+(DTypeSig false "findSmaller" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
 (DFunDef false "findSmaller" (PWild PWild PWild PWild PWild (PList)) (EVar "None"))
 (DFunDef false "findSmaller" ((PVar "evalEnv") (PVar "params") (PVar "body") (PVar "candidate") (PVar "x") (PCons (PVar "sv") (PVar "rest"))) (EBlock (DoLet false false (PVar "candidate2") (EApp (EApp (EApp (EVar "replaceVal") (EVar "x")) (EVar "sv")) (EVar "candidate"))) (DoExpr (EIf (EApp (EApp (EApp (EVar "checkProp") (EVar "evalEnv")) (EVar "body")) (EVar "candidate2")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findSmaller") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (EVar "x")) (EVar "rest")) (EApp (EVar "Some") (EVar "candidate2"))))))
 (DTypeSig false "assocVal" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Value") (TyVar "e")))))
@@ -482,9 +482,9 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DTypeSig false "filterDecls" (TyFun (TyFun (TyCon "Decl") (TyCon "Bool")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "filterDecls" (PWild (PList)) (EListLit))
 (DFunDef false "filterDecls" ((PVar "p") (PCons (PVar "d") (PVar "rest"))) (EIf (EApp (EVar "p") (EVar "d")) (EBinOp "::" (EVar "d") (EApp (EApp (EVar "filterDecls") (EVar "p")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterDecls") (EVar "p")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "runAllProps" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO" "Mut") None (TyCon "Bool")))))
+(DTypeSig true "runAllProps" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyCon "Bool")))))
 (DFunDef false "runAllProps" ((PVar "evalEnv") (PVar "program")) (EBlock (DoLet false false (PVar "props") (EApp (EVar "filterProps") (EVar "program"))) (DoExpr (EIf (EApp (EVar "isEmptyL") (EVar "props")) (EVar "True") (EBlock (DoLet false false (PVar "tydefs") (EApp (EVar "buildTyDefs") (EVar "program"))) (DoLet false false (PVar "results") (EApp (EApp (EApp (EVar "runEach") (EVar "tydefs")) (EVar "evalEnv")) (EVar "props"))) (DoLet false false (PVar "nPass") (EApp (EVar "countTrue") (EVar "results"))) (DoLet false false (PVar "nFail") (EBinOp "-" (EApp (EVar "listLen") (EVar "results")) (EVar "nPass"))) (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "\n")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "nPass")))) (ELit (LString " passed, "))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "nFail")))) (ELit (LString " failed"))))) (DoExpr (EBinOp "==" (EVar "nFail") (ELit (LInt 0)))))))))
-(DTypeSig false "runEach" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO" "Mut") None (TyApp (TyCon "List") (TyCon "Bool")))))))
+(DTypeSig false "runEach" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyApp (TyCon "List") (TyCon "Bool")))))))
 (DFunDef false "runEach" (PWild PWild (PList)) (EListLit))
 (DFunDef false "runEach" ((PVar "tydefs") (PVar "evalEnv") (PCons (PVar "p") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "runProp") (EVar "tydefs")) (EVar "evalEnv")) (EVar "p")) (ELit (LInt 100))) (EApp (EApp (EApp (EVar "runEach") (EVar "tydefs")) (EVar "evalEnv")) (EVar "rest"))))
 (DTypeSig false "countTrue" (TyFun (TyApp (TyCon "List") (TyCon "Bool")) (TyCon "Int")))
@@ -500,11 +500,11 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "Expr" false) (mem "DProp" false) (mem "DData" false) (mem "DNewtype" false) (mem "PropParam" false) (mem "Ty" true) (mem "Variant" true) (mem "Field" true) (mem "ConPayload" true))))
 (DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "EvalEnv" true) (mem "eval" false) (mem "extendEnv" false) (mem "force" false) (mem "ppValue" false) (mem "rngStateRef" false))))
 (DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "isEmptyL" false) (mem "filterList" false) (mem "zipL" false))))
-(DTypeSig false "rngNextLocal" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Int"))))
+(DTypeSig false "rngNextLocal" (TyFun (TyCon "Unit") (TyCon "Int")))
 (DFunDef false "rngNextLocal" (PWild) (EBlock (DoLet false false (PVar "s") (EBinOp "%" (EBinOp "+" (EBinOp "*" (EFieldAccess (EVar "rngStateRef") "value") (ELit (LInt 1103515245))) (ELit (LInt 12345))) (ELit (LInt 2147483648)))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "rngStateRef")) (EVar "s"))) (DoExpr (EVar "s"))))
-(DTypeSig false "randIntRange" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Int")))))
+(DTypeSig false "randIntRange" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
 (DFunDef false "randIntRange" ((PVar "lo") (PVar "hi")) (EBlock (DoLet false false (PVar "range") (EBinOp "+" (EBinOp "-" (EVar "hi") (EVar "lo")) (ELit (LInt 1)))) (DoExpr (EIf (EBinOp "<=" (EVar "range") (ELit (LInt 0))) (EVar "lo") (EBinOp "+" (EVar "lo") (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (EVar "range")))))))
-(DTypeSig false "randBoolL" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Bool"))))
+(DTypeSig false "randBoolL" (TyFun (TyCon "Unit") (TyCon "Bool")))
 (DFunDef false "randBoolL" (PWild) (EBinOp "==" (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (ELit (LInt 2))) (ELit (LInt 1))))
 (DData Public "TyDef" () ((variant "TDData" (ConPos (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Variant"))))) ())
 (DTypeSig false "buildTyDefs" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef")))))
@@ -522,7 +522,7 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "tySpineGo" ((PVar "acc") (PCon "TyApp" (PVar "f") (PVar "a"))) (EApp (EApp (EVar "tySpineGo") (EBinOp "::" (EVar "a") (EVar "acc"))) (EVar "f")))
 (DFunDef false "tySpineGo" ((PVar "acc") (PCon "TyCon" (PVar "n") PWild)) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "acc"))))
 (DFunDef false "tySpineGo" (PWild PWild) (EVar "None"))
-(DTypeSig false "genForType" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genForType" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyVar" (PVar "v"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "v")) (EVar "subst")) (arm (PCon "Some" (PVar "t")) () (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "t"))) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (ELit (LString "prop_runner: cannot generate values for unbound type variable '")) (EVar "v")) (ELit (LString "'")))))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyCon" (PLit (LString "Int")) PWild)) (EApp (EVar "VInt") (EApp (EApp (EVar "randIntRange") (EUnOp "-" (ELit (LInt 1000)))) (ELit (LInt 1000)))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyCon" (PLit (LString "Bool")) PWild)) (EApp (EVar "VBool") (EApp (EVar "randBoolL") (ELit LUnit))))
@@ -536,30 +536,30 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyApp" (PCon "TyApp" (PCon "TyCon" (PLit (LString "Result")) PWild) (PVar "e")) (PVar "a"))) (EIf (EApp (EVar "randBoolL") (ELit LUnit)) (EApp (EApp (EVar "VCon") (ELit (LString "Ok"))) (EListLit (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "a")))) (EApp (EApp (EVar "VCon") (ELit (LString "Err"))) (EListLit (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "e"))))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PCon "TyTuple" (PVar "ts"))) (EApp (EVar "VTuple") (EApp (EApp (EApp (EVar "genTuple") (EVar "tydefs")) (EVar "subst")) (EVar "ts"))))
 (DFunDef false "genForType" ((PVar "tydefs") (PVar "subst") (PVar "ty")) (EApp (EApp (EApp (EVar "genUserOrFail") (EVar "tydefs")) (EVar "subst")) (EVar "ty")))
-(DTypeSig false "genTuple" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DTypeSig false "genTuple" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "genTuple" (PWild PWild (PList)) (EListLit))
 (DFunDef false "genTuple" ((PVar "tydefs") (PVar "subst") (PCons (PVar "t") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "t")) (EApp (EApp (EApp (EVar "genTuple") (EVar "tydefs")) (EVar "subst")) (EVar "rest"))))
-(DTypeSig false "genList" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyFun (TyCon "Int") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
+(DTypeSig false "genList" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "genList" (PWild PWild PWild (PLit (LInt 0))) (EListLit))
 (DFunDef false "genList" ((PVar "tydefs") (PVar "subst") (PVar "t") (PVar "n")) (EBinOp "::" (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "t")) (EApp (EApp (EApp (EApp (EVar "genList") (EVar "tydefs")) (EVar "subst")) (EVar "t")) (EBinOp "-" (EVar "n") (ELit (LInt 1))))))
-(DTypeSig false "genFloat" (TyFun (TyCon "Unit") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
+(DTypeSig false "genFloat" (TyFun (TyCon "Unit") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "genFloat" (PWild) (EBlock (DoLet false false (PVar "r") (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (ELit (LInt 2000001)))) (DoExpr (EApp (EVar "VFloat") (EBinOp "-" (EBinOp "*" (EApp (EVar "intToFloat") (EVar "r")) (EBinOp "/" (ELit (LFloat 1.0)) (ELit (LFloat 1000000.0)))) (ELit (LFloat 1.0)))))))
-(DTypeSig false "genCharStr" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "String"))))
+(DTypeSig false "genCharStr" (TyFun (TyCon "Unit") (TyCon "String")))
 (DFunDef false "genCharStr" (PWild) (EApp (EVar "charToStr") (EApp (EVar "charFromCodeU") (EBinOp "+" (ELit (LInt 32)) (EBinOp "%" (EApp (EVar "rngNextLocal") (ELit LUnit)) (ELit (LInt 95)))))))
 (DTypeSig false "charFromCodeU" (TyFun (TyCon "Int") (TyCon "Char")))
 (DFunDef false "charFromCodeU" ((PVar "n")) (EMatch (EApp (EVar "charFromCode") (EVar "n")) (arm (PCon "Some" (PVar "c")) () (EVar "c")) (arm (PCon "None") () (ELit (LChar " ")))))
-(DTypeSig false "genString" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "String"))))
+(DTypeSig false "genString" (TyFun (TyCon "Unit") (TyCon "String")))
 (DFunDef false "genString" (PWild) (EApp (EVar "stringConcat") (EApp (EVar "genStringGo") (EApp (EApp (EVar "randIntRange") (ELit (LInt 0))) (ELit (LInt 10))))))
-(DTypeSig false "genStringGo" (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyApp (TyCon "List") (TyCon "String")))))
+(DTypeSig false "genStringGo" (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "genStringGo" ((PLit (LInt 0))) (EListLit))
 (DFunDef false "genStringGo" ((PVar "n")) (EBinOp "::" (EApp (EVar "genCharStr") (ELit LUnit)) (EApp (EVar "genStringGo") (EBinOp "-" (EVar "n") (ELit (LInt 1))))))
-(DTypeSig false "genUserOrFail" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genUserOrFail" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Ty") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genUserOrFail" ((PVar "tydefs") (PVar "subst") (PVar "ty")) (EMatch (EApp (EVar "tySpine") (EVar "ty")) (arm (PCon "Some" (PTuple (PVar "name") (PVar "args"))) () (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EVar "tydefs")) (arm (PCon "Some" (PVar "tydef")) () (EApp (EApp (EApp (EApp (EApp (EVar "genUser") (EVar "tydefs")) (EVar "subst")) (EVar "name")) (EVar "tydef")) (EVar "args"))) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (EBinOp "++" (ELit (LString "prop_runner: no Arbitrary instance for type '")) (EVar "name")) (ELit (LString "'. Add 'deriving (Arbitrary)' or an explicit impl."))))))) (arm (PCon "None") () (EApp (EVar "panic") (ELit (LString "prop_runner: cannot generate values for type"))))))
-(DTypeSig false "genUser" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "String") (TyFun (TyCon "TyDef") (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
+(DTypeSig false "genUser" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "String") (TyFun (TyCon "TyDef") (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))
 (DFunDef false "genUser" ((PVar "tydefs") (PVar "subst") (PVar "name") (PVar "tydef") (PVar "args")) (EBlock (DoLet false false (PVar "args2") (EApp (EApp (EMethodRef "map") (EApp (EVar "substTy") (EVar "subst"))) (EVar "args"))) (DoExpr (EMatch (EVar "tydef") (arm (PCon "TDData" (PVar "params") (PVar "variants")) () (EBlock (DoLet false false (PVar "subst2") (EIf (EBinOp "==" (EApp (EVar "listLen") (EVar "params")) (EApp (EVar "listLen") (EVar "args2"))) (EApp (EApp (EVar "zipL") (EVar "params")) (EVar "args2")) (EListLit))) (DoLet false false (PVar "v") (EApp (EApp (EVar "nthList") (EVar "variants")) (EApp (EApp (EVar "randIntRange") (ELit (LInt 0))) (EBinOp "-" (EApp (EVar "listLen") (EVar "variants")) (ELit (LInt 1)))))) (DoExpr (EApp (EApp (EApp (EVar "genVariant") (EVar "tydefs")) (EVar "subst2")) (EVar "v")))))))))
-(DTypeSig false "genVariant" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Variant") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genVariant" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Variant") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genVariant" ((PVar "tydefs") (PVar "subst") (PCon "Variant" (PVar "cname") (PVar "payload"))) (EMatch (EVar "payload") (arm (PCon "ConPos" (PVar "tys")) () (EApp (EApp (EVar "VCon") (EVar "cname")) (EApp (EApp (EMethodRef "map") (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst"))) (EVar "tys")))) (arm (PCon "ConNamed" (PVar "fields") PWild) () (EApp (EApp (EVar "VCon") (EVar "cname")) (EApp (EApp (EMethodRef "map") (EApp (EApp (EVar "genFieldTy") (EVar "tydefs")) (EVar "subst"))) (EVar "fields"))))))
-(DTypeSig false "genFieldTy" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Field") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
+(DTypeSig false "genFieldTy" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Ty"))) (TyFun (TyCon "Field") (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "genFieldTy" ((PVar "tydefs") (PVar "subst") (PCon "Field" PWild (PVar "fty"))) (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EVar "subst")) (EVar "fty")))
 (DTypeSig false "nthList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyCon "Int") (TyVar "a"))))
 (DFunDef false "nthList" ((PCons (PVar "x") PWild) (PLit (LInt 0))) (EVar "x"))
@@ -569,18 +569,18 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "shrinkValue" ((PVar "ty") (PVar "v")) (EMatch (ETuple (EVar "ty") (EVar "v")) (arm (PTuple (PCon "TyCon" (PLit (LString "Int")) PWild) (PCon "VInt" (PVar "n"))) () (EApp (EVar "shrinkInt") (EVar "n"))) (arm (PTuple (PCon "TyCon" (PLit (LString "Bool")) PWild) (PCon "VBool" (PCon "True"))) () (EListLit (EApp (EVar "VBool") (EVar "False")))) (arm (PTuple (PCon "TyCon" (PLit (LString "Bool")) PWild) (PCon "VBool" (PCon "False"))) () (EListLit)) (arm (PTuple (PCon "TyCon" (PLit (LString "Float")) PWild) (PCon "VFloat" (PVar "x"))) () (EIf (EBinOp "==" (EVar "x") (ELit (LFloat 0.0))) (EListLit) (EListLit (EApp (EVar "VFloat") (ELit (LFloat 0.0))) (EApp (EVar "VFloat") (EBinOp "/" (EVar "x") (ELit (LFloat 2.0))))))) (arm (PTuple (PCon "TyCon" (PLit (LString "String")) PWild) (PCon "VString" (PVar "s"))) () (EIf (EBinOp "==" (EVar "s") (ELit (LString ""))) (EListLit) (EListLit (EApp (EVar "VString") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "/" (EApp (EVar "stringLength") (EVar "s")) (ELit (LInt 2)))) (EVar "s")))))) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "List")) PWild) PWild) (PCon "VList" (PList))) () (EListLit)) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "List")) PWild) PWild) (PCon "VList" (PCons PWild (PVar "rest")))) () (EListLit (EApp (EVar "VList") (EVar "rest")))) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "Option")) PWild) PWild) (PCon "VCon" (PLit (LString "None")) (PList))) () (EListLit)) (arm (PTuple (PCon "TyApp" (PCon "TyCon" (PLit (LString "Option")) PWild) PWild) (PCon "VCon" (PLit (LString "Some")) PWild)) () (EListLit (EApp (EApp (EVar "VCon") (ELit (LString "None"))) (EListLit)))) (arm PWild () (EListLit))))
 (DTypeSig false "shrinkInt" (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "shrinkInt" ((PVar "n")) (EBlock (DoLet false false (PVar "cands") (EListLit (ELit (LInt 0)) (EBinOp "/" (EVar "n") (ELit (LInt 2))) (EBinOp "+" (EVar "n") (EIf (EBinOp ">" (EVar "n") (ELit (LInt 0))) (EUnOp "-" (ELit (LInt 1))) (ELit (LInt 1)))))) (DoExpr (EApp (EApp (EMethodRef "map") (EVar "VInt")) (EApp (EApp (EVar "filterList") (ELam ((PVar "_s")) (EBinOp "!=" (EVar "_s") (EVar "n")))) (EVar "cands"))))))
-(DTypeSig false "checkProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect ("Mut") (Some "e") (TyCon "Bool"))))))
+(DTypeSig false "checkProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect () (Some "e") (TyCon "Bool"))))))
 (DFunDef false "checkProp" ((PVar "evalEnv") (PVar "body") (PVar "inputs")) (EBlock (DoLet false false (PVar "env") (EApp (EApp (EVar "extendEnv") (EApp (EVar "EvalEnv") (EListLit (EListLit)))) (EBinOp "++" (EVar "inputs") (EVar "evalEnv")))) (DoExpr (EMatch (EApp (EVar "force") (EApp (EApp (EVar "eval") (EVar "env")) (EVar "body"))) (arm (PCon "VBool" (PVar "b")) () (EVar "b")) (arm PWild () (EVar "False"))))))
 (DData Public "PropOutcome" ("v") ((variant "PropPassed" (ConPos)) (variant "PropFailed" (ConPos (TyCon "Int") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyVar "v")))))) ())
-(DTypeSig false "runProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyEffect ("IO" "Mut") None (TyCon "Bool")))))))
+(DTypeSig false "runProp" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyEffect ("IO") None (TyCon "Bool")))))))
 (DFunDef false "runProp" ((PVar "tydefs") (PVar "evalEnv") (PCon "DProp" PWild (PVar "name") (PVar "params") (PVar "body")) (PVar "maxTests")) (EBlock (DoLet false false PWild (EApp (EVar "putStr") (EBinOp "++" (EBinOp "++" (ELit (LString "Testing ")) (EApp (EVar "escStrLocal") (EVar "name"))) (ELit (LString " ... "))))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findFailure") (EVar "tydefs")) (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "maxTests")) (ELit (LInt 1))) (arm (PCon "PropPassed") () (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "OK (")) (EApp (EVar "intToString") (EVar "maxTests"))) (ELit (LString " tests)"))))) (DoExpr (EVar "True")))) (arm (PCon "PropFailed" (PVar "run") (PVar "shrunk")) () (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "FAILED after ")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "run")))) (ELit (LString ""))) (EApp (EMethodRef "display") (EIf (EBinOp "==" (EVar "run") (ELit (LInt 1))) (ELit (LString " test")) (ELit (LString " tests"))))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "  Counterexample:")))) (DoLet false false PWild (EApp (EVar "printCounterexample") (EVar "shrunk"))) (DoExpr (EVar "False"))))))))
 (DFunDef false "runProp" ((PVar "tydefs") (PVar "evalEnv") PWild (PVar "maxTests")) (EVar "True"))
-(DTypeSig false "findFailure" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))
+(DTypeSig false "findFailure" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))
 (DFunDef false "findFailure" ((PVar "tydefs") (PVar "evalEnv") (PVar "params") (PVar "body") (PVar "maxTests") (PVar "run")) (EIf (EBinOp ">" (EVar "run") (EVar "maxTests")) (EVar "PropPassed") (EIf (EVar "otherwise") (EBlock (DoLet false false (PVar "inputs") (EApp (EApp (EVar "genInputs") (EVar "tydefs")) (EVar "params"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findFailureStep") (EVar "tydefs")) (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "maxTests")) (EVar "run")) (EVar "inputs")) (EApp (EApp (EApp (EVar "checkProp") (EVar "evalEnv")) (EVar "body")) (EVar "inputs"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "findFailureStep" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Bool") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
+(DTypeSig false "findFailureStep" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Bool") (TyEffect () (Some "e") (TyApp (TyCon "PropOutcome") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
 (DFunDef false "findFailureStep" ((PVar "tydefs") (PVar "evalEnv") (PVar "params") (PVar "body") (PVar "maxTests") (PVar "run") PWild (PCon "True")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findFailure") (EVar "tydefs")) (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "maxTests")) (EBinOp "+" (EVar "run") (ELit (LInt 1)))))
 (DFunDef false "findFailureStep" (PWild (PVar "evalEnv") (PVar "params") (PVar "body") PWild (PVar "run") (PVar "inputs") (PCon "False")) (EApp (EApp (EVar "PropFailed") (EVar "run")) (EApp (EApp (EApp (EApp (EVar "shrinkLoop") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "inputs"))))
-(DTypeSig false "genInputs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DTypeSig false "genInputs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "genInputs" (PWild (PList)) (EListLit))
 (DFunDef false "genInputs" ((PVar "tydefs") (PCons (PCon "PropParam" (PVar "x") (PVar "ty")) (PVar "rest"))) (EBinOp "::" (ETuple (EVar "x") (EApp (EApp (EApp (EVar "genForType") (EVar "tydefs")) (EListLit)) (EVar "ty"))) (EApp (EApp (EVar "genInputs") (EVar "tydefs")) (EVar "rest"))))
 (DTypeSig false "printCounterexample" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect ("IO") None (TyCon "Unit"))))
@@ -588,11 +588,11 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DFunDef false "printCounterexample" ((PCons (PTuple (PVar "x") (PVar "v")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "    ")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "ppValue") (EVar "v")))) (ELit (LString ""))))) (DoExpr (EApp (EVar "printCounterexample") (EVar "rest")))))
 (DTypeSig false "escStrLocal" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "escStrLocal" ((PVar "s")) (EBinOp "++" (EBinOp "++" (ELit (LString "\"")) (EVar "s")) (ELit (LString "\""))))
-(DTypeSig false "shrinkLoop" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))
+(DTypeSig false "shrinkLoop" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))
 (DFunDef false "shrinkLoop" ((PVar "evalEnv") (PVar "params") (PVar "body") (PVar "candidate")) (EMatch (EApp (EApp (EApp (EApp (EApp (EVar "tryShrinkOne") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (ELit (LInt 0))) (arm (PCon "Some" (PVar "better")) () (EApp (EApp (EApp (EApp (EVar "shrinkLoop") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "better"))) (arm (PCon "None") () (EVar "candidate"))))
-(DTypeSig false "tryShrinkOne" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Int") (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))))
+(DTypeSig false "tryShrinkOne" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))))))
 (DFunDef false "tryShrinkOne" ((PVar "evalEnv") (PVar "params") (PVar "body") (PVar "candidate") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "listLen") (EVar "params"))) (EVar "None") (EIf (EVar "otherwise") (EBlock (DoLet false false (PCon "PropParam" (PVar "x") (PVar "ty")) (EApp (EApp (EVar "nthList") (EVar "params")) (EVar "i"))) (DoLet false false (PVar "currentV") (EApp (EApp (EVar "assocVal") (EVar "x")) (EVar "candidate"))) (DoLet false false (PVar "smaller") (EApp (EApp (EVar "shrinkValue") (EVar "ty")) (EVar "currentV"))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findSmaller") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (EVar "x")) (EVar "smaller")) (arm (PCon "Some" (PVar "better")) () (EApp (EVar "Some") (EVar "better"))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EApp (EVar "tryShrinkOne") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "findSmaller" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyEffect ("Mut") (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
+(DTypeSig false "findSmaller" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))))))))))
 (DFunDef false "findSmaller" (PWild PWild PWild PWild PWild (PList)) (EVar "None"))
 (DFunDef false "findSmaller" ((PVar "evalEnv") (PVar "params") (PVar "body") (PVar "candidate") (PVar "x") (PCons (PVar "sv") (PVar "rest"))) (EBlock (DoLet false false (PVar "candidate2") (EApp (EApp (EApp (EVar "replaceVal") (EVar "x")) (EVar "sv")) (EVar "candidate"))) (DoExpr (EIf (EApp (EApp (EApp (EVar "checkProp") (EVar "evalEnv")) (EVar "body")) (EVar "candidate2")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "findSmaller") (EVar "evalEnv")) (EVar "params")) (EVar "body")) (EVar "candidate")) (EVar "x")) (EVar "rest")) (EApp (EVar "Some") (EVar "candidate2"))))))
 (DTypeSig false "assocVal" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Value") (TyVar "e")))))
@@ -608,9 +608,9 @@ anyDecl p (d::rest) = p d || anyDecl p rest
 (DTypeSig false "filterDecls" (TyFun (TyFun (TyCon "Decl") (TyCon "Bool")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "filterDecls" (PWild (PList)) (EListLit))
 (DFunDef false "filterDecls" ((PVar "p") (PCons (PVar "d") (PVar "rest"))) (EIf (EApp (EVar "p") (EVar "d")) (EBinOp "::" (EVar "d") (EApp (EApp (EVar "filterDecls") (EVar "p")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterDecls") (EVar "p")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "runAllProps" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO" "Mut") None (TyCon "Bool")))))
+(DTypeSig true "runAllProps" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyCon "Bool")))))
 (DFunDef false "runAllProps" ((PVar "evalEnv") (PVar "program")) (EBlock (DoLet false false (PVar "props") (EApp (EVar "filterProps") (EVar "program"))) (DoExpr (EIf (EApp (EVar "isEmptyL") (EVar "props")) (EVar "True") (EBlock (DoLet false false (PVar "tydefs") (EApp (EVar "buildTyDefs") (EVar "program"))) (DoLet false false (PVar "results") (EApp (EApp (EApp (EVar "runEach") (EVar "tydefs")) (EVar "evalEnv")) (EVar "props"))) (DoLet false false (PVar "nPass") (EApp (EVar "countTrue") (EVar "results"))) (DoLet false false (PVar "nFail") (EBinOp "-" (EApp (EVar "listLen") (EVar "results")) (EVar "nPass"))) (DoLet false false PWild (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "\n")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "nPass")))) (ELit (LString " passed, "))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "nFail")))) (ELit (LString " failed"))))) (DoExpr (EBinOp "==" (EVar "nFail") (ELit (LInt 0)))))))))
-(DTypeSig false "runEach" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO" "Mut") None (TyApp (TyCon "List") (TyCon "Bool")))))))
+(DTypeSig false "runEach" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "TyDef"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyApp (TyCon "List") (TyCon "Bool")))))))
 (DFunDef false "runEach" (PWild PWild (PList)) (EListLit))
 (DFunDef false "runEach" ((PVar "tydefs") (PVar "evalEnv") (PCons (PVar "p") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "runProp") (EVar "tydefs")) (EVar "evalEnv")) (EVar "p")) (ELit (LInt 100))) (EApp (EApp (EApp (EVar "runEach") (EVar "tydefs")) (EVar "evalEnv")) (EVar "rest"))))
 (DTypeSig false "countTrue" (TyFun (TyApp (TyCon "List") (TyCon "Bool")) (TyCon "Int")))

@@ -125,7 +125,7 @@ specs = [
   ("orders", ordersSql, Some 0, ordersRows),
 ]
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main =
   let _ = println "-- CREATE users + orders (in-memory) --"
   match buildDatabaseMulti specs

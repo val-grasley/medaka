@@ -26,7 +26,7 @@ rootsOrDefault _ roots = roots
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
 
-run : String -> String -> String -> List String -> <IO, Mut> Unit
+run : String -> String -> String -> List String -> <IO> Unit
 run runtimeP coreP entry roots = match readFile runtimeP
   Err e => ePutStrLn e
   Ok rsrc => match readFile coreP

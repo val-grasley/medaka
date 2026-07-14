@@ -269,7 +269,7 @@ nthLineGo cs i len cur target acc
 -- Arguments: runtimeSrc (runtime.mdk source), coreSrc (core.mdk source),
 -- progSrc (target source).
 
-export analyze : String -> String -> String -> <Mut> List Diag
+export analyze : String -> String -> String -> List Diag
 analyze runtimeSrc coreSrc progSrc =
   analyzeFrom runtimeSrc coreSrc (parse progSrc) []
 
@@ -277,14 +277,14 @@ analyze runtimeSrc coreSrc progSrc =
 -- `parseLocated` so the ELoc wrappers carry REAL line/col spans (the pure
 -- `parse` carries placeholder locs).  Type-error Diags then surface the true
 -- expr-level span; runtime/core stay on `parse` (their locs are never reported).
-export analyzeLocated : String -> String -> String -> <Mut> List Diag
+export analyzeLocated : String -> String -> String -> List Diag
 analyzeLocated runtimeSrc coreSrc progSrc =
   analyzeFrom runtimeSrc coreSrc (parseLocated progSrc) []
 
 -- B.10.x: like analyzeLocated but enforcing the internal-extern guard unless
 -- `allowInternal` is set (the single-file `medaka check` error path).  Other
 -- callers (LSP, playground) keep `analyzeLocated`, which is unguarded.
-export analyzeLocatedG : Bool -> String -> String -> String -> <Mut> List Diag
+export analyzeLocatedG : Bool -> String -> String -> String -> List Diag
 analyzeLocatedG allowInternal runtimeSrc coreSrc progSrc =
   analyzeFrom
     runtimeSrc
@@ -296,7 +296,7 @@ analyzeLocatedG allowInternal runtimeSrc coreSrc progSrc =
 -- (so `analyze` can pass placeholder-loc `parse` decls and `analyzeLocated` can
 -- pass real-loc `parseLocated` decls without duplicating the pipeline).
 -- `internalGuard` is the internal-extern guard list (empty ⇒ unrestricted).
-analyzeFrom : String -> String -> List Decl -> List String -> <Mut> List Diag
+analyzeFrom : String -> String -> List Decl -> List String -> List Diag
 analyzeFrom runtimeSrc coreSrc raw internalGuard =
   let desugared = desugar raw
   let runtimeP = desugar (parse runtimeSrc)
@@ -330,7 +330,7 @@ analyzeFrom runtimeSrc coreSrc raw internalGuard =
 -- underivedMainDiags re-runs the WHOLE check on the wrapped program, so it also
 -- re-reports every non-auto-print error already in `tcDiags`; `filterNewDiags`
 -- (at the call site) drops those, keeping only the wrap-introduced obligation.
-autoPrintObligationDiags : List Decl -> List Decl -> List Decl -> <Mut> List Diag
+autoPrintObligationDiags : List Decl -> List Decl -> List Decl -> List Diag
 autoPrintObligationDiags runtimeP coreP desugared =
   let modules = [("__main__", desugared)]
   if shouldAutoPrintMain coreP modules then
@@ -381,7 +381,7 @@ stripWarnPrefix s =
 
 -- ── text entry point (for diff gate) ──────────────────────────────────────
 
-export analyzeToLines : String -> String -> String -> <Mut> String
+export analyzeToLines : String -> String -> String -> String
 analyzeToLines runtimeSrc coreSrc progSrc =
   joinNl (map ppDiag (analyze runtimeSrc coreSrc progSrc))
 
@@ -470,7 +470,7 @@ cacheRemove f ((k, v)::rest)
 -- The wrapped read callback.  `cacheRef` persists last-good sources across
 -- analyses (threaded by the caller); `staleRef` collects this round's parse
 -- errors (file → Diag) to append after the graph analysis.
-wrappedRead : Ref (List (String, String)) -> Ref (List (String, Diag)) -> (String -> Option String) -> String -> <Mut> Option String
+wrappedRead : Ref (List (String, String)) -> Ref (List (String, Diag)) -> (String -> Option String) -> String -> Option String
 wrappedRead cacheRef staleRef read path = match read path
   None => None
   Some src => match parseResult src
@@ -512,7 +512,7 @@ parseErrLoc path e =
 -- Memoized prelude desugar: parse+desugar the runtime/core source once per session,
 -- keyed by source in the shared parse cache (its keys never collide with a module's
 -- source).  A miss parses+desugars and inserts; a hit returns the cached decls.
-preludeDesugared : Ref (List (String, List Decl)) -> String -> <Mut> List Decl
+preludeDesugared : Ref (List (String, List Decl)) -> String -> List Decl
 preludeDesugared parseCacheRef src = match lookupAssoc src parseCacheRef.value
   Some decls => decls
   None =>
@@ -520,7 +520,7 @@ preludeDesugared parseCacheRef src = match lookupAssoc src parseCacheRef.value
     let _ = setRef parseCacheRef ((src, decls)::parseCacheRef.value)
     decls
 
-export analyzeProject : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> List (String, List Diag)
+export analyzeProject : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO> List (String, List Diag)
 analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
   let staleRef = newStale ()
   let wread = p => wrappedRead cacheRef staleRef read p
@@ -546,7 +546,7 @@ analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
 -- module (checked last), so its locals and its import-scoped seed (runtime + core
 -- + imported names) are available to the hover lookup fallback chain.  None on a
 -- load error (a buffer with an unresolved import) — hover then degrades to null.
-export projectEntrySchemes : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> Option (List (String, Scheme))
+export projectEntrySchemes : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO> Option (List (String, Scheme))
 projectEntrySchemes cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
   let staleRef = newStale ()
   let wread = p => wrappedRead cacheRef staleRef read p
@@ -563,7 +563,7 @@ projectEntrySchemes cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
 -- finally fold in the stale parse-error diagnostics (and seed their files).
 
 -- newStale: a fresh per-call stale-collection Ref.
-newStale : Unit -> <Mut> Ref (List (String, Diag))
+newStale : Unit -> Ref (List (String, Diag))
 newStale _ = Ref []
 
 -- (modId, path, decls) → path (the bucket key) and the desugared decls helper.
@@ -576,7 +576,7 @@ seedAll (f::fs) buckets = seedAll fs (seedBucket f buckets)
 
 -- Append the collected stale parse-error diagnostics into their files' buckets
 -- (seeding the bucket first so the file appears even if it produced nothing else).
-appendStale : Ref (List (String, Diag)) -> List (String, List Diag) -> <Mut> List (String, List Diag)
+appendStale : Ref (List (String, Diag)) -> List (String, List Diag) -> List (String, List Diag)
 appendStale staleRef buckets = foldStale staleRef.value buckets
 
 foldStale : List (String, Diag) -> List (String, List Diag) -> List (String, List Diag)
@@ -606,7 +606,7 @@ resolvePass rt core known ((mid, path, prog)::rest) buckets =
 -- Guard-exhaustiveness warnings still come from the RAW (pre-desugar) module decls
 -- (checkGuardExhaustiveness needs the surface `EGuards` shape, gone after desugar),
 -- bucketed per file alongside the module's type diagnostics.
-typecheckPass : List Decl -> List Decl -> List Decl -> List (String, String, List Decl) -> List (String, List Diag) -> <Mut> List (String, List Diag)
+typecheckPass : List Decl -> List Decl -> List Decl -> List (String, String, List Decl) -> List (String, List Diag) -> List (String, List Diag)
 typecheckPass runtimeP coreP _ mods buckets =
   let modPairs = map midToDesugaredPair mods
   let tcByMid = checkModulesDiags runtimeP coreP modPairs
@@ -658,7 +658,7 @@ isRedundantUnbound existing d
 -- For each (mid, path, rawProg): look up its harvested (errs, warns) by mid, wrap
 -- them as Diags (preserving each type error's Option Loc), fold in this module's
 -- guard-exhaustiveness warnings from the raw decls, and bucket by path.
-foldModuleTc : List Decl -> List (String, String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc))) -> List (String, List Diag) -> <Mut> List (String, List Diag)
+foldModuleTc : List Decl -> List (String, String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc))) -> List (String, List Diag) -> List (String, List Diag)
 foldModuleTc _ [] _ buckets = buckets
 foldModuleTc oracleDecls ((mid, path, prog)::rest) tcByMid buckets =
   let (tcErrs, tcWarns) = lookupTcDiags mid tcByMid
@@ -683,7 +683,7 @@ lookupTcDiags mid ((m, d)::rest)
 --   "## FILE <path>"  followed by each diag's "severity: message" line.
 -- The harness splits on the marker and sorts each file's lines, diffing against
 -- the OCaml analyze_project's per-file buckets.
-export analyzeProjectToLines : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> String
+export analyzeProjectToLines : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO> String
 analyzeProjectToLines cacheRef read entry roots runtimeSrc coreSrc =
   let parseCacheRef = Ref []
   joinNl (projectLines (analyzeProject

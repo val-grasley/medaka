@@ -29,12 +29,12 @@ mkRows i n acc =
   else
     mkRows (i + 1) n (mkRow i :: acc)
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = match args ()
   [nStr, out] => run (parseN nStr) out
   _ => println "usage: multipage_write_demo <n> <out.db>"
 
-run : Int -> String -> <IO, Mut> Unit
+run : Int -> String -> <IO> Unit
 run n out =
   let rows = mkRows 1 n []
   match writeDatabase out tableName createSql 2 (Some 0) rows

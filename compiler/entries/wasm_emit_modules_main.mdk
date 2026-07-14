@@ -49,7 +49,7 @@ import backend.wasm_emit.{
 }
 import entries.entry_support.{driveModules, runEmitWith}
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = driveModules (runEmitWith emitTail)
 
 -- COMPOSITE-MAIN AUTO-PRINT (design §10, WasmGC peer of llvm_emit_modules_main):
@@ -61,7 +61,7 @@ main = driveModules (runEmitWith emitTail)
 -- compiler-graph main) is unchanged → emitter output byte-identical.
 
 -- Install the WasmGC side-tables + emit, from an already-elaborated program.
-emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 emitTail runtimeDecls coreD modules2 =
   let allDecls0 = coreD ++ flatMap snd modules2
   let allDecls = dceFilter allDecls0

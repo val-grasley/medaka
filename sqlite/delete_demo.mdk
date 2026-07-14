@@ -14,7 +14,7 @@ import lib.mutate.{delete}
 import lib.select.{eColInt, eLitI, eEq, eNe, eLt, eLe, eGt, eGe}
 import string.{toInt}
 
-runDelete : String -> String -> String -> String -> Int -> <IO, FileRead, FileWrite, Mut> Unit
+runDelete : String -> String -> String -> String -> Int -> <IO, FileRead, FileWrite> Unit
 runDelete path table col op val =
   let expr = match op
     "eq" => eEq (eColInt col) (eLitI val)
@@ -28,7 +28,7 @@ runDelete path table col op val =
     Err e => println "Error: \{e}"
     Ok n => println "deleted \{n} rows"
 
-main : <IO, FileRead, FileWrite, Mut> Unit
+main : <IO, FileRead, FileWrite> Unit
 main = match args ()
   [path, table, col, op, val] => match toInt val
     None => println "Error: invalid integer: \{val}"

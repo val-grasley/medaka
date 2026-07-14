@@ -343,7 +343,7 @@ runAsync : Async a b -> b
 runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
 seqIO : Async a b -> (b -> Async a c) -> Async a c
 sequence : a (b c) -> b (a c)
-setIndex : a -> b -> c -> <Mut> a
+setIndex : a -> b -> c -> a
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b

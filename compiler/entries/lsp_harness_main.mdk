@@ -51,7 +51,7 @@ nonEmpty [] = False
 nonEmpty _ = True
 
 -- Fixture 1: frame integrity over a file whose diagnostic carries an em-dash.
-fixtureFrameIntegrity : String -> String -> <IO, Mut> Unit
+fixtureFrameIntegrity : String -> String -> <IO> Unit
 fixtureFrameIntegrity medaka fixDir =
   let path = stringConcat [fixDir, "/multibyte.mdk"]
   match readFile path
@@ -75,7 +75,7 @@ fixtureFrameIntegrity medaka fixDir =
 -- Fixture 2: opening proj/main.mdk drives the multi-module path, which checks the
 -- sibling helper.mdk's exhaustive Option match.  helper.mdk must be published AND
 -- carry 0 diagnostics (the multi-module exhaustiveness-oracle regression guard).
-fixtureMultiModuleClean : String -> String -> <IO, Mut> Unit
+fixtureMultiModuleClean : String -> String -> <IO> Unit
 fixtureMultiModuleClean medaka fixDir =
   let mainPath = stringConcat [fixDir, "/proj/main.mdk"]
   let helperUri = fileUri (stringConcat [fixDir, "/proj/helper.mdk"])
@@ -90,7 +90,7 @@ fixtureMultiModuleClean medaka fixDir =
           (frames, _) => check "multi-module clean (0 diagnostics)" (diagPublishedFor helperUri frames && diagCountFor helperUri frames == 0)
 
 -- Fixture 3: a genuine type error must surface ≥1 diagnostic.
-fixtureTypeError : String -> String -> <IO, Mut> Unit
+fixtureTypeError : String -> String -> <IO> Unit
 fixtureTypeError medaka fixDir =
   let path = stringConcat [fixDir, "/typeerror.mdk"]
   match readFile path
@@ -107,7 +107,7 @@ fixtureTypeError medaka fixDir =
 -- parseWithPositions used to panic on a parse failure (files are unparseable
 -- constantly mid-edit); the handler now uses the non-panicking variant.  Assert
 -- the documentSymbol request (id 2) still gets a response (server survived).
-fixtureUnparseableNoCrash : String -> String -> <IO, Mut> Unit
+fixtureUnparseableNoCrash : String -> String -> <IO> Unit
 fixtureUnparseableNoCrash medaka fixDir =
   let path = stringConcat [fixDir, "/unparseable.mdk"]
   match readFile path
@@ -136,7 +136,7 @@ fixtureUnparseableNoCrash medaka fixDir =
    comma-followed `Expr` differently from the trailing one; the lexer-driven
    semantic tokens fix it.  We decode the delta-encoded `data` array back to
    absolute tokens and assert the length-4 tokens (>=3 of them) share a type. -}
-fixtureSemanticTokens : String -> String -> <IO, Mut> Unit
+fixtureSemanticTokens : String -> String -> <IO> Unit
 fixtureSemanticTokens medaka fixDir =
   let path = stringConcat [fixDir, "/semantic.mdk"]
   match readFile path
@@ -161,7 +161,7 @@ fixtureSemanticTokens medaka fixDir =
    constructor (`Red`→2), and typeclass (`Show`→7) must ALL be emitted, i.e. the
    classifier separates type / constructor / interface (v1 colored all uppercase
    the same). -}
-fixtureSemanticRoles : String -> String -> <IO, Mut> Unit
+fixtureSemanticRoles : String -> String -> <IO> Unit
 fixtureSemanticRoles medaka fixDir =
   let path = stringConcat [fixDir, "/roles.mdk"]
   match readFile path
@@ -193,7 +193,7 @@ fixtureSemanticRoles medaka fixDir =
 --     externs are seeded, else `input` types as a free `a`).
 --   • EXTERNS (seed schemes, excluded from the returned env) were invisible —
 --     assert `putStrLn` / `readLine` hover their full signatures incl. effects.
-fixtureHoverLocal : String -> String -> <IO, Mut> Unit
+fixtureHoverLocal : String -> String -> <IO> Unit
 fixtureHoverLocal medaka fixDir =
   let path = stringConcat [fixDir, "/hover_local.mdk"]
   match readFile path
@@ -227,7 +227,7 @@ fixtureHoverLocal medaka fixDir =
 -- All four hover checks fail (file unreadable / session error).  Arity-1 (NOT a
 -- nullary CAF — a top-level nullary effectful binding is lazy + force-once, which
 -- would fire these checks at startup regardless of the branch taken).
-hoverFail : Unit -> <IO, Mut> Unit
+hoverFail : Unit -> <IO> Unit
 hoverFail _ =
   let _ = check "hover local: use site → input : String" False
   let _ = check "hover local: binder site → input : String" False
@@ -244,7 +244,7 @@ hoverContains idn frames needle = match hoverValue idn frames
 -- project pipeline (regression for the single-file hover env, which never loaded
 -- sibling/stdlib imports).  hover_import.mdk imports `list.{reverse}` and uses it;
 -- hovering the use site must report `reverse : List a -> List a`.
-fixtureHoverImport : String -> String -> <IO, Mut> Unit
+fixtureHoverImport : String -> String -> <IO> Unit
 fixtureHoverImport medaka fixDir =
   let path = stringConcat [fixDir, "/hover_import.mdk"]
   match readFile path
@@ -267,7 +267,7 @@ fixtureHoverImport medaka fixDir =
 -- Fixture 9: completion over a project buffer suggests IMPORTED names (and core/
 -- runtime), not just the buffer's own.  completion_import.mdk imports
 -- `list.{reverse}` and types `rev`; the completion list must include `reverse`.
-fixtureCompletionImport : String -> String -> <IO, Mut> Unit
+fixtureCompletionImport : String -> String -> <IO> Unit
 fixtureCompletionImport medaka fixDir =
   let path = stringConcat [fixDir, "/completion_import.mdk"]
   match readFile path
@@ -300,7 +300,7 @@ fixtureCompletionImport medaka fixDir =
 -- The bad variant adds an entry-module function whose body mis-applies the
 -- imported `describe` (Option String -> String) to an Int and returns it as Int —
 -- a clear entry-module type error, while helper.mdk (the reused dep) is unchanged.
-fixtureDidChangeConverges : String -> String -> <IO, Mut> Unit
+fixtureDidChangeConverges : String -> String -> <IO> Unit
 fixtureDidChangeConverges medaka fixDir =
   let mainPath = stringConcat [fixDir, "/proj/main.mdk"]
   match readFile mainPath
@@ -329,7 +329,7 @@ fixtureDidChangeConverges medaka fixDir =
             let _ = check "didChange burst: BAD edit surfaces error (no stale cache hit)" sawError
             check "didChange burst: converges to clean on final edit" converged
 
-didChangeFail : Unit -> <IO, Mut> Unit
+didChangeFail : Unit -> <IO> Unit
 didChangeFail _ =
   let _ = check "didChange burst: BAD edit surfaces error (no stale cache hit)" False
   check "didChange burst: converges to clean on final edit" False
@@ -344,7 +344,7 @@ didChangeFail _ =
 -- (line 17) must report `stream : List Json` — without the push it reported
 -- `Array Json` and the error mislocalized to the binding.  The file is expected
 -- to carry exactly one diagnostic (the `List vs Array` mismatch at the USE).
-fixtureHoverDoBind : String -> String -> <IO, Mut> Unit
+fixtureHoverDoBind : String -> String -> <IO> Unit
 fixtureHoverDoBind medaka fixDir =
   let path = stringConcat [fixDir, "/hover_dobind.mdk"]
   match readFile path
@@ -370,7 +370,7 @@ fixtureHoverDoBind medaka fixDir =
               "hover do-bind: one diagnostic (mismatch at the use)"
               (diagPublishedFor uri frames && diagCountFor uri frames == 1)
 
-hoverDoBindFail : Unit -> <IO, Mut> Unit
+hoverDoBindFail : Unit -> <IO> Unit
 hoverDoBindFail _ =
   let _ = check "hover do-bind: binder site -> stream : List Json" False
   let _ = check "hover do-bind: use site -> stream : List Json" False

@@ -56,10 +56,10 @@ import backend.llvm_emit.{
 import backend.private_mangle.{mangleUnits}
 import entries.entry_support.{driveModules}
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = driveModules runEmit
 
-runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules

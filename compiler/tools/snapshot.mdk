@@ -455,7 +455,7 @@ markOf coreDecls d = programToSexp (markWithPrelude coreDecls d)
 -- under ERROR-QUALITY.md, so either makes the section unblessable.  Keyed on the
 -- typecheck accumulators, never on the text: a renderer that greps its own output for
 -- "TYPE ERROR:" is one reworded message away from silently becoming blessable.
-typesOf : List Decl -> List Decl -> <Mut> (String, Bool)
+typesOf : List Decl -> List Decl -> (String, Bool)
 typesOf runtimeDecls d =
   let _ = setCoherenceUserDecls d
   let _ = resetTypeErrorsSticky ()
@@ -467,10 +467,10 @@ typesOf runtimeDecls d =
 -- against the prelude instead would splice ~110 KB of identical prelude IR into every
 -- single snapshot — the section is here to show what the fixture lowers to, and the
 -- dispatch-bearing lowering is already covered by `# LLVM`.
-coreIrOf : List Decl -> <Mut> String
+coreIrOf : List Decl -> String
 coreIrOf d = cprogramToSexp (lowerProgram (annotateProgram d))
 
-evalOf : List Decl -> List Decl -> List Decl -> <Mut> String
+evalOf : List Decl -> List Decl -> List Decl -> String
 evalOf runtimeDecls coreDecls d =
   let livePrelude = dropShadowedExp (funNamesOf d) coreDecls
   evalOneOutput
@@ -500,7 +500,7 @@ evalOf runtimeDecls coreDecls d =
 -- records the gap, substitutes a placeholder, and keeps going; the recorded gaps are
 -- appended to the section as backend-native comments, which is precisely FORK 1's
 -- point: wasm coverage drift becomes a visible diff instead of silence.
-emitBoth : String -> List String -> List Decl -> List Decl -> <IO, Mut> Unit
+emitBoth : String -> List String -> List Decl -> List Decl -> <IO> Unit
 emitBoth root sel runtimeDecls userDecls =
   let _ = setEmitArgStampPasses True
   let userNames = funNamesOf userDecls
@@ -516,7 +516,7 @@ emitBoth root sel runtimeDecls userDecls =
   else
     ()
 
-llvmOf : List Decl -> List Decl -> CProgram -> <Mut> String
+llvmOf : List Decl -> List Decl -> CProgram -> String
 llvmOf runtimeDecls allDecls cp =
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)
@@ -531,7 +531,7 @@ llvmOf runtimeDecls allDecls cp =
   let text = emitProgram cp
   withGaps ";" text (gapEvents ())
 
-wasmOf : List Decl -> List Decl -> CProgram -> <Mut> String
+wasmOf : List Decl -> List Decl -> CProgram -> String
 wasmOf runtimeDecls allDecls cp =
   let _ = installDeclRetTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
   let _ = installCtorFloatFields (ctorFieldTypeNames allDecls)
@@ -565,15 +565,15 @@ putLineFlush s =
   let _ = putStrLn s
   flushStdout ()
 
-emitSection : String -> String -> String -> <IO, Mut> Unit
+emitSection : String -> String -> String -> <IO> Unit
 emitSection root name content = emitSectionTagged root name content False
 
 -- The ONE place a section is declared diagnostic-bearing.  Called at the render site,
 -- where the fact is structural (see the header block's mechanism note).
-emitDiagSection : String -> String -> String -> <IO, Mut> Unit
+emitDiagSection : String -> String -> String -> <IO> Unit
 emitDiagSection root name content = emitSectionTagged root name content True
 
-emitSectionTagged : String -> String -> String -> Bool -> <IO, Mut> Unit
+emitSectionTagged : String -> String -> String -> Bool -> <IO> Unit
 emitSectionTagged root name content diag = emitRawTagged
   name
   (if isRunSection name then normalizeText root content else canonText content)
@@ -592,7 +592,7 @@ emitRawTagged name content diag =
 encodeLines : List String -> String
 encodeLines ls = stringConcat (map (l => "D\{l}\n") ls)
 
-export runSnapshotWorker : String -> List String -> List String -> <IO, Mut, Panic> Unit
+export runSnapshotWorker : String -> List String -> List String -> <IO> Unit
 runSnapshotWorker root sel files = match loadPrelude root
   Err msg =>
     let _ = ePutStrLn msg
@@ -611,13 +611,13 @@ loadPrelude root = match readFile "\{root}/stdlib/runtime.mdk"
         Err _ => Err "snapshot: stdlib/core.mdk does not parse"
         Ok cd => Ok (desugar rd, desugar cd)
 
-workerLoop : String -> List String -> List Decl -> List Decl -> List String -> <IO, Mut, Panic> Unit
+workerLoop : String -> List String -> List Decl -> List Decl -> List String -> <IO> Unit
 workerLoop _ _ _ _ [] = ()
 workerLoop root sel runtimeDecls coreDecls (f::rest) =
   let _ = workerOne root sel runtimeDecls coreDecls f
   workerLoop root sel runtimeDecls coreDecls rest
 
-workerOne : String -> List String -> List Decl -> List Decl -> String -> <IO, Mut, Panic> Unit
+workerOne : String -> List String -> List Decl -> List Decl -> String -> <IO> Unit
 workerOne root sel runtimeDecls coreDecls path =
   -- restore the OFF (eval) mode a previous fixture's LLVM emit turned ON.
   let _ = setEmitArgStampPasses False
@@ -625,7 +625,7 @@ workerOne root sel runtimeDecls coreDecls path =
   let _ = workerRender root sel runtimeDecls coreDecls path
   putLineFlush "END \{path}"
 
-workerRender : String -> List String -> List Decl -> List Decl -> String -> <IO, Mut, Panic> Unit
+workerRender : String -> List String -> List Decl -> List Decl -> String -> <IO> Unit
 workerRender root sel runtimeDecls coreDecls path = match readFile path
   Err msg => emitDiagSection root "CRASH" "cannot read fixture: \{msg}\n"
   Ok src =>
@@ -645,7 +645,7 @@ workerRender root sel runtimeDecls coreDecls path = match readFile path
       Err e => emitDiagSection root "PARSE" (parseErrText (parseErrorLine e) (parseErrorCol e) (parseErrorMessage e))
       Ok decls => workerStages root sel runtimeDecls coreDecls decls
 
-workerStages : String -> List String -> List Decl -> List Decl -> List Decl -> <IO, Mut, Panic> Unit
+workerStages : String -> List String -> List Decl -> List Decl -> List Decl -> <IO> Unit
 workerStages root sel runtimeDecls coreDecls decls =
   let _ = if wants sel "PARSE" then emitSection root "PARSE" (programToSexp decls) else ()
   let d = desugar decls
@@ -683,7 +683,7 @@ workerStages root sel runtimeDecls coreDecls decls =
 -- `# TYPES` is diagnostic-bearing exactly when the pass it just ran accumulated an error
 -- or a warning — so the tag is decided from `typesOf`'s second component, not from the
 -- shape of the lines it produced.
-emitTypes : String -> List Decl -> List Decl -> <IO, Mut> Unit
+emitTypes : String -> List Decl -> List Decl -> <IO> Unit
 emitTypes root runtimeDecls d =
   let (text, diag) = typesOf runtimeDecls d
   emitSectionTagged root "TYPES" text diag
@@ -702,14 +702,14 @@ chunkSize = 25
 -- One worker process: the stage set it runs under, and the fixtures it runs.
 type Chunk = (List String, List String)
 
-export runSnapshotSupervisor : String -> SnapMode -> Bool -> Option String -> List String -> List String -> <IO, Mut, Panic> Bool
+export runSnapshotSupervisor : String -> SnapMode -> Bool -> Option String -> List String -> List String -> <IO> Bool
 runSnapshotSupervisor root mode forceIsolate outDir cli files =
   let results = superviseChunks root mode outDir (chunksOf root outDir forceIsolate cli files)
   reportResults results
 
 -- Group into chunks, but give any fixture whose META says `isolate=true` a chunk of its
 -- own — a known crasher then costs ZERO respawns in steady state.
-chunksOf : String -> Option String -> Bool -> List String -> List String -> <IO, Mut, Panic> List Chunk
+chunksOf : String -> Option String -> Bool -> List String -> List String -> <IO> List Chunk
 chunksOf _ _ _ _ [] = []
 chunksOf root outDir forceIsolate cli (f::rest) =
   let meta = metaOf root outDir f
@@ -721,7 +721,7 @@ chunksOf root outDir forceIsolate cli (f::rest) =
 
 -- A worker process carries ONE `--stages`, so a run of fixtures is groupable only while
 -- their stage sets agree — mixing them would silently render the wrong stages for some.
-takeRun : String -> Option String -> Bool -> List String -> List String -> Int -> List String -> <IO, Mut, Panic> (List String, List String)
+takeRun : String -> Option String -> Bool -> List String -> List String -> Int -> List String -> <IO> (List String, List String)
 takeRun _ _ _ _ _ _ [] = ([], [])
 takeRun root outDir forceIsolate cli sel n (f::rest) =
   if n <= 0 then ([], f::rest)
@@ -735,7 +735,7 @@ takeRun root outDir forceIsolate cli sel n (f::rest) =
 -- The fixture's EXISTING snapshot's `# META` lines.  Must consult the same --out
 -- directory the run will write to, or a corpus kept out-of-tree would silently never
 -- isolate anything (and would never see its own `stages=`).
-metaOf : String -> Option String -> String -> <IO, Mut, Panic> List String
+metaOf : String -> Option String -> String -> <IO> List String
 metaOf root outDir f = match readFile (snapPathOf root outDir f)
   Err _ => []
   Ok text => contentLines (sectionOf "META" (parseSnapshot text))
@@ -760,7 +760,7 @@ metaStages (l::rest) =
     Err _ => []
   else metaStages rest
 
-superviseChunks : String -> SnapMode -> Option String -> List Chunk -> <IO, Mut, Panic> List SnapResult
+superviseChunks : String -> SnapMode -> Option String -> List Chunk -> <IO> List SnapResult
 superviseChunks _ _ _ [] = []
 superviseChunks root mode outDir ((sel, fs)::rest) =
   let here = runChunk root mode outDir sel fs
@@ -769,7 +769,7 @@ superviseChunks root mode outDir ((sel, fs)::rest) =
 -- Run one chunk in a child.  On a crash: bank every fixture the child COMPLETED, write
 -- the crasher's snapshot from the sections it managed to stream plus its stderr, then
 -- respawn over what is left of the chunk.
-runChunk : String -> SnapMode -> Option String -> List String -> List String -> <IO, Mut, Panic> List SnapResult
+runChunk : String -> SnapMode -> Option String -> List String -> List String -> <IO> List SnapResult
 runChunk _ _ _ _ [] = []
 runChunk root mode outDir sel pending = match runCommand (executablePath ()) (workerArgv root sel pending)
   Err e => map (f => (f, "ERROR spawn failed: \{e}", False)) pending
@@ -1019,11 +1019,11 @@ untilHeader (x::rest) =
 -- so the fact that it took the worker down with it has nowhere else to live.
 type SnapResult = (String, String, Bool)
 
-settle : String -> SnapMode -> Option String -> List String -> (String, List RunSec) -> <IO, Mut, Panic> SnapResult
+settle : String -> SnapMode -> Option String -> List String -> (String, List RunSec) -> <IO> SnapResult
 settle root mode outDir sel (path, secs) =
   (path, settleVerdict root mode outDir sel path secs, False)
 
-settleVerdict : String -> SnapMode -> Option String -> List String -> String -> List RunSec -> <IO, Mut, Panic> String
+settleVerdict : String -> SnapMode -> Option String -> List String -> String -> List RunSec -> <IO> String
 settleVerdict root mode outDir sel path secs =
   match badSections secs
     -- the header-grammar invariant: refuse to write a file that cannot round-trip.
@@ -1040,7 +1040,7 @@ settleVerdict root mode outDir sel path secs =
 --   --bless  REFUSE (lock 2).  A bless that can mint an expectation is a stage writing
 --            down its own output as correct; that single affordance is what would make
 --            the whole corpus worthless.
-verdictMissing : SnapMode -> String -> List String -> List RunSec -> <IO, Mut, Panic> String
+verdictMissing : SnapMode -> String -> List String -> List RunSec -> <IO> String
 verdictMissing SnapCheck snapPath _ _ =
   "FAIL no snapshot (\{snapPath}); run `medaka snapshot --new`"
 verdictMissing SnapBless snapPath _ _ = "FAIL no snapshot (\{snapPath}); --bless never creates one — run `medaka snapshot --new` first"
@@ -1048,7 +1048,7 @@ verdictMissing SnapNew snapPath sel secs = match writeSnap snapPath sel secs
   Err e => "ERROR cannot write \{snapPath}: \{e}"
   Ok _ => "NEW \{snapPath}"
 
-verdictExisting : SnapMode -> String -> List String -> List RunSec -> String -> <IO, Mut, Panic> String
+verdictExisting : SnapMode -> String -> List String -> List RunSec -> String -> <IO> String
 verdictExisting SnapCheck _ _ secs prev = compareSnap prev secs
 -- `--new` NEVER overwrites: rewriting an existing snapshot from the current compiler IS
 -- blessing, and blessing has a door of its own, with locks on it.
@@ -1118,7 +1118,7 @@ readOpt p = match readFile p
 -- Failures are printed, and so is every BLESS: a rewrite that is not named on stdout is
 -- a rewrite nobody reviewed.  (`git diff` is the actual review gate — this is just the
 -- receipt.)
-reportResults : List SnapResult -> <IO, Mut, Panic> Bool
+reportResults : List SnapResult -> <IO> Bool
 reportResults results =
   let bad = filterList (r => isBad (verdictOf r)) results
   let _ = mapUnit printResult (filterList (r => startsWith "BLESS" (verdictOf r)) results)

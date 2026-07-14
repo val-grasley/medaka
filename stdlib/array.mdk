@@ -262,7 +262,7 @@ revList (x::xs) acc = revList xs (x::acc)
 -- ── Effectful mutation (explicit <Mut>) ─────────────────────────────────
 
 -- | Bounds-checked write.  Panics on OOB.
-export set : Int -> a -> Array a -> <Mut> Unit
+export set : Int -> a -> Array a -> Unit
 set i x arr =
   if i < 0 || i >= arrayLength arr then
     panic "Array.set: index out of bounds"
@@ -270,7 +270,7 @@ set i x arr =
     arraySetUnsafe i x arr
 
 -- | Exchange the elements at indices `i` and `j` in place.
-export swap : Int -> Int -> Array a -> <Mut> Unit
+export swap : Int -> Int -> Array a -> Unit
 swap i j arr =
   let xi = arrayGetUnsafe i arr
   let xj = arrayGetUnsafe j arr
@@ -278,13 +278,13 @@ swap i j arr =
   arraySetUnsafe j xi arr
 
 -- | Overwrite every element with `x` in place.
-export fill : a -> Array a -> <Mut> Unit
+export fill : a -> Array a -> Unit
 fill x arr = arrayFill x arr
 
 -- | Bounds-checked bulk copy: copies `len` elements from `src` at offset
 --   `srcOff` into `dst` at offset `dstOff`.  Panics when any argument is
 --   negative or the copy would exceed either array's bounds.
-export blit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
+export blit : Array a -> Int -> Array a -> Int -> Int -> Unit
 blit src srcOff dst dstOff len =
   if len < 0 then
     panic "Array.blit: negative length"
@@ -300,13 +300,13 @@ blit src srcOff dst dstOff len =
     arrayBlit src srcOff dst dstOff len
 
 -- | Sort in place using the supplied comparison.
-export sortInPlaceBy : (a -> a -> <e> Ordering) -> Array a -> <Mut | e> Unit
+export sortInPlaceBy : (a -> a -> <e> Ordering) -> Array a -> <e> Unit
 sortInPlaceBy cmp arr =
   let sorted = sortBy cmp arr
   arrayBlit sorted 0 arr 0 (arrayLength arr)
 
 -- | Sort in place by the `Ord` instance.
-export sortInPlace : Ord a => Array a -> <Mut> Unit
+export sortInPlace : Ord a => Array a -> Unit
 sortInPlace arr = sortInPlaceBy compare arr
 
 -- ── Pure sort (returns fresh sorted array) ──────────────────────────────

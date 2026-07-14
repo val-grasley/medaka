@@ -440,7 +440,7 @@ jDiagLen j = match lookup "params" j
 export failCount : Ref Int
 failCount = Ref 0
 
-export check : String -> Bool -> <IO, Mut> Unit
+export check : String -> Bool -> <IO> Unit
 check name ok =
   if ok then println (stringConcat ["PASS ", name])
   else

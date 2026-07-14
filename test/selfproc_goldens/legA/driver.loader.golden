@@ -26,18 +26,18 @@ keyBeforeEq : String -> String
 keyEqGo : String -> Int -> Int -> String
 lastOr : a -> List a -> a
 loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
-loadProgramFiles : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
-loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
-loadProgramFilesLocatedCached : Ref (List (String, List Decl)) -> (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFiles : (String -> Option String) -> String -> List String -> <IO> Result String (List (String, String, List Decl))
+loadProgramFilesLocated : (String -> Option String) -> String -> List String -> <IO> Result String (List (String, String, List Decl))
+loadProgramFilesLocatedCached : Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> <IO> Result String (List (String, String, List Decl))
 mdkBaseName : String -> Option String
 moduleIdOfPath : List String -> String -> String
 parentDir : String -> String
 parentGo : String -> Int -> String
 parseCacheLimit : Int
-parseCachedLocated : Ref (List (String, List Decl)) -> String -> <Mut> List Decl
+parseCachedLocated : Ref (List (String, List Decl)) -> String -> List Decl
 readDeps : String -> <IO> List (String, String)
 readModuleProg : List (String, String) -> List String -> String -> <IO> Result String (String, List Decl)
-readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> String -> <IO, Mut> Result String (String, String, List Decl)
+readModuleProgF : (String -> List Decl) -> (String -> Option String) -> List (String, String) -> List String -> String -> <IO> Result String (String, String, List Decl)
 relUnderRoots : List String -> String -> String
 resolveDepFile : List (String, String) -> String -> <IO> Option (String, String)
 revLookupRoot : String -> List (String, String) -> <IO> Option String
@@ -58,6 +58,6 @@ unquote : String -> String
 valAfterEq : String -> String
 valEqGo : String -> Int -> Int -> String
 visitMod : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
-visitModF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModF : (String -> List Decl) -> (String -> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO> Result String (List String, List (String, String, List Decl))
 visitMods : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
-visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModsF : (String -> List Decl) -> (String -> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO> Result String (List String, List (String, String, List Decl))

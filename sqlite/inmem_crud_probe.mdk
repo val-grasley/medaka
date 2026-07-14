@@ -58,7 +58,7 @@ setAge (i::n::_::[]) age = [i, n, age]
 setAge cells age = cells
 
 -- Build → parse → scan → print one table.
-readTable : String -> String -> Int -> List (List Cell) -> <IO, Mut> Unit
+readTable : String -> String -> Int -> List (List Cell) -> <IO> Unit
 readTable name createSql colCount rows = match buildDatabase name createSql colCount ipk rows
   Err e => println "build error: \{e}"
   Ok bytes => match fromBytes bytes
@@ -67,7 +67,7 @@ readTable name createSql colCount rows = match buildDatabase name createSql colC
       Err e => println "scan error: \{e}"
       Ok found => printRows display found
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main =
   let _ = println "-- CREATE+READ users --"
   let _ = readTable "users" usersSql 3 baseRows

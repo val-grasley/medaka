@@ -30,12 +30,12 @@ allRows : Expr Bool
 allRows = eGe (eColInt "id") (eLitI 0)
 
 -- Run one UPDATE and print "<label>: updated N rows" (or an error).
-runOne : String -> String -> List Assign -> Expr Bool -> String -> <IO, FileRead, FileWrite, Mut> Unit
+runOne : String -> String -> List Assign -> Expr Bool -> String -> <IO, FileRead, FileWrite> Unit
 runOne path table asgns where_ label = match update path table asgns where_
   Err e => println "\{label}: Error: \{e}"
   Ok n => println "\{label}: updated \{n} rows"
 
-main : <IO, FileRead, FileWrite, Mut> Unit
+main : <IO, FileRead, FileWrite> Unit
 main = match args ()
   [path] =>
     let _ = runOne path "t1"

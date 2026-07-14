@@ -126,7 +126,7 @@ toArray (MutArray backing len) =
 
 {- | Append an element, growing (doubling) the backing store when it is full.
    Amortized O(1). -}
-export push : a -> MutArray a -> <Mut> Unit
+export push : a -> MutArray a -> Unit
 push x (MutArray backing len)
   | len.value < arrayLength backing.value =
     arraySetUnsafe len.value x backing.value
@@ -142,7 +142,7 @@ push x (MutArray backing len)
 
 {- | Remove and return the last element, or `None` when empty.  Keeps capacity
    (no shrink). -}
-export pop : MutArray a -> <Mut> Option a
+export pop : MutArray a -> Option a
 pop (MutArray backing len)
   | len.value == 0 = None
   | otherwise =
@@ -153,7 +153,7 @@ pop (MutArray backing len)
 
 {- | Overwrite the element at an index.  Panics when out of the live range
    `[0, length)` (use `push` to extend). -}
-export set : Int -> a -> MutArray a -> <Mut> Unit
+export set : Int -> a -> MutArray a -> Unit
 set i x (MutArray backing len)
   | i >= 0 && i < len.value = arraySetUnsafe i x backing.value
   | otherwise = panic "MutArray.set: index out of bounds"
@@ -169,7 +169,7 @@ export impl IndexMut (MutArray a) Int a where
     else indexError "index \{intToString i} out of bounds"
 
 {- | Exchange the elements at two indices.  Caller ensures both are in range. -}
-export swap : Int -> Int -> MutArray a -> <Mut> Unit
+export swap : Int -> Int -> MutArray a -> Unit
 swap i j (MutArray backing _) =
   let arr = backing.value
   let xi = arrayGetUnsafe i arr
@@ -178,10 +178,10 @@ swap i j (MutArray backing _) =
   arraySetUnsafe j xi arr
 
 {- | Drop all elements (length 0), retaining the allocated capacity. -}
-export clear : MutArray a -> <Mut> Unit
+export clear : MutArray a -> Unit
 clear (MutArray _ len) = setRef len 0
 
-mapInPlaceGo : (a -> a) -> Array a -> Int -> Int -> <Mut> Unit
+mapInPlaceGo : (a -> a) -> Array a -> Int -> Int -> Unit
 mapInPlaceGo f arr i n
   | i >= n = ()
   | otherwise =
@@ -189,7 +189,7 @@ mapInPlaceGo f arr i n
     mapInPlaceGo f arr (i + 1) n
 
 {- | Apply `f` to every live element in place. -}
-export mapInPlace : (a -> a) -> MutArray a -> <Mut> Unit
+export mapInPlace : (a -> a) -> MutArray a -> Unit
 mapInPlace f (MutArray backing len) = mapInPlaceGo f backing.value 0 len.value
 
 -- ── Folds (index-based; never allocate a list) ──────────────────────────
@@ -260,20 +260,20 @@ export impl Debug (MutArray a) requires Debug a where
 (DFunDef false "elems" ((PCon "MutArray" (PVar "backing") (PVar "len"))) (EApp (EApp (EApp (EVar "elemsGo") (EFieldAccess (EVar "backing") "value")) (EBinOp "-" (EFieldAccess (EVar "len") "value") (ELit (LInt 1)))) (EListLit)))
 (DTypeSig true "toArray" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "toArray" ((PCon "MutArray" (PVar "backing") (PVar "len"))) (EBlock (DoLet false false (PVar "arr") (EFieldAccess (EVar "backing") "value")) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EFieldAccess (EVar "len") "value")) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))))))
-(DTypeSig true "push" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "push" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "push" ((PVar "x") (PCon "MutArray" (PVar "backing") (PVar "len"))) (EIf (EBinOp "<" (EFieldAccess (EVar "len") "value") (EApp (EVar "arrayLength") (EFieldAccess (EVar "backing") "value"))) (EBlock (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EFieldAccess (EVar "len") "value")) (EVar "x")) (EFieldAccess (EVar "backing") "value"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "len")) (EBinOp "+" (EFieldAccess (EVar "len") "value") (ELit (LInt 1)))))) (EIf (EVar "otherwise") (EBlock (DoLet false false (PVar "oldArr") (EFieldAccess (EVar "backing") "value")) (DoLet false false (PVar "oldLen") (EFieldAccess (EVar "len") "value")) (DoLet false false (PVar "newCap") (EIf (EBinOp "==" (EVar "oldLen") (ELit (LInt 0))) (ELit (LInt 1)) (EBinOp "*" (EVar "oldLen") (ELit (LInt 2))))) (DoLet false false (PVar "newArr") (EApp (EApp (EVar "arrayMake") (EVar "newCap")) (EVar "x"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "arrayBlit") (EVar "oldArr")) (ELit (LInt 0))) (EVar "newArr")) (ELit (LInt 0))) (EVar "oldLen"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "backing")) (EVar "newArr"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "len")) (EBinOp "+" (EVar "oldLen") (ELit (LInt 1)))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "pop" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyApp (TyCon "Option") (TyVar "a")))))
+(DTypeSig true "pop" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyApp (TyCon "Option") (TyVar "a"))))
 (DFunDef false "pop" ((PCon "MutArray" (PVar "backing") (PVar "len"))) (EIf (EBinOp "==" (EFieldAccess (EVar "len") "value") (ELit (LInt 0))) (EVar "None") (EIf (EVar "otherwise") (EBlock (DoLet false false (PVar "i") (EBinOp "-" (EFieldAccess (EVar "len") "value") (ELit (LInt 1)))) (DoLet false false (PVar "x") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EFieldAccess (EVar "backing") "value"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "len")) (EVar "i"))) (DoExpr (EApp (EVar "Some") (EVar "x")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "set" ((PVar "i") (PVar "x") (PCon "MutArray" (PVar "backing") (PVar "len"))) (EIf (EBinOp "&&" (EBinOp ">=" (EVar "i") (ELit (LInt 0))) (EBinOp "<" (EVar "i") (EFieldAccess (EVar "len") "value"))) (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "x")) (EFieldAccess (EVar "backing") "value")) (EIf (EVar "otherwise") (EApp (EVar "panic") (ELit (LString "MutArray.set: index out of bounds"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DImpl true "IndexMut" ((TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Int") (TyVar "a")) () ((im "setIndex" ((PCon "MutArray" (PVar "backing") (PVar "len")) (PVar "i") (PVar "v")) (EIf (EBinOp "&&" (EBinOp ">=" (EVar "i") (ELit (LInt 0))) (EBinOp "<" (EVar "i") (EFieldAccess (EVar "len") "value"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "v")) (EFieldAccess (EVar "backing") "value"))) (DoExpr (EApp (EApp (EVar "MutArray") (EVar "backing")) (EVar "len")))) (EApp (EVar "indexError") (EBinOp "++" (EBinOp "++" (ELit (LString "index ")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString " out of bounds"))))))))
-(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "swap" ((PVar "i") (PVar "j") (PCon "MutArray" (PVar "backing") PWild)) (EBlock (DoLet false false (PVar "arr") (EFieldAccess (EVar "backing") "value")) (DoLet false false (PVar "xi") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (DoLet false false (PVar "xj") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "j")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "xj")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "j")) (EVar "xi")) (EVar "arr")))))
-(DTypeSig true "clear" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))
+(DTypeSig true "clear" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit")))
 (DFunDef false "clear" ((PCon "MutArray" PWild (PVar "len"))) (EApp (EApp (EVar "setRef") (EVar "len")) (ELit (LInt 0))))
-(DTypeSig false "mapInPlaceGo" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit")))))))
+(DTypeSig false "mapInPlaceGo" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Unit"))))))
 (DFunDef false "mapInPlaceGo" ((PVar "f") (PVar "arr") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (ELit LUnit) (EIf (EVar "otherwise") (EBlock (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EApp (EVar "f") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "mapInPlaceGo") (EVar "f")) (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "mapInPlace" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "mapInPlace" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "mapInPlace" ((PVar "f") (PCon "MutArray" (PVar "backing") (PVar "len"))) (EApp (EApp (EApp (EApp (EVar "mapInPlaceGo") (EVar "f")) (EFieldAccess (EVar "backing") "value")) (ELit (LInt 0))) (EFieldAccess (EVar "len") "value")))
 (DTypeSig false "foldGo" (TyFun (TyFun (TyVar "b") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "b")))) (TyFun (TyVar "b") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyVar "b"))))))))
 (DFunDef false "foldGo" ((PVar "f") (PVar "z") (PVar "arr") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "z") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "foldGo") (EVar "f")) (EApp (EApp (EVar "f") (EVar "z")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))) (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -308,20 +308,20 @@ export impl Debug (MutArray a) requires Debug a where
 (DFunDef false "elems" ((PCon "MutArray" (PVar "backing") (PVar "len"))) (EApp (EApp (EApp (EVar "elemsGo") (EFieldAccess (EVar "backing") "value")) (EBinOp "-" (EFieldAccess (EVar "len") "value") (ELit (LInt 1)))) (EListLit)))
 (DTypeSig true "toArray" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "toArray" ((PCon "MutArray" (PVar "backing") (PVar "len"))) (EBlock (DoLet false false (PVar "arr") (EFieldAccess (EVar "backing") "value")) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EFieldAccess (EVar "len") "value")) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))))))
-(DTypeSig true "push" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "push" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "push" ((PVar "x") (PCon "MutArray" (PVar "backing") (PVar "len"))) (EIf (EBinOp "<" (EFieldAccess (EVar "len") "value") (EApp (EVar "arrayLength") (EFieldAccess (EVar "backing") "value"))) (EBlock (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EFieldAccess (EVar "len") "value")) (EVar "x")) (EFieldAccess (EVar "backing") "value"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "len")) (EBinOp "+" (EFieldAccess (EVar "len") "value") (ELit (LInt 1)))))) (EIf (EVar "otherwise") (EBlock (DoLet false false (PVar "oldArr") (EFieldAccess (EVar "backing") "value")) (DoLet false false (PVar "oldLen") (EFieldAccess (EVar "len") "value")) (DoLet false false (PVar "newCap") (EIf (EBinOp "==" (EVar "oldLen") (ELit (LInt 0))) (ELit (LInt 1)) (EBinOp "*" (EVar "oldLen") (ELit (LInt 2))))) (DoLet false false (PVar "newArr") (EApp (EApp (EVar "arrayMake") (EVar "newCap")) (EVar "x"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "arrayBlit") (EVar "oldArr")) (ELit (LInt 0))) (EVar "newArr")) (ELit (LInt 0))) (EVar "oldLen"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "backing")) (EVar "newArr"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "len")) (EBinOp "+" (EVar "oldLen") (ELit (LInt 1)))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "pop" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyApp (TyCon "Option") (TyVar "a")))))
+(DTypeSig true "pop" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyApp (TyCon "Option") (TyVar "a"))))
 (DFunDef false "pop" ((PCon "MutArray" (PVar "backing") (PVar "len"))) (EIf (EBinOp "==" (EFieldAccess (EVar "len") "value") (ELit (LInt 0))) (EVar "None") (EIf (EVar "otherwise") (EBlock (DoLet false false (PVar "i") (EBinOp "-" (EFieldAccess (EVar "len") "value") (ELit (LInt 1)))) (DoLet false false (PVar "x") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EFieldAccess (EVar "backing") "value"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "len")) (EVar "i"))) (DoExpr (EApp (EVar "Some") (EVar "x")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "set" ((PVar "i") (PVar "x") (PCon "MutArray" (PVar "backing") (PVar "len"))) (EIf (EBinOp "&&" (EBinOp ">=" (EVar "i") (ELit (LInt 0))) (EBinOp "<" (EVar "i") (EFieldAccess (EVar "len") "value"))) (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "x")) (EFieldAccess (EVar "backing") "value")) (EIf (EVar "otherwise") (EApp (EVar "panic") (ELit (LString "MutArray.set: index out of bounds"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DImpl true "IndexMut" ((TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Int") (TyVar "a")) () ((im "setIndex" ((PCon "MutArray" (PVar "backing") (PVar "len")) (PVar "i") (PVar "v")) (EIf (EBinOp "&&" (EBinOp ">=" (EVar "i") (ELit (LInt 0))) (EBinOp "<" (EVar "i") (EFieldAccess (EVar "len") "value"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "v")) (EFieldAccess (EVar "backing") "value"))) (DoExpr (EApp (EApp (EVar "MutArray") (EVar "backing")) (EVar "len")))) (EApp (EVar "indexError") (EBinOp "++" (EBinOp "++" (ELit (LString "index ")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString " out of bounds"))))))))
-(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "swap" ((PVar "i") (PVar "j") (PCon "MutArray" (PVar "backing") PWild)) (EBlock (DoLet false false (PVar "arr") (EFieldAccess (EVar "backing") "value")) (DoLet false false (PVar "xi") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (DoLet false false (PVar "xj") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "j")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "xj")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "j")) (EVar "xi")) (EVar "arr")))))
-(DTypeSig true "clear" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))
+(DTypeSig true "clear" (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit")))
 (DFunDef false "clear" ((PCon "MutArray" PWild (PVar "len"))) (EApp (EApp (EVar "setRef") (EVar "len")) (ELit (LInt 0))))
-(DTypeSig false "mapInPlaceGo" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit")))))))
+(DTypeSig false "mapInPlaceGo" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Unit"))))))
 (DFunDef false "mapInPlaceGo" ((PVar "f") (PVar "arr") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (ELit LUnit) (EIf (EVar "otherwise") (EBlock (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EApp (EVar "f") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "mapInPlaceGo") (EVar "f")) (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "mapInPlace" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "mapInPlace" (TyFun (TyFun (TyVar "a") (TyVar "a")) (TyFun (TyApp (TyCon "MutArray") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "mapInPlace" ((PVar "f") (PCon "MutArray" (PVar "backing") (PVar "len"))) (EApp (EApp (EApp (EApp (EVar "mapInPlaceGo") (EVar "f")) (EFieldAccess (EVar "backing") "value")) (ELit (LInt 0))) (EFieldAccess (EVar "len") "value")))
 (DTypeSig false "foldGo" (TyFun (TyFun (TyVar "b") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "b")))) (TyFun (TyVar "b") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect () (Some "e") (TyVar "b"))))))))
 (DFunDef false "foldGo" ((PVar "f") (PVar "z") (PVar "arr") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "z") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "foldGo") (EVar "f")) (EApp (EApp (EVar "f") (EVar "z")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))) (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))

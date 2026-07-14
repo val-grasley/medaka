@@ -9,6 +9,6 @@ import entries.entry_support.{driveRuntimeBatch}
 
 main = driveRuntimeBatch "===SELFHOST-FIX=== " render
 
-render : List Decl -> List Decl -> List Decl -> <Mut> String
+render : List Decl -> List Decl -> List Decl -> String
 render coreDecls listDecls targetDecls =
   evalMain (coreDecls ++ listDecls ++ targetDecls)

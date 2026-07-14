@@ -20,7 +20,7 @@ makeAssign col "int" val = map (n => assign col (eLitI n)) (toInt val)
 makeAssign col "text" val = Some (assign col (eLitT val))
 makeAssign col _ val = None
 
-runUpdate : String -> String -> Assign -> String -> String -> Int -> <IO, FileRead, FileWrite, Mut> Unit
+runUpdate : String -> String -> Assign -> String -> String -> Int -> <IO, FileRead, FileWrite> Unit
 runUpdate path table asgn whereCol op whereVal =
   let expr = match op
     "eq" => eEq (eColInt whereCol) (eLitI whereVal)
@@ -34,7 +34,7 @@ runUpdate path table asgn whereCol op whereVal =
     Err e => println "Error: \{e}"
     Ok n => println "updated \{n} rows"
 
-main : <IO, FileRead, FileWrite, Mut> Unit
+main : <IO, FileRead, FileWrite> Unit
 main = match args ()
   [path, table, setCol, setType, setVal, whereCol, op, whereIntVal] => match toInt whereIntVal
     None => println "Error: invalid WHERE integer: \{whereIntVal}"

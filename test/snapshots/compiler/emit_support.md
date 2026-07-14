@@ -107,13 +107,13 @@ export methodIfaceTableRef : Ref (List (String, (String, Int)))
 methodIfaceTableRef = Ref []
 
 -- the interface a method name belongs to ("" = not an interface method).
-export methodIfaceOf : String -> <Mut> String
+export methodIfaceOf : String -> String
 methodIfaceOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (iface, _) => iface
   None => ""
 
 -- the declared full arity of an interface method (0 = not found).
-export methodArityOf : String -> <Mut> Int
+export methodArityOf : String -> Int
 methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (_, arity) => arity
   None => 0
@@ -269,9 +269,9 @@ labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 (DFunDef false "eagerVarsBinds" ((PVar "b") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "eagerVarsBinds") (EVar "b")) (EVar "rest")))
 (DTypeSig true "methodIfaceTableRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "methodIfaceTableRef" () (EApp (EVar "Ref") (EListLit)))
-(DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "String"))))
+(DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "methodIfaceOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple (PVar "iface") PWild)) () (EVar "iface")) (arm (PCon "None") () (ELit (LString "")))))
-(DTypeSig true "methodArityOf" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Int"))))
+(DTypeSig true "methodArityOf" (TyFun (TyCon "String") (TyCon "Int")))
 (DFunDef false "methodArityOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "arity"))) () (EVar "arity")) (arm (PCon "None") () (ELit (LInt 0)))))
 (DTypeSig true "isDictParamName" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isDictParamName" ((PVar "x")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "stringLength") (EVar "x")) (ELit (LInt 5))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 5))) (EVar "x")) (ELit (LString "$dict")))))
@@ -351,9 +351,9 @@ labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 (DFunDef false "eagerVarsBinds" ((PVar "b") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "eagerVarsBinds") (EVar "b")) (EVar "rest")))
 (DTypeSig true "methodIfaceTableRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "methodIfaceTableRef" () (EApp (EVar "Ref") (EListLit)))
-(DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "String"))))
+(DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "methodIfaceOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple (PVar "iface") PWild)) () (EVar "iface")) (arm (PCon "None") () (ELit (LString "")))))
-(DTypeSig true "methodArityOf" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Int"))))
+(DTypeSig true "methodArityOf" (TyFun (TyCon "String") (TyCon "Int")))
 (DFunDef false "methodArityOf" ((PVar "method")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "method")) (EFieldAccess (EVar "methodIfaceTableRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "arity"))) () (EVar "arity")) (arm (PCon "None") () (ELit (LInt 0)))))
 (DTypeSig true "isDictParamName" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isDictParamName" ((PVar "x")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "stringLength") (EVar "x")) (ELit (LInt 5))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 5))) (EVar "x")) (ELit (LString "$dict")))))

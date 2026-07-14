@@ -103,13 +103,13 @@ export methodIfaceTableRef : Ref (List (String, (String, Int)))
 methodIfaceTableRef = Ref []
 
 -- the interface a method name belongs to ("" = not an interface method).
-export methodIfaceOf : String -> <Mut> String
+export methodIfaceOf : String -> String
 methodIfaceOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (iface, _) => iface
   None => ""
 
 -- the declared full arity of an interface method (0 = not found).
-export methodArityOf : String -> <Mut> Int
+export methodArityOf : String -> Int
 methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (_, arity) => arity
   None => 0

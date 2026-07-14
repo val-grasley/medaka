@@ -22,11 +22,11 @@ import entries.entry_support.{driveRuntime}
 
 main = driveRuntime emit
 
-emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
+emit : List Decl -> List Decl -> List Decl -> <IO> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStrLn (runDict runtimeDecls preludeDecls userDecls)
 
-runDict : List Decl -> List Decl -> List Decl -> <Mut> String
+runDict : List Decl -> List Decl -> List Decl -> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls

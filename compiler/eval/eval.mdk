@@ -409,10 +409,10 @@ tyMentions (TyEffect _ _ t) params = tyMentions t params
 tyMentions (TyConstrained _ t) params = tyMentions t params
 
 -- ── environment ───────────────────────────────────────────────────────────
-export lookupEnv : EvalEnv (Value e) -> String -> <Mut | e> Value e
+export lookupEnv : EvalEnv (Value e) -> String -> <e> Value e
 lookupEnv (EvalEnv frames) name = lookupFrames frames name
 
-lookupFrames : List (List (String, Ref (Value e))) -> String -> <Mut | e> Value e
+lookupFrames : List (List (String, Ref (Value e))) -> String -> <e> Value e
 lookupFrames [] name = panic ("unbound identifier: " ++ name)
 lookupFrames (frame::rest) name = match lookupFrameCell frame name
   Some cell => forceCell cell name
@@ -432,10 +432,10 @@ lookupFrames (frame::rest) name = match lookupFrameCell frame name
 -- method.  NOTE: in this runtime EVERY top-level group installs as a VMulti (even a
 -- single-clause standalone), so the OCaml "first VMulti wins" test is too coarse —
 -- the candidates' shape (VTypedImpl vs VClosure) is the real discriminator.
-export lookupMethod : EvalEnv (Value e) -> String -> <Mut | e> Value e
+export lookupMethod : EvalEnv (Value e) -> String -> <e> Value e
 lookupMethod (EvalEnv frames) name = lookupMethodFrames frames frames name
 
-lookupMethodFrames : List (List (String, Ref (Value e))) -> List (List (String, Ref (Value e))) -> String -> <Mut | e> Value e
+lookupMethodFrames : List (List (String, Ref (Value e))) -> List (List (String, Ref (Value e))) -> String -> <e> Value e
 lookupMethodFrames all [] name = lookupFrames all name
 lookupMethodFrames all (frame::rest) name = match lookupFrameCell frame name
   Some cell =>
@@ -464,12 +464,12 @@ anyTypedImpl (_::rest) = anyTypedImpl rest
 -- E-CYCLIC-VALUE instead of self-forcing to a stack-overflow crash.  Before
 -- running the thunk we overwrite the cell with a black-hole thunk that panics
 -- if re-entered; on success we memoise the real value, clearing the mark.
-forceCell : Ref (Value e) -> String -> <Mut | e> Value e
+forceCell : Ref (Value e) -> String -> <e> Value e
 forceCell cell name = match cell.value
   VThunk f => forceMemo cell name f
   v => v
 
-forceMemo : Ref (Value e) -> String -> (Unit -> <Mut | e> Value e) -> <Mut | e> Value e
+forceMemo : Ref (Value e) -> String -> (Unit -> <e> Value e) -> <e> Value e
 forceMemo cell name f =
   let _ = setRef cell (VThunk (blackholeCell name))
   let v = f ()
@@ -478,13 +478,13 @@ forceMemo cell name f =
 
 -- The thunk a cell holds *while it is being forced*.  Re-entering the force of
 -- the same cell runs this and raises E-CYCLIC-VALUE, naming the binding.
-blackholeCell : String -> Unit -> <Mut | e> Value e
+blackholeCell : String -> Unit -> <e> Value e
 blackholeCell name _ =
   runtimePanic
     "E-CYCLIC-VALUE"
     "\{name} refers to itself during initialization (non-productive cyclic value)"
 
-export force : Value e -> <Mut | e> Value e
+export force : Value e -> <e> Value e
 force (VThunk f) = f ()
 force v = v
 
@@ -503,7 +503,7 @@ lookupFrameCell ((n, cell)::rest) name
 -- `List (List ..)`: switching to array frames for true O(1) slot indexing was
 -- measured a clear regression under the tree-walker (per-frame `arrayFromList`
 -- cost > the by-name scan it saves), so the rep is unchanged — see PERF-NOTES.
-lookupAtAddr : EvalEnv (Value e) -> String -> Addr -> <Mut | e> Value e
+lookupAtAddr : EvalEnv (Value e) -> String -> Addr -> <e> Value e
 lookupAtAddr env name AGlobal = lookupEnv env name
 lookupAtAddr (EvalEnv frames) name (ALocal depth slot) =
   forceCell (addrCell (frameAtDepth frames depth name) slot name) name
@@ -718,14 +718,14 @@ makeCtorGo name arity acc
 -- binds `apply` (function application), so `import eval.{apply}` is ambiguous at
 -- a call site; `applyValue` lets core_ir_eval.mdk reuse this runtime's value
 -- application unambiguously.
-export applyValue : Value e -> Value e -> <Mut | e> Value e
+export applyValue : Value e -> Value e -> <e> Value e
 applyValue f x = apply f x
 
 -- P0-2(a): guard the host C-stack against unbounded non-tail recursion.  We
 -- increment a depth counter on entry, raise a clean E-STACK-OVERFLOW past the
 -- limit, and decrement on the balanced return (a runtimePanic is noreturn, so a
 -- tripped guard just exits — the counter never needs unwinding).
-export apply : Value e -> Value e -> <Mut | e> Value e
+export apply : Value e -> Value e -> <e> Value e
 apply f x =
   let d = evalDepthRef.value + 1
   let _ = setRef evalDepthRef d
@@ -737,12 +737,12 @@ apply f x =
   let _ = setRef evalDepthRef (d - 1)
   r
 
-applyDispatch : Value e -> Value e -> <Mut | e> Value e
+applyDispatch : Value e -> Value e -> <e> Value e
 applyDispatch f x = match applyOpt f x
   Some v => v
   None => runtimePanic "E-NONEXHAUSTIVE-MATCH" "non-exhaustive match"
 
-applyOpt : Value e -> Value e -> <Mut | e> Option (Value e)
+applyOpt : Value e -> Value e -> <e> Option (Value e)
 applyOpt (VClosure env pats body) arg = applyClosure env pats body arg
 applyOpt (VClosureF env pats f) arg = applyClosureF env pats f arg
 applyOpt (VPrim f) arg = Some (f arg)
@@ -754,7 +754,7 @@ applyOpt other _ =
 
 -- pass the arg to the impl's inner value, preserving the dispatch tag across
 -- partial applications (so later args still route to the same impl)
-applyTyped : String -> String -> List Int -> Int -> Value e -> Value e -> <Mut | e> Option (Value e)
+applyTyped : String -> String -> List Int -> Int -> Value e -> Value e -> <e> Option (Value e)
 applyTyped t key pos seen inner arg =
   map (reTag t key pos (seen + 1)) (applyOpt inner arg)
 
@@ -790,7 +790,7 @@ isDispatching _ = False
 -- VTypedImpl tag matches the type the typechecker resolved (no runtime arg).  An
 -- empty tag (unresolved / polymorphic — doesn't occur in the compiler) leaves the
 -- VMulti for arg-tag fallback.
-export narrowMethod : Value e -> String -> <Mut | e> Value e
+export narrowMethod : Value e -> String -> <e> Value e
 narrowMethod (VMulti vs) "" = VMulti vs
 narrowMethod (VMulti vs) tag = stripResolved (pickByTag vs tag)
 -- A single-impl interface method binds to a BARE VTypedImpl (never coalesced into
@@ -831,12 +831,12 @@ isDefaultCand _ = True
 -- that is never applied — its wrapper must not leak into the program).  A body
 -- still awaiting application (a closure / partial impl, e.g. `pure`) keeps the
 -- wrapper so `apply` strips the tag on application.  Mirrors lib/eval.ml Phase 96.
-stripResolved : Value e -> <Mut | e> Value e
+stripResolved : Value e -> <e> Value e
 stripResolved (VTypedImpl t k p s inner) =
   stripBody (VTypedImpl t k p s inner) inner
 stripResolved v = v
 
-stripBody : Value e -> Value e -> <Mut | e> Value e
+stripBody : Value e -> Value e -> <e> Value e
 stripBody wrapper (VThunk f) = stripBody wrapper (f ())
 stripBody wrapper (VTypedImpl _ _ _ _ inner) = stripBody wrapper inner
 stripBody wrapper v = if awaitsArgs v then wrapper else v
@@ -852,7 +852,7 @@ awaitsArgs _ = False
 -- the concrete head tag an EMethodAt route narrows by: RKey is literal; RDict/
 -- RDictFwd forward the enclosing function's dict parameter; RNone leaves the
 -- VMulti for arg-tag fallback ("").
-export routeTag : EvalEnv (Value e) -> Route -> <Mut | e> String
+export routeTag : EvalEnv (Value e) -> Route -> <e> String
 routeTag _ RNone = ""
 routeTag _ (RKey key _) = key
 routeTag env (RDict d) = match lookupEnv env d
@@ -869,20 +869,20 @@ routeTag _ (RScalar _) =
 
 -- a constrained-function occurrence: apply one runtime dictionary per resolved
 -- route as a leading argument (matching the dict params dict_pass prepended).
-export applyDicts : EvalEnv (Value e) -> Value e -> List Route -> <Mut | e> Value e
+export applyDicts : EvalEnv (Value e) -> Value e -> List Route -> <e> Value e
 applyDicts _ v [] = v
 applyDicts env v (r::rest) = applyDicts env (apply v (dictOfRoute env r)) rest
 
 -- apply an already-built list of VDict values directly (used to forward an impl's
 -- own requires into its body at a return-position RDictFwd site, Phase 83/84 #5).
-export applyValues : Value e -> List (Value e) -> <Mut | e> Value e
+export applyValues : Value e -> List (Value e) -> <e> Value e
 applyValues v [] = v
 applyValues v (x::rest) = applyValues (apply v x) rest
 
 -- build the runtime dictionary for one route: RKey builds a structured VDict
 -- carrying the impl's own requires dicts recursively (Phase 83/84 #5); RDict/
 -- RDictFwd forward the enclosing dict param in full; RNone is a no-op dict.
-dictOfRoute : EvalEnv (Value e) -> Route -> <Mut | e> Value e
+dictOfRoute : EvalEnv (Value e) -> Route -> <e> Value e
 dictOfRoute env (RKey key reqs) = VDict key (map (dictOfRoute env) reqs)
 dictOfRoute env (RDict d) = match lookupEnv env d
   VDict key reqs => VDict key reqs
@@ -904,7 +904,7 @@ dictOfRoute _ (RScalar _) =
 -- narrow a method VMulti by a route, returning the narrowed value and any
 -- forwarded requires (non-empty only for RDictFwd return-position sites where the
 -- enclosing dict carries nested element dicts for the selected impl, Phase 83/84 #5).
-export methodAtNarrow : EvalEnv (Value e) -> Value e -> Route -> <Mut | e> (Value e, List (Value e))
+export methodAtNarrow : EvalEnv (Value e) -> Value e -> Route -> <e> (Value e, List (Value e))
 methodAtNarrow _ v RNone = (v, [])
 methodAtNarrow _ v (RKey key _) = (narrowMethod v key, [])
 -- ARGSTAMP-UNIFY Phase 2+3 / genuine #21: under eval dict-threading an arg-position
@@ -949,7 +949,7 @@ matchesTag : String -> Value e -> Bool
 matchesTag tag (VTypedImpl t k _ _ _) = t == tag || k == tag
 matchesTag _ _ = True
 
-applyClosure : EvalEnv (Value e) -> List Pat -> Expr -> Value e -> <Mut | e> Option (Value e)
+applyClosure : EvalEnv (Value e) -> List Pat -> Expr -> Value e -> <e> Option (Value e)
 applyClosure _ [] _ _ = panic "applied closure with no parameters"
 applyClosure env [p] body arg = match matchPat p arg
   None => None
@@ -960,7 +960,7 @@ applyClosure env (p::ps) body arg =
 -- VClosureF analog of applyClosure: the body is a host fn run on the fully-
 -- extended env once the last param binds; partial application keeps the same
 -- body fn and grows env (mirrors VClosure exactly).
-export applyClosureF : EvalEnv (Value e) -> List Pat -> (EvalEnv (Value e) -> <Mut | e> Value e) -> Value e -> <Mut | e> Option (Value e)
+export applyClosureF : EvalEnv (Value e) -> List Pat -> (EvalEnv (Value e) -> <e> Value e) -> Value e -> <e> Option (Value e)
 applyClosureF _ [] _ _ = panic "applied closure with no parameters"
 applyClosureF env [p] f arg = match matchPat p arg
   None => None
@@ -973,7 +973,7 @@ fallthroughToNone : Value e -> Option (Value e)
 fallthroughToNone VFallthrough = None
 fallthroughToNone v = Some v
 
-collectPartials : List (Value e) -> List (Value e) -> Value e -> <Mut | e> Option (Value e)
+collectPartials : List (Value e) -> List (Value e) -> Value e -> <e> Option (Value e)
 collectPartials [] [] _ = panic "no matching impl for dispatch"
 collectPartials [v] [] _ = Some v
 collectPartials many [] _ = Some (VMulti (reverseL many))
@@ -990,7 +990,7 @@ isPartial (VTypedImpl _ _ _ _ _) = True
 isPartial _ = False
 
 -- ── the evaluator ─────────────────────────────────────────────────────────
-export eval : EvalEnv (Value e) -> Expr -> <Mut | e> Value e
+export eval : EvalEnv (Value e) -> Expr -> <e> Value e
 eval _ (ELit (LInt n)) = VInt n
 -- PLAN.md #11: dictPass rewrites every ENumLit to ELit before eval; these arms
 -- are defensive for an untyped/non-elaborate eval path (a bare int → VInt; a
@@ -1078,7 +1078,7 @@ eval _ _ = panic "eval: unsupported node (slice 2)"
 -- with no dict folding (mirror lib/eval.ml:816 EMethodRef RLocal).  Every other
 -- route is a genuine method dispatch: resolve the VMulti past any nearer same-
 -- named standalone shadow with lookupMethod (C5 / lib/eval.ml:223), then narrow.
-evalMethodAt : EvalEnv (Value e) -> String -> Route -> List Route -> List Route -> <Mut | e> Value e
+evalMethodAt : EvalEnv (Value e) -> String -> Route -> List Route -> List Route -> <e> Value e
 -- P0-18: the carried String is the MANGLED standalone symbol on the emit path;
 -- "" (the un-mangled run/check path) falls back to the bare method name.
 -- S-1: apply the standalone's OWN constraint dicts as leading args (`dicts` is empty
@@ -1165,7 +1165,7 @@ rangeListMk ns = VList (map VInt ns)
 export rangeArrayMk : List Int -> Value e
 rangeArrayMk ns = VArray (arrayFromList (map VInt ns))
 
-evalFieldAssign : EvalEnv (Value e) -> FieldAssign -> <Mut | e> (String, Value e)
+evalFieldAssign : EvalEnv (Value e) -> FieldAssign -> <e> (String, Value e)
 evalFieldAssign env (FieldAssign k e) = (k, eval env e)
 
 -- A named-field DATA constructor (registered in ctorFieldOrdersRef) builds a
@@ -1239,7 +1239,7 @@ fieldOr fields field = match lookupAssoc field fields
   None => panic ("unknown field: " ++ field)
 
 -- bare sequential block: value of the last statement is the block's result
-evalBlock : EvalEnv (Value e) -> List DoStmt -> <Mut | e> Value e
+evalBlock : EvalEnv (Value e) -> List DoStmt -> <e> Value e
 evalBlock _ [] = VUnit
 evalBlock env [DoExpr e] = eval env e
 evalBlock env [DoLet _ _ pat e] = blockLetLast env pat e
@@ -1255,12 +1255,12 @@ evalBlock env ((DoAssign x e)::rest) =
   evalBlock (extendEnv env [(x, eval env e)]) rest
 evalBlock _ (_::_) = panic "eval: unsupported block statement"
 
-blockLetLast : EvalEnv (Value e) -> Pat -> Expr -> <Mut | e> Value e
+blockLetLast : EvalEnv (Value e) -> Pat -> Expr -> <e> Value e
 blockLetLast env pat e = match matchPat pat (eval env e)
   None => runtimePanic "E-LET-REFUTE" "let pattern match failed"
   Some _ => VUnit
 
-blockRecLet : EvalEnv (Value e) -> String -> Expr -> List DoStmt -> <Mut | e> Value e
+blockRecLet : EvalEnv (Value e) -> String -> Expr -> List DoStmt -> <e> Value e
 blockRecLet env f e rest =
   let cell = Ref VUnit
   let recEnv = pushFrame env [(f, cell)]
@@ -1268,12 +1268,12 @@ blockRecLet env f e rest =
   let _ = setRef cell v
   evalBlock recEnv rest
 
-blockLet : EvalEnv (Value e) -> Pat -> Expr -> List DoStmt -> <Mut | e> Value e
+blockLet : EvalEnv (Value e) -> Pat -> Expr -> List DoStmt -> <e> Value e
 blockLet env pat e rest = match matchPat pat (eval env e)
   None => runtimePanic "E-LET-REFUTE" "let pattern match failed"
   Some binds => evalBlock (extendEnv env binds) rest
 
-evalRecLet : EvalEnv (Value e) -> String -> Expr -> Expr -> <Mut | e> Value e
+evalRecLet : EvalEnv (Value e) -> String -> Expr -> Expr -> <e> Value e
 evalRecLet env f e1 e2 =
   let cell = Ref VUnit
   let recEnv = pushFrame env [(f, cell)]
@@ -1281,12 +1281,12 @@ evalRecLet env f e1 e2 =
   let _ = setRef cell v
   eval recEnv e2
 
-evalLet : EvalEnv (Value e) -> Pat -> Expr -> Expr -> <Mut | e> Value e
+evalLet : EvalEnv (Value e) -> Pat -> Expr -> Expr -> <e> Value e
 evalLet env pat e1 e2 = match matchPat pat (eval env e1)
   None => runtimePanic "E-LET-REFUTE" "let pattern match failed"
   Some binds => eval (extendEnv env binds) e2
 
-evalLetGroup : EvalEnv (Value e) -> List LetBind -> Expr -> <Mut | e> Value e
+evalLetGroup : EvalEnv (Value e) -> List LetBind -> Expr -> <e> Value e
 evalLetGroup env binds body =
   let cells = map letBindCell binds
   let env2 = pushFrame env cells
@@ -1296,7 +1296,7 @@ evalLetGroup env binds body =
 letBindCell : LetBind -> (String, Ref (Value e))
 letBindCell (LetBind name _) = (name, Ref VUnit)
 
-installGroup : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List LetBind -> <Mut | e> Unit
+installGroup : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List LetBind -> <e> Unit
 installGroup _ _ [] = ()
 installGroup env cells ((LetBind name clauses)::rest) =
   let _ = setRef (findCell cells name) (groupValue env (map funClauseToClause clauses))
@@ -1305,7 +1305,7 @@ installGroup env cells ((LetBind name clauses)::rest) =
 funClauseToClause : FunClause -> (List Pat, Expr)
 funClauseToClause (FunClause pats body) = (pats, body)
 
-groupValue : EvalEnv (Value e) -> List (List Pat, Expr) -> <Mut | e> Value e
+groupValue : EvalEnv (Value e) -> List (List Pat, Expr) -> <e> Value e
 groupValue env [(pats, body)]
   | isNullary pats = eval env body
   | otherwise = VClosure env pats body
@@ -1326,7 +1326,7 @@ export isNullary : List Pat -> Bool
 isNullary [] = True
 isNullary _ = False
 
-evalMatch : EvalEnv (Value e) -> Value e -> List Arm -> <Mut | e> Value e
+evalMatch : EvalEnv (Value e) -> Value e -> List Arm -> <e> Value e
 evalMatch _ _ [] = runtimePanic "E-NONEXHAUSTIVE-MATCH" "non-exhaustive match"
 evalMatch env sv ((Arm pat guards body)::rest) = match matchPat pat sv
   None => evalMatch env sv rest
@@ -1334,7 +1334,7 @@ evalMatch env sv ((Arm pat guards body)::rest) = match matchPat pat sv
     Some env2 => eval env2 body
     None => evalMatch env sv rest
 
-runGuards : EvalEnv (Value e) -> List Guard -> <Mut | e> Option (EvalEnv (Value e))
+runGuards : EvalEnv (Value e) -> List Guard -> <e> Option (EvalEnv (Value e))
 runGuards env [] = Some env
 runGuards env ((GBool g)::qs) = match eval env g
   VBool True => runGuards env qs
@@ -1344,7 +1344,7 @@ runGuards env ((GBind p e)::qs) = match matchPat p (eval env e)
   Some b => runGuards (extendEnv env b) qs
   None => None
 
-evalIf : EvalEnv (Value e) -> Value e -> Expr -> Expr -> <Mut | e> Value e
+evalIf : EvalEnv (Value e) -> Value e -> Expr -> Expr -> <e> Value e
 evalIf env (VBool True) t _ = eval env t
 evalIf env (VCon "True" []) t _ = eval env t
 evalIf env (VBool False) _ e = eval env e
@@ -1361,7 +1361,7 @@ evalUnop "not" (VBool b) = VBool (not b)
 evalUnop "not" _ = panic "'!' on non-Bool"
 evalUnop op _ = panic ("unknown unary op: " ++ op)
 
-evalBinop : EvalEnv (Value e) -> String -> Expr -> Expr -> <Mut | e> Value e
+evalBinop : EvalEnv (Value e) -> String -> Expr -> Expr -> <e> Value e
 evalBinop env "|>" l r = apply (eval env r) (eval env l)
 evalBinop env ">>" l r = composeFwd (eval env l) (eval env r)
 evalBinop env "<<" l r = composeBwd (eval env l) (eval env r)
@@ -1377,14 +1377,14 @@ composeFwd fv gv = VPrim (x => apply gv (apply fv x))
 composeBwd : Value e -> Value e -> Value e
 composeBwd fv gv = VPrim (x => apply fv (apply gv x))
 
-evalAnd : EvalEnv (Value e) -> Value e -> Expr -> <Mut | e> Value e
+evalAnd : EvalEnv (Value e) -> Value e -> Expr -> <e> Value e
 evalAnd _ (VBool False) _ = VBool False
 evalAnd _ (VCon "False" []) _ = VBool False
 evalAnd env (VBool True) r = eval env r
 evalAnd env (VCon "True" []) r = eval env r
 evalAnd _ _ _ = panic "'&&' on non-Bool"
 
-evalOr : EvalEnv (Value e) -> Value e -> Expr -> <Mut | e> Value e
+evalOr : EvalEnv (Value e) -> Value e -> Expr -> <e> Value e
 evalOr _ (VBool True) _ = VBool True
 evalOr _ (VCon "True" []) _ = VBool True
 evalOr env (VBool False) r = eval env r
@@ -1528,12 +1528,12 @@ memoThunk env body = memoThunkOf (Ref None) env body
 memoThunkOf : Ref (Option (Value e)) -> EvalEnv (Value e) -> Expr -> Value e
 memoThunkOf cell env body = VThunk (_ => forceMemoCell cell env body)
 
-forceMemoCell : Ref (Option (Value e)) -> EvalEnv (Value e) -> Expr -> <Mut | e> Value e
+forceMemoCell : Ref (Option (Value e)) -> EvalEnv (Value e) -> Expr -> <e> Value e
 forceMemoCell cell env body = match cell.value
   Some v => v
   None => storeMemo cell (eval env body)
 
-storeMemo : Ref (Option (Value e)) -> Value e -> <Mut | e> Value e
+storeMemo : Ref (Option (Value e)) -> Value e -> <e> Value e
 storeMemo cell v = seqV (setRef cell (Some v)) v
 
 seqV : Unit -> Value e -> Value e
@@ -1631,26 +1631,26 @@ boolSeeds =
 -- holds only the effect-free-observable prims (the differential oracle
 -- installs exactly these); real-I/O prims live in `ioExternBindings` below
 -- and are installed only by `medaka run`'s driver.
-prim1 : (Value e -> <Mut | e> Value e) -> Value e
+prim1 : (Value e -> <e> Value e) -> Value e
 prim1 f = VPrim f
 
-prim2 : (Value e -> Value e -> <Mut | e> Value e) -> Value e
+prim2 : (Value e -> Value e -> <e> Value e) -> Value e
 prim2 f = VPrim (a => VPrim (b => f a b))
 
-prim3 : (Value e -> Value e -> Value e -> <Mut | e> Value e) -> Value e
+prim3 : (Value e -> Value e -> Value e -> <e> Value e) -> Value e
 prim3 f = VPrim (a => VPrim (b => VPrim (c => f a b c)))
 
-prim2M : (Value e -> Value e -> <Mut | e> Value e) -> Value e
+prim2M : (Value e -> Value e -> <e> Value e) -> Value e
 prim2M f = VPrim (a => VPrim (b => f a b))
 
-prim3M : (Value e -> Value e -> Value e -> <Mut | e> Value e) -> Value e
+prim3M : (Value e -> Value e -> Value e -> <e> Value e) -> Value e
 prim3M f = VPrim (a => VPrim (b => VPrim (c => f a b c)))
 
-prim5M : (Value e -> Value e -> Value e -> Value e -> Value e -> <Mut | e> Value e) -> Value e
+prim5M : (Value e -> Value e -> Value e -> Value e -> Value e -> <e> Value e) -> Value e
 prim5M f =
   VPrim (a => VPrim (b => VPrim (c => VPrim (d => VPrim (x => f a b c d x)))))
 
-prim1M : (Value e -> <Mut | e> Value e) -> Value e
+prim1M : (Value e -> <e> Value e) -> Value e
 prim1M f = VPrim f
 
 -- captured stdout: putStr/putStrLn append here instead of doing real IO, so the
@@ -1702,7 +1702,7 @@ runJsonMode = Ref False
 -- pattern's Eq comparison, list index dispatch) the prelude's placeholder would
 -- otherwise clobber the real user-code span.  A real located atom always has a
 -- positive-width span, so this sentinel is unambiguous.
-updateEvalLoc : Loc -> <Mut> Unit
+updateEvalLoc : Loc -> Unit
 updateEvalLoc (Loc f sl sc el ec)
   | sl == 1 && sc == 0 && el == 1 && ec == 0 = ()
   | otherwise = setRef currentEvalLoc (Loc f sl sc el ec)
@@ -1739,7 +1739,7 @@ runtimePanic code msg = match currentEvalLoc.value
 fmtSentinel : String
 fmtSentinel = "\u{01}"
 
-appendOutput : String -> <Mut | e> Value e
+appendOutput : String -> <e> Value e
 appendOutput s =
   let _ = setRef outputRef (outputRef.value ++ s)
   -- Snapshot the buffer's raw bytes into the native runtime (O(1)
@@ -1753,22 +1753,22 @@ appendOutput s =
   let _ = stashRunStdout outputRef.value
   VUnit
 
-pPutStr : Value e -> <Mut | e> Value e
+pPutStr : Value e -> <e> Value e
 pPutStr (VString s) = appendOutput s
 pPutStr _ = panic "putStr: not a String"
 
-pPutStrLn : Value e -> <Mut | e> Value e
+pPutStrLn : Value e -> <e> Value e
 pPutStrLn (VString s) = appendOutput (s ++ "\n")
 pPutStrLn _ = panic "putStrLn: not a String"
 
-pStashRunStdout : Value e -> <Mut | e> Value e
+pStashRunStdout : Value e -> <e> Value e
 pStashRunStdout (VString s) = let _ = stashRunStdout s in VUnit
 pStashRunStdout _ = panic "stashRunStdout: not a String"
 
-pEnableRunStdoutFlush : Value e -> <Mut | e> Value e
+pEnableRunStdoutFlush : Value e -> <e> Value e
 pEnableRunStdoutFlush _ = let _ = enableRunStdoutFlush () in VUnit
 
-pDiscard : Value e -> <Mut | e> Value e
+pDiscard : Value e -> <e> Value e
 pDiscard _ = VUnit
 
 -- The `panic` extern (stdlib/runtime.mdk: `panic : String -> a`) was missing
@@ -1778,17 +1778,17 @@ pDiscard _ = VUnit
 -- through the real host `panic` (a genuine, unrecoverable abort — no
 -- catchable panics, see AGENTS.md).  Wiring the extern to the same host
 -- `panic` fixes both `explicit_panic`/`let_else_fail` fixtures.
-pPanic : Value e -> <Mut | e> a
+pPanic : Value e -> <e> a
 pPanic v = runtimePanic "E-PANIC" (unString v)
 
-pRef : Value e -> <Mut | e> Value e
+pRef : Value e -> <e> Value e
 pRef v = VRef (Ref v)
 
-pSetRef : Value e -> Value e -> <Mut | e> Value e
+pSetRef : Value e -> Value e -> <e> Value e
 pSetRef (VRef cell) v = doSetRef cell v
 pSetRef _ _ = panic "setRef: not a Ref"
 
-doSetRef : Ref (Value e) -> Value e -> <Mut | e> Value e
+doSetRef : Ref (Value e) -> Value e -> <e> Value e
 doSetRef cell v =
   let _ = setRef cell v
   VUnit
@@ -1826,7 +1826,7 @@ rngStateRef = Ref 123456789
 -- Knuth/POSIX LCG over a 2^31 modulus.  Constants chosen so the product
 -- `state * 1103515245` stays under the 63-bit OCaml int max (no overflow), and
 -- the result is always non-negative — compiler exposes no bitwise externs.
-rngNext : Unit -> <Mut> Int
+rngNext : Unit -> Int
 -- Intentional cross-file duplicate of the same helper in prop_runner.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
 rngNext _ =
@@ -1834,21 +1834,21 @@ rngNext _ =
   let _ = setRef rngStateRef s
   s
 
-pRandomInt : Value e -> Value e -> <Mut | e> Value e
+pRandomInt : Value e -> Value e -> <e> Value e
 pRandomInt (VInt lo) (VInt hi) =
   let range = hi - lo + 1
   if range <= 0 then VInt lo else VInt (lo + rngNext () % range)
 pRandomInt _ _ = panic "randomInt: expected Int Int"
 
-pRandomBool : Value e -> <Mut | e> Value e
+pRandomBool : Value e -> <e> Value e
 pRandomBool _ = VBool (rngNext () % 2 == 1)
 
-pRandomFloat : Value e -> <Mut | e> Value e
+pRandomFloat : Value e -> <e> Value e
 pRandomFloat _ =
   let r = rngNext () % 2000001
   VFloat (intToFloat r * (1.0 / 1000000.0) - 1.0)
 
-pRandomChar : Value e -> <Mut | e> Value e
+pRandomChar : Value e -> <e> Value e
 pRandomChar _ = VChar (charToStr (charFromCodeUnsafe (32 + rngNext () % 95)))
 
 charFromCodeUnsafe : Int -> Char
@@ -1858,7 +1858,7 @@ charFromCodeUnsafe n = match charFromCode n
   Some c => c
   None => ' '
 
-pSetSeed : Value e -> <Mut | e> Value e
+pSetSeed : Value e -> <e> Value e
 pSetSeed (VInt seed) =
   let _ = setRef rngStateRef seed
   VUnit
@@ -1873,17 +1873,17 @@ pSetSeed _ = panic "setSeed: expected Int"
 -- comment here claimed "the interpreter has no FFI to the clock" — a fossil from
 -- when eval.mdk was purely a value oracle.  It is compiled by the LLVM backend
 -- and linked against runtime/medaka_rt.c; there is no FFI barrier.
-pWallTimeSec : Value e -> <Mut | e> Value e
+pWallTimeSec : Value e -> <e> Value e
 pWallTimeSec _ = VFloat 1700000000.0
 
-pMonotonicSec : Value e -> <Mut | e> Value e
+pMonotonicSec : Value e -> <e> Value e
 pMonotonicSec _ = VFloat 1000.0
 
-pSleepMs : Value e -> <Mut | e> Value e
+pSleepMs : Value e -> <e> Value e
 pSleepMs (VInt _) = VUnit
 pSleepMs _ = panic "sleepMs: expected Int"
 
-pAllocBytes : Value e -> <Mut | e> Value e
+pAllocBytes : Value e -> <e> Value e
 pAllocBytes _ = VFloat 0.0
 
 -- B2: a FUNCTION (not a top-level value) so every consumer instantiates a
@@ -1994,59 +1994,59 @@ externBindings _ = [
   (fallthroughName, prim1 (_ => VFallthrough)),
 ]
 
-pDebugStringLit : Value e -> <Mut | e> Value e
+pDebugStringLit : Value e -> <e> Value e
 pDebugStringLit (VString s) = VString (debugStringLit s)
 pDebugStringLit _ = panic "debugStringLit: not a String"
 
-pDebugCharLit : Value e -> <Mut | e> Value e
+pDebugCharLit : Value e -> <e> Value e
 pDebugCharLit (VChar s) = VString (debugCharLit (unChar (VChar s)))
 pDebugCharLit _ = panic "debugCharLit: not a Char"
 
-pStringToFloat : Value e -> <Mut | e> Value e
+pStringToFloat : Value e -> <e> Value e
 pStringToFloat (VString s) = optionToValue (mapOption VFloat (stringToFloat s))
 pStringToFloat _ = panic "stringToFloat: not a String"
 
-charPred : (Char -> Bool) -> Value e -> <Mut | e> Value e
+charPred : (Char -> Bool) -> Value e -> <e> Value e
 charPred f (VChar s) = VBool (f (unChar (VChar s)))
 charPred _ _ = panic "char predicate: not a Char"
 
-pIntToString : Value e -> <Mut | e> Value e
+pIntToString : Value e -> <e> Value e
 pIntToString (VInt n) = VString (intToString n)
 pIntToString _ = panic "intToString: not an Int"
 
-pBitAnd : Value e -> Value e -> <Mut | e> Value e
+pBitAnd : Value e -> Value e -> <e> Value e
 pBitAnd (VInt a) (VInt b) = VInt (bitAnd a b)
 pBitAnd _ _ = panic "bitAnd: not Ints"
 
-pBitOr : Value e -> Value e -> <Mut | e> Value e
+pBitOr : Value e -> Value e -> <e> Value e
 pBitOr (VInt a) (VInt b) = VInt (bitOr a b)
 pBitOr _ _ = panic "bitOr: not Ints"
 
-pBitXor : Value e -> Value e -> <Mut | e> Value e
+pBitXor : Value e -> Value e -> <e> Value e
 pBitXor (VInt a) (VInt b) = VInt (bitXor a b)
 pBitXor _ _ = panic "bitXor: not Ints"
 
-pShiftLeft : Value e -> Value e -> <Mut | e> Value e
+pShiftLeft : Value e -> Value e -> <e> Value e
 pShiftLeft (VInt a) (VInt b) = VInt (shiftLeft a b)
 pShiftLeft _ _ = panic "shiftLeft: not Ints"
 
-pShiftRight : Value e -> Value e -> <Mut | e> Value e
+pShiftRight : Value e -> Value e -> <e> Value e
 pShiftRight (VInt a) (VInt b) = VInt (shiftRight a b)
 pShiftRight _ _ = panic "shiftRight: not Ints"
 
-pBitNot : Value e -> <Mut | e> Value e
+pBitNot : Value e -> <e> Value e
 pBitNot (VInt a) = VInt (bitNot a)
 pBitNot _ = panic "bitNot: not an Int"
 
-pIntToFloat : Value e -> <Mut | e> Value e
+pIntToFloat : Value e -> <e> Value e
 pIntToFloat (VInt n) = VFloat (intToFloat n)
 pIntToFloat _ = panic "intToFloat: not an Int"
 
-pFloatToInt : Value e -> <Mut | e> Value e
+pFloatToInt : Value e -> <e> Value e
 pFloatToInt (VFloat f) = VInt (floatToInt f)
 pFloatToInt _ = panic "floatToInt: not a Float"
 
-pIntBitsToFloat : Value e -> <Mut | e> Value e
+pIntBitsToFloat : Value e -> <e> Value e
 pIntBitsToFloat (VInt n) = VFloat (intBitsToFloat n)
 pIntBitsToFloat _ = panic "intBitsToFloat: not an Int"
 
@@ -2055,7 +2055,7 @@ getByte64 off arr i = match arrayGetUnsafe (off + i) arr
   VInt b => bitAnd b 255
   _ => panic "bytesToFloat64: array element not Int"
 
-pBytesToFloat64 : Value e -> Value e -> <Mut | e> Value e
+pBytesToFloat64 : Value e -> Value e -> <e> Value e
 pBytesToFloat64 (VArray arr) (VInt off)
   | off < 0 || off + 8 > arrayLength arr = runtimePanic "E-INDEX-OOB" ("index " ++ intToString off ++ " out of bounds")
 pBytesToFloat64 (VArray arr) (VInt off) =
@@ -2066,7 +2066,7 @@ pBytesToFloat64 (VArray arr) (VInt off) =
   VFloat (bytesToFloat64 intArr 0)
 pBytesToFloat64 _ _ = panic "bytesToFloat64: expected Array Int"
 
-pFloatToBytes64 : Value e -> <Mut | e> Value e
+pFloatToBytes64 : Value e -> <e> Value e
 pFloatToBytes64 (VFloat f) =
   let bs = floatToBytes64 f
   VArray (arrayMakeWith 8 (i => VInt (arrayGetUnsafe i bs)))
@@ -2109,73 +2109,73 @@ fnvFoldList30 : List Int -> Int -> Int
 fnvFoldList30 [] h = h
 fnvFoldList30 (x::xs) h = fnvFoldList30 xs (fnvStep30 h x)
 
-pHashInt : Value e -> <Mut | e> Value e
+pHashInt : Value e -> <e> Value e
 pHashInt (VInt n) = VInt (mixInt30 n)
 pHashInt _ = panic "hashInt: not an Int"
 
-pHashChar : Value e -> <Mut | e> Value e
+pHashChar : Value e -> <e> Value e
 pHashChar (VChar s) =
   VInt (mixInt30 (charCode (arrayGetUnsafe 0 (stringToChars s))))
 pHashChar _ = panic "hashChar: not a Char"
 
-pHashBool : Value e -> <Mut | e> Value e
+pHashBool : Value e -> <e> Value e
 pHashBool (VBool b) = VInt (boolToInt b)
 pHashBool _ = panic "hashBool: not a Bool"
 
-pHashFloat : Value e -> <Mut | e> Value e
+pHashFloat : Value e -> <e> Value e
 pHashFloat (VFloat f) =
   let bs = floatToBytes64 f
   VInt (bitAnd (fnvFoldList30 (arrayToListG bs) fnvOffset30) hashMask30)
 pHashFloat _ = panic "hashFloat: not a Float"
 
-pHashString : Value e -> <Mut | e> Value e
+pHashString : Value e -> <e> Value e
 pHashString (VString s) =
   VInt (bitAnd
     (fnvFoldList30 (arrayToListG (stringToUtf8Bytes s)) fnvOffset30)
     hashMask30)
 pHashString _ = panic "hashString: not a String"
 
-pFloatToString : Value e -> <Mut | e> Value e
+pFloatToString : Value e -> <e> Value e
 pFloatToString (VFloat f) = VString (floatToString f)
 pFloatToString _ = panic "floatToString: not a Float"
 
-pCharToStr : Value e -> <Mut | e> Value e
+pCharToStr : Value e -> <e> Value e
 pCharToStr (VChar s) = VString s
 pCharToStr _ = panic "charToStr: not a Char"
 
-pCharCode : Value e -> <Mut | e> Value e
+pCharCode : Value e -> <e> Value e
 pCharCode (VChar s) = VInt (charCode (arrayGetUnsafe 0 (stringToChars s)))
 pCharCode _ = panic "charCode: not a Char"
 
-pCharFromCode : Value e -> <Mut | e> Value e
+pCharFromCode : Value e -> <e> Value e
 pCharFromCode (VInt n) = optionToValue (mapOption charToVChar (charFromCode n))
 pCharFromCode _ = panic "charFromCode: not an Int"
 
 charToVChar : Char -> Value e
 charToVChar c = VChar (charToStr c)
 
-pCharToUpper : Value e -> <Mut | e> Value e
+pCharToUpper : Value e -> <e> Value e
 pCharToUpper (VChar s) = VChar (charToStr (charToUpper (unChar (VChar s))))
 pCharToUpper _ = panic "charToUpper: not a Char"
 
-pCharToLower : Value e -> <Mut | e> Value e
+pCharToLower : Value e -> <e> Value e
 pCharToLower (VChar s) = VChar (charToStr (charToLower (unChar (VChar s))))
 pCharToLower _ = panic "charToLower: not a Char"
 
-pStringLength : Value e -> <Mut | e> Value e
+pStringLength : Value e -> <e> Value e
 pStringLength (VString s) = VInt (stringLength s)
 pStringLength _ = panic "stringLength: not a String"
 
-pStringConcat : Value e -> <Mut | e> Value e
+pStringConcat : Value e -> <e> Value e
 pStringConcat (VList vs) = VString (stringConcat (map unString vs))
 pStringConcat _ = panic "stringConcat: not a List"
 
-pStringToChars : Value e -> <Mut | e> Value e
+pStringToChars : Value e -> <e> Value e
 pStringToChars (VString s) =
   VArray (arrayFromList (map charToVChar (arrayToListG (stringToChars s))))
 pStringToChars _ = panic "stringToChars: not a String"
 
-pStringFromChars : Value e -> <Mut | e> Value e
+pStringFromChars : Value e -> <e> Value e
 pStringFromChars (VArray vs) =
   VString (stringFromChars (arrayFromList (map unChar (arrayToListG vs))))
 pStringFromChars _ = panic "stringFromChars: not an Array"
@@ -2184,143 +2184,143 @@ unInt : Value e -> Int
 unInt (VInt n) = n
 unInt _ = panic "unInt: not an Int"
 
-pStringToUtf8Bytes : Value e -> <Mut | e> Value e
+pStringToUtf8Bytes : Value e -> <e> Value e
 pStringToUtf8Bytes (VString s) =
   VArray (arrayFromList (map VInt (arrayToListG (stringToUtf8Bytes s))))
 pStringToUtf8Bytes _ = panic "stringToUtf8Bytes: not a String"
 
-pStringFromUtf8Bytes : Value e -> <Mut | e> Value e
+pStringFromUtf8Bytes : Value e -> <e> Value e
 pStringFromUtf8Bytes (VArray vs) =
   VString (stringFromUtf8Bytes (arrayFromList (map unInt (arrayToListG vs))))
 pStringFromUtf8Bytes _ = panic "stringFromUtf8Bytes: not an Array"
 
-pFloatRem : Value e -> Value e -> <Mut | e> Value e
+pFloatRem : Value e -> Value e -> <e> Value e
 pFloatRem (VFloat a) (VFloat b) = VFloat (floatRem a b)
 pFloatRem _ _ = panic "floatRem: bad operands"
 
 -- libm math prims — each calls the runtime.mdk extern of the same name, which
 -- lowers to the C math.h shim (mirrors pFloatRem calling floatRem).  Native only.
-pSqrt : Value e -> <Mut | e> Value e
+pSqrt : Value e -> <e> Value e
 pSqrt (VFloat a) = VFloat (sqrt a)
 pSqrt _ = panic "sqrt: not a Float"
-pCbrt : Value e -> <Mut | e> Value e
+pCbrt : Value e -> <e> Value e
 pCbrt (VFloat a) = VFloat (cbrt a)
 pCbrt _ = panic "cbrt: not a Float"
-pExp : Value e -> <Mut | e> Value e
+pExp : Value e -> <e> Value e
 pExp (VFloat a) = VFloat (exp a)
 pExp _ = panic "exp: not a Float"
-pLog : Value e -> <Mut | e> Value e
+pLog : Value e -> <e> Value e
 pLog (VFloat a) = VFloat (log a)
 pLog _ = panic "log: not a Float"
-pLog2 : Value e -> <Mut | e> Value e
+pLog2 : Value e -> <e> Value e
 pLog2 (VFloat a) = VFloat (log2 a)
 pLog2 _ = panic "log2: not a Float"
-pLog10 : Value e -> <Mut | e> Value e
+pLog10 : Value e -> <e> Value e
 pLog10 (VFloat a) = VFloat (log10 a)
 pLog10 _ = panic "log10: not a Float"
-pSin : Value e -> <Mut | e> Value e
+pSin : Value e -> <e> Value e
 pSin (VFloat a) = VFloat (sin a)
 pSin _ = panic "sin: not a Float"
-pCos : Value e -> <Mut | e> Value e
+pCos : Value e -> <e> Value e
 pCos (VFloat a) = VFloat (cos a)
 pCos _ = panic "cos: not a Float"
-pTan : Value e -> <Mut | e> Value e
+pTan : Value e -> <e> Value e
 pTan (VFloat a) = VFloat (tan a)
 pTan _ = panic "tan: not a Float"
-pAsin : Value e -> <Mut | e> Value e
+pAsin : Value e -> <e> Value e
 pAsin (VFloat a) = VFloat (asin a)
 pAsin _ = panic "asin: not a Float"
-pAcos : Value e -> <Mut | e> Value e
+pAcos : Value e -> <e> Value e
 pAcos (VFloat a) = VFloat (acos a)
 pAcos _ = panic "acos: not a Float"
-pAtan : Value e -> <Mut | e> Value e
+pAtan : Value e -> <e> Value e
 pAtan (VFloat a) = VFloat (atan a)
 pAtan _ = panic "atan: not a Float"
-pSinh : Value e -> <Mut | e> Value e
+pSinh : Value e -> <e> Value e
 pSinh (VFloat a) = VFloat (sinh a)
 pSinh _ = panic "sinh: not a Float"
-pCosh : Value e -> <Mut | e> Value e
+pCosh : Value e -> <e> Value e
 pCosh (VFloat a) = VFloat (cosh a)
 pCosh _ = panic "cosh: not a Float"
-pTanh : Value e -> <Mut | e> Value e
+pTanh : Value e -> <e> Value e
 pTanh (VFloat a) = VFloat (tanh a)
 pTanh _ = panic "tanh: not a Float"
-pFloor : Value e -> <Mut | e> Value e
+pFloor : Value e -> <e> Value e
 pFloor (VFloat a) = VFloat (floor a)
 pFloor _ = panic "floor: not a Float"
-pCeil : Value e -> <Mut | e> Value e
+pCeil : Value e -> <e> Value e
 pCeil (VFloat a) = VFloat (ceil a)
 pCeil _ = panic "ceil: not a Float"
-pRound : Value e -> <Mut | e> Value e
+pRound : Value e -> <e> Value e
 pRound (VFloat a) = VFloat (round a)
 pRound _ = panic "round: not a Float"
-pTrunc : Value e -> <Mut | e> Value e
+pTrunc : Value e -> <e> Value e
 pTrunc (VFloat a) = VFloat (trunc a)
 pTrunc _ = panic "trunc: not a Float"
-pPow : Value e -> Value e -> <Mut | e> Value e
+pPow : Value e -> Value e -> <e> Value e
 pPow (VFloat a) (VFloat b) = VFloat (pow a b)
 pPow _ _ = panic "pow: bad operands"
-pAtan2 : Value e -> Value e -> <Mut | e> Value e
+pAtan2 : Value e -> Value e -> <e> Value e
 pAtan2 (VFloat a) (VFloat b) = VFloat (atan2 a b)
 pAtan2 _ _ = panic "atan2: bad operands"
-pHypot : Value e -> Value e -> <Mut | e> Value e
+pHypot : Value e -> Value e -> <e> Value e
 pHypot (VFloat a) (VFloat b) = VFloat (hypot a b)
 pHypot _ _ = panic "hypot: bad operands"
 
-pStringToUpper : Value e -> <Mut | e> Value e
+pStringToUpper : Value e -> <e> Value e
 pStringToUpper (VString s) = VString (stringToUpper s)
 pStringToUpper _ = panic "stringToUpper: not a String"
 
-pStringToLower : Value e -> <Mut | e> Value e
+pStringToLower : Value e -> <e> Value e
 pStringToLower (VString s) = VString (stringToLower s)
 pStringToLower _ = panic "stringToLower: not a String"
 
-pStringCompare : Value e -> Value e -> <Mut | e> Value e
+pStringCompare : Value e -> Value e -> <e> Value e
 pStringCompare (VString a) (VString b) = orderingToValue (stringCompare a b)
 pStringCompare _ _ = panic "stringCompare: not Strings"
 
-pStringIndexOf : Value e -> Value e -> <Mut | e> Value e
+pStringIndexOf : Value e -> Value e -> <e> Value e
 pStringIndexOf (VString needle) (VString hay) =
   optionToValue (mapOption VInt (stringIndexOf needle hay))
 pStringIndexOf _ _ = panic "stringIndexOf: not Strings"
 
-pStringSlice : Value e -> Value e -> Value e -> <Mut | e> Value e
+pStringSlice : Value e -> Value e -> Value e -> <e> Value e
 pStringSlice (VInt lo) (VInt hi) (VString s) = VString (stringSlice lo hi s)
 pStringSlice _ _ _ = panic "stringSlice: bad operands"
 
-pArrayLength : Value e -> <Mut | e> Value e
+pArrayLength : Value e -> <e> Value e
 pArrayLength (VArray a) = VInt (arrayLength a)
 pArrayLength _ = panic "arrayLength: not an Array"
 
-pArrayFromList : Value e -> <Mut | e> Value e
+pArrayFromList : Value e -> <e> Value e
 pArrayFromList (VList vs) = VArray (arrayFromList vs)
 pArrayFromList _ = panic "arrayFromList: not a List"
 
-pArrayGetUnsafe : Value e -> Value e -> <Mut | e> Value e
+pArrayGetUnsafe : Value e -> Value e -> <e> Value e
 pArrayGetUnsafe (VInt i) (VArray a) = arrayGetUnsafe i a
 pArrayGetUnsafe _ _ = panic "arrayGetUnsafe: bad operands"
 
-pArrayMake : Value e -> Value e -> <Mut | e> Value e
+pArrayMake : Value e -> Value e -> <e> Value e
 pArrayMake (VInt n) v = VArray (arrayMake n v)
 pArrayMake _ _ = panic "arrayMake: bad operands"
 
 -- arrayMakeWith : Int -> (Int -> a) -> Array a — higher-order, so it applies the
 -- builder Value back through `apply` (hence <Mut>); builds a list then converts,
 -- avoiding passing an effectful builder to the pure native arrayMakeWith extern.
-pArrayMakeWith : Value e -> Value e -> <Mut | e> Value e
+pArrayMakeWith : Value e -> Value e -> <e> Value e
 pArrayMakeWith (VInt n) f = VArray (arrayFromList (buildWith f 0 n))
 pArrayMakeWith _ _ = panic "arrayMakeWith: bad operands"
 
 -- arrayCopy : Array a -> Array a — a fresh, mutation-independent copy.  Routes
 -- to the host `arrayCopy` extern (eval.mdk is compiled by the reference, so the
 -- runtime extern is in scope), mirroring lib/eval.ml's Array.copy.
-pArrayCopy : Value e -> <Mut | e> Value e
+pArrayCopy : Value e -> <e> Value e
 pArrayCopy (VArray a) = VArray (arrayCopy a)
 pArrayCopy _ = panic "arrayCopy: not an Array"
 
 -- arraySetUnsafe : Int -> a -> Array a -> <Mut> Unit — mutate slot i in place.
 -- Routes to the host arraySetUnsafe extern (the native Array is mutable).
-pArraySetUnsafe : Value e -> Value e -> Value e -> <Mut | e> Value e
+pArraySetUnsafe : Value e -> Value e -> Value e -> <e> Value e
 pArraySetUnsafe (VInt i) v (VArray a) =
   let _ = arraySetUnsafe i v a
   VUnit
@@ -2329,7 +2329,7 @@ pArraySetUnsafe _ _ _ = panic "arraySetUnsafe: bad operands"
 -- arrayFill : a -> Array a -> <Mut> Unit — set every slot to v.  Takes no
 -- callback, so it delegates straight to the host extern (unlike the sorts and
 -- arrayMakeWith below, whose function argument is a Value closure).
-pArrayFill : Value e -> Value e -> <Mut | e> Value e
+pArrayFill : Value e -> Value e -> <e> Value e
 pArrayFill v (VArray a) =
   let _ = arrayFill v a
   VUnit
@@ -2338,7 +2338,7 @@ pArrayFill _ _ = panic "arrayFill: not an Array"
 -- arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
 -- Copies len elements from src[srcOff..] into dst[dstOff..] in place.
 -- Mirrors OCaml Array.blit semantics (memmove; handles overlapping regions).
-blitGo : Array (Value e) -> Int -> Array (Value e) -> Int -> Int -> <Mut | e> Unit
+blitGo : Array (Value e) -> Int -> Array (Value e) -> Int -> Int -> <e> Unit
 blitGo src srcOff dst dstOff len
   | len <= 0 = ()
   | otherwise =
@@ -2346,13 +2346,13 @@ blitGo src srcOff dst dstOff len
     arraySetUnsafe dstOff v dst
     blitGo src (srcOff + 1) dst (dstOff + 1) (len - 1)
 
-pArrayBlit : Value e -> Value e -> Value e -> Value e -> Value e -> <Mut | e> Value e
+pArrayBlit : Value e -> Value e -> Value e -> Value e -> Value e -> <e> Value e
 pArrayBlit (VArray src) (VInt srcOff) (VArray dst) (VInt dstOff) (VInt len) =
   blitGo src srcOff dst dstOff len
   VUnit
 pArrayBlit _ _ _ _ _ = panic "arrayBlit: bad operands"
 
-buildWith : Value e -> Int -> Int -> <Mut | e> List (Value e)
+buildWith : Value e -> Int -> Int -> <e> List (Value e)
 buildWith f i n =
   if i >= n then
     []
@@ -2362,13 +2362,13 @@ buildWith f i n =
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 mkGroup defs name = (name, clausesForName name defs)
 
-export installConsts : List (String, Ref (Value e)) -> List (String, Value e) -> <Mut | e> Unit
+export installConsts : List (String, Ref (Value e)) -> List (String, Value e) -> <e> Unit
 installConsts _ [] = ()
 installConsts cells ((n, v)::rest) =
   let _ = setRef (findCell cells n) v
   installConsts cells rest
 
-installGroups : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List (String, List (List Pat, Expr)) -> <Mut | e> Unit
+installGroups : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List (String, List (List Pat, Expr)) -> <e> Unit
 installGroups _ _ [] = ()
 installGroups env cells ((n, clauses)::rest) =
   let _ = setRef (findCell cells n) (topGroupValue env clauses)
@@ -2390,7 +2390,7 @@ lookupBinding name ((n, v)::rest)
 export noMainMsg : String
 noMainMsg = "program has no 'main' binding"
 
-export evalMain : List Decl -> <Mut> String
+export evalMain : List Decl -> String
 evalMain prog = match lookupBinding "main" (evalOne [] ("__main__", prog))
   Some v => ppValue (force v)
   None => runtimePanic "E-NO-MAIN" noMainMsg
@@ -2403,7 +2403,7 @@ evalMain prog = match lookupBinding "main" (evalOne [] ("__main__", prog))
 -- Like evalOutput, but drops any prelude function the user program redefines
 -- (mirrors the reference's prelude_for shadow-drop) so a user `sum` doesn't
 -- coalesce with the prelude's point-free `sum` into a mixed-arity VMulti.
-export evalOutputWith : List Decl -> List Decl -> <Mut> String
+export evalOutputWith : List Decl -> List Decl -> String
 evalOutputWith preludeDecls userDecls = evalOneOutput
   []
   ("__main__", dropShadowed (funNamesOf userDecls) preludeDecls ++ userDecls)
@@ -2424,7 +2424,7 @@ shadowedFun : List String -> Decl -> Bool
 shadowedFun names (DFunDef _ n _ _) = contains n names
 shadowedFun _ _ = False
 
-runMainForEffect : List (String, Value e) -> <Mut | e> Value e
+runMainForEffect : List (String, Value e) -> <e> Value e
 runMainForEffect binds = match lookupBinding "main" binds
   Some v => force v
   None => runtimePanic "E-NO-MAIN" noMainMsg
@@ -2452,14 +2452,14 @@ runMainForEffect binds = match lookupBinding "main" binds
 data ModInfo v =
   | ModInfo String (List Decl) (List (String, List (List Pat, Expr))) (List (String, Ref v)) (EvalEnv v)
 
-export evalModules : List Decl -> List (String, List Decl) -> <Mut | e> List (String, Value e)
+export evalModules : List Decl -> List (String, List Decl) -> <e> List (String, Value e)
 evalModules preludeDecls modules = evalModulesWith [] preludeDecls modules
 
 -- B2 (RUN-EFFECTS): evalModules with EXTRA extern bindings installed alongside
 -- externBindings — the seam `medaka run` uses to install real-I/O prims
 -- (ioExternBindings) without them ever reaching the differential-oracle
 -- drivers, so the oracle's `e := <Mut>` purity stays a type-level guarantee.
-export evalModulesWith : List (String, Value e) -> List Decl -> List (String, List Decl) -> <Mut | e> List (String, Value e)
+export evalModulesWith : List (String, Value e) -> List Decl -> List (String, List Decl) -> <e> List (String, Value e)
 evalModulesWith extraExterns preludeDecls modules =
   let externs = externBindings () ++ extraExterns
   let moduleDecls = flatMap snd modules
@@ -2540,7 +2540,7 @@ ifaceMethodNmE : IfaceMethod -> String
 ifaceMethodNmE (IfaceMethod n _ _) = n
 
 -- pass 2: install each module's funDef groups into its own cells (its env)
-installModGroups : List (ModInfo (Value e)) -> <Mut | e> Unit
+installModGroups : List (ModInfo (Value e)) -> <e> Unit
 installModGroups [] = ()
 installModGroups ((ModInfo _ decls grps cells menv)::rest) =
   let _ = installGroups menv cells grps
@@ -2556,7 +2556,7 @@ modImplEntries disp (ModInfo _ decls _ _ menv) =
   flatMap (declImplEntries menv disp) decls
 
 -- the root module is last in dependency order; its locals hold `main`
-rootLocals : List (ModInfo (Value e)) -> <Mut | e> List (String, Value e)
+rootLocals : List (ModInfo (Value e)) -> <e> List (String, Value e)
 rootLocals [] = []
 rootLocals [ModInfo _ _ _ cells _] = map cellResult cells
 rootLocals (_::rest) = rootLocals rest
@@ -2567,7 +2567,7 @@ rootLocals (_::rest) = rootLocals rest
 -- file's own helpers (locals) and imported names but also prelude methods like
 -- `eq`/`compare` (globals), which rootLocals alone omits.  Mirrors lib/eval.ml's
 -- eval_modules_root_env.
-export evalModulesRootEnv : List Decl -> List (String, List Decl) -> <Mut | e> List (String, Value e)
+export evalModulesRootEnv : List Decl -> List (String, List Decl) -> <e> List (String, Value e)
 evalModulesRootEnv preludeDecls modules =
   let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
@@ -2592,12 +2592,12 @@ evalModulesRootEnv preludeDecls modules =
 -- Flatten the root module's frame stack (locals first, then imports, then
 -- globals) to an assoc list — local names shadow imports shadow globals, which
 -- is the lookup order in its EvalEnv.
-rootFullEnv : List (ModInfo (Value e)) -> List (String, Ref (Value e)) -> <Mut | e> List (String, Value e)
+rootFullEnv : List (ModInfo (Value e)) -> List (String, Ref (Value e)) -> <e> List (String, Value e)
 rootFullEnv [] globalCells = map cellResult globalCells
 rootFullEnv [ModInfo _ _ _ cells menv] globalCells = flattenEnv menv
 rootFullEnv (_::rest) globalCells = rootFullEnv rest globalCells
 
-flattenEnv : EvalEnv (Value e) -> <Mut | e> List (String, Value e)
+flattenEnv : EvalEnv (Value e) -> <e> List (String, Value e)
 flattenEnv (EvalEnv frames) = map cellResult (concatList frames)
 
 concatList : List (List a) -> List a
@@ -2703,7 +2703,7 @@ firstOrEmpty (x::_) = x
 -- Run a multi-module program for its OUTPUT (the loader-driven analog of
 -- evalOutput): evaluate every module in dependency order, force the root
 -- module's `main` for its IO side-effects, return the captured stdout.
-export evalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
+export evalModulesOutput : List Decl -> List (String, List Decl) -> String
 evalModulesOutput preludeDecls modules =
   let _ = setRef outputRef ""
   let binds = evalModules preludeDecls modules
@@ -2736,7 +2736,7 @@ evalModulesOutput preludeDecls modules =
 -- that is a property of the buffered-stdout design, tracked separately as
 -- "`run` drops stdout on panic", and streaming stderr is a step toward, not away
 -- from, fixing it.
-pReadFile : Value e -> <FileRead "_", Mut | e> Value e
+pReadFile : Value e -> <FileRead "_" | e> Value e
 pReadFile (VString path) = match readFile path
   Ok s => VCon "Ok" [VString s]
   Err m => VCon "Err" [VString m]
@@ -2768,13 +2768,13 @@ vOptionString : Option String -> Value e
 vOptionString o = optionToValue (mapOption VString o)
 
 -- ── Clock / GC (was: frozen constants) ────────────────────────────────────
-pWallTimeSecIO : Value e -> <Clock, Mut | e> Value e
+pWallTimeSecIO : Value e -> <Clock | e> Value e
 pWallTimeSecIO _ = VFloat (wallTimeSec ())
 
-pMonotonicSecIO : Value e -> <Clock, Mut | e> Value e
+pMonotonicSecIO : Value e -> <Clock | e> Value e
 pMonotonicSecIO _ = VFloat (monotonicSec ())
 
-pSleepMsIO : Value e -> <Clock, Mut | e> Value e
+pSleepMsIO : Value e -> <Clock | e> Value e
 pSleepMsIO (VInt n) =
   let _ = sleepMs n
   VUnit
@@ -2809,48 +2809,48 @@ pSleepMsIO _ = panic "sleepMs: expected Int"
 -- @mdk_exit — a real process exit with the given code. (mdk_exit itself now
 -- also flushes the run-stdout stash first — see its comment in
 -- runtime/medaka_rt.c — so output printed before the exit call is not lost.)
-pExit : Value e -> <Panic, Mut | e> Value e
+pExit : Value e -> <e> Value e
 pExit (VInt n) =
   let _ = exit n
   VUnit
 pExit _ = panic "exit: not an Int"
 
-pAllocBytesIO : Value e -> <IO, Mut | e> Value e
+pAllocBytesIO : Value e -> <IO | e> Value e
 pAllocBytesIO _ = VFloat (allocBytes ())
 
 -- ── stderr (was: pDiscard — ALL stderr was silently dropped) ───────────────
-pEPutStr : Value e -> <Stderr, Mut | e> Value e
+pEPutStr : Value e -> <Stderr | e> Value e
 pEPutStr (VString s) =
   let _ = ePutStr s
   VUnit
 pEPutStr _ = panic "ePutStr: not a String"
 
-pEPutStrLn : Value e -> <Stderr, Mut | e> Value e
+pEPutStrLn : Value e -> <Stderr | e> Value e
 pEPutStrLn (VString s) =
   let _ = ePutStrLn s
   VUnit
 pEPutStrLn _ = panic "ePutStrLn: not a String"
 
 -- ── File ──────────────────────────────────────────────────────────────────
-pReadFileBytes : Value e -> <FileRead "_", Mut | e> Value e
+pReadFileBytes : Value e -> <FileRead "_" | e> Value e
 pReadFileBytes (VString path) =
   resultToValue (mapResultOk vIntArray (readFileBytes path))
 pReadFileBytes _ = panic "readFileBytes: not a String"
 
-pFileExists : Value e -> <FileRead "_", Mut | e> Value e
+pFileExists : Value e -> <FileRead "_" | e> Value e
 pFileExists (VString path) = VBool (fileExists path)
 pFileExists _ = panic "fileExists: not a String"
 
-pCanonicalizePath : Value e -> <FileRead "_", Mut | e> Value e
+pCanonicalizePath : Value e -> <FileRead "_" | e> Value e
 pCanonicalizePath (VString path) = VString (canonicalizePath path)
 pCanonicalizePath _ = panic "canonicalizePath: not a String"
 
-pListDir : Value e -> <FileRead "_", Mut | e> Value e
+pListDir : Value e -> <FileRead "_" | e> Value e
 pListDir (VString path) = resultToValue (mapResultOk vStringList (listDir path))
 pListDir _ = panic "listDir: not a String"
 
 -- statFile : String -> Result String (Int, Bool, Bool, Float)  (size, isDir, isFile, mtime)
-pStatFile : Value e -> <FileRead "_", Mut | e> Value e
+pStatFile : Value e -> <FileRead "_" | e> Value e
 pStatFile (VString path) = resultToValue (mapResultOk statTuple (statFile path))
 pStatFile _ = panic "statFile: not a String"
 
@@ -2858,32 +2858,32 @@ statTuple : (Int, Bool, Bool, Float) -> Value e
 statTuple (sz, isDir, isFile, mtime) =
   VTuple [VInt sz, VBool isDir, VBool isFile, VFloat mtime]
 
-pWriteFile : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pWriteFile : Value e -> Value e -> <FileWrite "_" | e> Value e
 pWriteFile (VString path) (VString s) = unitResultToValue (writeFile path s)
 pWriteFile _ _ = panic "writeFile: expected String String"
 
-pWriteFileBytes : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pWriteFileBytes : Value e -> Value e -> <FileWrite "_" | e> Value e
 pWriteFileBytes (VString path) bs =
   unitResultToValue (writeFileBytes path (unIntArray bs))
 pWriteFileBytes _ _ = panic "writeFileBytes: expected String (Array Int)"
 
-pAppendFile : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pAppendFile : Value e -> Value e -> <FileWrite "_" | e> Value e
 pAppendFile (VString path) (VString s) = unitResultToValue (appendFile path s)
 pAppendFile _ _ = panic "appendFile: expected String String"
 
-pMakeDir : Value e -> <FileWrite "_", Mut | e> Value e
+pMakeDir : Value e -> <FileWrite "_" | e> Value e
 pMakeDir (VString path) = unitResultToValue (makeDir path)
 pMakeDir _ = panic "makeDir: not a String"
 
-pRemoveFile : Value e -> <FileWrite "_", Mut | e> Value e
+pRemoveFile : Value e -> <FileWrite "_" | e> Value e
 pRemoveFile (VString path) = unitResultToValue (removeFile path)
 pRemoveFile _ = panic "removeFile: not a String"
 
-pRemoveDir : Value e -> <FileWrite "_", Mut | e> Value e
+pRemoveDir : Value e -> <FileWrite "_" | e> Value e
 pRemoveDir (VString path) = unitResultToValue (removeDir path)
 pRemoveDir _ = panic "removeDir: not a String"
 
-pRename : Value e -> Value e -> <FileWrite "_", Mut | e> Value e
+pRename : Value e -> Value e -> <FileWrite "_" | e> Value e
 pRename (VString old) (VString new) = unitResultToValue (rename old new)
 pRename _ _ = panic "rename: expected String String"
 
@@ -2897,27 +2897,27 @@ pRename _ _ = panic "rename: expected String String"
 export progArgsRef : Ref (List String)
 progArgsRef = Ref []
 
-pArgs : Value e -> <Env, Mut | e> Value e
+pArgs : Value e -> <Env | e> Value e
 pArgs _ = vStringList progArgsRef.value
 
-pGetEnv : Value e -> <Env "_", Mut | e> Value e
+pGetEnv : Value e -> <Env "_" | e> Value e
 pGetEnv (VString name) = vOptionString (getEnv name)
 pGetEnv _ = panic "getEnv: not a String"
 
-pExecutablePath : Value e -> <Env, Mut | e> Value e
+pExecutablePath : Value e -> <Env | e> Value e
 pExecutablePath _ = VString (executablePath ())
 
 -- ── Stdin ─────────────────────────────────────────────────────────────────
-pReadLine : Value e -> <Stdin, Mut | e> Value e
+pReadLine : Value e -> <Stdin | e> Value e
 pReadLine _ = VString (readLine ())
 
-pReadLineOpt : Value e -> <Stdin, Mut | e> Value e
+pReadLineOpt : Value e -> <Stdin | e> Value e
 pReadLineOpt _ = vOptionString (readLineOpt ())
 
-pReadAll : Value e -> <Stdin, Mut | e> Value e
+pReadAll : Value e -> <Stdin | e> Value e
 pReadAll _ = VString (readAll ())
 
-pReadExactly : Value e -> <Stdin, Mut | e> Value e
+pReadExactly : Value e -> <Stdin | e> Value e
 pReadExactly (VInt n) = vOptionString (readExactly n)
 pReadExactly _ = panic "readExactly: expected Int"
 
@@ -2961,7 +2961,7 @@ ioExternBindings _ = [
 -- The row is the coarse `IO` alias: ioExternBindings now spans FileRead/FileWrite/
 -- Env/Stdin/Stderr/Clock, and `IO` in a BOUND expands to exactly that join
 -- (typecheck.expandIoInBound), so writing them out one by one would buy nothing.
-export evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO, Mut> String
+export evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO> String
 evalModulesOutputRun preludeDecls modules =
   let _ = setRef outputRef ""
   -- Only the real `medaka run` CLI driver reaches this function (never the
@@ -2979,7 +2979,7 @@ evalModulesOutputRun preludeDecls modules =
 -- the root module's FULL env — locals ∪ imports ∪ globals — so an imported
 -- `runAsync` is reachable), which trampolines the suspensions and performs the
 -- stored row, appending to outputRef.  Mirrors bin/main.ml's Run-branch dispatch.
-export evalModulesOutputAsync : List Decl -> List (String, List Decl) -> <Mut | e> String
+export evalModulesOutputAsync : List Decl -> List (String, List Decl) -> <e> String
 evalModulesOutputAsync preludeDecls modules =
   let _ = setRef outputRef ""
   -- Same reasoning as evalModulesOutputRun above: only the real `medaka run`
@@ -2989,7 +2989,7 @@ evalModulesOutputAsync preludeDecls modules =
   let _ = driveAsyncMain binds
   outputRef.value
 
-driveAsyncMain : List (String, Value e) -> <Mut | e> Value e
+driveAsyncMain : List (String, Value e) -> <e> Value e
 driveAsyncMain binds = match lookupBinding "main" binds
   None => runtimePanic "E-NO-MAIN" noMainMsg
   Some mv => match lookupBinding "runAsync" binds
@@ -3007,17 +3007,17 @@ driveAsyncMain binds = match lookupBinding "main" binds
 -- + user into ONE by-name frame and forces nullary thunks after every impl
 -- installs, whereas evalModules uses separate prelude/module install order — the
 -- binding/install/thunk-force hazard class (phases 96/103/121/125/134).
-export evalOne : List Decl -> (String, List Decl) -> <Mut | e> List (String, Value e)
+export evalOne : List Decl -> (String, List Decl) -> <e> List (String, Value e)
 evalOne preludeDecls (rootId, prog) = evalModules preludeDecls [(rootId, prog)]
 
 -- run a single program for OUTPUT (mirror evalOutput): the 1-module evalModules
 -- already forces the root module's `main` for effects and returns captured stdout.
-export evalOneOutput : List Decl -> (String, List Decl) -> <Mut> String
+export evalOneOutput : List Decl -> (String, List Decl) -> String
 evalOneOutput preludeDecls (rootId, prog) =
   evalModulesOutput preludeDecls [(rootId, prog)]
 
 -- the root module's FULL frame (locals ∪ imports ∪ globals), mirror
 -- evalModulesRootEnv — the prop runner needs prelude methods (eq/compare) visible.
-export evalOneRootEnv : List Decl -> (String, List Decl) -> <Mut | e> List (String, Value e)
+export evalOneRootEnv : List Decl -> (String, List Decl) -> <e> List (String, Value e)
 evalOneRootEnv preludeDecls (rootId, prog) =
   evalModulesRootEnv preludeDecls [(rootId, prog)]

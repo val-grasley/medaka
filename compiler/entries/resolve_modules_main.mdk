@@ -33,7 +33,7 @@ readModules (f::rest) = match readFile f
   Err e => Err e
   Ok src => map ((modIdOf f, desugar (parse src)) :: _) (readModules rest)
 
-run : String -> String -> List String -> <IO, Mut> Unit
+run : String -> String -> List String -> <IO> Unit
 run runtimeP coreP files = match readFile runtimeP
   Err e => ePutStrLn e
   Ok rsrc => match readFile coreP

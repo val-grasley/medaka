@@ -21,16 +21,16 @@ main = match args ()
   [runtimePath, targetPath] => withFiles runtimePath targetPath
   _ => ePutStrLn "usage: medaka run compiler/entries/check_match_main.mdk <runtime.mdk> <file.mdk>"
 
-withFiles : String -> String -> <IO, Mut> Unit
+withFiles : String -> String -> <IO> Unit
 withFiles runtimePath targetPath = match readFile runtimePath
   Ok rsrc => withTarget rsrc targetPath
   Err msg => ePutStrLn msg
 
-withTarget : String -> String -> <IO, Mut> Unit
+withTarget : String -> String -> <IO> Unit
 withTarget rsrc targetPath = match readFile targetPath
   Ok tsrc => putStr (runCheckMatch rsrc tsrc)
   Err msg => ePutStrLn msg
 
-runCheckMatch : String -> String -> <Mut> String
+runCheckMatch : String -> String -> String
 runCheckMatch rsrc tsrc =
   checkMatchToLines (desugar (parse rsrc)) (desugar (parse tsrc))

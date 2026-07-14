@@ -73,7 +73,7 @@ rootsOrDefault _ roots = roots
 -- file with zero tests, also returns True — vacuous/IO-error pass mirrors the
 -- pre-existing printed behaviour; callers gate `exit 1` on this Bool rather
 -- than on the printed report, since the report is prose, not a signal).
-export runTest : String -> String -> String -> List String -> <IO, Mut> Bool
+export runTest : String -> String -> String -> List String -> <IO> Bool
 runTest runtimeP coreP target roots = match readFile runtimeP
   Err e =>
     let _ = ePutStrLn e
@@ -88,7 +88,7 @@ runTest runtimeP coreP target roots = match readFile runtimeP
         True
       Ok tsrc => driveAll (desugar (parse rsrc)) (desugar (parse csrc)) target tsrc roots
 
-driveAll : List Decl -> List Decl -> String -> String -> List String -> <IO, Mut> Bool
+driveAll : List Decl -> List Decl -> String -> String -> List String -> <IO> Bool
 driveAll runtimeDecls coreDecls target tsrc roots =
   let userDecls = desugar (parse tsrc)
   let doctestsOk = runDoctests runtimeDecls coreDecls target tsrc userDecls roots
@@ -98,7 +98,7 @@ driveAll runtimeDecls coreDecls target tsrc roots =
 
 -- ── doctest phase ────────────────────────────────────────────────────────────
 
-runDoctests : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO, Mut> Bool
+runDoctests : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO> Bool
 runDoctests runtimeDecls coreDecls target tsrc userDecls roots =
   let _ = putStrLn ("running doctests in " ++ target)
   let examples = extractExamples (collectComments tsrc)
@@ -111,7 +111,7 @@ runDoctests runtimeDecls coreDecls target tsrc userDecls roots =
       let result = runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
       reportDoctests target result
 
-runChosen : List Decl -> List Decl -> String -> List Decl -> List String -> List Example -> List Decl -> <IO, Mut> RunResult
+runChosen : List Decl -> List Decl -> String -> List Decl -> List String -> List Example -> List Decl -> <IO> RunResult
 runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
   | hasUseDecls userDecls =
     runMulti runtimeDecls coreDecls target userDecls roots examples synthDecls
@@ -132,7 +132,7 @@ runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
 -- passed SEPARATE (elaborateOne folds it in); for `medaka test stdlib/core.mdk`
 -- (programIsCore) livePrelude is [] so the prelude is not double-prepended.  evalOne's
 -- rootLocals carry the synthesized __dt_i__ bindings (same as runMulti).
-runSingle : List Decl -> List Decl -> List Decl -> List Example -> List Decl -> <Mut> RunResult
+runSingle : List Decl -> List Decl -> List Decl -> List Example -> List Decl -> RunResult
 runSingle runtimeDecls coreDecls userDecls examples synthDecls =
   let allUser = userDecls ++ synthDecls
   let userNames = funNamesOf allUser
@@ -169,7 +169,7 @@ pcHasFoldable (_::rest) = pcHasFoldable rest
 
 -- Multi-module path: load the module graph, inject synth into the root module,
 -- elaborate across modules, eval (root env carries the __dt_i__ bindings).
-runMulti : List Decl -> List Decl -> String -> List Decl -> List String -> List Example -> List Decl -> <IO, Mut> RunResult
+runMulti : List Decl -> List Decl -> String -> List Decl -> List String -> List Example -> List Decl -> <IO> RunResult
 runMulti runtimeDecls coreDecls target _userDecls roots examples synthDecls = match loadProgram target roots
   Err e => buildDetails (Err e) examples
   Ok mods =>
@@ -234,7 +234,7 @@ printOne target ex res =
 -- Only runs (and prints) if the file declares props — mirrors the OCaml short
 -- circuit (`Prop_runner.run_all` returns true with no output when none).
 
-runProps : List Decl -> List Decl -> String -> List Decl -> List String -> <IO, Mut> Bool
+runProps : List Decl -> List Decl -> String -> List Decl -> List String -> <IO> Bool
 runProps runtimeDecls coreDecls target userDecls roots
   | not (hasProps userDecls) = True
   | hasUseDecls userDecls =
@@ -250,7 +250,7 @@ runProps runtimeDecls coreDecls target userDecls roots
 -- call sites) — keyed by the "__user__" id — so the file's own `=>`-constrained fns
 -- (set's `fromList`/`wellFormed`) get their leading dict argument, mirroring
 -- runPropsMulti's elaboratedRootProps (which inferPropBodies typed in-module).
-runPropsSingle : List Decl -> List Decl -> List Decl -> <IO, Mut> Bool
+runPropsSingle : List Decl -> List Decl -> List Decl -> <IO> Bool
 runPropsSingle runtimeDecls coreDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = if programIsCore userDecls then
@@ -264,7 +264,7 @@ runPropsSingle runtimeDecls coreDecls userDecls =
     None => userDecls
   runAllProps env rootProps
 
-runPropsMulti : List Decl -> List Decl -> String -> List Decl -> List String -> <IO, Mut> Bool
+runPropsMulti : List Decl -> List Decl -> String -> List Decl -> List String -> <IO> Bool
 runPropsMulti runtimeDecls coreDecls target userDecls roots = match loadProgram target roots
   Err e =>
     let _ = ePutStrLn e
@@ -315,7 +315,7 @@ lookupModuleDecls rootId ((mid, decls)::rest)
 -- DTest bodies from the ELABORATED root module so their `expectEqual`/… call sites
 -- carry the dict argument (`import test`'s constrained assertions).
 
-runTestDecls : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO, Mut> Bool
+runTestDecls : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO> Bool
 runTestDecls runtimeDecls coreDecls target tsrc userDecls roots
   | not (hasTests userDecls) = True
   | hasUseDecls userDecls =
@@ -324,10 +324,10 @@ runTestDecls runtimeDecls coreDecls target tsrc userDecls roots
 
 -- Line map keyed by test name, from a POSITION-populating reparse of the source
 -- (the bare `parse` used elsewhere leaves placeholder line-1 locs).
-testLineTests : String -> <Mut> List (String, Int, Expr)
+testLineTests : String -> List (String, Int, Expr)
 testLineTests tsrc = collectTests (desugar (parseLocated tsrc))
 
-runTestDeclsSingle : List Decl -> List Decl -> String -> String -> List Decl -> <IO, Mut> Bool
+runTestDeclsSingle : List Decl -> List Decl -> String -> String -> List Decl -> <IO> Bool
 runTestDeclsSingle runtimeDecls coreDecls target tsrc userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = if programIsCore userDecls then
@@ -344,7 +344,7 @@ runTestDeclsSingle runtimeDecls coreDecls target tsrc userDecls =
     env
     (attachRawLines (testLineTests tsrc) (collectTests rootTests))
 
-runTestDeclsMulti : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO, Mut> Bool
+runTestDeclsMulti : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO> Bool
 runTestDeclsMulti runtimeDecls coreDecls target tsrc userDecls roots = match loadProgram target roots
   Err e =>
     let _ = ePutStrLn e
@@ -377,7 +377,7 @@ lookupRawLine name ((n, l, _)::rest)
 -- prop phase, each result is printed AS its body is evaluated (not batched), so a
 -- body that aborts the run still leaves the tests that already passed on screen.
 -- Returns True iff every test passed.
-reportTests : String -> List (String, Value e) -> List (String, Int, Expr) -> <IO, Mut> Bool
+reportTests : String -> List (String, Value e) -> List (String, Int, Expr) -> <IO> Bool
 reportTests target env tests =
   let _ = putStrLn ("running tests in " ++ target)
   let (passed, failed, errors) = runTestLoop target env tests 0 0 0
@@ -387,7 +387,7 @@ reportTests target env tests =
   let _ = putStr "\n"
   failed == 0 && errors == 0
 
-runTestLoop : String -> List (String, Value e) -> List (String, Int, Expr) -> Int -> Int -> Int -> <IO, Mut> (Int, Int, Int)
+runTestLoop : String -> List (String, Value e) -> List (String, Int, Expr) -> Int -> Int -> Int -> <IO> (Int, Int, Int)
 runTestLoop _ _ [] passed failed errors = (passed, failed, errors)
 runTestLoop target env ((name, line, body)::rest) passed failed errors =
   let loc = "\{target}:\{intToString line}"

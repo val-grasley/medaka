@@ -418,9 +418,6 @@ ARROW
 UPPER "MutArray"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "push"
@@ -531,9 +528,6 @@ COLON
 UPPER "MutArray"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Option"
 IDENT "a"
 NEWLINE
@@ -596,9 +590,6 @@ ARROW
 UPPER "MutArray"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "set"
@@ -705,9 +696,6 @@ ARROW
 UPPER "MutArray"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "swap"
@@ -759,9 +747,6 @@ COLON
 UPPER "MutArray"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "clear"
@@ -790,9 +775,6 @@ UPPER "Int"
 ARROW
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "mapInPlaceGo"
@@ -851,9 +833,6 @@ ARROW
 UPPER "MutArray"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "mapInPlace"

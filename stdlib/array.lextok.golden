@@ -1103,9 +1103,6 @@ ARROW
 UPPER "Array"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "set"
@@ -1150,9 +1147,6 @@ ARROW
 UPPER "Array"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "swap"
@@ -1195,9 +1189,6 @@ ARROW
 UPPER "Array"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "fill"
@@ -1223,9 +1214,6 @@ UPPER "Int"
 ARROW
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "blit"
@@ -1327,8 +1315,6 @@ UPPER "Array"
 IDENT "a"
 ARROW
 LT
-UPPER "Mut"
-PIPE
 IDENT "e"
 GT
 UPPER "Unit"
@@ -1366,9 +1352,6 @@ FAT_ARROW
 UPPER "Array"
 IDENT "a"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "sortInPlace"

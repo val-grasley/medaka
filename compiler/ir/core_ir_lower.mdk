@@ -450,7 +450,7 @@ lowerStmt _ = panic "core_ir lower: unsupported block statement"
 -- Coalesce top-level multi-clause `DFunDef`s into one CBind per name (preserving
 -- first-appearance order, exactly as eval.mdk's funGroupNames), gather the ctor
 -- arity + ctor→type tables.  Interfaces/impls are slice-5 (no dispatch yet).
-export lowerProgram : List Decl -> <Mut> CProgram
+export lowerProgram : List Decl -> CProgram
 lowerProgram prog =
   let _ = setRef ctorFieldOrdersRef (buildCtorFieldOrders prog)
   CProgram
@@ -479,7 +479,7 @@ lowerProgram prog =
 -- DECLARED order (DData named-field variants), the same order
 -- the emitter's record cell layout / recFieldTable use, so the positional indices
 -- line up with the cell's stored field offsets (verified by the fixture byte-diff).
-export lowerProgramEmit : List Decl -> <Mut> CProgram
+export lowerProgramEmit : List Decl -> CProgram
 lowerProgramEmit prog =
   rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog)
 

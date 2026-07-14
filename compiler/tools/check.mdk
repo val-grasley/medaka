@@ -47,7 +47,7 @@ import types.typecheck.{
 -- exported so the batch typecheck harness's synthetic entry can pull this
 -- module into a single union closure (does not change its inferred schemes),
 -- and so compiler/entries/check_main.mdk + compiler/medaka_cli.mdk can drive it.
-export runCheck : String -> String -> String -> <Mut> String
+export runCheck : String -> String -> String -> String
 runCheck rsrc csrc tsrc =
   let raw = parse tsrc
   let desugared = desugar raw
@@ -61,18 +61,18 @@ runCheck rsrc csrc tsrc =
 -- spurious typecheck "Unbound variable".  In single-file mode there is
 -- no loader, so any non-core import is by definition unknown.
 
-routeImportCheck : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+routeImportCheck : String -> List Decl -> List Decl -> List Decl -> List Decl -> String
 routeImportCheck "" runtimeP coreP raw desugared =
   let resDiags = resolveToLines runtimeP coreP desugared
   reportFor resDiags runtimeP coreP raw desugared
 routeImportCheck diags _ _ _ _ = diags
 
-reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> String
 reportFor "" runtimeP coreP raw desugared =
   cleanReport runtimeP coreP raw desugared
 reportFor resDiags _ _ _ _ = resDiags
 
-cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> String
 -- Intentional cross-file duplicate of the same helper in check_batch.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
 cleanReport runtimeP coreP raw desugared =
@@ -97,7 +97,7 @@ joinNonEmpty a b = "\{a}\n\{b}"
 -- sources, while ignoring exhaustiveness WARNINGS (not errors) and the success
 -- scheme dump.  Keeping this separate from runCheck leaves its stdout byte-
 -- identical (the diff_native_cli gate stays green); only the exit code is gated.
-export checkHasErrors : String -> String -> String -> <Mut> Bool
+export checkHasErrors : String -> String -> String -> Bool
 checkHasErrors rsrc csrc tsrc =
   let raw = parse tsrc
   let desugared = desugar raw
@@ -125,7 +125,7 @@ checkHasErrors rsrc csrc tsrc =
 -- `rtD`/`coreD` are the DESUGARED runtime/core decls; `mods` are the DESUGARED
 -- loaded modules (entry last).  Kept separate from runCheck so the no-import path
 -- stays byte-identical (the CLI routes 1-module loads through runCheck).
-export runCheckModules : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+export runCheckModules : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
 runCheckModules allowInternal trustedMods rtD coreD mods =
   let resDiags = resolveModulesToHumaneG allowInternal trustedMods rtD coreD mods
   match resDiags
@@ -137,7 +137,7 @@ runCheckModules allowInternal trustedMods rtD coreD mods =
 
 -- exit-code predicate analog of checkHasErrors for the multi-module path: a
 -- resolve error OR any type error in the entry module.
-export checkModulesHasErrors : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
+export checkModulesHasErrors : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> Bool
 checkModulesHasErrors allowInternal trustedMods rtD coreD mods =
   let resDiags = resolveModulesToLinesG allowInternal trustedMods rtD coreD mods
   match resDiags

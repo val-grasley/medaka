@@ -43,11 +43,11 @@ import entries.entry_support.{driveRuntime}
 
 main = driveRuntime emit
 
-emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
+emit : List Decl -> List Decl -> List Decl -> <IO> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStr (runEmit runtimeDecls preludeDecls userDecls)
 
-runEmit : List Decl -> List Decl -> List Decl -> <Mut> String
+runEmit : List Decl -> List Decl -> List Decl -> String
 runEmit runtimeDecls preludeDecls userDecls =
   let _ = enableEmitArgStampPasses ()
   let userNames = funNamesOf userDecls

@@ -122,7 +122,7 @@ notATableName [w] = elem (toUpper w) statementKeywords
 notATableName _ = True
 
 -- Run one statement and print its rows (nothing, for a non-SELECT).
-runSql : String -> String -> <IO, FileRead, FileWrite, Mut> Unit
+runSql : String -> String -> <IO, FileRead, FileWrite> Unit
 runSql path sql = match execSql path sql
   Err e => println "error: \{e}"
   Ok out => printCellRows (outRows out)
@@ -135,13 +135,13 @@ printCellRows (cells::rest) =
 
 -- ---------------------------------------------------------------------------
 
-main : <IO, FileRead, FileWrite, Mut> Unit
+main : <IO, FileRead, FileWrite> Unit
 main = match args ()
   [path] => runOpen path dumpSchema
   path::arg::_ => runArg path arg
   _ => println "usage: sqlite_cli <db> [<table> | \"<SQL>\"]"
 
-runArg : String -> String -> <IO, FileRead, FileWrite, Mut> Unit
+runArg : String -> String -> <IO, FileRead, FileWrite> Unit
 runArg path arg =
   if isStatement arg then
     runSql path arg

@@ -26,13 +26,13 @@ import ir.core_ir_sexp.{cprogramToSexp}
 import ir.dce.{dceFilter}
 import entries.entry_support.{driveModules, runEmitWith}
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = driveModules (runEmitWith emitTail)
 
 -- The llvm_emit_modules_main emitTail with `putStr (emitProgram …)` swapped for
 -- the S-expression serializer; no side-table installs (they feed the emitter,
 -- not the lowering).
-emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 emitTail _ coreD modules2 =
   let allDecls0 = coreD ++ flatMap snd modules2
   let allDecls = dceFilter allDecls0

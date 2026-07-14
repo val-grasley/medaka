@@ -37,7 +37,7 @@ rootsOrDefault _ roots = roots
 annotatePair : (String, List Decl) -> (String, List Decl)
 annotatePair (mid, p) = (mid, annotateProgram (desugar p))
 
-run : String -> String -> List String -> <IO, Mut> Unit
+run : String -> String -> List String -> <IO> Unit
 run coreP entry roots = match readFile coreP
   Err e => ePutStrLn e
   Ok csrc => match loadProgram entry roots

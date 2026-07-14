@@ -132,7 +132,7 @@ validateRows expected (r::rest) =
 -- * A row too large for one leaf cell is stored on overflow pages — there is
 --   no size limit on a TEXT/BLOB value.
 -- * Returns `Err` on a row width mismatch or an IPK type mismatch.
-export writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite, Mut> Result String Unit
+export writeTable : String -> TableSchema -> List (List Cell) -> <FileWrite> Result String Unit
 writeTable path schema rows = match schema
   TableSchema { schemaTableName = name, columns } => do
     let colCount = length columns
@@ -143,7 +143,7 @@ writeTable path schema rows = match schema
 
 -- | Like `writeTable` but returns the raw byte image instead of writing to
 -- disk.  Useful for testing and round-trip inspection.
-export buildTable : TableSchema -> List (List Cell) -> <Mut> Result String (Array Int)
+export buildTable : TableSchema -> List (List Cell) -> Result String (Array Int)
 buildTable schema rows = match schema
   TableSchema { schemaTableName = name, columns } => do
     let colCount = length columns
@@ -188,13 +188,13 @@ collectSpecs (t::rest) acc = do
 -- `(schema, rows)` entries.  The single-table case (`[entry]`) produces the
 -- same image as `buildTable` (both route through the parameterized page
 -- builder).
-export buildTables : List (TableSchema, List (List Cell)) -> <Mut> Result String (Array Int)
+export buildTables : List (TableSchema, List (List Cell)) -> Result String (Array Int)
 buildTables tables = do
   specs <- collectSpecs tables []
   buildDatabaseMulti specs
 
 -- | Build a multi-table SQLite database and `writeFileBytes` it to `path`.
-export writeTables : String -> List (TableSchema, List (List Cell)) -> <FileWrite, Mut> Result String Unit
+export writeTables : String -> List (TableSchema, List (List Cell)) -> <FileWrite> Result String Unit
 writeTables path tables = do
   img <- buildTables tables
   writeFileBytes path img
@@ -238,13 +238,13 @@ collectSpecsExplicit (t::rest) acc = do
   collectSpecsExplicit rest (spec::acc)
 
 -- | Build the byte image of a multi-table database from explicit-rowid entries.
-export buildTablesExplicit : List (TableSchema, List (Int, List Cell)) -> <Mut> Result String (Array Int)
+export buildTablesExplicit : List (TableSchema, List (Int, List Cell)) -> Result String (Array Int)
 buildTablesExplicit tables = do
   specs <- collectSpecsExplicit tables []
   buildDatabaseMultiExplicit specs
 
 -- | Build an explicit-rowid multi-table database and `writeFileBytes` it.
-export writeTablesExplicit : String -> List (TableSchema, List (Int, List Cell)) -> <FileWrite, Mut> Result String Unit
+export writeTablesExplicit : String -> List (TableSchema, List (Int, List Cell)) -> <FileWrite> Result String Unit
 writeTablesExplicit path tables = do
   img <- buildTablesExplicit tables
   writeFileBytes path img

@@ -125,7 +125,7 @@ sendAll conn bs =
     Ok 0 => Err "net.sendAll: 0 bytes written (connection stalled)"
     Ok n => sendAll conn (drop n bs)
 
-recvAllLoop : Connection -> MutArray Int -> <Net "_", Mut> Result String (Array Int)
+recvAllLoop : Connection -> MutArray Int -> <Net "_"> Result String (Array Int)
 recvAllLoop conn buf = match recv conn 4096
   Err e => Err e
   Ok chunk => if arrayLength chunk == 0 then Ok (toArray buf)
@@ -136,7 +136,7 @@ recvAllLoop conn buf = match recv conn 4096
 {- | Read until the peer closes the connection (EOF), accumulating every chunk.
    `Err` on the first failed `recv` (whatever has been read so far is
    discarded — a partial read is not distinguishable from a fresh failure). -}
-export recvAll : Connection -> <Net "_", Mut> Result String (Array Int)
+export recvAll : Connection -> <Net "_"> Result String (Array Int)
 recvAll conn = recvAllLoop conn (new ())
 
 -- ── Text convenience (UTF-8, via stdlib/string) ────────────────────────────
@@ -149,14 +149,14 @@ sendString conn s = sendAll conn (toUtf8 s)
    `recvString` only when the peer is expected to close after writing (e.g. a
    one-shot request/response); for a persistent connection, size a `recv`/
    `recvN` read explicitly instead. -}
-export recvString : Connection -> <Net "_", Mut> Result String String
+export recvString : Connection -> <Net "_"> Result String String
 recvString conn = map fromUtf8 (recvAll conn)
 
 {- | Send `s` followed by `"\n"`, UTF-8 encoded (`sendAll`). -}
 export sendLine : Connection -> String -> <Net "_"> Result String Unit
 sendLine conn s = sendString conn (s ++ "\n")
 
-recvLineLoop : Connection -> MutArray Int -> <Net "_", Mut> Result String (Option String)
+recvLineLoop : Connection -> MutArray Int -> <Net "_"> Result String (Option String)
 recvLineLoop conn buf =
   match recv conn 1
     Err e => Err e
@@ -178,7 +178,7 @@ recvLineLoop conn buf =
    (no read-ahead buffer to manage across calls) at the cost of a syscall per
    byte — fine for line-oriented protocols exchanging small messages, not
    recommended for bulk transfer (use `recvAll`/`recv` there). -}
-export recvLine : Connection -> <Net "_", Mut> Result String (Option String)
+export recvLine : Connection -> <Net "_"> Result String (Option String)
 recvLine conn = recvLineLoop conn (new ())
 
 -- ── Brackets (the blessed leak-safe pattern — NET-DESIGN.md §4) ───────────

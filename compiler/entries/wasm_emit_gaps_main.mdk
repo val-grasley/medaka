@@ -50,10 +50,10 @@ import backend.wasm_emit.{
 }
 import entries.entry_support.{driveModules}
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = driveModules runEmit
 
-runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
@@ -76,7 +76,7 @@ runEmit runtimeDecls coreDecls modules =
   let gaps = emitProgramGaps (lowerProgramEmit allDecls)
   printGaps gaps
 
-printGaps : List String -> <IO, Mut> Unit
+printGaps : List String -> <IO> Unit
 printGaps [] = ()
 printGaps (g::rest) =
   let _ = putStrLn g

@@ -137,12 +137,12 @@ ctxAdts (Ctx _ _ a _ _) = a.value
 ctxScope : Ctx -> List (String, Gty)
 ctxScope (Ctx _ _ _ s _) = s.value
 
-setAdts : Ctx -> List Gadt -> <Mut> Unit
+setAdts : Ctx -> List Gadt -> Unit
 setAdts (Ctx _ _ a _ _) v = setRef a v
-setScope : Ctx -> List (String, Gty) -> <Mut> Unit
+setScope : Ctx -> List (String, Gty) -> Unit
 setScope (Ctx _ _ _ s _) v = setRef s v
 
-freshName : Ctx -> String -> <Mut> String
+freshName : Ctx -> String -> String
 freshName (Ctx _ _ _ _ fr) prefix =
   let n = fr.value
   let _ = setRef fr (n + 1)
@@ -152,7 +152,7 @@ baseGtys : List Gty
 baseGtys = [GInt, GFloat, GBool, GString, GChar]
 
 -- ── target type: biased toward scalars; ADTs/tuples only at higher tier ─────
-randGty : Ctx -> Int -> <Rand, Mut> Gty
+randGty : Ctx -> Int -> <Rand> Gty
 randGty ctx depth =
   if depth <= 0 then pick baseGtys
   else
@@ -164,7 +164,7 @@ randGty ctx depth =
       else pick baseGtys
 
 -- k random element types (named recursion, not an inline ctx-closure)
-randGtyList : Ctx -> Int -> Int -> <Rand, Mut> List Gty
+randGtyList : Ctx -> Int -> Int -> <Rand> List Gty
 randGtyList ctx depth k =
   if k <= 0 then
     []
@@ -218,7 +218,7 @@ filterScopeTy ty ((nm, ty2)::rest) =
   else
     filterScopeTy ty rest
 
-lookupInScope : Ctx -> Gty -> <Mut> Option String
+lookupInScope : Ctx -> Gty -> Option String
 lookupInScope ctx t = match filterScopeTy t (ctxScope ctx)
   [] => None
   x::_ => Some (fst x)
@@ -233,12 +233,12 @@ findAdt ctx name = findAdtGo name (ctxAdts ctx)
 -- explicit recursion over tuple element types (avoids a closure-over-ctx that a
 -- native codegen gap mis-lowers at nested-tuple depth — interpreter is fine, but
 -- the LLVM backend faults on the captured-ctx map closure inside ETuple).
-genTupElems : Ctx -> List Gty -> Int -> <Rand, Mut> List Expr
+genTupElems : Ctx -> List Gty -> Int -> <Rand> List Expr
 genTupElems _ [] _ = []
 genTupElems ctx (ti::rest) depth =
   genExpr ctx ti (depth - 1) :: genTupElems ctx rest depth
 
-genLeafElems : Ctx -> List Gty -> <Rand, Mut> List Expr
+genLeafElems : Ctx -> List Gty -> <Rand> List Expr
 genLeafElems _ [] = []
 genLeafElems ctx (ti::rest) = genLeaf ctx ti :: genLeafElems ctx rest
 
@@ -253,19 +253,19 @@ genLeafElems ctx (ti::rest) = genLeaf ctx ti :: genLeafElems ctx rest
 -- Constructors are now universally per-module mangled (backend/private_mangle.mdk),
 -- so the direct mixed match below lowers correctly.  The former projector-helper
 -- workaround (gtyTupElems/gtyDataName peel) has been removed.
-genScalar : Ctx -> Gty -> Int -> <Rand, Mut> Expr
+genScalar : Ctx -> Gty -> Int -> <Rand> Expr
 genScalar ctx GInt depth = genNum ctx GInt depth
 genScalar ctx GFloat depth = genNum ctx GFloat depth
 genScalar ctx GBool depth = genBool ctx depth
 genScalar ctx GString depth = genString ctx depth
 genScalar ctx t depth = genLeaf ctx t
 
-genByType : Ctx -> Gty -> Int -> <Rand, Mut> Expr
+genByType : Ctx -> Gty -> Int -> <Rand> Expr
 genByType ctx (GTup ts) depth = ETuple (genTupElems ctx ts depth)
 genByType ctx (GData name) depth = genData ctx name depth
 genByType ctx t depth = genScalar ctx t depth
 
-genExpr : Ctx -> Gty -> Int -> <Rand, Mut> Expr
+genExpr : Ctx -> Gty -> Int -> <Rand> Expr
 genExpr ctx t depth =
   if depth <= 0 then genLeaf ctx t
   else
@@ -274,13 +274,13 @@ genExpr ctx t depth =
       Some v => EVar v
       None => genByType ctx t depth
 
-genLeaf : Ctx -> Gty -> <Rand, Mut> Expr
+genLeaf : Ctx -> Gty -> <Rand> Expr
 genLeaf ctx (GTup ts) = ETuple (genLeafElems ctx ts)
 genLeaf ctx (GData name) = genData ctx name 0
 genLeaf ctx t = litOf t
 
 -- numeric expression (Int or Float): literals, arithmetic, if, let.
-genNum : Ctx -> Gty -> Int -> <Rand, Mut> Expr
+genNum : Ctx -> Gty -> Int -> <Rand> Expr
 genNum ctx t depth =
   let r = randBelow 10
   if r < 3 then litOf t
@@ -297,7 +297,7 @@ genNum ctx t depth =
     else if r < 9 then EIf (genCond ctx (depth - 1)) (genExpr ctx t (depth - 1)) (genExpr ctx t (depth - 1)) else genLet ctx t depth
 
 -- a boolean usable as an `if` condition: NEVER a bare EIf.
-genCond : Ctx -> Int -> <Rand, Mut> Expr
+genCond : Ctx -> Int -> <Rand> Expr
 genCond ctx depth =
   let r = randBelow 10
   if r < 3 || depth <= 0 then
@@ -315,7 +315,7 @@ filterDerived (a::rest) =
   else
     filterDerived rest
 
-pickOptype : Ctx -> Bool -> List Gadt -> List Gty -> <Rand, Mut> Gty
+pickOptype : Ctx -> Bool -> List Gadt -> List Gty -> <Rand> Gty
 pickOptype ctx wantOrd derived ordScalars =
   if not (listEmpty derived) && chance 1 3 then
     GData (adtName (pick derived))
@@ -325,7 +325,7 @@ pickOptype ctx wantOrd derived ordScalars =
     pick (GBool::ordScalars)
 
 -- a comparison/equality expression with a well-typed operand pair.
-genCompare : Ctx -> Int -> <Rand, Mut> Expr
+genCompare : Ctx -> Int -> <Rand> Expr
 genCompare ctx depth =
   let wantOrd = chance 1 2
   let derived = if ctxTier ctx >= 2 then filterDerived (ctxAdts ctx) else []
@@ -335,7 +335,7 @@ genCompare ctx depth =
   binop op (genExpr ctx optype depth) (genExpr ctx optype depth)
 
 -- boolean VALUE (an `if` here is fine — operand position, parenthesized).
-genBool : Ctx -> Int -> <Rand, Mut> Expr
+genBool : Ctx -> Int -> <Rand> Expr
 genBool ctx depth =
   let r = randBelow 10
   if r < 2 then
@@ -347,7 +347,7 @@ genBool ctx depth =
   else
     EIf (genCond ctx (depth - 1)) (genBool ctx (depth - 1)) (genBool ctx (depth - 1))
 
-genString : Ctx -> Int -> <Rand, Mut> Expr
+genString : Ctx -> Int -> <Rand> Expr
 genString ctx depth =
   if depth <= 0 || chance 1 2 then
     ELit (randStringLit ())
@@ -355,7 +355,7 @@ genString ctx depth =
     binop "++" (genString ctx (depth - 1)) (genString ctx (depth - 1))
 
 -- let x = e1 in e2 (single binding; x typed at a fresh scalar type)
-genLet : Ctx -> Gty -> Int -> <Rand, Mut> Expr
+genLet : Ctx -> Gty -> Int -> <Rand> Expr
 genLet ctx t depth =
   let bt = pick baseGtys
   let name = freshName ctx "v"
@@ -367,12 +367,12 @@ genLet ctx t depth =
   ELet False False (PVar name) rhs body
 
 -- construct an ADT value: pick a variant, fill positional fields.
-applyFields : Ctx -> Int -> Expr -> List Gty -> <Rand, Mut> Expr
+applyFields : Ctx -> Int -> Expr -> List Gty -> <Rand> Expr
 applyFields ctx depth acc [] = acc
 applyFields ctx depth acc (fty::rest) =
   applyFields ctx depth (EApp acc (genExpr ctx fty (maxI 0 (depth - 1)))) rest
 
-genData : Ctx -> String -> Int -> <Rand, Mut> Expr
+genData : Ctx -> String -> Int -> <Rand> Expr
 genData ctx name depth =
   let a = findAdt ctx name
   match pick (adtVariants a)
@@ -392,12 +392,12 @@ pvarOf n = PVar n
 
 -- one fresh pattern var per field type (named helper, not an inline ctx-closure —
 -- the native backend mis-lowers a closure capturing ctx in some recursive sites).
-freshPVars : Ctx -> List Gty -> <Mut> List String
+freshPVars : Ctx -> List Gty -> List String
 freshPVars _ [] = []
 freshPVars ctx (_::rest) = freshName ctx "p" :: freshPVars ctx rest
 
 -- ── match: exhaustive arms over one ADT scrutinee, body of type t ───────────
-genArm : Ctx -> Gty -> Int -> (String, List Gty) -> <Rand, Mut> Arm
+genArm : Ctx -> Gty -> Int -> (String, List Gty) -> <Rand> Arm
 genArm ctx t depth (con, ftys) =
   let vars = freshPVars ctx ftys
   let pat = PCon con (map pvarOf vars)
@@ -407,21 +407,21 @@ genArm ctx t depth (con, ftys) =
   let _ = setScope ctx saved
   Arm pat [] body
 
-genMatch : Ctx -> Gadt -> Gty -> Int -> <Rand, Mut> Expr
+genMatch : Ctx -> Gadt -> Gty -> Int -> <Rand> Expr
 genMatch ctx scrutAdt t depth =
   let scrut = genData ctx (adtName scrutAdt) depth
   let arms = mapMut (genArm ctx t depth) (adtVariants scrutAdt)
   EMatch scrut arms
 
 -- ── ADT declarations ────────────────────────────────────────────────────────
-genVariant : Ctx -> List Gty -> Int -> <Rand, Mut> (String, List Gty)
+genVariant : Ctx -> List Gty -> Int -> <Rand> (String, List Gty)
 genVariant ctx fieldTys vi =
   let cname = freshName ctx "C"
   let nf = randBelow 3
   let ftys = listInit nf (fi => pick fieldTys)
   (cname, ftys)
 
-genAdtDecl : Ctx -> <Rand, Mut> Gadt
+genAdtDecl : Ctx -> <Rand> Gadt
 genAdtDecl ctx =
   let tname = freshName ctx "T"
   let nvariants = 1 + randBelow 3
@@ -450,7 +450,7 @@ adtToDecl a =
   DData VisPrivate (adtName a) [] variants derives
 
 -- ── monomorphic helper function: f : A -> B ─────────────────────────────────
-genFunDecl : Ctx -> <Rand, Mut> Decl
+genFunDecl : Ctx -> <Rand> Decl
 genFunDecl ctx =
   let pt = pick baseGtys
   let fname = freshName ctx "f"
@@ -463,7 +463,7 @@ genFunDecl ctx =
   DFunDef False fname [PVar pname] body
 
 -- ── invariant assertions (Tier-A) — each MUST evaluate True by construction ──
-invArith : Ctx -> <Rand, Mut> List Expr
+invArith : Ctx -> <Rand> List Expr
 invArith ctx =
   let a = genExpr ctx GInt 2
   let b = genExpr ctx GInt 2
@@ -473,7 +473,7 @@ invArith ctx =
     binop "==" (binop "-" (binop "+" a b) b) a,
   ]
 
-invEq : Ctx -> Gadt -> <Rand, Mut> List Expr
+invEq : Ctx -> Gadt -> <Rand> List Expr
 invEq ctx a =
   let x = genData ctx (adtName a) 2
   let y = genData ctx (adtName a) 2
@@ -483,7 +483,7 @@ invEq ctx a =
     binop "==" (binop "==" x y) (binop "==" y x),
   ]
 
-invOrd : Ctx -> Gadt -> <Rand, Mut> List Expr
+invOrd : Ctx -> Gadt -> <Rand> List Expr
 invOrd ctx a =
   let x = genData ctx (adtName a) 2
   let y = genData ctx (adtName a) 2
@@ -493,7 +493,7 @@ invOrd ctx a =
     binop "<=" x x,
   ]
 
-invOrdTrans : Ctx -> <Rand, Mut> Expr
+invOrdTrans : Ctx -> <Rand> Expr
 invOrdTrans ctx =
   let a = genExpr ctx GInt 1
   let b = genExpr ctx GInt 1
@@ -523,13 +523,13 @@ iterExprs (e::rest) f = let _ = f e in iterExprs rest f
 -- collide.  Resets adts/scope so blocks are semantically independent.
 
 -- append one freshly-generated ADT to ctx.adts
-addAdt : Ctx -> Int -> <Rand, Mut> Unit
+addAdt : Ctx -> Int -> <Rand> Unit
 addAdt ctx i =
   let a = genAdtDecl ctx
   setAdts ctx (ctxAdts ctx ++ [a])
 
 -- one top-level value binding (populates scope for later reuse)
-genValDecl : Ctx -> Int -> <Rand, Mut> Decl
+genValDecl : Ctx -> Int -> <Rand> Decl
 genValDecl ctx i =
   let t = randGty ctx 1
   let name = freshName ctx "g"
@@ -538,13 +538,13 @@ genValDecl ctx i =
   DFunDef False name [] e
 
 -- hoist an expr into a fresh top-level binding `oN = e`, recording (name, decl, isInv)
-hoistOut : Ctx -> Ref (List Out) -> Bool -> Expr -> <Mut> Unit
+hoistOut : Ctx -> Ref (List Out) -> Bool -> Expr -> Unit
 hoistOut ctx outsRef isInv e =
   let name = freshName ctx "o"
   setRef outsRef (outsRef.value ++ [Out name (DFunDef False name [] e) isInv])
 
 -- emit Eq + Ord invariants for one derived ADT (no-op for non-derived)
-hoistAdtInvs : Ctx -> Ref (List Out) -> Gadt -> <Rand, Mut> Unit
+hoistAdtInvs : Ctx -> Ref (List Out) -> Gadt -> <Rand> Unit
 hoistAdtInvs ctx outsRef a =
   if adtDerives a then
     let _ = iterExprs (invEq ctx a) (e => hoistOut ctx outsRef True e)
@@ -562,7 +562,7 @@ outToStmt (Out name _ isInv) =
 outDecl : Out -> Decl
 outDecl (Out _ d _) = d
 
-genBlock : Ctx -> <Rand, Mut> (List Decl, List DoStmt)
+genBlock : Ctx -> <Rand> (List Decl, List DoStmt)
 genBlock ctx =
   let _ = setAdts ctx []
   let _ = setScope ctx []
@@ -608,7 +608,7 @@ genBlock ctx =
 -- Assemble a full program from K independent blocks, sharing one ctx so names
 -- stay unique.  One combined `main` runs every block's statements in order,
 -- with a `--BLOCK--` marker between blocks.
-appendBlock : Ctx -> Ref (List Decl) -> Ref (List DoStmt) -> Int -> <Rand, Mut> Unit
+appendBlock : Ctx -> Ref (List Decl) -> Ref (List DoStmt) -> Int -> <Rand> Unit
 appendBlock ctx allDeclsRef allBodyRef i = match genBlock ctx
   (decls, body) =>
     let _ = setRef allDeclsRef (allDeclsRef.value ++ decls)
@@ -618,7 +618,7 @@ appendBlock ctx allDeclsRef allBodyRef i = match genBlock ctx
       []
     setRef allBodyRef (allBodyRef.value ++ sep ++ body)
 
-genProgram : Ctx -> Int -> <Rand, Mut> List Decl
+genProgram : Ctx -> Int -> <Rand> List Decl
 genProgram ctx nblocks =
   let allDeclsRef = Ref []
   let allBodyRef = Ref []
@@ -648,7 +648,7 @@ intOr s d = match toInt s
   Some n => n
   None => d
 
-main : <IO, Rand, Mut, Panic> Unit
+main : <IO, Rand> Unit
 main = match parseOpts (args ()) (Opts 0 2 1 False)
   Opts seedVal tier batch noTuple =>
     let _ = setSeed seedVal

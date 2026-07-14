@@ -454,7 +454,7 @@ lowerStmt _ = panic "core_ir lower: unsupported block statement"
 -- Coalesce top-level multi-clause `DFunDef`s into one CBind per name (preserving
 -- first-appearance order, exactly as eval.mdk's funGroupNames), gather the ctor
 -- arity + ctor→type tables.  Interfaces/impls are slice-5 (no dispatch yet).
-export lowerProgram : List Decl -> <Mut> CProgram
+export lowerProgram : List Decl -> CProgram
 lowerProgram prog =
   let _ = setRef ctorFieldOrdersRef (buildCtorFieldOrders prog)
   CProgram
@@ -483,7 +483,7 @@ lowerProgram prog =
 -- DECLARED order (DData named-field variants), the same order
 -- the emitter's record cell layout / recFieldTable use, so the positional indices
 -- line up with the cell's stored field offsets (verified by the fixture byte-diff).
-export lowerProgramEmit : List Decl -> <Mut> CProgram
+export lowerProgramEmit : List Decl -> CProgram
 lowerProgramEmit prog =
   rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog)
 
@@ -1299,9 +1299,9 @@ nodeTag _ = "?"
 (DFunDef false "lowerStmt" ((PCon "DoLet" (PVar "b") PWild (PVar "pat") (PVar "e"))) (EApp (EApp (EApp (EVar "CSLet") (EVar "b")) (EVar "pat")) (EApp (EVar "lower") (EVar "e"))))
 (DFunDef false "lowerStmt" ((PCon "DoAssign" (PVar "x") (PVar "e"))) (EApp (EApp (EVar "CSAssign") (EVar "x")) (EApp (EVar "lower") (EVar "e"))))
 (DFunDef false "lowerStmt" (PWild) (EApp (EVar "panic") (ELit (LString "core_ir lower: unsupported block statement"))))
-(DTypeSig true "lowerProgram" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "CProgram"))))
+(DTypeSig true "lowerProgram" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "CProgram")))
 (DFunDef false "lowerProgram" ((PVar "prog")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "ctorFieldOrdersRef")) (EApp (EVar "buildCtorFieldOrders") (EVar "prog")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "CProgram") (EApp (EVar "lowerGroups") (EVar "prog"))) (EApp (EVar "ctorArities") (EVar "prog"))) (EApp (EVar "buildCtorToType") (EVar "prog"))) (EApp (EVar "lowerImpls") (EVar "prog"))))))
-(DTypeSig true "lowerProgramEmit" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "CProgram"))))
+(DTypeSig true "lowerProgramEmit" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "CProgram")))
 (DFunDef false "lowerProgramEmit" ((PVar "prog")) (EApp (EApp (EVar "rewriteProgramRecPats") (EApp (EVar "buildRecPatFieldOrders") (EVar "prog"))) (EApp (EVar "lowerProgram") (EVar "prog"))))
 (DTypeSig false "buildRecPatFieldOrders" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "buildRecPatFieldOrders" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "recPatFieldOrderEntries")) (EVar "prog")))
@@ -1772,9 +1772,9 @@ nodeTag _ = "?"
 (DFunDef false "lowerStmt" ((PCon "DoLet" (PVar "b") PWild (PVar "pat") (PVar "e"))) (EApp (EApp (EApp (EVar "CSLet") (EVar "b")) (EVar "pat")) (EApp (EVar "lower") (EVar "e"))))
 (DFunDef false "lowerStmt" ((PCon "DoAssign" (PVar "x") (PVar "e"))) (EApp (EApp (EVar "CSAssign") (EVar "x")) (EApp (EVar "lower") (EVar "e"))))
 (DFunDef false "lowerStmt" (PWild) (EApp (EVar "panic") (ELit (LString "core_ir lower: unsupported block statement"))))
-(DTypeSig true "lowerProgram" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "CProgram"))))
+(DTypeSig true "lowerProgram" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "CProgram")))
 (DFunDef false "lowerProgram" ((PVar "prog")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "ctorFieldOrdersRef")) (EApp (EVar "buildCtorFieldOrders") (EVar "prog")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "CProgram") (EApp (EVar "lowerGroups") (EVar "prog"))) (EApp (EVar "ctorArities") (EVar "prog"))) (EApp (EVar "buildCtorToType") (EVar "prog"))) (EApp (EVar "lowerImpls") (EVar "prog"))))))
-(DTypeSig true "lowerProgramEmit" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "CProgram"))))
+(DTypeSig true "lowerProgramEmit" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "CProgram")))
 (DFunDef false "lowerProgramEmit" ((PVar "prog")) (EApp (EApp (EVar "rewriteProgramRecPats") (EApp (EVar "buildRecPatFieldOrders") (EVar "prog"))) (EApp (EVar "lowerProgram") (EVar "prog"))))
 (DTypeSig false "buildRecPatFieldOrders" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "buildRecPatFieldOrders" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "recPatFieldOrderEntries")) (EVar "prog")))

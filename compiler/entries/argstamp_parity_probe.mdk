@@ -22,11 +22,11 @@ main = match args ()
   mode::rest => withMode mode rest
   _ => ePutStrLn "usage: medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
-withMode : String -> List String -> <IO, Mut> Unit
+withMode : String -> List String -> <IO> Unit
 withMode mode rest =
   let _ = if mode == "ON" then enableEmitArgStampPasses () else ()
   driveRuntimeArgs rest emit
 
-emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
+emit : List Decl -> List Decl -> List Decl -> <IO> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStr (evalDictString runtimeDecls preludeDecls userDecls)

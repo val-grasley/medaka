@@ -301,7 +301,7 @@ lookupAssocL k ((n, v)::rest) = if k == n then Some v else lookupAssocL k rest
 -- already returns Atoms), recurse into the result; at TApp recurse into both
 -- sides.  Deduped/sorted by label.  Mirror mono_effects / scheme_effects, but
 -- the threaded representation is now `Atom` so the param survives to the compare.
-monoEffects : Mono -> <Mut> List Atom
+monoEffects : Mono -> List Atom
 monoEffects m = match normalize m
   TFun _ row result =>
     let atoms = effrowLabels row
@@ -315,7 +315,7 @@ monoEffects m = match normalize m
     None => sortUniqAtoms (monoEffects a ++ monoEffects b)
   _ => []
 
-schemeEffects : Scheme -> <Mut> List Atom
+schemeEffects : Scheme -> List Atom
 schemeEffects (Forall _ _ mono) = monoEffects mono
 
 -- Sort atoms by label and drop label-duplicates (first atom of a label wins;
@@ -357,7 +357,7 @@ atomLabels [] = []
 atomLabels (a::rest) = atomLabel a ++ drender (atomParam a) :: atomLabels rest
 
 -- (name, effect-atoms) for every fn whose scheme carries a non-empty effect set.
-fnEffectsTable : List (String, Scheme) -> <Mut> List (String, List Atom)
+fnEffectsTable : List (String, Scheme) -> List (String, List Atom)
 fnEffectsTable [] = []
 fnEffectsTable ((name, sch)::rest) = match schemeEffects sch
   [] => fnEffectsTable rest
@@ -484,7 +484,7 @@ stubSource = stringConcat
 -- Run `fn` on the sample request "X-Forwarded-For: 192.168.1.1" with stub
 -- platform impls, returning the captured stdout (LOG lines) ++ the transform
 -- line.  Mirror the OCaml accept-path eval block.
-runPlugin : String -> List Decl -> List Decl -> List Decl -> <Mut> String
+runPlugin : String -> List Decl -> List Decl -> List Decl -> String
 runPlugin fnName rtD coreD userD =
   let stubD = desugar (parse stubSource)
   let prelude = coreD ++ stubD
@@ -516,7 +516,7 @@ public export data PolicyOutcome =
   | PolicyAccept String String (List Decl) (List Decl) (List Decl)  -- header fn coreD rtD userD
   | PolicyReject String
 
-export runCheckPolicy : String -> String -> String -> String -> String -> <Mut> PolicyOutcome
+export runCheckPolicy : String -> String -> String -> String -> String -> PolicyOutcome
 runCheckPolicy rtSrc coreSrc src allowStr fnName =
   let policy = parsePolicy allowStr
   let rawUser = parse src
@@ -547,7 +547,7 @@ runCheckPolicy rtSrc coreSrc src allowStr fnName =
 -- Run the accepted plugin and return the captured run output (LOG lines + the
 -- transform-result line).  Called by the CLI AFTER it has printed the accept
 -- header, so a panic on an unstubbed extern surfaces post-header (oracle parity).
-export runAcceptedPlugin : String -> List Decl -> List Decl -> List Decl -> <Mut> String
+export runAcceptedPlugin : String -> List Decl -> List Decl -> List Decl -> String
 runAcceptedPlugin fnName coreD rtD userD = runPlugin fnName rtD coreD userD
 
 firstOf : List String -> String
@@ -667,7 +667,7 @@ parseManifestGo (f::rest) (file@(Some _)) fn = parseManifestGo rest file fn
 -- Run manifest extraction: typecheck the file, read the named fn's inferred
 -- effect row, filter to security labels, return TOML.
 -- Returns (toml, fnEffects) so the caller can also drive round-trip validation.
-export runManifest : String -> String -> String -> String -> <Mut> String
+export runManifest : String -> String -> String -> String -> String
 runManifest rtSrc coreSrc src fnName =
   let rawUser = parse src
   let userD = desugar rawUser
@@ -714,7 +714,7 @@ joinSemiTok : List String -> String
 joinSemiTok xs = joinWith ";" xs
 
 -- Full manifest extraction returning the atom list (for round-trip gate).
-export runManifestAtoms : String -> String -> String -> String -> <Mut> List Atom
+export runManifestAtoms : String -> String -> String -> String -> List Atom
 runManifestAtoms rtSrc coreSrc src fnName =
   let rawUser = parse src
   let userD = desugar rawUser

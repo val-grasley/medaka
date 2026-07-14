@@ -95,7 +95,7 @@ import eval.eval.{
 }
 
 -- ── the evaluator ─────────────────────────────────────────────────────────
-export ceval : EvalEnv (Value e) -> CExpr -> <Mut | e> Value e
+export ceval : EvalEnv (Value e) -> CExpr -> <e> Value e
 ceval _ (CLit l) = litValue l
 ceval env (CVar x _) = if startsWithAt x then VUnit else lookupEnv env x
 ceval env (CApp f x) = applyValue (ceval env f) (ceval env x)
@@ -153,7 +153,7 @@ ceval env (CMethod name route implRoutes methRoutes) =
 ceval env (CDict name routes) = applyDicts env (lookupEnv env name) routes
 ceval _ _ = panic "core_ir ceval: unsupported node"
 
-cevalField : EvalEnv (Value e) -> CField -> <Mut | e> (String, Value e)
+cevalField : EvalEnv (Value e) -> CField -> <e> (String, Value e)
 cevalField env (CField k e) = (k, ceval env e)
 
 litValue : Lit -> Value e
@@ -169,14 +169,14 @@ cevalBinPrim "::" l r = consVal l r
 cevalBinPrim "++" l r = appendVal l r
 cevalBinPrim op l r = evalArith op l r
 
-cevalIf : EvalEnv (Value e) -> Value e -> CExpr -> CExpr -> <Mut | e> Value e
+cevalIf : EvalEnv (Value e) -> Value e -> CExpr -> CExpr -> <e> Value e
 cevalIf env (VBool True) t _ = ceval env t
 cevalIf env (VCon "True" []) t _ = ceval env t
 cevalIf env (VBool False) _ e = ceval env e
 cevalIf env (VCon "False" []) _ e = ceval env e
 cevalIf _ _ _ _ = panic "if condition is not a Bool"
 
-cevalMatch : EvalEnv (Value e) -> Value e -> List CArm -> <Mut | e> Value e
+cevalMatch : EvalEnv (Value e) -> Value e -> List CArm -> <e> Value e
 cevalMatch _ _ [] = panic "no matching clause in match"
 cevalMatch env sv ((CArm pat guards body)::rest) = match matchPat pat sv
   None => cevalMatch env sv rest
@@ -184,7 +184,7 @@ cevalMatch env sv ((CArm pat guards body)::rest) = match matchPat pat sv
     Some env2 => ceval env2 body
     None => cevalMatch env sv rest
 
-cevalGuards : EvalEnv (Value e) -> List CGuard -> <Mut | e> Option (EvalEnv (Value e))
+cevalGuards : EvalEnv (Value e) -> List CGuard -> <e> Option (EvalEnv (Value e))
 cevalGuards env [] = Some env
 cevalGuards env ((CGBool g)::qs) = match ceval env g
   VBool True => cevalGuards env qs
@@ -202,10 +202,10 @@ cevalGuards env ((CGBind p e)::qs) = match matchPat p (ceval env e)
 -- bindings + runs guards); `occs` is the live column values (the matrix
 -- columns), starting as just [root] and expanding into a constructor's fields
 -- as the tree descends — kept in lockstep with the lowering's specialization.
-cevalDecision : EvalEnv (Value e) -> Value e -> List CArm -> CTree -> <Mut | e> Value e
+cevalDecision : EvalEnv (Value e) -> Value e -> List CArm -> CTree -> <e> Value e
 cevalDecision env root arms tree = cevalTree env root arms [root] tree
 
-cevalTree : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> CTree -> <Mut | e> Value e
+cevalTree : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> CTree -> <e> Value e
 cevalTree _ _ _ _ CTFail = panic "no matching clause in match"
 cevalTree env root arms _ (CTLeaf i) = cevalArm env root arms i
 cevalTree env root arms occs (CTGuard i fail) =
@@ -222,12 +222,12 @@ cOccsTail (_::xs) = xs
 -- a terminal leaf: re-match the selected arm's ORIGINAL pattern against the
 -- whole scrutinee (guaranteed to match — the tree path implies it) to recover
 -- its variable bindings, then evaluate its body.
-cevalArm : EvalEnv (Value e) -> Value e -> List CArm -> Int -> <Mut | e> Value e
+cevalArm : EvalEnv (Value e) -> Value e -> List CArm -> Int -> <e> Value e
 cevalArm env root arms i = match nthArm arms i
   Some (CArm pat _ body) => cevalArmBody env root pat body
   None => panic "core_ir decision tree: arm index out of range"
 
-cevalArmBody : EvalEnv (Value e) -> Value e -> Pat -> CExpr -> <Mut | e> Value e
+cevalArmBody : EvalEnv (Value e) -> Value e -> Pat -> CExpr -> <e> Value e
 cevalArmBody env root pat body = match matchPat pat root
   Some binds => ceval (extendEnv env binds) body
   None => panic "core_ir decision tree: leaf pattern did not match scrutinee"
@@ -235,7 +235,7 @@ cevalArmBody env root pat body = match matchPat pat root
 -- a guarded leaf: re-match for bindings, run the guards; on success eval the
 -- body, on failure resume the ordered semantics via the `fail` subtree (at the
 -- current column context, so its switches read the same live sub-values).
-cevalGuardedArm : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> Int -> CTree -> <Mut | e> Value e
+cevalGuardedArm : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> Int -> CTree -> <e> Value e
 cevalGuardedArm env root arms occs i fail = match nthArm arms i
   Some (CArm pat guards body) =>
     cevalGuardedBody env root arms occs pat guards body fail
@@ -248,7 +248,7 @@ cevalGuardedArm env root arms occs i fail = match nthArm arms i
 -- resumes the ordered semantics via the `fail` subtree, exactly as cevalMatch's
 -- sequential arm-by-arm search would.  For non-PRng/PRec arms the tree
 -- guarantees the pattern matches, so None is unreachable there.
-cevalGuardedBody : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> Pat -> List CGuard -> CExpr -> CTree -> <Mut | e> Value e
+cevalGuardedBody : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> Pat -> List CGuard -> CExpr -> CTree -> <e> Value e
 cevalGuardedBody env root arms occs pat guards body fail = match matchPat pat root
   None => cevalTree env root arms occs fail
   Some binds => match cevalGuards (extendEnv env binds) guards
@@ -259,12 +259,12 @@ cevalGuardedBody env root arms occs pat guards body fail = match matchPat pat ro
 -- head against it (constructors/literals are disjoint, so the first match is
 -- THE match), descending into the matched head's fields ++ the remaining
 -- columns; if none match, the default branch drops the head column.
-cevalSwitch : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> List CTBranch -> CTree -> <Mut | e> Value e
+cevalSwitch : EvalEnv (Value e) -> Value e -> List CArm -> List (Value e) -> List CTBranch -> CTree -> <e> Value e
 cevalSwitch env root arms [] branches dft = cevalTree env root arms [] dft
 cevalSwitch env root arms (v::rest) branches dft =
   cevalSwitchOn env root arms v rest branches dft
 
-cevalSwitchOn : EvalEnv (Value e) -> Value e -> List CArm -> Value e -> List (Value e) -> List CTBranch -> CTree -> <Mut | e> Value e
+cevalSwitchOn : EvalEnv (Value e) -> Value e -> List CArm -> Value e -> List (Value e) -> List CTBranch -> CTree -> <e> Value e
 cevalSwitchOn env root arms _ rest [] dft = cevalTree env root arms rest dft
 cevalSwitchOn env root arms v rest ((CTBranch head sub)::more) dft = match headExtract head v
   Some subs => cevalTree env root arms (subs ++ rest) sub
@@ -300,7 +300,7 @@ nthArm (a::_) 0 = Some a
 nthArm (_::rest) n = nthArm rest (n - 1)
 nthArm [] _ = None
 
-cevalRecLet : EvalEnv (Value e) -> String -> CExpr -> CExpr -> <Mut | e> Value e
+cevalRecLet : EvalEnv (Value e) -> String -> CExpr -> CExpr -> <e> Value e
 cevalRecLet env f e1 e2 =
   let cell = Ref VUnit
   let recEnv = pushFrame env [(f, cell)]
@@ -308,7 +308,7 @@ cevalRecLet env f e1 e2 =
   let _ = setRef cell v
   ceval recEnv e2
 
-cevalLet : EvalEnv (Value e) -> Pat -> CExpr -> CExpr -> <Mut | e> Value e
+cevalLet : EvalEnv (Value e) -> Pat -> CExpr -> CExpr -> <e> Value e
 cevalLet env pat e1 e2 = match matchPat pat (ceval env e1)
   None => panic "let pattern match failure"
   Some binds => ceval (extendEnv env binds) e2
@@ -317,7 +317,7 @@ cevalLet env pat e1 e2 = match matchPat pat (ceval env e1)
 -- Mirrors eval.mdk's evalBlock: a block ending in a `let` yields VUnit; ending
 -- in an expr yields that expr.  (Mutable-cell `let mut` / Ref rebinding via
 -- DoAssign is carried for slice 3; slice-1 fixtures use only let + expr.)
-cevalBlock : EvalEnv (Value e) -> List CStmt -> <Mut | e> Value e
+cevalBlock : EvalEnv (Value e) -> List CStmt -> <e> Value e
 cevalBlock _ [] = VUnit
 cevalBlock env [CSExpr e] = ceval env e
 cevalBlock env [CSLet _ pat e] = cBlockLetLast env pat e
@@ -331,18 +331,18 @@ cevalBlock env [CSAssign _ e] =
 cevalBlock env ((CSAssign x e)::rest) =
   cevalBlock (extendEnv env [(x, ceval env e)]) rest
 
-cBlockLetLast : EvalEnv (Value e) -> Pat -> CExpr -> <Mut | e> Value e
+cBlockLetLast : EvalEnv (Value e) -> Pat -> CExpr -> <e> Value e
 cBlockLetLast env pat e = match matchPat pat (ceval env e)
   None => panic "let pattern match failure in block"
   Some _ => VUnit
 
-cBlockLet : EvalEnv (Value e) -> Pat -> CExpr -> List CStmt -> <Mut | e> Value e
+cBlockLet : EvalEnv (Value e) -> Pat -> CExpr -> List CStmt -> <e> Value e
 cBlockLet env pat e rest = match matchPat pat (ceval env e)
   None => panic "let pattern match failure in block"
   Some binds => cevalBlock (extendEnv env binds) rest
 
 -- ── let-groups (where / mutually-recursive coalesced bindings) ─────────────
-cevalLetGroup : EvalEnv (Value e) -> List CBind -> CExpr -> <Mut | e> Value e
+cevalLetGroup : EvalEnv (Value e) -> List CBind -> CExpr -> <e> Value e
 cevalLetGroup env binds body =
   let cells = map cBindCell binds
   let env2 = pushFrame env cells
@@ -352,7 +352,7 @@ cevalLetGroup env binds body =
 cBindCell : CBind -> (String, Ref (Value e))
 cBindCell (CBind name _) = (name, Ref VUnit)
 
-cInstallGroup : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List CBind -> <Mut | e> Unit
+cInstallGroup : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List CBind -> <e> Unit
 cInstallGroup _ _ [] = ()
 cInstallGroup env cells ((CBind name clauses)::rest) =
   let _ = setRef (findCell cells name) (cGroupValue env clauses)
@@ -360,7 +360,7 @@ cInstallGroup env cells ((CBind name clauses)::rest) =
 
 -- let-group binding value: a nullary single clause is eager (recursive let);
 -- multi-clause coalesces into a VMulti dispatched by arg pattern + fall-through.
-cGroupValue : EvalEnv (Value e) -> List CClause -> <Mut | e> Value e
+cGroupValue : EvalEnv (Value e) -> List CClause -> <e> Value e
 cGroupValue env [CClause pats body]
   | isNullary pats = ceval env body
   | otherwise = cClauseClosure env (CClause pats body)
@@ -373,7 +373,7 @@ cClauseClosure env (CClause pats body) = VClosureF env pats (e => ceval e body)
 -- Mirror of eval.mdk's evalProgram, but installs Core IR groups.  A nullary
 -- top-level binding becomes a deferred VThunk (forced on first lookup) so
 -- point-free defs can reference values installed later, in any order.
-export cevalProgram : CProgram -> <Mut | e> List (String, Value e)
+export cevalProgram : CProgram -> <e> List (String, Value e)
 cevalProgram (CProgram groups ctorArs ctorToType implEntries) =
   let _ = setRef ctorToTypeRef ctorToType
   let ctors = map ctorBinding ctorArs
@@ -425,7 +425,7 @@ cImplMethodValue env _ pats body = VClosureF env pats (e => ceval e body)
 cBindName : CBind -> String
 cBindName (CBind n _) = n
 
-cInstallTopGroups : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List CBind -> <Mut | e> Unit
+cInstallTopGroups : EvalEnv (Value e) -> List (String, Ref (Value e)) -> List CBind -> <e> Unit
 cInstallTopGroups _ _ [] = ()
 cInstallTopGroups env cells ((CBind n clauses)::rest) =
   let _ = setRef (findCell cells n) (cTopGroupValue env clauses)
@@ -438,7 +438,7 @@ cTopGroupValue env [CClause pats body]
 cTopGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
 
 -- ── entry point (pure-value path, diffed via pp_value of `main`) ───────────
-export cevalMain : CProgram -> <Mut> String
+export cevalMain : CProgram -> String
 cevalMain prog = match lookupBinding "main" (cevalProgram prog)
   Some v => ppValue (force v)
   None => panic "core_ir eval: no `main` binding"
@@ -447,14 +447,14 @@ cevalMain prog = match lookupBinding "main" (cevalProgram prog)
 -- append to eval.mdk's outputRef) and return the captured stdout — the Core-IR
 -- analog of eval.mdk's evalOutput, for the typed / run corpora that diff stdout
 -- (=== EVAL === goldens) rather than pp_value of `main`.
-export cevalOutput : CProgram -> <Mut> String
+export cevalOutput : CProgram -> String
 cevalOutput prog =
   let _ = setRef outputRef ""
   let binds = cevalProgram prog
   let _ = cRunMainForEffect binds
   outputRef.value
 
-cRunMainForEffect : List (String, Value e) -> <Mut | e> Value e
+cRunMainForEffect : List (String, Value e) -> <e> Value e
 cRunMainForEffect binds = match lookupBinding "main" binds
   Some v => force v
   None => VUnit
@@ -482,7 +482,7 @@ cRunMainForEffect binds = match lookupBinding "main" binds
 data CModInfo v =
   | CModInfo String (List Decl) (List CBind) (List CImplEntry) (List (String, Ref v)) (EvalEnv v)
 
-export cevalModules : List Decl -> List (String, List Decl) -> <Mut | e> List (String, Value e)
+export cevalModules : List Decl -> List (String, List Decl) -> <e> List (String, Value e)
 cevalModules preludeDecls modules =
   let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
@@ -536,12 +536,12 @@ cBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
 
 -- a module's impl methods / interface defaults close over ITS env but coalesce
 -- into the shared global VMulti (mirror of eval.mdk's modImplEntries)
-cModImplValues : CModInfo (Value e) -> <Mut | e> List (String, (Int, Value e))
+cModImplValues : CModInfo (Value e) -> <e> List (String, (Int, Value e))
 cModImplValues (CModInfo _ _ _ cimpls _ menv) =
   map (cImplEntryValue menv) cimpls
 
 -- pass 2: install each module's groups into its own cells (its env)
-cInstallModGroups : List (CModInfo (Value e)) -> <Mut | e> Unit
+cInstallModGroups : List (CModInfo (Value e)) -> <e> Unit
 cInstallModGroups [] = ()
 cInstallModGroups ((CModInfo _ decls cbinds _ cells menv)::rest) =
   let _ = cInstallTopGroups menv cells cbinds
@@ -551,7 +551,7 @@ cInstallModGroups ((CModInfo _ decls cbinds _ cells menv)::rest) =
   cInstallModGroups rest
 
 -- the root module is last in dependency order; its locals hold `main`
-cRootLocals : List (CModInfo (Value e)) -> <Mut | e> List (String, Value e)
+cRootLocals : List (CModInfo (Value e)) -> <e> List (String, Value e)
 cRootLocals [] = []
 cRootLocals [CModInfo _ _ _ _ cells _] = map cellResult cells
 cRootLocals (_::rest) = cRootLocals rest
@@ -559,7 +559,7 @@ cRootLocals (_::rest) = cRootLocals rest
 -- Run a multi-module Core-IR program for its OUTPUT (the loader-driven analog of
 -- cevalOutput): evaluate every module in dependency order, force the root module's
 -- `main` for its IO side-effects, return the captured stdout.
-export cevalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
+export cevalModulesOutput : List Decl -> List (String, List Decl) -> String
 cevalModulesOutput preludeDecls modules =
   let _ = setRef outputRef ""
   let binds = cevalModules preludeDecls modules

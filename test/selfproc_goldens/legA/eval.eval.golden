@@ -1,28 +1,28 @@
 addrCell : List (String, Ref (Value a)) -> Int -> String -> Ref (Value a)
 anyTypedImpl : List (Value a) -> Bool
-appendOutput : String -> <Mut> Value a
+appendOutput : String -> Value a
 appendVal : Value a -> Value a -> Value a
-apply : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
-applyClosure : EvalEnv (Value <Mut | a>) -> List Pat -> Expr -> Value <Mut | a> -> <Mut> Option (Value <Mut | a>)
-applyClosureF : EvalEnv (Value a) -> List Pat -> (EvalEnv (Value a) -> <Mut> Value a) -> Value a -> <Mut> Option (Value a)
-applyDicts : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> List Route -> <Mut> Value <Mut | a>
-applyDispatch : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
+apply : Value a -> Value a -> Value a
+applyClosure : EvalEnv (Value a) -> List Pat -> Expr -> Value a -> Option (Value a)
+applyClosureF : EvalEnv (Value a) -> List Pat -> (EvalEnv (Value a) -> Value a) -> Value a -> Option (Value a)
+applyDicts : EvalEnv (Value a) -> Value a -> List Route -> Value a
+applyDispatch : Value a -> Value a -> Value a
 applyFieldUpdate : List (String, Value a) -> String -> Value a -> Value a
-applyOpt : Value <Mut | a> -> Value <Mut | a> -> <Mut> Option (Value <Mut | a>)
-applyTyped : String -> String -> List Int -> Int -> Value <Mut | a> -> Value <Mut | a> -> <Mut> Option (Value <Mut | a>)
-applyValue : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
-applyValues : Value <Mut | a> -> List (Value <Mut | a>) -> <Mut> Value <Mut | a>
+applyOpt : Value a -> Value a -> Option (Value a)
+applyTyped : String -> String -> List Int -> Int -> Value a -> Value a -> Option (Value a)
+applyValue : Value a -> Value a -> Value a
+applyValues : Value a -> List (Value a) -> Value a
 applyVariantUpdates : List (String, Value a) -> List String -> List (Value a) -> List (Value a)
 argsOfTy : Ty -> List Ty
 arrayToListG : Array a -> List a
 arrayToListGo : Array a -> Int -> Int -> List a
 awaitsArgs : Value a -> Bool
 bindNames : List (String, String) -> List (String, Ref (Value a)) -> List (String, Ref (Value a))
-blackholeCell : String -> Unit -> <Mut> Value a
-blitGo : Array (Value a) -> Int -> Array (Value a) -> Int -> Int -> <Mut> Unit
-blockLet : EvalEnv (Value <Mut | a>) -> Pat -> Expr -> List DoStmt -> <Mut> Value <Mut | a>
-blockLetLast : EvalEnv (Value <Mut | a>) -> Pat -> Expr -> <Mut> Value <Mut | a>
-blockRecLet : EvalEnv (Value <Mut | a>) -> String -> Expr -> List DoStmt -> <Mut> Value <Mut | a>
+blackholeCell : String -> Unit -> Value a
+blitGo : Array (Value a) -> Int -> Array (Value a) -> Int -> Int -> Unit
+blockLet : EvalEnv (Value a) -> Pat -> Expr -> List DoStmt -> Value a
+blockLetLast : EvalEnv (Value a) -> Pat -> Expr -> Value a
+blockRecLet : EvalEnv (Value a) -> String -> Expr -> List DoStmt -> Value a
 boolEq : Bool -> Bool -> Bool
 boolSeeds : List (String, Value a)
 boolToInt : Bool -> Int
@@ -31,11 +31,11 @@ buildCtorToType : List Decl -> List (String, String)
 buildIfaceDispatch : List Decl -> List ((String, String), List Int)
 buildMethodReqCounts : List Decl -> List ((String, String), Int)
 buildModInfos : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> List (String, List Decl) -> List (ModInfo (Value a))
-buildWith : Value <Mut | a> -> Int -> Int -> <Mut> List (Value <Mut | a>)
+buildWith : Value a -> Int -> Int -> List (Value a)
 cellOf : (String, Value a) -> (String, Ref (Value a))
 cellResult : (String, Ref (Value a)) -> (String, Value a)
 charFromCodeUnsafe : Int -> Char
-charPred : (Char -> Bool) -> Value a -> <Mut> Value a
+charPred : (Char -> Bool) -> Value a -> Value a
 charToVChar : Char -> Value a
 charUpper : String -> String -> Bool -> Bool
 clauseClosure : EvalEnv (Value a) -> (List Pat, Expr) -> Value a
@@ -44,10 +44,10 @@ clausesForName : String -> List (String, (List Pat, Expr)) -> List (List Pat, Ex
 coalesceImpls : List (String, (Int, Value a)) -> List (String, Value a)
 coalesceOne : String -> List (String, (Int, Value a)) -> Value a
 collectCtors : List Decl -> List (String, Value a)
-collectPartials : List (Value <Mut | a>) -> List (Value <Mut | a>) -> Value <Mut | a> -> <Mut> Option (Value <Mut | a>)
+collectPartials : List (Value a) -> List (Value a) -> Value a -> Option (Value a)
 compareValueLists : List (Value a) -> List (Value a) -> Ordering
-composeBwd : Value <Mut | a> -> Value <Mut | a> -> Value <Mut | a>
-composeFwd : Value <Mut | a> -> Value <Mut | a> -> Value <Mut | a>
+composeBwd : Value a -> Value a -> Value a
+composeFwd : Value a -> Value a -> Value a
 concatList : List (List a) -> List a
 consVal : Value a -> Value a -> Value a
 containsInt : Int -> List Int -> Bool
@@ -61,45 +61,45 @@ ctorTypeEntries : Decl -> List (String, String)
 ctorsOfDecl : Decl -> List (String, Value a)
 currentEvalFile : Ref String
 currentEvalLoc : Ref Loc
-declImplEntries : EvalEnv (Value <Mut | a>) -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value <Mut | a>))
-defaultEntry : EvalEnv (Value <Mut | a>) -> List String -> IfaceMethod -> List (String, (Int, Value <Mut | a>))
+declImplEntries : EvalEnv (Value a) -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value a))
+defaultEntry : EvalEnv (Value a) -> List String -> IfaceMethod -> List (String, (Int, Value a))
 defaultName : IfaceMethod -> List String
-dictOfRoute : EvalEnv (Value <Mut | a>) -> Route -> <Mut> Value <Mut | a>
+dictOfRoute : EvalEnv (Value a) -> Route -> Value a
 dispatchPositionsOf : Ty -> List String -> List Int
-doSetRef : Ref (Value a) -> Value a -> <Mut> Value a
-driveAsyncMain : List (String, Value <Mut | a>) -> <Mut> Value <Mut | a>
+doSetRef : Ref (Value a) -> Value a -> Value a
+driveAsyncMain : List (String, Value a) -> Value a
 dropShadowed : List String -> List Decl -> List Decl
 dropShadowedExp : List String -> List Decl -> List Decl
-eval : EvalEnv (Value <Mut | a>) -> Expr -> <Mut> Value <Mut | a>
-evalAnd : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> Expr -> <Mut> Value <Mut | a>
+eval : EvalEnv (Value a) -> Expr -> Value a
+evalAnd : EvalEnv (Value a) -> Value a -> Expr -> Value a
 evalArith : String -> Value a -> Value a -> Value a
-evalBinop : EvalEnv (Value <Mut | a>) -> String -> Expr -> Expr -> <Mut> Value <Mut | a>
-evalBlock : EvalEnv (Value <Mut | a>) -> List DoStmt -> <Mut> Value <Mut | a>
+evalBinop : EvalEnv (Value a) -> String -> Expr -> Expr -> Value a
+evalBlock : EvalEnv (Value a) -> List DoStmt -> Value a
 evalDepthLimit : Int
 evalDepthRef : Ref Int
 evalField : Value a -> String -> Value a
-evalFieldAssign : EvalEnv (Value <Mut | a>) -> FieldAssign -> <Mut> (String, Value <Mut | a>)
-evalIf : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> Expr -> Expr -> <Mut> Value <Mut | a>
+evalFieldAssign : EvalEnv (Value a) -> FieldAssign -> (String, Value a)
+evalIf : EvalEnv (Value a) -> Value a -> Expr -> Expr -> Value a
 evalIndex : Value a -> Value a -> Value a
 evalIndexInt : Value a -> Int -> Value a
-evalLet : EvalEnv (Value <Mut | a>) -> Pat -> Expr -> Expr -> <Mut> Value <Mut | a>
-evalLetGroup : EvalEnv (Value <Mut | a>) -> List LetBind -> Expr -> <Mut> Value <Mut | a>
-evalMain : List Decl -> <Mut> String
-evalMatch : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> List Arm -> <Mut> Value <Mut | a>
-evalMethodAt : EvalEnv (Value <Mut | a>) -> String -> Route -> List Route -> List Route -> <Mut> Value <Mut | a>
-evalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value a)
-evalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
-evalModulesOutputAsync : List Decl -> List (String, List Decl) -> <Mut> String
-evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO, Mut> String
-evalModulesRootEnv : List Decl -> List (String, List Decl) -> <Mut> List (String, Value a)
-evalModulesWith : List (String, Value <Mut | a>) -> List Decl -> List (String, List Decl) -> <Mut> List (String, Value <Mut | a>)
-evalOne : List Decl -> (String, List Decl) -> <Mut> List (String, Value a)
-evalOneOutput : List Decl -> (String, List Decl) -> <Mut> String
-evalOneRootEnv : List Decl -> (String, List Decl) -> <Mut> List (String, Value a)
-evalOr : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> Expr -> <Mut> Value <Mut | a>
-evalOutputWith : List Decl -> List Decl -> <Mut> String
+evalLet : EvalEnv (Value a) -> Pat -> Expr -> Expr -> Value a
+evalLetGroup : EvalEnv (Value a) -> List LetBind -> Expr -> Value a
+evalMain : List Decl -> String
+evalMatch : EvalEnv (Value a) -> Value a -> List Arm -> Value a
+evalMethodAt : EvalEnv (Value a) -> String -> Route -> List Route -> List Route -> Value a
+evalModules : List Decl -> List (String, List Decl) -> List (String, Value a)
+evalModulesOutput : List Decl -> List (String, List Decl) -> String
+evalModulesOutputAsync : List Decl -> List (String, List Decl) -> String
+evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO> String
+evalModulesRootEnv : List Decl -> List (String, List Decl) -> List (String, Value a)
+evalModulesWith : List (String, Value a) -> List Decl -> List (String, List Decl) -> List (String, Value a)
+evalOne : List Decl -> (String, List Decl) -> List (String, Value a)
+evalOneOutput : List Decl -> (String, List Decl) -> String
+evalOneRootEnv : List Decl -> (String, List Decl) -> List (String, Value a)
+evalOr : EvalEnv (Value a) -> Value a -> Expr -> Value a
+evalOutputWith : List Decl -> List Decl -> String
 evalRange : Value a -> Value a -> Bool -> (List Int -> Value a) -> Value a
-evalRecLet : EvalEnv (Value <Mut | a>) -> String -> Expr -> Expr -> <Mut> Value <Mut | a>
+evalRecLet : EvalEnv (Value a) -> String -> Expr -> Expr -> Value a
 evalRecordUpdate : Value a -> List (String, Value a) -> Value a
 evalSlice : Value a -> Value a -> Value a -> Bool -> Value a
 evalSliceInt : Value a -> Int -> Int -> Bool -> Value a
@@ -107,7 +107,7 @@ evalUnop : String -> Value a -> Value a
 evalValueField : Value a -> Value a
 evalVariantUpdate : String -> Value a -> List (String, Value a) -> Value a
 extendEnv : EvalEnv (Value a) -> List (String, Value a) -> EvalEnv (Value a)
-externBindings : Unit -> List (String, Value <Mut | a>)
+externBindings : Unit -> List (String, Value a)
 fallthroughToNone : Value a -> Option (Value a)
 fieldListEq : List (String, Value a) -> List (String, Value a) -> Bool
 fieldName : Field -> String
@@ -117,23 +117,23 @@ filterByTagT : List (Value a) -> Option String -> List (Value a)
 filterMentions : Int -> List Ty -> List String -> List Int
 findCell : List (String, Ref (Value a)) -> String -> Ref (Value a)
 firstOrEmpty : List String -> String
-flattenEnv : EvalEnv (Value a) -> <Mut> List (String, Value a)
+flattenEnv : EvalEnv (Value a) -> List (String, Value a)
 fmtSentinel : String
 fnvFoldList30 : List Int -> Int -> Int
 fnvOffset30 : Int
 fnvPrime30 : Int
 fnvStep30 : Int -> Int -> Int
-force : Value a -> <Mut> Value a
-forceCell : Ref (Value <Mut | a>) -> String -> <Mut> Value <Mut | a>
-forceMemo : Ref (Value <Mut | a>) -> String -> (Unit -> <Mut> Value <Mut | a>) -> <Mut> Value <Mut | a>
-forceMemoCell : Ref (Option (Value <Mut | a>)) -> EvalEnv (Value <Mut | a>) -> Expr -> <Mut> Value <Mut | a>
+force : Value a -> Value a
+forceCell : Ref (Value a) -> String -> Value a
+forceMemo : Ref (Value a) -> String -> (Unit -> Value a) -> Value a
+forceMemoCell : Ref (Option (Value a)) -> EvalEnv (Value a) -> Expr -> Value a
 frameAtDepth : List (List (String, Ref (Value a))) -> Int -> String -> List (String, Ref (Value a))
 funClauseToClause : FunClause -> (List Pat, Expr)
 funDefs : List Decl -> List (String, (List Pat, Expr))
 funGroupNames : List (String, (List Pat, Expr)) -> List String -> List String
 funNamesOf : List Decl -> List String
 getByte64 : Int -> Array (Value a) -> Int -> Int
-groupValue : EvalEnv (Value <Mut | a>) -> List (List Pat, Expr) -> <Mut> Value <Mut | a>
+groupValue : EvalEnv (Value a) -> List (List Pat, Expr) -> Value a
 groupsOf : List Decl -> List (String, List (List Pat, Expr))
 hasTag : String -> Value a -> Bool
 hashMask30 : Int
@@ -145,20 +145,20 @@ ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), Li
 ifaceMethodNmE : IfaceMethod -> String
 implDeclNames : Decl -> List String
 implKeyOf : String -> List Ty -> Option String -> String
-implMethodEntry : EvalEnv (Value <Mut | a>) -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value <Mut | a>))
+implMethodEntry : EvalEnv (Value a) -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value a))
 implMethodName : ImplMethod -> String
 implMethodNames : List Decl -> List String
 implMethodReqCountEntry : List (String, Int) -> String -> ImplMethod -> List ((String, String), Int)
 implMethodReqCounts : List (String, Int) -> Decl -> List ((String, String), Int)
-implMethodValue : EvalEnv (Value <Mut | a>) -> List Int -> List Pat -> Expr -> Value <Mut | a>
+implMethodValue : EvalEnv (Value a) -> List Int -> List Pat -> Expr -> Value a
 importFrameOf : List (String, List (String, Ref (Value a))) -> List Decl -> List (String, Ref (Value a))
 inCharRange : String -> String -> String -> Bool -> Bool
 inIntRange : Int -> Int -> Int -> Bool -> Bool
 insertScore : (Int, Value a) -> List (Int, Value a) -> List (Int, Value a)
-installConsts : List (String, Ref (Value a)) -> List (String, Value a) -> <Mut> Unit
-installGroup : EvalEnv (Value <Mut | a>) -> List (String, Ref (Value <Mut | a>)) -> List LetBind -> <Mut> Unit
-installGroups : EvalEnv (Value <Mut | a>) -> List (String, Ref (Value <Mut | a>)) -> List (String, List (List Pat, Expr)) -> <Mut> Unit
-installModGroups : List (ModInfo (Value <Mut | a>)) -> <Mut> Unit
+installConsts : List (String, Ref (Value a)) -> List (String, Value a) -> Unit
+installGroup : EvalEnv (Value a) -> List (String, Ref (Value a)) -> List LetBind -> Unit
+installGroups : EvalEnv (Value a) -> List (String, Ref (Value a)) -> List (String, List (List Pat, Expr)) -> Unit
+installModGroups : List (ModInfo (Value a)) -> Unit
 intSeq : Int -> Int -> List Int
 ioExternBindings : Unit -> List (String, Value a)
 isDefaultCand : Value a -> Bool
@@ -176,13 +176,13 @@ letGroupDefs : List LetBind -> List (String, (List Pat, Expr))
 listNthAt : List (Value a) -> Int -> Int -> Value a
 listSliceGo : List (Value a) -> Int -> Int -> Int -> List (Value a)
 listSliceV : List (Value a) -> Int -> Int -> List (Value a)
-lookupAtAddr : EvalEnv (Value <Mut | a>) -> String -> Addr -> <Mut> Value <Mut | a>
+lookupAtAddr : EvalEnv (Value a) -> String -> Addr -> Value a
 lookupBinding : String -> List (String, Value a) -> Option (Value a)
-lookupEnv : EvalEnv (Value <Mut | a>) -> String -> <Mut> Value <Mut | a>
+lookupEnv : EvalEnv (Value a) -> String -> Value a
 lookupFrameCell : List (String, Ref (Value a)) -> String -> Option (Ref (Value a))
-lookupFrames : List (List (String, Ref (Value <Mut | a>))) -> String -> <Mut> Value <Mut | a>
-lookupMethod : EvalEnv (Value <Mut | a>) -> String -> <Mut> Value <Mut | a>
-lookupMethodFrames : List (List (String, Ref (Value <Mut | a>))) -> List (List (String, Ref (Value <Mut | a>))) -> String -> <Mut> Value <Mut | a>
+lookupFrames : List (List (String, Ref (Value a))) -> String -> Value a
+lookupMethod : EvalEnv (Value a) -> String -> Value a
+lookupMethodFrames : List (List (String, Ref (Value a))) -> List (List (String, Ref (Value a))) -> String -> Value a
 lookupMethodReqCount : String -> String -> Int
 lookupPositions : String -> String -> List ((String, String), List Int) -> List Int
 lookupReqCount : String -> String -> List ((String, String), Int) -> Int
@@ -197,20 +197,20 @@ matchRecField : String -> Option Pat -> Value a -> List RecPatField -> List (Str
 matchRecFields : List RecPatField -> List (String, Value a) -> Option (List (String, Value a))
 matchesTag : String -> Value a -> Bool
 memberBind : UseMember -> (String, String)
-memoThunk : EvalEnv (Value <Mut | a>) -> Expr -> Value <Mut | a>
-memoThunkOf : Ref (Option (Value <Mut | a>)) -> EvalEnv (Value <Mut | a>) -> Expr -> Value <Mut | a>
+memoThunk : EvalEnv (Value a) -> Expr -> Value a
+memoThunkOf : Ref (Option (Value a)) -> EvalEnv (Value a) -> Expr -> Value a
 mergeField : List (String, Value a) -> (String, Value a) -> (String, Value a)
-methodAtNarrow : EvalEnv (Value <Mut | a>) -> Value <Mut | a> -> Route -> <Mut> (Value <Mut | a>, List (Value <Mut | a>))
+methodAtNarrow : EvalEnv (Value a) -> Value a -> Route -> (Value a, List (Value a))
 methodCell : List (String, Ref (Value a)) -> String -> List (String, Ref (Value a))
 methodCellsOf : List (String, Ref (Value a)) -> List Decl -> List (String, Ref (Value a))
 methodDeclArities : Decl -> List (String, Int)
 methodReqCountRef : Ref (List ((String, String), Int))
 mixInt30 : Int -> Int
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
-modImplEntries : List ((String, String), List Int) -> ModInfo (Value <Mut | a>) -> List (String, (Int, Value <Mut | a>))
+modImplEntries : List ((String, String), List Int) -> ModInfo (Value a) -> List (String, (Int, Value a))
 moduleMethodNames : List Decl -> List String
 moduleMethodNamesOf : Decl -> List String
-narrowMethod : Value a -> String -> <Mut> Value a
+narrowMethod : Value a -> String -> Value a
 noMainMsg : String
 oneOrMulti : List (Value a) -> Value a
 oneOrMultiV : List (Value a) -> List (Value a) -> Value a
@@ -219,119 +219,119 @@ ordGt : Ordering -> Bool
 ordLt : Ordering -> Bool
 orderingToValue : Ordering -> Value a
 outputRef : Ref String
-pAcos : Value a -> <Mut> Value a
-pAllocBytes : Value a -> <Mut> Value a
-pAllocBytesIO : Value a -> <IO, Mut> Value a
-pAppendFile : Value a -> Value a -> <FileWrite, Mut> Value a
-pArgs : Value a -> <Env, Mut> Value a
-pArrayBlit : Value a -> Value a -> Value a -> Value a -> Value a -> <Mut> Value a
-pArrayCopy : Value a -> <Mut> Value a
-pArrayFill : Value a -> Value a -> <Mut> Value a
-pArrayFromList : Value a -> <Mut> Value a
-pArrayGetUnsafe : Value a -> Value a -> <Mut> Value a
-pArrayLength : Value a -> <Mut> Value a
-pArrayMake : Value a -> Value a -> <Mut> Value a
-pArrayMakeWith : Value <Mut | a> -> Value <Mut | a> -> <Mut> Value <Mut | a>
-pArraySetUnsafe : Value a -> Value a -> Value a -> <Mut> Value a
-pAsin : Value a -> <Mut> Value a
-pAtan : Value a -> <Mut> Value a
-pAtan2 : Value a -> Value a -> <Mut> Value a
-pBitAnd : Value a -> Value a -> <Mut> Value a
-pBitNot : Value a -> <Mut> Value a
-pBitOr : Value a -> Value a -> <Mut> Value a
-pBitXor : Value a -> Value a -> <Mut> Value a
-pBytesToFloat64 : Value a -> Value a -> <Mut> Value a
-pCanonicalizePath : Value a -> <FileRead, Mut> Value a
-pCbrt : Value a -> <Mut> Value a
-pCeil : Value a -> <Mut> Value a
-pCharCode : Value a -> <Mut> Value a
-pCharFromCode : Value a -> <Mut> Value a
-pCharToLower : Value a -> <Mut> Value a
-pCharToStr : Value a -> <Mut> Value a
-pCharToUpper : Value a -> <Mut> Value a
-pCos : Value a -> <Mut> Value a
-pCosh : Value a -> <Mut> Value a
-pDebugCharLit : Value a -> <Mut> Value a
-pDebugStringLit : Value a -> <Mut> Value a
-pDiscard : Value a -> <Mut> Value a
-pEPutStr : Value a -> <Mut, Stderr> Value a
-pEPutStrLn : Value a -> <Mut, Stderr> Value a
-pEnableRunStdoutFlush : Value a -> <Mut> Value a
-pExecutablePath : Value a -> <Env, Mut> Value a
-pExit : Value a -> <Mut, Panic> Value a
-pExp : Value a -> <Mut> Value a
-pFileExists : Value a -> <FileRead, Mut> Value a
-pFloatRem : Value a -> Value a -> <Mut> Value a
-pFloatToBytes64 : Value a -> <Mut> Value a
-pFloatToInt : Value a -> <Mut> Value a
-pFloatToString : Value a -> <Mut> Value a
-pFloor : Value a -> <Mut> Value a
-pGetEnv : Value a -> <Env, Mut> Value a
-pHashBool : Value a -> <Mut> Value a
-pHashChar : Value a -> <Mut> Value a
-pHashFloat : Value a -> <Mut> Value a
-pHashInt : Value a -> <Mut> Value a
-pHashString : Value a -> <Mut> Value a
-pHypot : Value a -> Value a -> <Mut> Value a
-pIntBitsToFloat : Value a -> <Mut> Value a
-pIntToFloat : Value a -> <Mut> Value a
-pIntToString : Value a -> <Mut> Value a
-pListDir : Value a -> <FileRead, Mut> Value a
-pLog : Value a -> <Mut> Value a
-pLog10 : Value a -> <Mut> Value a
-pLog2 : Value a -> <Mut> Value a
-pMakeDir : Value a -> <FileWrite, Mut> Value a
-pMonotonicSec : Value a -> <Mut> Value a
-pMonotonicSecIO : Value a -> <Clock, Mut> Value a
-pPanic : Value a -> <Mut> b
-pPow : Value a -> Value a -> <Mut> Value a
-pPutStr : Value a -> <Mut> Value a
-pPutStrLn : Value a -> <Mut> Value a
-pRandomBool : Value a -> <Mut> Value a
-pRandomChar : Value a -> <Mut> Value a
-pRandomFloat : Value a -> <Mut> Value a
-pRandomInt : Value a -> Value a -> <Mut> Value a
-pReadAll : Value a -> <Mut, Stdin> Value a
-pReadExactly : Value a -> <Mut, Stdin> Value a
-pReadFile : Value a -> <FileRead, Mut> Value a
-pReadFileBytes : Value a -> <FileRead, Mut> Value a
-pReadLine : Value a -> <Mut, Stdin> Value a
-pReadLineOpt : Value a -> <Mut, Stdin> Value a
-pRef : Value a -> <Mut> Value a
-pRemoveDir : Value a -> <FileWrite, Mut> Value a
-pRemoveFile : Value a -> <FileWrite, Mut> Value a
-pRename : Value a -> Value a -> <FileWrite, Mut> Value a
-pRound : Value a -> <Mut> Value a
-pSetRef : Value a -> Value a -> <Mut> Value a
-pSetSeed : Value a -> <Mut> Value a
-pShiftLeft : Value a -> Value a -> <Mut> Value a
-pShiftRight : Value a -> Value a -> <Mut> Value a
-pSin : Value a -> <Mut> Value a
-pSinh : Value a -> <Mut> Value a
-pSleepMs : Value a -> <Mut> Value a
-pSleepMsIO : Value a -> <Clock, Mut> Value a
-pSqrt : Value a -> <Mut> Value a
-pStashRunStdout : Value a -> <Mut> Value a
-pStatFile : Value a -> <FileRead, Mut> Value a
-pStringCompare : Value a -> Value a -> <Mut> Value a
-pStringConcat : Value a -> <Mut> Value a
-pStringFromChars : Value a -> <Mut> Value a
-pStringFromUtf8Bytes : Value a -> <Mut> Value a
-pStringIndexOf : Value a -> Value a -> <Mut> Value a
-pStringLength : Value a -> <Mut> Value a
-pStringSlice : Value a -> Value a -> Value a -> <Mut> Value a
-pStringToChars : Value a -> <Mut> Value a
-pStringToFloat : Value a -> <Mut> Value a
-pStringToLower : Value a -> <Mut> Value a
-pStringToUpper : Value a -> <Mut> Value a
-pStringToUtf8Bytes : Value a -> <Mut> Value a
-pTan : Value a -> <Mut> Value a
-pTanh : Value a -> <Mut> Value a
-pTrunc : Value a -> <Mut> Value a
-pWallTimeSec : Value a -> <Mut> Value a
-pWallTimeSecIO : Value a -> <Clock, Mut> Value a
-pWriteFile : Value a -> Value a -> <FileWrite, Mut> Value a
-pWriteFileBytes : Value a -> Value a -> <FileWrite, Mut> Value a
+pAcos : Value a -> Value a
+pAllocBytes : Value a -> Value a
+pAllocBytesIO : Value a -> <IO> Value a
+pAppendFile : Value a -> Value a -> <FileWrite> Value a
+pArgs : Value a -> <Env> Value a
+pArrayBlit : Value a -> Value a -> Value a -> Value a -> Value a -> Value a
+pArrayCopy : Value a -> Value a
+pArrayFill : Value a -> Value a -> Value a
+pArrayFromList : Value a -> Value a
+pArrayGetUnsafe : Value a -> Value a -> Value a
+pArrayLength : Value a -> Value a
+pArrayMake : Value a -> Value a -> Value a
+pArrayMakeWith : Value a -> Value a -> Value a
+pArraySetUnsafe : Value a -> Value a -> Value a -> Value a
+pAsin : Value a -> Value a
+pAtan : Value a -> Value a
+pAtan2 : Value a -> Value a -> Value a
+pBitAnd : Value a -> Value a -> Value a
+pBitNot : Value a -> Value a
+pBitOr : Value a -> Value a -> Value a
+pBitXor : Value a -> Value a -> Value a
+pBytesToFloat64 : Value a -> Value a -> Value a
+pCanonicalizePath : Value a -> <FileRead> Value a
+pCbrt : Value a -> Value a
+pCeil : Value a -> Value a
+pCharCode : Value a -> Value a
+pCharFromCode : Value a -> Value a
+pCharToLower : Value a -> Value a
+pCharToStr : Value a -> Value a
+pCharToUpper : Value a -> Value a
+pCos : Value a -> Value a
+pCosh : Value a -> Value a
+pDebugCharLit : Value a -> Value a
+pDebugStringLit : Value a -> Value a
+pDiscard : Value a -> Value a
+pEPutStr : Value a -> <Stderr> Value a
+pEPutStrLn : Value a -> <Stderr> Value a
+pEnableRunStdoutFlush : Value a -> Value a
+pExecutablePath : Value a -> <Env> Value a
+pExit : Value a -> Value a
+pExp : Value a -> Value a
+pFileExists : Value a -> <FileRead> Value a
+pFloatRem : Value a -> Value a -> Value a
+pFloatToBytes64 : Value a -> Value a
+pFloatToInt : Value a -> Value a
+pFloatToString : Value a -> Value a
+pFloor : Value a -> Value a
+pGetEnv : Value a -> <Env> Value a
+pHashBool : Value a -> Value a
+pHashChar : Value a -> Value a
+pHashFloat : Value a -> Value a
+pHashInt : Value a -> Value a
+pHashString : Value a -> Value a
+pHypot : Value a -> Value a -> Value a
+pIntBitsToFloat : Value a -> Value a
+pIntToFloat : Value a -> Value a
+pIntToString : Value a -> Value a
+pListDir : Value a -> <FileRead> Value a
+pLog : Value a -> Value a
+pLog10 : Value a -> Value a
+pLog2 : Value a -> Value a
+pMakeDir : Value a -> <FileWrite> Value a
+pMonotonicSec : Value a -> Value a
+pMonotonicSecIO : Value a -> <Clock> Value a
+pPanic : Value a -> b
+pPow : Value a -> Value a -> Value a
+pPutStr : Value a -> Value a
+pPutStrLn : Value a -> Value a
+pRandomBool : Value a -> Value a
+pRandomChar : Value a -> Value a
+pRandomFloat : Value a -> Value a
+pRandomInt : Value a -> Value a -> Value a
+pReadAll : Value a -> <Stdin> Value a
+pReadExactly : Value a -> <Stdin> Value a
+pReadFile : Value a -> <FileRead> Value a
+pReadFileBytes : Value a -> <FileRead> Value a
+pReadLine : Value a -> <Stdin> Value a
+pReadLineOpt : Value a -> <Stdin> Value a
+pRef : Value a -> Value a
+pRemoveDir : Value a -> <FileWrite> Value a
+pRemoveFile : Value a -> <FileWrite> Value a
+pRename : Value a -> Value a -> <FileWrite> Value a
+pRound : Value a -> Value a
+pSetRef : Value a -> Value a -> Value a
+pSetSeed : Value a -> Value a
+pShiftLeft : Value a -> Value a -> Value a
+pShiftRight : Value a -> Value a -> Value a
+pSin : Value a -> Value a
+pSinh : Value a -> Value a
+pSleepMs : Value a -> Value a
+pSleepMsIO : Value a -> <Clock> Value a
+pSqrt : Value a -> Value a
+pStashRunStdout : Value a -> Value a
+pStatFile : Value a -> <FileRead> Value a
+pStringCompare : Value a -> Value a -> Value a
+pStringConcat : Value a -> Value a
+pStringFromChars : Value a -> Value a
+pStringFromUtf8Bytes : Value a -> Value a
+pStringIndexOf : Value a -> Value a -> Value a
+pStringLength : Value a -> Value a
+pStringSlice : Value a -> Value a -> Value a -> Value a
+pStringToChars : Value a -> Value a
+pStringToFloat : Value a -> Value a
+pStringToLower : Value a -> Value a
+pStringToUpper : Value a -> Value a
+pStringToUtf8Bytes : Value a -> Value a
+pTan : Value a -> Value a
+pTanh : Value a -> Value a
+pTrunc : Value a -> Value a
+pWallTimeSec : Value a -> Value a
+pWallTimeSecIO : Value a -> <Clock> Value a
+pWriteFile : Value a -> Value a -> <FileWrite> Value a
+pWriteFileBytes : Value a -> Value a -> <FileWrite> Value a
 payloadArity : ConPayload -> Int
 pickByTag : List (Value a) -> String -> Value a
 ppField : (String, Value a) -> String
@@ -340,13 +340,13 @@ ppTyFunArgK : Ty -> String
 ppTyK : Ty -> String
 ppValue : Value a -> String
 ppValueAtom : Value a -> String
-prim1 : (Value a -> <Mut> Value a) -> Value a
-prim1M : (Value a -> <Mut> Value a) -> Value a
-prim2 : (Value a -> Value a -> <Mut> Value a) -> Value a
-prim2M : (Value a -> Value a -> <Mut> Value a) -> Value a
-prim3 : (Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
-prim3M : (Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
-prim5M : (Value a -> Value a -> Value a -> Value a -> Value a -> <Mut> Value a) -> Value a
+prim1 : (Value a -> Value a) -> Value a
+prim1M : (Value a -> Value a) -> Value a
+prim2 : (Value a -> Value a -> Value a) -> Value a
+prim2M : (Value a -> Value a -> Value a) -> Value a
+prim3 : (Value a -> Value a -> Value a -> Value a) -> Value a
+prim3M : (Value a -> Value a -> Value a -> Value a) -> Value a
+prim5M : (Value a -> Value a -> Value a -> Value a -> Value a -> Value a) -> Value a
 progArgsRef : Ref (List String)
 pubReexports : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> List Decl -> List (String, Ref (Value a))
 pushFrame : EvalEnv (Value a) -> List (String, Ref (Value a)) -> EvalEnv (Value a)
@@ -359,14 +359,14 @@ recordCreateVals : String -> List String -> List (String, Value a) -> List (Valu
 reexport : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> Decl -> List (String, Ref (Value a))
 resolveMembers : UsePath -> List (String, Ref (Value a)) -> List (String, Ref (Value a))
 resultToValue : Result String (Value a) -> Value a
-rngNext : Unit -> <Mut> Int
+rngNext : Unit -> Int
 rngStateRef : Ref Int
-rootFullEnv : List (ModInfo (Value a)) -> List (String, Ref (Value a)) -> <Mut> List (String, Value a)
-rootLocals : List (ModInfo (Value a)) -> <Mut> List (String, Value a)
-routeTag : EvalEnv (Value <Mut | a>) -> Route -> <Mut> String
-runGuards : EvalEnv (Value <Mut | a>) -> List Guard -> <Mut> Option (EvalEnv (Value <Mut | a>))
+rootFullEnv : List (ModInfo (Value a)) -> List (String, Ref (Value a)) -> List (String, Value a)
+rootLocals : List (ModInfo (Value a)) -> List (String, Value a)
+routeTag : EvalEnv (Value a) -> Route -> String
+runGuards : EvalEnv (Value a) -> List Guard -> Option (EvalEnv (Value a))
 runJsonMode : Ref Bool
-runMainForEffect : List (String, Value a) -> <Mut> Value a
+runMainForEffect : List (String, Value a) -> Value a
 runtimePanic : String -> String -> a
 runtimeTypeTag : Value a -> Option String
 selectByName : String -> List (String, (Int, Value a)) -> List (Int, Value a)
@@ -378,14 +378,14 @@ sortByScore : List (Int, Value a) -> List (Int, Value a)
 sortGo : List (Int, Value a) -> List (Int, Value a) -> List (Int, Value a)
 startsWithAt : String -> Bool
 statTuple : (Int, Bool, Bool, Float) -> Value a
-storeMemo : Ref (Option (Value a)) -> Value a -> <Mut> Value a
+storeMemo : Ref (Option (Value a)) -> Value a -> Value a
 stringIndexCp : String -> Int -> Value a
-stripBody : Value a -> Value a -> <Mut> Value a
-stripResolved : Value a -> <Mut> Value a
+stripBody : Value a -> Value a -> Value a
+stripResolved : Value a -> Value a
 subClampZero : Int -> Int -> Int
 sumInts : List Int -> Int
 takeN : Int -> List a -> List a
-topGroupValue : EvalEnv (Value <Mut | a>) -> List (List Pat, Expr) -> Value <Mut | a>
+topGroupValue : EvalEnv (Value a) -> List (List Pat, Expr) -> Value a
 tupleHeadTag : Int -> String
 tyMentions : Ty -> List String -> Bool
 tyvarsInArgs : List Ty -> Int
@@ -394,7 +394,7 @@ unInt : Value a -> Int
 unIntArray : Value a -> Array Int
 unString : Value a -> String
 unitResultToValue : Result String Unit -> Value a
-updateEvalLoc : Loc -> <Mut> Unit
+updateEvalLoc : Loc -> Unit
 useImports : List (String, List (String, Ref (Value a))) -> Decl -> List (String, Ref (Value a))
 useModuleId : UsePath -> String
 vIntArray : Array Int -> Value a

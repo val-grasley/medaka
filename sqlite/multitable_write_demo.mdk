@@ -66,12 +66,12 @@ bigRows i n acc =
   else
     bigRows (i + 1) n (bigRow i :: acc)
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = match args ()
   [nStr, out] => run (parseN nStr) out
   _ => println "usage: multitable_write_demo <n> <out.db>"
 
-run : Int -> String -> <IO, Mut> Unit
+run : Int -> String -> <IO> Unit
 run n out =
   let tables = [(usersSchema, usersRows), (bigSchema, bigRows 1 n []), (kvSchema, kvRows)]
   match writeTables out tables

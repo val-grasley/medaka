@@ -32,7 +32,7 @@ rootsOrDefault _ roots = roots
 noOverride : String -> Option String
 noOverride _ = None
 
-run : String -> String -> String -> List String -> <IO, Mut> Unit
+run : String -> String -> String -> List String -> <IO> Unit
 run runtimeP coreP entry roots = match readFile runtimeP
   Err e => ePutStrLn e
   Ok rsrc => match readFile coreP

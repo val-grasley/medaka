@@ -121,7 +121,7 @@ import backend.wasm_emit.{
 -- hoverFor/completionFor use on a no-import buffer) and look up the identifier /
 -- prefix at the cursor.  ONE playground.wasm serves all three (the typecheck deps
 -- are already linked for `compile`).
-main : <IO, Mut, Panic> Unit
+main : <IO> Unit
 main = match args ()
   "compile"::runtimeP::coreP::entry::roots =>
     run runtimeP coreP entry (rootsOrDefault entry roots)
@@ -145,7 +145,7 @@ rootsOrDefault _ roots = roots
 --   1 module             → analyzeLocated (single-file path)
 --   N modules            → analyzeProject (loader path)
 -- If analysis is clean, fall through to emit.
-run : String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+run : String -> String -> String -> List String -> <IO> Unit
 run runtimeP coreP entry roots = match readFile runtimeP
   Err e => emitLoadFail entry e
   Ok rsrc => match readFile coreP
@@ -169,7 +169,7 @@ run runtimeP coreP entry roots = match readFile runtimeP
             _ => analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots mods
 
 -- Single module: analyzeLocated (correct single-file type errors).  Clean ⇒ emit.
-analyzeSingle : String -> String -> String -> String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+analyzeSingle : String -> String -> String -> String -> String -> String -> List String -> <IO> Unit
 analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots =
   let diags = analyzeLocated rsrc csrc tsrc
   match any isDiagError diags
@@ -177,7 +177,7 @@ analyzeSingle rsrc csrc tsrc entry runtimeP coreP roots =
     False => guardedEmit rsrc csrc tsrc entry roots [(entry, tsrc, filterWarnings diags)]
 
 -- Multi-module: analyzeProject (loader path).  Clean ⇒ emit.
-analyzeMulti : String -> String -> String -> String -> String -> String -> List String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+analyzeMulti : String -> String -> String -> String -> String -> String -> List String -> List (String, List Decl) -> <IO> Unit
 analyzeMulti rsrc csrc tsrc entry runtimeP coreP roots _mods =
   let cacheRef = Ref []
   let parseCacheRef = Ref []
@@ -211,7 +211,7 @@ warnTriple (p, s, ds) = (p, s, filterWarnings ds)
 -- file, so a clean-but-warning program can still surface them once we reach
 -- `doEmit` below.  The main-shape guard runs FIRST and unconditionally blocks
 -- on an ERROR — it never consults warnTriples.
-guardedEmit : String -> String -> String -> String -> List String -> List (String, String, List Diag) -> <IO, Mut, Panic> Unit
+guardedEmit : String -> String -> String -> String -> List String -> List (String, String, List Diag) -> <IO> Unit
 guardedEmit rsrc csrc tsrc entry roots warnTriples = match parseResult tsrc
   Err pe => emitParseError entry pe
   Ok decls => match mainShapeError decls
@@ -266,7 +266,7 @@ mainShapeError decls = match findMainFunDef decls
 -- crash the emitter); a bare underived-ADT main surfaces the clean `No impl of
 -- Display …` diagnostic (via the __MEDAKA_DIAGNOSTICS__ marker, NOT the WAT
 -- marker).  A Unit/Async main is unchanged.
-doEmit : String -> String -> String -> String -> List String -> List (String, String, List Diag) -> <IO, Mut, Panic> Unit
+doEmit : String -> String -> String -> String -> List String -> List (String, String, List Diag) -> <IO> Unit
 doEmit rsrc csrc tsrc entry roots warnTriples = match loadProgram entry roots
   Err e => emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError "R-MODULE-LOAD" e None None None])])
   Ok mods =>
@@ -307,7 +307,7 @@ nonEmptyDiags _ = True
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
 
-runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
@@ -371,7 +371,7 @@ isDiagError _ = False
 -- hover=True → __MEDAKA_HOVER__ + a Hover JSON (or null); False → __MEDAKA_COMPLETE__
 -- + a CompletionItem[] (or null).  Reads the three sources; a read/parse failure
 -- degrades to a null result (never a trap), keeping the browser seam happy.
-runQuery : Bool -> String -> String -> String -> List String -> <IO, Mut> Unit
+runQuery : Bool -> String -> String -> String -> List String -> <IO> Unit
 runQuery isHover runtimeP coreP entry (lineS::colS::_) = match readFile runtimeP
   Err _ => emitQuery isHover JNull
   Ok rsrc => match readFile coreP
@@ -388,7 +388,7 @@ emitQuery isHover j =
 
 -- Build the buffer's typecheck env (core + runtime + this file), then either look
 -- up the identifier under the cursor (hover) or prefix-filter the env (complete).
-queryResult : Bool -> String -> String -> String -> Int -> Int -> <Mut> Json
+queryResult : Bool -> String -> String -> String -> Int -> Int -> Json
 queryResult isHover rsrc csrc tsrc line col = match parseResult tsrc
   Err _ => JNull
   Ok userRaw =>
@@ -400,7 +400,7 @@ queryResult isHover rsrc csrc tsrc line col = match parseResult tsrc
     else
       jArray (filterCompletions (prefixBefore tsrc line col) [] env)
 
-hoverResult : String -> Int -> Int -> List (String, Scheme) -> <Mut> Json
+hoverResult : String -> Int -> Int -> List (String, Scheme) -> Json
 hoverResult src line col env = match identifierAt src line col
   None => JNull
   Some name => match lookupSchemeL name env
@@ -512,7 +512,7 @@ anyName : List String -> String -> Bool
 anyName [] _ = False
 anyName (x::xs) name = x == name || anyName xs name
 
-filterCompletions : String -> List String -> List (String, Scheme) -> <Mut> List Json
+filterCompletions : String -> List String -> List (String, Scheme) -> List Json
 filterCompletions _ _ [] = []
 filterCompletions prefix seen ((n, s)::rest)
   | startsWith prefix n && not (anyName seen n) = jCompletionItem n (ppSchemeNamed n s) :: filterCompletions prefix (n::seen) rest

@@ -17,7 +17,7 @@ stages=DESUGAR,MARK
 extern putStr : String -> <Stdout> Unit
 extern putStrLn : String -> <Stdout> Unit
 extern Ref : a -> Ref a
-extern setRef : Ref a -> a -> <Mut> Unit
+extern setRef : Ref a -> a -> Unit
 -- Per-type Hashable hashers — SPECIFIED deterministic algorithms, byte-identical
 -- in lib/eval.ml (oracle) and runtime/medaka_rt.c (native): hashInt/hashChar/
 -- hashFloat = SplitMix64-finalizer mix, hashString = FNV-1a, hashBool = 0/1; all
@@ -57,7 +57,7 @@ extern writeFileBytes : String -> Array Int -> <FileWrite "_"> Result String Uni
 -- returns Err with the OS error message; exit-code non-zero is still Ok.
 -- Used by a Medaka-hosted medaka build to invoke clang and the emitter.
 extern runCommand : String -> List String -> <Exec "_"> Result String (Int, String, String)
-extern exit : Int -> <Panic> Unit
+extern exit : Int -> Unit
 extern panic : String -> a
 -- Coded-OOB abort, for a container's own `Index`/`IndexMut` impl to raise on
 -- out-of-bounds access.  Reuses the existing E-INDEX-OOB abort machinery every
@@ -80,8 +80,8 @@ extern indexError : String -> a
 -- real `medaka run` CLI driver -- never by the pure differential-oracle eval
 -- probes, which share this same source but never call it, so their captured
 -- output is unaffected.
-extern stashRunStdout : String -> <Mut> Unit
-extern enableRunStdoutFlush : Unit -> <Mut> Unit
+extern stashRunStdout : String -> Unit
+extern enableRunStdoutFlush : Unit -> Unit
 
 -- io Module 7.  Higher-level ergonomics (eprint/eprintln/readLines) live in
 -- stdlib/io.mdk; these are the irreducible host primitives.
@@ -204,10 +204,10 @@ extern arrayLength : Array a -> Int
 extern arrayMake : Int -> a -> Array a
 extern arrayMakeWith : Int -> (Int -> a) -> Array a
 extern arrayGetUnsafe : Int -> Array a -> a
-extern arraySetUnsafe : Int -> a -> Array a -> <Mut> Unit
+extern arraySetUnsafe : Int -> a -> Array a -> Unit
 extern arrayCopy : Array a -> Array a
-extern arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
-extern arrayFill : a -> Array a -> <Mut> Unit
+extern arrayBlit : Array a -> Int -> Array a -> Int -> Int -> Unit
+extern arrayFill : a -> Array a -> Unit
 -- Pure wrapper.  Encapsulates "alloc + locally mutate + return fresh" so the
 -- <Mut> doesn't leak into pure callers (Medaka has no effect masking).
 extern arrayFromList : List a -> Array a
@@ -255,7 +255,7 @@ extern stringToLower : String -> String
 (DExtern false "putStr" (TyFun (TyCon "String") (TyEffect ("Stdout") None (TyCon "Unit"))))
 (DExtern false "putStrLn" (TyFun (TyCon "String") (TyEffect ("Stdout") None (TyCon "Unit"))))
 (DExtern false "Ref" (TyFun (TyVar "a") (TyApp (TyCon "Ref") (TyVar "a"))))
-(DExtern false "setRef" (TyFun (TyApp (TyCon "Ref") (TyVar "a")) (TyFun (TyVar "a") (TyEffect ("Mut") None (TyCon "Unit")))))
+(DExtern false "setRef" (TyFun (TyApp (TyCon "Ref") (TyVar "a")) (TyFun (TyVar "a") (TyCon "Unit"))))
 (DExtern false "hashInt" (TyFun (TyCon "Int") (TyCon "Int")))
 (DExtern false "hashFloat" (TyFun (TyCon "Float") (TyCon "Int")))
 (DExtern false "hashString" (TyFun (TyCon "String") (TyCon "Int")))
@@ -275,11 +275,11 @@ extern stringToLower : String -> String
 (DExtern false "writeFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ((hole "FileWrite")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))
 (DExtern false "writeFileBytes" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyEffect ((hole "FileWrite")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))
 (DExtern false "runCommand" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ((hole "Exec")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyTuple (TyCon "Int") (TyCon "String") (TyCon "String")))))))
-(DExtern false "exit" (TyFun (TyCon "Int") (TyEffect ("Panic") None (TyCon "Unit"))))
+(DExtern false "exit" (TyFun (TyCon "Int") (TyCon "Unit")))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "indexError" (TyFun (TyCon "String") (TyVar "a")))
-(DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Unit"))))
-(DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Unit"))))
+(DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyCon "Unit")))
+(DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyCon "Unit")))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
 (DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
@@ -360,10 +360,10 @@ extern stringToLower : String -> String
 (DExtern false "arrayMake" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyApp (TyCon "Array") (TyVar "a")))))
 (DExtern false "arrayMakeWith" (TyFun (TyCon "Int") (TyFun (TyFun (TyCon "Int") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
 (DExtern false "arrayGetUnsafe" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyVar "a"))))
-(DExtern false "arraySetUnsafe" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DExtern false "arraySetUnsafe" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit")))))
 (DExtern false "arrayCopy" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
-(DExtern false "arrayBlit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit"))))))))
-(DExtern false "arrayFill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DExtern false "arrayBlit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Unit")))))))
+(DExtern false "arrayFill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit"))))
 (DExtern false "arrayFromList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DExtern false "stringToChars" (TyFun (TyCon "String") (TyApp (TyCon "Array") (TyCon "Char"))))
 (DExtern false "stringFromChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyCon "String")))
@@ -390,7 +390,7 @@ extern stringToLower : String -> String
 (DExtern false "putStr" (TyFun (TyCon "String") (TyEffect ("Stdout") None (TyCon "Unit"))))
 (DExtern false "putStrLn" (TyFun (TyCon "String") (TyEffect ("Stdout") None (TyCon "Unit"))))
 (DExtern false "Ref" (TyFun (TyVar "a") (TyApp (TyCon "Ref") (TyVar "a"))))
-(DExtern false "setRef" (TyFun (TyApp (TyCon "Ref") (TyVar "a")) (TyFun (TyVar "a") (TyEffect ("Mut") None (TyCon "Unit")))))
+(DExtern false "setRef" (TyFun (TyApp (TyCon "Ref") (TyVar "a")) (TyFun (TyVar "a") (TyCon "Unit"))))
 (DExtern false "hashInt" (TyFun (TyCon "Int") (TyCon "Int")))
 (DExtern false "hashFloat" (TyFun (TyCon "Float") (TyCon "Int")))
 (DExtern false "hashString" (TyFun (TyCon "String") (TyCon "Int")))
@@ -410,11 +410,11 @@ extern stringToLower : String -> String
 (DExtern false "writeFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ((hole "FileWrite")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))
 (DExtern false "writeFileBytes" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyEffect ((hole "FileWrite")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))
 (DExtern false "runCommand" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ((hole "Exec")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyTuple (TyCon "Int") (TyCon "String") (TyCon "String")))))))
-(DExtern false "exit" (TyFun (TyCon "Int") (TyEffect ("Panic") None (TyCon "Unit"))))
+(DExtern false "exit" (TyFun (TyCon "Int") (TyCon "Unit")))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "indexError" (TyFun (TyCon "String") (TyVar "a")))
-(DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyEffect ("Mut") None (TyCon "Unit"))))
-(DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyEffect ("Mut") None (TyCon "Unit"))))
+(DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyCon "Unit")))
+(DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyCon "Unit")))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
 (DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
@@ -495,10 +495,10 @@ extern stringToLower : String -> String
 (DExtern false "arrayMake" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyApp (TyCon "Array") (TyVar "a")))))
 (DExtern false "arrayMakeWith" (TyFun (TyCon "Int") (TyFun (TyFun (TyCon "Int") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
 (DExtern false "arrayGetUnsafe" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyVar "a"))))
-(DExtern false "arraySetUnsafe" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DExtern false "arraySetUnsafe" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit")))))
 (DExtern false "arrayCopy" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
-(DExtern false "arrayBlit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit"))))))))
-(DExtern false "arrayFill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DExtern false "arrayBlit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Unit")))))))
+(DExtern false "arrayFill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit"))))
 (DExtern false "arrayFromList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DExtern false "stringToChars" (TyFun (TyCon "String") (TyApp (TyCon "Array") (TyCon "Char"))))
 (DExtern false "stringFromChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyCon "String")))

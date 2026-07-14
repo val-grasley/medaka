@@ -63,7 +63,7 @@ preludeNamesRef : Ref (List String)
 preludeNamesRef = Ref []
 
 -- ── Initialise session ────────────────────────────────────────────────────
-export initSession : List Decl -> List Decl -> <Mut> Unit
+export initSession : List Decl -> List Decl -> Unit
 initSession runtimeDecls preludeDecls =
   let _ = setRef runtimeDeclsRef runtimeDecls
   let _ = setRef preludeDeclsRef preludeDecls
@@ -203,7 +203,7 @@ lookupScheme name ((n, s)::rest)
   | name == n = Some s
   | otherwise = lookupScheme name rest
 
-runPipeline : List Decl -> <Mut | e> (List String, List (String, Scheme), List (String, Value e))
+runPipeline : List Decl -> <e> (List String, List (String, Scheme), List (String, Value e))
 runPipeline combined =
   let runtimeDecls = runtimeDeclsRef.value
   let preludeDecls = preludeDeclsRef.value
@@ -232,7 +232,7 @@ combinedDecls newDecls = accumulatedRef.value ++ newDecls
 printErr : String -> <IO> Unit
 printErr msg = ePutStrLn ("<repl>: " ++ msg)
 
-mapIO : (a -> <IO, Mut> Unit) -> List a -> <IO, Mut> Unit
+mapIO : (a -> <IO> Unit) -> List a -> <IO> Unit
 mapIO _ [] = ()
 mapIO f (x::rest) =
   let _ = f x
@@ -244,12 +244,12 @@ mapIO_ f (x::rest) =
   let _ = f x
   mapIO_ f rest
 
-mapMut : (a -> <Mut> b) -> List a -> <Mut> List b
+mapMut : (a -> b) -> List a -> List b
 mapMut _ [] = []
 mapMut f (x::rest) = f x :: mapMut f rest
 
 -- ── Process a declaration input ───────────────────────────────────────────
-processDeclInput : String -> <IO, Mut> Unit
+processDeclInput : String -> <IO> Unit
 processDeclInput src =
   let newDecls = desugar (parse src)
   let combined = combinedDecls newDecls
@@ -268,17 +268,17 @@ processDeclInput src =
       let newUserBindings = mapMut schemeToBinding newSchemes
       setRef userBindingsRef (userBindingsRef.value ++ newUserBindings)
 
-printNewScheme : (String, Scheme) -> <IO, Mut> Unit
+printNewScheme : (String, Scheme) -> <IO> Unit
 printNewScheme (n, s) = putStrLn "val \{n} : \{ppScheme s}"
 
 printTypeAnn : (String, String) -> <IO> Unit
 printTypeAnn (kind, name) = putStrLn "\{kind} \{name}"
 
-schemeToBinding : (String, Scheme) -> <Mut> (String, String)
+schemeToBinding : (String, Scheme) -> (String, String)
 schemeToBinding (n, s) = (n, ppScheme s)
 
 -- ── Process an expression input ───────────────────────────────────────────
-processExprInput : String -> <IO, Mut> Unit
+processExprInput : String -> <IO> Unit
 processExprInput src =
   let wrappedSrc = "__repl__ = " ++ src
   let newDecls = desugar (parse wrappedSrc)
@@ -297,7 +297,7 @@ processExprInput src =
         _ => ()
 
 -- ── Process :type command ─────────────────────────────────────────────────
-processTypeCmd : String -> <IO, Mut> Unit
+processTypeCmd : String -> <IO> Unit
 processTypeCmd exprSrc =
   let trimmed = stringTrim exprSrc
   if trimmed == "" then ePutStrLn ":type requires an expression"
@@ -313,7 +313,7 @@ processTypeCmd exprSrc =
         None => ()
 
 -- ── Process :browse / :env command ───────────────────────────────────────
-processBrowse : Unit -> <IO, Mut> Unit
+processBrowse : Unit -> <IO> Unit
 processBrowse _ =
   let bindings = userBindingsRef.value
   if listNull bindings then putStrLn "(no user-defined bindings)"
@@ -339,7 +339,7 @@ insertSorted (k, v) ((k2, v2)::rest)
   | otherwise = (k2, v2) :: insertSorted (k, v) rest
 
 -- ── Process :reset command ────────────────────────────────────────────────
-processReset : Unit -> <IO, Mut> Unit
+processReset : Unit -> <IO> Unit
 processReset _ =
   let _ = setRef accumulatedRef []
   let _ = setRef userBindingsRef []
@@ -348,7 +348,7 @@ processReset _ =
 
 -- ── Meta-command dispatch ─────────────────────────────────────────────────
 -- Returns False → exit the REPL loop.
-processCommand : String -> <IO, Mut> Bool
+processCommand : String -> <IO> Bool
 processCommand cmd =
   if cmd == ":quit" || cmd == ":q" then False
   else
@@ -374,12 +374,12 @@ processCommand cmd =
             True
 
 -- ── Main REPL loop ────────────────────────────────────────────────────────
-export replLoop : Unit -> <IO, Mut> Unit
+export replLoop : Unit -> <IO> Unit
 replLoop _ =
   let _ = putStrLn "medaka repl (:quit to exit, :reset to clear session)"
   replLoopGo "" False
 
-replLoopGo : String -> Bool -> <IO, Mut> Unit
+replLoopGo : String -> Bool -> <IO> Unit
 replLoopGo buf cont =
   let _ = putStr (if cont then "  " else "> ")
   match readLineOpt ()
@@ -402,7 +402,7 @@ replLoopGo buf cont =
           let _ = dispatchInput newBuf
           replLoopGo "" False
 
-dispatchInput : String -> <IO, Mut> Unit
+dispatchInput : String -> <IO> Unit
 dispatchInput src =
   let trimmed = stringTrim src
   if trimmed == "" then
@@ -446,7 +446,7 @@ stringSplitOn sep s start cur len
 (DFunDef false "preludeDeclsRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "preludeNamesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "preludeNamesRef" () (EApp (EVar "Ref") (EListLit)))
-(DTypeSig true "initSession" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "initSession" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))
 (DFunDef false "initSession" ((PVar "runtimeDecls") (PVar "preludeDecls")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "runtimeDeclsRef")) (EVar "runtimeDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "preludeDeclsRef")) (EVar "preludeDecls"))) (DoLet false false (PVar "prelSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EListLit)) (EVar "preludeDecls"))) (DoLet false false (PVar "prelNames") (EApp (EApp (EVar "map") (EVar "fst")) (EVar "prelSchemes"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "preludeNamesRef")) (EVar "prelNames"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "knownNamesRef")) (EVar "prelNames"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "accumulatedRef")) (EListLit))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "userBindingsRef")) (EListLit)))))
 (DTypeSig false "isDeclStartToken" (TyFun (TyCon "Token") (TyCon "Bool")))
 (DFunDef false "isDeclStartToken" ((PCon "TData")) (EVar "True"))
@@ -514,34 +514,34 @@ stringSplitOn sep s start cur len
 (DTypeSig false "lookupScheme" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "Option") (TyCon "Scheme")))))
 (DFunDef false "lookupScheme" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupScheme" ((PVar "name") (PCons (PTuple (PVar "n") (PVar "s")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "name") (EVar "n")) (EApp (EVar "Some") (EVar "s")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupScheme") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "runPipeline" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") (Some "e") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DTypeSig false "runPipeline" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect () (Some "e") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "runPipeline" ((PVar "combined")) (EBlock (DoLet false false (PVar "runtimeDecls") (EFieldAccess (EVar "runtimeDeclsRef") "value")) (DoLet false false (PVar "preludeDecls") (EFieldAccess (EVar "preludeDeclsRef") "value")) (DoLet false false (PVar "resErrs") (EApp (EApp (EApp (EVar "resolveProgram") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "resErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EVar "map") (EVar "ppResError")) (EVar "resErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "tcErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EVar "map") (ELam ((PTuple PWild (PVar "m") PWild)) (EVar "m"))) (EVar "tcErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PVar "allSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EVar "preludeDecls")) (EVar "combined"))) (DoLet false false (PVar "bindings") (EApp (EApp (EVar "evalOneRootEnv") (EVar "preludeDecls")) (ETuple (ELit (LString "__repl__")) (EVar "combined")))) (DoExpr (ETuple (EListLit) (EVar "allSchemes") (EVar "bindings")))))))))))))
 (DTypeSig false "combinedDecls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "combinedDecls" ((PVar "newDecls")) (EBinOp "++" (EFieldAccess (EVar "accumulatedRef") "value") (EVar "newDecls")))
 (DTypeSig false "printErr" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printErr" ((PVar "msg")) (EApp (EVar "ePutStrLn") (EBinOp "++" (ELit (LString "<repl>: ")) (EVar "msg"))))
-(DTypeSig false "mapIO" (TyFun (TyFun (TyVar "a") (TyEffect ("IO" "Mut") None (TyCon "Unit"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("IO" "Mut") None (TyCon "Unit")))))
+(DTypeSig false "mapIO" (TyFun (TyFun (TyVar "a") (TyEffect ("IO") None (TyCon "Unit"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "mapIO" (PWild (PList)) (ELit LUnit))
 (DFunDef false "mapIO" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "f") (EVar "x"))) (DoExpr (EApp (EApp (EVar "mapIO") (EVar "f")) (EVar "rest")))))
 (DTypeSig false "mapIO_" (TyFun (TyFun (TyVar "a") (TyEffect ("IO") None (TyCon "Unit"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "mapIO_" (PWild (PList)) (ELit LUnit))
 (DFunDef false "mapIO_" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "f") (EVar "x"))) (DoExpr (EApp (EApp (EVar "mapIO_") (EVar "f")) (EVar "rest")))))
-(DTypeSig false "mapMut" (TyFun (TyFun (TyVar "a") (TyEffect ("Mut") None (TyVar "b"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyVar "b"))))))
+(DTypeSig false "mapMut" (TyFun (TyFun (TyVar "a") (TyVar "b")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")))))
 (DFunDef false "mapMut" (PWild (PList)) (EListLit))
 (DFunDef false "mapMut" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBinOp "::" (EApp (EVar "f") (EVar "x")) (EApp (EApp (EVar "mapMut") (EVar "f")) (EVar "rest"))))
-(DTypeSig false "processDeclInput" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processDeclInput" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processDeclInput" ((PVar "src")) (EBlock (DoLet false false (PVar "newDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "src")))) (DoLet false false (PVar "combined") (EApp (EVar "combinedDecls") (EVar "newDecls"))) (DoLet false false (PTuple (PVar "errs") (PVar "allSchemes") (PVar "_bindings")) (EApp (EVar "runPipeline") (EVar "combined"))) (DoExpr (EMatch (EVar "errs") (arm (PCons (PVar "e") PWild) () (EApp (EApp (EVar "mapIO_") (EVar "printErr")) (EVar "errs"))) (arm (PList) () (EBlock (DoLet false false (PVar "known") (EFieldAccess (EVar "knownNamesRef") "value")) (DoLet false false (PVar "newSchemes") (EApp (EApp (EVar "userSchemes") (EVar "allSchemes")) (EVar "known"))) (DoLet false false PWild (EApp (EApp (EVar "mapIO") (EVar "printNewScheme")) (EVar "newSchemes"))) (DoLet false false (PVar "typeAnns") (EApp (EVar "declTypeAnnotations") (EVar "newDecls"))) (DoLet false false PWild (EApp (EApp (EVar "mapIO_") (EVar "printTypeAnn")) (EVar "typeAnns"))) (DoLet false false (PVar "newNames") (EBinOp "++" (EApp (EApp (EVar "map") (EVar "fst")) (EVar "newSchemes")) (EApp (EApp (EVar "map") (EVar "snd")) (EVar "typeAnns")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "accumulatedRef")) (EBinOp "++" (EFieldAccess (EVar "accumulatedRef") "value") (EVar "newDecls")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "knownNamesRef")) (EBinOp "++" (EVar "known") (EVar "newNames")))) (DoLet false false (PVar "newUserBindings") (EApp (EApp (EVar "mapMut") (EVar "schemeToBinding")) (EVar "newSchemes"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "userBindingsRef")) (EBinOp "++" (EFieldAccess (EVar "userBindingsRef") "value") (EVar "newUserBindings"))))))))))
-(DTypeSig false "printNewScheme" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "printNewScheme" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printNewScheme" ((PTuple (PVar "n") (PVar "s"))) (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "val ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString " : "))) (EApp (EVar "display") (EApp (EVar "ppScheme") (EVar "s")))) (ELit (LString "")))))
 (DTypeSig false "printTypeAnn" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printTypeAnn" ((PTuple (PVar "kind") (PVar "name"))) (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EVar "kind"))) (ELit (LString " "))) (EApp (EVar "display") (EVar "name"))) (ELit (LString "")))))
-(DTypeSig false "schemeToBinding" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "String")))))
+(DTypeSig false "schemeToBinding" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyTuple (TyCon "String") (TyCon "String"))))
 (DFunDef false "schemeToBinding" ((PTuple (PVar "n") (PVar "s"))) (ETuple (EVar "n") (EApp (EVar "ppScheme") (EVar "s"))))
-(DTypeSig false "processExprInput" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processExprInput" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processExprInput" ((PVar "src")) (EBlock (DoLet false false (PVar "wrappedSrc") (EBinOp "++" (ELit (LString "__repl__ = ")) (EVar "src"))) (DoLet false false (PVar "newDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "wrappedSrc")))) (DoLet false false (PVar "combined") (EApp (EVar "combinedDecls") (EVar "newDecls"))) (DoLet false false (PTuple (PVar "errs") (PVar "allSchemes") (PVar "bindings")) (EApp (EVar "runPipeline") (EVar "combined"))) (DoExpr (EMatch (EVar "errs") (arm (PCons (PVar "e") PWild) () (EApp (EApp (EVar "mapIO_") (EVar "printErr")) (EVar "errs"))) (arm (PList) () (EBlock (DoLet false false (PVar "valOpt") (EApp (EApp (EVar "lookupBinding") (ELit (LString "__repl__"))) (EVar "bindings"))) (DoLet false false (PVar "schemeOpt") (EApp (EApp (EVar "lookupScheme") (ELit (LString "__repl__"))) (EVar "allSchemes"))) (DoExpr (EMatch (ETuple (EVar "valOpt") (EVar "schemeOpt")) (arm (PTuple (PCon "Some" (PVar "v")) (PCon "Some" (PVar "scheme"))) () (EBlock (DoLet false false (PVar "vStr") (EApp (EVar "ppValue") (EApp (EVar "force") (EVar "v")))) (DoLet false false (PVar "tStr") (EApp (EVar "ppScheme") (EVar "scheme"))) (DoExpr (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EVar "vStr"))) (ELit (LString " : "))) (EApp (EVar "display") (EVar "tStr"))) (ELit (LString ""))))))) (arm PWild () (ELit LUnit))))))))))
-(DTypeSig false "processTypeCmd" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processTypeCmd" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processTypeCmd" ((PVar "exprSrc")) (EBlock (DoLet false false (PVar "trimmed") (EApp (EVar "stringTrim") (EVar "exprSrc"))) (DoExpr (EIf (EBinOp "==" (EVar "trimmed") (ELit (LString ""))) (EApp (EVar "ePutStrLn") (ELit (LString ":type requires an expression"))) (EBlock (DoLet false false (PVar "wrappedSrc") (EBinOp "++" (ELit (LString "__repl__ = ")) (EVar "trimmed"))) (DoLet false false (PVar "newDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "wrappedSrc")))) (DoLet false false (PVar "combined") (EApp (EVar "combinedDecls") (EVar "newDecls"))) (DoLet false false (PTuple (PVar "errs") (PVar "allSchemes") PWild) (EApp (EVar "runPipeline") (EVar "combined"))) (DoExpr (EMatch (EVar "errs") (arm (PCons (PVar "e") PWild) () (EApp (EApp (EVar "mapIO_") (EVar "printErr")) (EVar "errs"))) (arm (PList) () (EMatch (EApp (EApp (EVar "lookupScheme") (ELit (LString "__repl__"))) (EVar "allSchemes")) (arm (PCon "Some" (PVar "scheme")) () (EApp (EVar "putStrLn") (EApp (EVar "ppScheme") (EVar "scheme")))) (arm (PCon "None") () (ELit LUnit)))))))))))
-(DTypeSig false "processBrowse" (TyFun (TyCon "Unit") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processBrowse" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processBrowse" (PWild) (EBlock (DoLet false false (PVar "bindings") (EFieldAccess (EVar "userBindingsRef") "value")) (DoExpr (EIf (EApp (EVar "listNull") (EVar "bindings")) (EApp (EVar "putStrLn") (ELit (LString "(no user-defined bindings)"))) (EBlock (DoLet false false (PVar "sorted") (EApp (EVar "sortByKey") (EVar "bindings"))) (DoExpr (EApp (EApp (EVar "mapIO_") (EVar "printBrowseLine")) (EVar "sorted"))))))))
 (DTypeSig false "printBrowseLine" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printBrowseLine" ((PTuple (PVar "n") (PVar "t"))) (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "val ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString " : "))) (EApp (EVar "display") (EVar "t"))) (ELit (LString "")))))
@@ -554,15 +554,15 @@ stringSplitOn sep s start cur len
 (DTypeSig false "insertSorted" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "insertSorted" ((PVar "x") (PList)) (EListLit (EVar "x")))
 (DFunDef false "insertSorted" ((PTuple (PVar "k") (PVar "v")) (PCons (PTuple (PVar "k2") (PVar "v2")) (PVar "rest"))) (EIf (EBinOp "<=" (EVar "k") (EVar "k2")) (EBinOp "::" (ETuple (EVar "k") (EVar "v")) (EBinOp "::" (ETuple (EVar "k2") (EVar "v2")) (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "k2") (EVar "v2")) (EApp (EApp (EVar "insertSorted") (ETuple (EVar "k") (EVar "v"))) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "processReset" (TyFun (TyCon "Unit") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processReset" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processReset" (PWild) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "accumulatedRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "userBindingsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "knownNamesRef")) (EFieldAccess (EVar "preludeNamesRef") "value"))) (DoExpr (EApp (EVar "putStrLn") (ELit (LString "Session reset"))))))
-(DTypeSig false "processCommand" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Bool"))))
+(DTypeSig false "processCommand" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Bool"))))
 (DFunDef false "processCommand" ((PVar "cmd")) (EIf (EBinOp "||" (EBinOp "==" (EVar "cmd") (ELit (LString ":quit"))) (EBinOp "==" (EVar "cmd") (ELit (LString ":q")))) (EVar "False") (EIf (EBinOp "==" (EVar "cmd") (ELit (LString ":reset"))) (EBlock (DoLet false false PWild (EApp (EVar "processReset") (ELit LUnit))) (DoExpr (EVar "True"))) (EIf (EBinOp "||" (EBinOp "==" (EVar "cmd") (ELit (LString ":browse"))) (EBinOp "==" (EVar "cmd") (ELit (LString ":env")))) (EBlock (DoLet false false PWild (EApp (EVar "processBrowse") (ELit LUnit))) (DoExpr (EVar "True"))) (EIf (EApp (EApp (EVar "startsWith") (ELit (LString ":type"))) (EVar "cmd")) (EBlock (DoLet false false (PVar "rest") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 5))) (EApp (EVar "stringLength") (EVar "cmd"))) (EVar "cmd"))) (DoLet false false PWild (EApp (EVar "processTypeCmd") (EVar "rest"))) (DoExpr (EVar "True"))) (EIf (EApp (EApp (EVar "startsWith") (ELit (LString ":t "))) (EVar "cmd")) (EBlock (DoLet false false (PVar "rest") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 3))) (EApp (EVar "stringLength") (EVar "cmd"))) (EVar "cmd"))) (DoLet false false PWild (EApp (EVar "processTypeCmd") (EVar "rest"))) (DoExpr (EVar "True"))) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown command: ")) (EVar "cmd")) (ELit (LString " (try :browse, :type, :reset, :quit)"))))) (DoExpr (EVar "True")))))))))
-(DTypeSig true "replLoop" (TyFun (TyCon "Unit") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig true "replLoop" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "replLoop" (PWild) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "medaka repl (:quit to exit, :reset to clear session)")))) (DoExpr (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")))))
-(DTypeSig false "replLoopGo" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO" "Mut") None (TyCon "Unit")))))
+(DTypeSig false "replLoopGo" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "replLoopGo" ((PVar "buf") (PVar "cont")) (EBlock (DoLet false false PWild (EApp (EVar "putStr") (EIf (EVar "cont") (ELit (LString "  ")) (ELit (LString "> "))))) (DoExpr (EMatch (EApp (EVar "readLineOpt") (ELit LUnit)) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "line")) () (EBlock (DoLet false false (PVar "newBuf") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EVar "buf"))) (ELit (LString ""))) (EApp (EVar "display") (EVar "line"))) (ELit (LString "\n")))) (DoExpr (EIf (EApp (EVar "not") (EVar "cont")) (EBlock (DoLet false false (PVar "trimmed") (EApp (EVar "stringTrim") (EVar "line"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">" (EApp (EVar "stringLength") (EVar "trimmed")) (ELit (LInt 0))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 1))) (EVar "trimmed")) (ELit (LString ":")))) (EBlock (DoLet false false (PVar "keepGoing") (EApp (EVar "processCommand") (EVar "trimmed"))) (DoExpr (EIf (EVar "keepGoing") (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")) (ELit LUnit)))) (EIf (EApp (EVar "needsMore") (EVar "newBuf")) (EApp (EApp (EVar "replLoopGo") (EVar "newBuf")) (EVar "True")) (EBlock (DoLet false false PWild (EApp (EVar "dispatchInput") (EVar "newBuf"))) (DoExpr (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")))))))) (EIf (EApp (EVar "needsMore") (EVar "newBuf")) (EApp (EApp (EVar "replLoopGo") (EVar "newBuf")) (EVar "True")) (EBlock (DoLet false false PWild (EApp (EVar "dispatchInput") (EVar "newBuf"))) (DoExpr (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")))))))))))))
-(DTypeSig false "dispatchInput" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "dispatchInput" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "dispatchInput" ((PVar "src")) (EBlock (DoLet false false (PVar "trimmed") (EApp (EVar "stringTrim") (EVar "src"))) (DoExpr (EIf (EBinOp "==" (EVar "trimmed") (ELit (LString ""))) (ELit LUnit) (EIf (EApp (EVar "isDecl") (EVar "src")) (EApp (EVar "processDeclInput") (EVar "src")) (EApp (EVar "processExprInput") (EVar "src")))))))
 (DTypeSig false "stringSplitNewlines" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "stringSplitNewlines" ((PVar "s")) (EApp (EApp (EApp (EApp (EApp (EVar "stringSplitOn") (ELit (LString "\n"))) (EVar "s")) (ELit (LInt 0))) (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "s"))))
@@ -589,7 +589,7 @@ stringSplitOn sep s start cur len
 (DFunDef false "preludeDeclsRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "preludeNamesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "preludeNamesRef" () (EApp (EVar "Ref") (EListLit)))
-(DTypeSig true "initSession" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "initSession" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))
 (DFunDef false "initSession" ((PVar "runtimeDecls") (PVar "preludeDecls")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "runtimeDeclsRef")) (EVar "runtimeDecls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "preludeDeclsRef")) (EVar "preludeDecls"))) (DoLet false false (PVar "prelSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EListLit)) (EVar "preludeDecls"))) (DoLet false false (PVar "prelNames") (EApp (EApp (EMethodRef "map") (EVar "fst")) (EVar "prelSchemes"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "preludeNamesRef")) (EVar "prelNames"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "knownNamesRef")) (EVar "prelNames"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "accumulatedRef")) (EListLit))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "userBindingsRef")) (EListLit)))))
 (DTypeSig false "isDeclStartToken" (TyFun (TyCon "Token") (TyCon "Bool")))
 (DFunDef false "isDeclStartToken" ((PCon "TData")) (EVar "True"))
@@ -657,34 +657,34 @@ stringSplitOn sep s start cur len
 (DTypeSig false "lookupScheme" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "Option") (TyCon "Scheme")))))
 (DFunDef false "lookupScheme" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupScheme" ((PVar "name") (PCons (PTuple (PVar "n") (PVar "s")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "name") (EVar "n")) (EApp (EVar "Some") (EVar "s")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupScheme") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "runPipeline" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("Mut") (Some "e") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
+(DTypeSig false "runPipeline" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect () (Some "e") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "runPipeline" ((PVar "combined")) (EBlock (DoLet false false (PVar "runtimeDecls") (EFieldAccess (EVar "runtimeDeclsRef") "value")) (DoLet false false (PVar "preludeDecls") (EFieldAccess (EVar "preludeDeclsRef") "value")) (DoLet false false (PVar "resErrs") (EApp (EApp (EApp (EVar "resolveProgram") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "resErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EMethodRef "map") (EVar "ppResError")) (EVar "resErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "tcErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EMethodRef "map") (ELam ((PTuple PWild (PVar "m") PWild)) (EVar "m"))) (EVar "tcErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PVar "allSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EVar "preludeDecls")) (EVar "combined"))) (DoLet false false (PVar "bindings") (EApp (EApp (EVar "evalOneRootEnv") (EVar "preludeDecls")) (ETuple (ELit (LString "__repl__")) (EVar "combined")))) (DoExpr (ETuple (EListLit) (EVar "allSchemes") (EVar "bindings")))))))))))))
 (DTypeSig false "combinedDecls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "combinedDecls" ((PVar "newDecls")) (EBinOp "++" (EFieldAccess (EVar "accumulatedRef") "value") (EVar "newDecls")))
 (DTypeSig false "printErr" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printErr" ((PVar "msg")) (EApp (EVar "ePutStrLn") (EBinOp "++" (ELit (LString "<repl>: ")) (EVar "msg"))))
-(DTypeSig false "mapIO" (TyFun (TyFun (TyVar "a") (TyEffect ("IO" "Mut") None (TyCon "Unit"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("IO" "Mut") None (TyCon "Unit")))))
+(DTypeSig false "mapIO" (TyFun (TyFun (TyVar "a") (TyEffect ("IO") None (TyCon "Unit"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "mapIO" (PWild (PList)) (ELit LUnit))
 (DFunDef false "mapIO" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "f") (EVar "x"))) (DoExpr (EApp (EApp (EVar "mapIO") (EVar "f")) (EVar "rest")))))
 (DTypeSig false "mapIO_" (TyFun (TyFun (TyVar "a") (TyEffect ("IO") None (TyCon "Unit"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "mapIO_" (PWild (PList)) (ELit LUnit))
 (DFunDef false "mapIO_" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "f") (EVar "x"))) (DoExpr (EApp (EApp (EVar "mapIO_") (EVar "f")) (EVar "rest")))))
-(DTypeSig false "mapMut" (TyFun (TyFun (TyVar "a") (TyEffect ("Mut") None (TyVar "b"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect ("Mut") None (TyApp (TyCon "List") (TyVar "b"))))))
+(DTypeSig false "mapMut" (TyFun (TyFun (TyVar "a") (TyVar "b")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")))))
 (DFunDef false "mapMut" (PWild (PList)) (EListLit))
 (DFunDef false "mapMut" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBinOp "::" (EApp (EVar "f") (EVar "x")) (EApp (EApp (EVar "mapMut") (EVar "f")) (EVar "rest"))))
-(DTypeSig false "processDeclInput" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processDeclInput" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processDeclInput" ((PVar "src")) (EBlock (DoLet false false (PVar "newDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "src")))) (DoLet false false (PVar "combined") (EApp (EVar "combinedDecls") (EVar "newDecls"))) (DoLet false false (PTuple (PVar "errs") (PVar "allSchemes") (PVar "_bindings")) (EApp (EVar "runPipeline") (EVar "combined"))) (DoExpr (EMatch (EVar "errs") (arm (PCons (PVar "e") PWild) () (EApp (EApp (EVar "mapIO_") (EVar "printErr")) (EVar "errs"))) (arm (PList) () (EBlock (DoLet false false (PVar "known") (EFieldAccess (EVar "knownNamesRef") "value")) (DoLet false false (PVar "newSchemes") (EApp (EApp (EVar "userSchemes") (EVar "allSchemes")) (EVar "known"))) (DoLet false false PWild (EApp (EApp (EVar "mapIO") (EVar "printNewScheme")) (EVar "newSchemes"))) (DoLet false false (PVar "typeAnns") (EApp (EVar "declTypeAnnotations") (EVar "newDecls"))) (DoLet false false PWild (EApp (EApp (EVar "mapIO_") (EVar "printTypeAnn")) (EVar "typeAnns"))) (DoLet false false (PVar "newNames") (EBinOp "++" (EApp (EApp (EMethodRef "map") (EVar "fst")) (EVar "newSchemes")) (EApp (EApp (EMethodRef "map") (EVar "snd")) (EVar "typeAnns")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "accumulatedRef")) (EBinOp "++" (EFieldAccess (EVar "accumulatedRef") "value") (EVar "newDecls")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "knownNamesRef")) (EBinOp "++" (EVar "known") (EVar "newNames")))) (DoLet false false (PVar "newUserBindings") (EApp (EApp (EVar "mapMut") (EVar "schemeToBinding")) (EVar "newSchemes"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "userBindingsRef")) (EBinOp "++" (EFieldAccess (EVar "userBindingsRef") "value") (EVar "newUserBindings"))))))))))
-(DTypeSig false "printNewScheme" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "printNewScheme" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printNewScheme" ((PTuple (PVar "n") (PVar "s"))) (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "val ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString " : "))) (EApp (EMethodRef "display") (EApp (EVar "ppScheme") (EVar "s")))) (ELit (LString "")))))
 (DTypeSig false "printTypeAnn" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printTypeAnn" ((PTuple (PVar "kind") (PVar "name"))) (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EVar "kind"))) (ELit (LString " "))) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "")))))
-(DTypeSig false "schemeToBinding" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyEffect ("Mut") None (TyTuple (TyCon "String") (TyCon "String")))))
+(DTypeSig false "schemeToBinding" (TyFun (TyTuple (TyCon "String") (TyCon "Scheme")) (TyTuple (TyCon "String") (TyCon "String"))))
 (DFunDef false "schemeToBinding" ((PTuple (PVar "n") (PVar "s"))) (ETuple (EVar "n") (EApp (EVar "ppScheme") (EVar "s"))))
-(DTypeSig false "processExprInput" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processExprInput" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processExprInput" ((PVar "src")) (EBlock (DoLet false false (PVar "wrappedSrc") (EBinOp "++" (ELit (LString "__repl__ = ")) (EVar "src"))) (DoLet false false (PVar "newDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "wrappedSrc")))) (DoLet false false (PVar "combined") (EApp (EVar "combinedDecls") (EVar "newDecls"))) (DoLet false false (PTuple (PVar "errs") (PVar "allSchemes") (PVar "bindings")) (EApp (EVar "runPipeline") (EVar "combined"))) (DoExpr (EMatch (EVar "errs") (arm (PCons (PVar "e") PWild) () (EApp (EApp (EVar "mapIO_") (EVar "printErr")) (EVar "errs"))) (arm (PList) () (EBlock (DoLet false false (PVar "valOpt") (EApp (EApp (EVar "lookupBinding") (ELit (LString "__repl__"))) (EVar "bindings"))) (DoLet false false (PVar "schemeOpt") (EApp (EApp (EVar "lookupScheme") (ELit (LString "__repl__"))) (EVar "allSchemes"))) (DoExpr (EMatch (ETuple (EVar "valOpt") (EVar "schemeOpt")) (arm (PTuple (PCon "Some" (PVar "v")) (PCon "Some" (PVar "scheme"))) () (EBlock (DoLet false false (PVar "vStr") (EApp (EVar "ppValue") (EApp (EVar "force") (EVar "v")))) (DoLet false false (PVar "tStr") (EApp (EVar "ppScheme") (EVar "scheme"))) (DoExpr (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EVar "vStr"))) (ELit (LString " : "))) (EApp (EMethodRef "display") (EVar "tStr"))) (ELit (LString ""))))))) (arm PWild () (ELit LUnit))))))))))
-(DTypeSig false "processTypeCmd" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processTypeCmd" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processTypeCmd" ((PVar "exprSrc")) (EBlock (DoLet false false (PVar "trimmed") (EApp (EVar "stringTrim") (EVar "exprSrc"))) (DoExpr (EIf (EBinOp "==" (EVar "trimmed") (ELit (LString ""))) (EApp (EVar "ePutStrLn") (ELit (LString ":type requires an expression"))) (EBlock (DoLet false false (PVar "wrappedSrc") (EBinOp "++" (ELit (LString "__repl__ = ")) (EVar "trimmed"))) (DoLet false false (PVar "newDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "wrappedSrc")))) (DoLet false false (PVar "combined") (EApp (EVar "combinedDecls") (EVar "newDecls"))) (DoLet false false (PTuple (PVar "errs") (PVar "allSchemes") PWild) (EApp (EVar "runPipeline") (EVar "combined"))) (DoExpr (EMatch (EVar "errs") (arm (PCons (PVar "e") PWild) () (EApp (EApp (EVar "mapIO_") (EVar "printErr")) (EVar "errs"))) (arm (PList) () (EMatch (EApp (EApp (EVar "lookupScheme") (ELit (LString "__repl__"))) (EVar "allSchemes")) (arm (PCon "Some" (PVar "scheme")) () (EApp (EVar "putStrLn") (EApp (EVar "ppScheme") (EVar "scheme")))) (arm (PCon "None") () (ELit LUnit)))))))))))
-(DTypeSig false "processBrowse" (TyFun (TyCon "Unit") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processBrowse" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processBrowse" (PWild) (EBlock (DoLet false false (PVar "bindings") (EFieldAccess (EVar "userBindingsRef") "value")) (DoExpr (EIf (EApp (EVar "listNull") (EVar "bindings")) (EApp (EVar "putStrLn") (ELit (LString "(no user-defined bindings)"))) (EBlock (DoLet false false (PVar "sorted") (EApp (EVar "sortByKey") (EVar "bindings"))) (DoExpr (EApp (EApp (EVar "mapIO_") (EVar "printBrowseLine")) (EVar "sorted"))))))))
 (DTypeSig false "printBrowseLine" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "printBrowseLine" ((PTuple (PVar "n") (PVar "t"))) (EApp (EVar "putStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "val ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString " : "))) (EApp (EMethodRef "display") (EVar "t"))) (ELit (LString "")))))
@@ -697,15 +697,15 @@ stringSplitOn sep s start cur len
 (DTypeSig false "insertSorted" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "insertSorted" ((PVar "x") (PList)) (EListLit (EVar "x")))
 (DFunDef false "insertSorted" ((PTuple (PVar "k") (PVar "v")) (PCons (PTuple (PVar "k2") (PVar "v2")) (PVar "rest"))) (EIf (EBinOp "<=" (EVar "k") (EVar "k2")) (EBinOp "::" (ETuple (EVar "k") (EVar "v")) (EBinOp "::" (ETuple (EVar "k2") (EVar "v2")) (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "k2") (EVar "v2")) (EApp (EApp (EVar "insertSorted") (ETuple (EVar "k") (EVar "v"))) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "processReset" (TyFun (TyCon "Unit") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "processReset" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "processReset" (PWild) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "accumulatedRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "userBindingsRef")) (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "knownNamesRef")) (EFieldAccess (EVar "preludeNamesRef") "value"))) (DoExpr (EApp (EVar "putStrLn") (ELit (LString "Session reset"))))))
-(DTypeSig false "processCommand" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Bool"))))
+(DTypeSig false "processCommand" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Bool"))))
 (DFunDef false "processCommand" ((PVar "cmd")) (EIf (EBinOp "||" (EBinOp "==" (EVar "cmd") (ELit (LString ":quit"))) (EBinOp "==" (EVar "cmd") (ELit (LString ":q")))) (EVar "False") (EIf (EBinOp "==" (EVar "cmd") (ELit (LString ":reset"))) (EBlock (DoLet false false PWild (EApp (EVar "processReset") (ELit LUnit))) (DoExpr (EVar "True"))) (EIf (EBinOp "||" (EBinOp "==" (EVar "cmd") (ELit (LString ":browse"))) (EBinOp "==" (EVar "cmd") (ELit (LString ":env")))) (EBlock (DoLet false false PWild (EApp (EVar "processBrowse") (ELit LUnit))) (DoExpr (EVar "True"))) (EIf (EApp (EApp (EVar "startsWith") (ELit (LString ":type"))) (EVar "cmd")) (EBlock (DoLet false false (PVar "rest") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 5))) (EApp (EVar "stringLength") (EVar "cmd"))) (EVar "cmd"))) (DoLet false false PWild (EApp (EVar "processTypeCmd") (EVar "rest"))) (DoExpr (EVar "True"))) (EIf (EApp (EApp (EVar "startsWith") (ELit (LString ":t "))) (EVar "cmd")) (EBlock (DoLet false false (PVar "rest") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 3))) (EApp (EVar "stringLength") (EVar "cmd"))) (EVar "cmd"))) (DoLet false false PWild (EApp (EVar "processTypeCmd") (EVar "rest"))) (DoExpr (EVar "True"))) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown command: ")) (EVar "cmd")) (ELit (LString " (try :browse, :type, :reset, :quit)"))))) (DoExpr (EVar "True")))))))))
-(DTypeSig true "replLoop" (TyFun (TyCon "Unit") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig true "replLoop" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "replLoop" (PWild) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "medaka repl (:quit to exit, :reset to clear session)")))) (DoExpr (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")))))
-(DTypeSig false "replLoopGo" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO" "Mut") None (TyCon "Unit")))))
+(DTypeSig false "replLoopGo" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "replLoopGo" ((PVar "buf") (PVar "cont")) (EBlock (DoLet false false PWild (EApp (EVar "putStr") (EIf (EVar "cont") (ELit (LString "  ")) (ELit (LString "> "))))) (DoExpr (EMatch (EApp (EVar "readLineOpt") (ELit LUnit)) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "line")) () (EBlock (DoLet false false (PVar "newBuf") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EVar "buf"))) (ELit (LString ""))) (EApp (EMethodRef "display") (EVar "line"))) (ELit (LString "\n")))) (DoExpr (EIf (EApp (EVar "not") (EVar "cont")) (EBlock (DoLet false false (PVar "trimmed") (EApp (EVar "stringTrim") (EVar "line"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">" (EApp (EVar "stringLength") (EVar "trimmed")) (ELit (LInt 0))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 1))) (EVar "trimmed")) (ELit (LString ":")))) (EBlock (DoLet false false (PVar "keepGoing") (EApp (EVar "processCommand") (EVar "trimmed"))) (DoExpr (EIf (EVar "keepGoing") (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")) (ELit LUnit)))) (EIf (EApp (EVar "needsMore") (EVar "newBuf")) (EApp (EApp (EVar "replLoopGo") (EVar "newBuf")) (EVar "True")) (EBlock (DoLet false false PWild (EApp (EVar "dispatchInput") (EVar "newBuf"))) (DoExpr (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")))))))) (EIf (EApp (EVar "needsMore") (EVar "newBuf")) (EApp (EApp (EVar "replLoopGo") (EVar "newBuf")) (EVar "True")) (EBlock (DoLet false false PWild (EApp (EVar "dispatchInput") (EVar "newBuf"))) (DoExpr (EApp (EApp (EVar "replLoopGo") (ELit (LString ""))) (EVar "False")))))))))))))
-(DTypeSig false "dispatchInput" (TyFun (TyCon "String") (TyEffect ("IO" "Mut") None (TyCon "Unit"))))
+(DTypeSig false "dispatchInput" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "dispatchInput" ((PVar "src")) (EBlock (DoLet false false (PVar "trimmed") (EApp (EVar "stringTrim") (EVar "src"))) (DoExpr (EIf (EBinOp "==" (EVar "trimmed") (ELit (LString ""))) (ELit LUnit) (EIf (EApp (EVar "isDecl") (EVar "src")) (EApp (EVar "processDeclInput") (EVar "src")) (EApp (EVar "processExprInput") (EVar "src")))))))
 (DTypeSig false "stringSplitNewlines" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "stringSplitNewlines" ((PVar "s")) (EApp (EApp (EApp (EApp (EApp (EVar "stringSplitOn") (ELit (LString "\n"))) (EVar "s")) (ELit (LInt 0))) (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "s"))))

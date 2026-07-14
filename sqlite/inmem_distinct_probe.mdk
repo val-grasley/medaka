@@ -62,7 +62,7 @@ runAll db =
     Err e => println "query error: \{e}"
     Ok rows => printInts rows
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main =
   let _ = println "-- CREATE nums, pairs (in-memory) --"
   match buildDatabaseMulti [("nums", numsSql, noIpk, numsRows), ("pairs", pairsSql, noIpk, pairsRows)]

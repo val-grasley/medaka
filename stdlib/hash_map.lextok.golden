@@ -509,9 +509,6 @@ UPPER "HashMap"
 IDENT "k"
 IDENT "v"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "set"
@@ -593,9 +590,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "insertAt"
@@ -695,9 +689,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "maybeResize"
@@ -756,9 +747,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "resize"
@@ -846,9 +834,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "reinsertAll"
@@ -927,9 +912,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "reinsertBucket"
@@ -993,9 +975,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "putRaw"
@@ -1067,9 +1046,6 @@ COMMA
 IDENT "v"
 RPAREN
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "HashMap"
 IDENT "k"
 IDENT "v"
@@ -1114,9 +1090,6 @@ UPPER "HashMap"
 IDENT "k"
 IDENT "v"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "insertAll"
@@ -1168,9 +1141,6 @@ UPPER "HashMap"
 IDENT "k"
 IDENT "v"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "delete"
@@ -1234,9 +1204,6 @@ ARROW
 UPPER "Ref"
 UPPER "Int"
 ARROW
-LT
-UPPER "Mut"
-GT
 UPPER "Unit"
 NEWLINE
 IDENT "deleteAt"

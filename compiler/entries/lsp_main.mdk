@@ -10,17 +10,17 @@
 
 import tools.lsp.{runServer}
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = match args ()
   [runtimePath, corePath] => withFiles runtimePath corePath
   _ => ePutStrLn "usage: medaka run compiler/entries/lsp_main.mdk <runtime.mdk> <core.mdk>"
 
-withFiles : String -> String -> <IO, Mut> Unit
+withFiles : String -> String -> <IO> Unit
 withFiles runtimePath corePath = match readFile runtimePath
   Ok rsrc => withCore rsrc corePath
   Err msg => ePutStrLn msg
 
-withCore : String -> String -> <IO, Mut> Unit
+withCore : String -> String -> <IO> Unit
 withCore rsrc corePath = match readFile corePath
   Ok csrc => runServer rsrc csrc
   Err msg => ePutStrLn msg

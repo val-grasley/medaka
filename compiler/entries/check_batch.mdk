@@ -21,28 +21,28 @@ import entries.entry_support.{driveParseSources}
 
 main = driveParseSources renderAll
 
-renderAll : List Decl -> List Decl -> List (String, String) -> <Mut> String
+renderAll : List Decl -> List Decl -> List (String, String) -> String
 renderAll runtimeP coreP [] = ""
 renderAll runtimeP coreP (pr::rest) = renderOne runtimeP coreP pr
   ++ renderAll runtimeP coreP rest
 
-renderOne : List Decl -> List Decl -> (String, String) -> <Mut> String
+renderOne : List Decl -> List Decl -> (String, String) -> String
 renderOne runtimeP coreP (path, tsrc) =
   "===SELFHOST-FIX=== \{path}\n\{runCheckCached runtimeP coreP tsrc}\n"
 
-runCheckCached : List Decl -> List Decl -> String -> <Mut> String
+runCheckCached : List Decl -> List Decl -> String -> String
 runCheckCached runtimeP coreP tsrc =
   let raw = parse tsrc
   let desugared = desugar raw
   let resDiags = resolveToLines runtimeP coreP desugared
   reportFor resDiags runtimeP coreP raw desugared
 
-reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> String
 reportFor "" runtimeP coreP raw desugared =
   cleanReport runtimeP coreP raw desugared
 reportFor resDiags _ _ _ _ = resDiags
 
-cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> String
 -- Intentional cross-file duplicate of the same helper in check.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
 cleanReport runtimeP coreP raw desugared =

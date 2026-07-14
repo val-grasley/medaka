@@ -59,7 +59,7 @@ preludeNamesRef : Ref (List String)
 preludeNamesRef = Ref []
 
 -- ── Initialise session ────────────────────────────────────────────────────
-export initSession : List Decl -> List Decl -> <Mut> Unit
+export initSession : List Decl -> List Decl -> Unit
 initSession runtimeDecls preludeDecls =
   let _ = setRef runtimeDeclsRef runtimeDecls
   let _ = setRef preludeDeclsRef preludeDecls
@@ -199,7 +199,7 @@ lookupScheme name ((n, s)::rest)
   | name == n = Some s
   | otherwise = lookupScheme name rest
 
-runPipeline : List Decl -> <Mut | e> (List String, List (String, Scheme), List (String, Value e))
+runPipeline : List Decl -> <e> (List String, List (String, Scheme), List (String, Value e))
 runPipeline combined =
   let runtimeDecls = runtimeDeclsRef.value
   let preludeDecls = preludeDeclsRef.value
@@ -228,7 +228,7 @@ combinedDecls newDecls = accumulatedRef.value ++ newDecls
 printErr : String -> <IO> Unit
 printErr msg = ePutStrLn ("<repl>: " ++ msg)
 
-mapIO : (a -> <IO, Mut> Unit) -> List a -> <IO, Mut> Unit
+mapIO : (a -> <IO> Unit) -> List a -> <IO> Unit
 mapIO _ [] = ()
 mapIO f (x::rest) =
   let _ = f x
@@ -240,12 +240,12 @@ mapIO_ f (x::rest) =
   let _ = f x
   mapIO_ f rest
 
-mapMut : (a -> <Mut> b) -> List a -> <Mut> List b
+mapMut : (a -> b) -> List a -> List b
 mapMut _ [] = []
 mapMut f (x::rest) = f x :: mapMut f rest
 
 -- ── Process a declaration input ───────────────────────────────────────────
-processDeclInput : String -> <IO, Mut> Unit
+processDeclInput : String -> <IO> Unit
 processDeclInput src =
   let newDecls = desugar (parse src)
   let combined = combinedDecls newDecls
@@ -264,17 +264,17 @@ processDeclInput src =
       let newUserBindings = mapMut schemeToBinding newSchemes
       setRef userBindingsRef (userBindingsRef.value ++ newUserBindings)
 
-printNewScheme : (String, Scheme) -> <IO, Mut> Unit
+printNewScheme : (String, Scheme) -> <IO> Unit
 printNewScheme (n, s) = putStrLn "val \{n} : \{ppScheme s}"
 
 printTypeAnn : (String, String) -> <IO> Unit
 printTypeAnn (kind, name) = putStrLn "\{kind} \{name}"
 
-schemeToBinding : (String, Scheme) -> <Mut> (String, String)
+schemeToBinding : (String, Scheme) -> (String, String)
 schemeToBinding (n, s) = (n, ppScheme s)
 
 -- ── Process an expression input ───────────────────────────────────────────
-processExprInput : String -> <IO, Mut> Unit
+processExprInput : String -> <IO> Unit
 processExprInput src =
   let wrappedSrc = "__repl__ = " ++ src
   let newDecls = desugar (parse wrappedSrc)
@@ -293,7 +293,7 @@ processExprInput src =
         _ => ()
 
 -- ── Process :type command ─────────────────────────────────────────────────
-processTypeCmd : String -> <IO, Mut> Unit
+processTypeCmd : String -> <IO> Unit
 processTypeCmd exprSrc =
   let trimmed = stringTrim exprSrc
   if trimmed == "" then ePutStrLn ":type requires an expression"
@@ -309,7 +309,7 @@ processTypeCmd exprSrc =
         None => ()
 
 -- ── Process :browse / :env command ───────────────────────────────────────
-processBrowse : Unit -> <IO, Mut> Unit
+processBrowse : Unit -> <IO> Unit
 processBrowse _ =
   let bindings = userBindingsRef.value
   if listNull bindings then putStrLn "(no user-defined bindings)"
@@ -335,7 +335,7 @@ insertSorted (k, v) ((k2, v2)::rest)
   | otherwise = (k2, v2) :: insertSorted (k, v) rest
 
 -- ── Process :reset command ────────────────────────────────────────────────
-processReset : Unit -> <IO, Mut> Unit
+processReset : Unit -> <IO> Unit
 processReset _ =
   let _ = setRef accumulatedRef []
   let _ = setRef userBindingsRef []
@@ -344,7 +344,7 @@ processReset _ =
 
 -- ── Meta-command dispatch ─────────────────────────────────────────────────
 -- Returns False → exit the REPL loop.
-processCommand : String -> <IO, Mut> Bool
+processCommand : String -> <IO> Bool
 processCommand cmd =
   if cmd == ":quit" || cmd == ":q" then False
   else
@@ -370,12 +370,12 @@ processCommand cmd =
             True
 
 -- ── Main REPL loop ────────────────────────────────────────────────────────
-export replLoop : Unit -> <IO, Mut> Unit
+export replLoop : Unit -> <IO> Unit
 replLoop _ =
   let _ = putStrLn "medaka repl (:quit to exit, :reset to clear session)"
   replLoopGo "" False
 
-replLoopGo : String -> Bool -> <IO, Mut> Unit
+replLoopGo : String -> Bool -> <IO> Unit
 replLoopGo buf cont =
   let _ = putStr (if cont then "  " else "> ")
   match readLineOpt ()
@@ -398,7 +398,7 @@ replLoopGo buf cont =
           let _ = dispatchInput newBuf
           replLoopGo "" False
 
-dispatchInput : String -> <IO, Mut> Unit
+dispatchInput : String -> <IO> Unit
 dispatchInput src =
   let trimmed = stringTrim src
   if trimmed == "" then

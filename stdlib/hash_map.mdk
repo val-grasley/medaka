@@ -118,13 +118,13 @@ bucketRemove key ((k, v)::rest)
 
 {- | Insert (or overwrite) the value at a key, in place. Resizes (doubling)
    when the load factor passes 0.75. -}
-export set : (Eq k, Hashable k) => k -> v -> HashMap k v -> <Mut> Unit
+export set : (Eq k, Hashable k) => k -> v -> HashMap k v -> Unit
 set key val (HashMap buckets count) =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
   insertAt key val arr idx buckets count
 
-insertAt : (Eq k, Hashable k) => k -> v -> Array (List (k, v)) -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+insertAt : (Eq k, Hashable k) => k -> v -> Array (List (k, v)) -> Int -> Ref (Array (List (k, v))) -> Ref Int -> Unit
 insertAt key val arr idx buckets count
   | bucketHas key (arrayGetUnsafe idx arr) =
     arraySetUnsafe idx (bucketReplace key val (arrayGetUnsafe idx arr)) arr
@@ -133,12 +133,12 @@ insertAt key val arr idx buckets count
     setRef count (count.value + 1)
     maybeResize buckets count
 
-maybeResize : (Eq k, Hashable k) => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+maybeResize : (Eq k, Hashable k) => Ref (Array (List (k, v))) -> Ref Int -> Unit
 maybeResize buckets count
   | count.value * 4 > arrayLength buckets.value * 3 = resize buckets count
   | otherwise = ()
 
-resize : (Eq k, Hashable k) => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+resize : (Eq k, Hashable k) => Ref (Array (List (k, v))) -> Ref Int -> Unit
 resize buckets count =
   let oldArr = buckets.value
   let newArr = arrayMake (arrayLength oldArr * 2) []
@@ -146,21 +146,21 @@ resize buckets count =
   setRef count 0
   reinsertAll oldArr 0 (arrayLength oldArr) buckets count
 
-reinsertAll : (Eq k, Hashable k) => Array (List (k, v)) -> Int -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+reinsertAll : (Eq k, Hashable k) => Array (List (k, v)) -> Int -> Int -> Ref (Array (List (k, v))) -> Ref Int -> Unit
 reinsertAll oldArr i n buckets count
   | i >= n = ()
   | otherwise =
     reinsertBucket (arrayGetUnsafe i oldArr) buckets count
     reinsertAll oldArr (i + 1) n buckets count
 
-reinsertBucket : (Eq k, Hashable k) => List (k, v) -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+reinsertBucket : (Eq k, Hashable k) => List (k, v) -> Ref (Array (List (k, v))) -> Ref Int -> Unit
 reinsertBucket [] _ _ = ()
 reinsertBucket ((k, v)::rest) buckets count =
   putRaw k v buckets count
   reinsertBucket rest buckets count
 
 -- Insert into a freshly-resized table (key known absent, so just prepend).
-putRaw : Hashable k => k -> v -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+putRaw : Hashable k => k -> v -> Ref (Array (List (k, v))) -> Ref Int -> Unit
 putRaw key val buckets count =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
@@ -171,13 +171,13 @@ putRaw key val buckets count =
 
    > size (fromList [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)])
    8 -}
-export fromList : (Eq k, Hashable k) => List (k, v) -> <Mut> HashMap k v
+export fromList : (Eq k, Hashable k) => List (k, v) -> HashMap k v
 fromList pairs =
   let m = new ()
   insertAll pairs m
   m
 
-insertAll : (Eq k, Hashable k) => List (k, v) -> HashMap k v -> <Mut> Unit
+insertAll : (Eq k, Hashable k) => List (k, v) -> HashMap k v -> Unit
 insertAll [] _ = ()
 insertAll ((k, v)::rest) m =
   set k v m
@@ -186,13 +186,13 @@ insertAll ((k, v)::rest) m =
 -- ── Deletion (mutating) ─────────────────────────────────────────────────
 
 {- | Remove a key, in place. A no-op when absent. -}
-export delete : (Eq k, Hashable k) => k -> HashMap k v -> <Mut> Unit
+export delete : (Eq k, Hashable k) => k -> HashMap k v -> Unit
 delete key (HashMap buckets count) =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
   deleteAt key arr idx count
 
-deleteAt : (Eq k, Hashable k) => k -> Array (List (k, v)) -> Int -> Ref Int -> <Mut> Unit
+deleteAt : (Eq k, Hashable k) => k -> Array (List (k, v)) -> Int -> Ref Int -> Unit
 deleteAt key arr idx count =
   if bucketHas key (arrayGetUnsafe idx arr) then
     arraySetUnsafe idx (bucketRemove key (arrayGetUnsafe idx arr)) arr

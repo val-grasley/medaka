@@ -142,7 +142,7 @@ locOffsRef = Ref (arrayFromList [])
 locLineStartsRef : Ref (Array Int)
 locLineStartsRef = Ref (arrayFromList [0])
 
-setLocState : String -> Array (Int, Int) -> <Mut> Unit
+setLocState : String -> Array (Int, Int) -> Unit
 setLocState src offs =
   let _ = setRef locSrcRef src
   let _ = setRef locLineStartsRef (lineStartsOf src)
@@ -3498,7 +3498,7 @@ parse src =
 -- Separate from `parse` (which stays pure / placeholder-loc) because `setRef`
 -- is <Mut> and `parse` is called from pure contexts across the pipeline; the
 -- token stream is byte-identical (`tokenizeWithOffsets` vs `tokenize`).
-export parseLocated : String -> <Mut> List Decl
+export parseLocated : String -> List Decl
 parseLocated src = match tokenizeWithOffsetPairs src
   (tokList, offPairs) =>
     let _ = setLocState src (arrayFromList offPairs)

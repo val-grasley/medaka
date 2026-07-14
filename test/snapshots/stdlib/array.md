@@ -266,7 +266,7 @@ revList (x::xs) acc = revList xs (x::acc)
 -- ── Effectful mutation (explicit <Mut>) ─────────────────────────────────
 
 -- | Bounds-checked write.  Panics on OOB.
-export set : Int -> a -> Array a -> <Mut> Unit
+export set : Int -> a -> Array a -> Unit
 set i x arr =
   if i < 0 || i >= arrayLength arr then
     panic "Array.set: index out of bounds"
@@ -274,7 +274,7 @@ set i x arr =
     arraySetUnsafe i x arr
 
 -- | Exchange the elements at indices `i` and `j` in place.
-export swap : Int -> Int -> Array a -> <Mut> Unit
+export swap : Int -> Int -> Array a -> Unit
 swap i j arr =
   let xi = arrayGetUnsafe i arr
   let xj = arrayGetUnsafe j arr
@@ -282,13 +282,13 @@ swap i j arr =
   arraySetUnsafe j xi arr
 
 -- | Overwrite every element with `x` in place.
-export fill : a -> Array a -> <Mut> Unit
+export fill : a -> Array a -> Unit
 fill x arr = arrayFill x arr
 
 -- | Bounds-checked bulk copy: copies `len` elements from `src` at offset
 --   `srcOff` into `dst` at offset `dstOff`.  Panics when any argument is
 --   negative or the copy would exceed either array's bounds.
-export blit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
+export blit : Array a -> Int -> Array a -> Int -> Int -> Unit
 blit src srcOff dst dstOff len =
   if len < 0 then
     panic "Array.blit: negative length"
@@ -304,13 +304,13 @@ blit src srcOff dst dstOff len =
     arrayBlit src srcOff dst dstOff len
 
 -- | Sort in place using the supplied comparison.
-export sortInPlaceBy : (a -> a -> <e> Ordering) -> Array a -> <Mut | e> Unit
+export sortInPlaceBy : (a -> a -> <e> Ordering) -> Array a -> <e> Unit
 sortInPlaceBy cmp arr =
   let sorted = sortBy cmp arr
   arrayBlit sorted 0 arr 0 (arrayLength arr)
 
 -- | Sort in place by the `Ord` instance.
-export sortInPlace : Ord a => Array a -> <Mut> Unit
+export sortInPlace : Ord a => Array a -> Unit
 sortInPlace arr = sortInPlaceBy compare arr
 
 -- ── Pure sort (returns fresh sorted array) ──────────────────────────────
@@ -587,17 +587,17 @@ prop "makeWith element at index 0" (n : Int) =
 (DTypeSig false "revList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "revList" ((PList) (PVar "acc")) (EVar "acc"))
 (DFunDef false "revList" ((PCons (PVar "x") (PVar "xs")) (PVar "acc")) (EApp (EApp (EVar "revList") (EVar "xs")) (EBinOp "::" (EVar "x") (EVar "acc"))))
-(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "set" ((PVar "i") (PVar "x") (PVar "arr")) (EIf (EBinOp "||" (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "arr")))) (EApp (EVar "panic") (ELit (LString "Array.set: index out of bounds"))) (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "x")) (EVar "arr"))))
-(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "swap" ((PVar "i") (PVar "j") (PVar "arr")) (EBlock (DoLet false false (PVar "xi") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (DoLet false false (PVar "xj") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "j")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "xj")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "j")) (EVar "xi")) (EVar "arr")))))
-(DTypeSig true "fill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "fill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "fill" ((PVar "x") (PVar "arr")) (EApp (EApp (EVar "arrayFill") (EVar "x")) (EVar "arr")))
-(DTypeSig true "blit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit"))))))))
+(DTypeSig true "blit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Unit")))))))
 (DFunDef false "blit" ((PVar "src") (PVar "srcOff") (PVar "dst") (PVar "dstOff") (PVar "len")) (EIf (EBinOp "<" (EVar "len") (ELit (LInt 0))) (EApp (EVar "panic") (ELit (LString "Array.blit: negative length"))) (EIf (EBinOp "<" (EVar "srcOff") (ELit (LInt 0))) (EApp (EVar "panic") (ELit (LString "Array.blit: negative srcOff"))) (EIf (EBinOp "<" (EVar "dstOff") (ELit (LInt 0))) (EApp (EVar "panic") (ELit (LString "Array.blit: negative dstOff"))) (EIf (EBinOp ">" (EBinOp "+" (EVar "srcOff") (EVar "len")) (EApp (EVar "arrayLength") (EVar "src"))) (EApp (EVar "panic") (ELit (LString "Array.blit: source out of bounds"))) (EIf (EBinOp ">" (EBinOp "+" (EVar "dstOff") (EVar "len")) (EApp (EVar "arrayLength") (EVar "dst"))) (EApp (EVar "panic") (ELit (LString "Array.blit: destination out of bounds"))) (EApp (EApp (EApp (EApp (EApp (EVar "arrayBlit") (EVar "src")) (EVar "srcOff")) (EVar "dst")) (EVar "dstOff")) (EVar "len"))))))))
-(DTypeSig true "sortInPlaceBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") (Some "e") (TyCon "Unit")))))
+(DTypeSig true "sortInPlaceBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect () (Some "e") (TyCon "Unit")))))
 (DFunDef false "sortInPlaceBy" ((PVar "cmp") (PVar "arr")) (EBlock (DoLet false false (PVar "sorted") (EApp (EApp (EVar "sortBy") (EVar "cmp")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "arrayBlit") (EVar "sorted")) (ELit (LInt 0))) (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))))))
-(DTypeSig true "sortInPlace" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "sortInPlace" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "sortInPlace" ((PVar "arr")) (EApp (EApp (EVar "sortInPlaceBy") (EVar "compare")) (EVar "arr")))
 (DTypeSig true "sortBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Array") (TyVar "a"))))))
 (DFunDef false "sortBy" ((PVar "cmp") (PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoExpr (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 1))) (EApp (EVar "arrayCopy") (EVar "arr")) (EBlock (DoLet false false (PVar "mid") (EBinOp "/" (EVar "n") (ELit (LInt 2)))) (DoLet false false (PVar "left") (EApp (EApp (EVar "arrayMakeWith") (EVar "mid")) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))))) (DoLet false false (PVar "right") (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "n") (EVar "mid"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "mid") (EVar "i"))) (EVar "arr"))))) (DoExpr (EApp (EApp (EApp (EVar "merge") (EVar "cmp")) (EApp (EApp (EVar "sortBy") (EVar "cmp")) (EVar "left"))) (EApp (EApp (EVar "sortBy") (EVar "cmp")) (EVar "right")))))))))
@@ -694,17 +694,17 @@ prop "makeWith element at index 0" (n : Int) =
 (DTypeSig false "revList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "revList" ((PList) (PVar "acc")) (EVar "acc"))
 (DFunDef false "revList" ((PCons (PVar "x") (PVar "xs")) (PVar "acc")) (EApp (EApp (EVar "revList") (EVar "xs")) (EBinOp "::" (EVar "x") (EVar "acc"))))
-(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "set" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "set" ((PVar "i") (PVar "x") (PVar "arr")) (EIf (EBinOp "||" (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "arr")))) (EApp (EVar "panic") (ELit (LString "Array.set: index out of bounds"))) (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "x")) (EVar "arr"))))
-(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit"))))))
+(DTypeSig true "swap" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit")))))
 (DFunDef false "swap" ((PVar "i") (PVar "j") (PVar "arr")) (EBlock (DoLet false false (PVar "xi") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (DoLet false false (PVar "xj") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "j")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "xj")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "j")) (EVar "xi")) (EVar "arr")))))
-(DTypeSig true "fill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "fill" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "fill" ((PVar "x") (PVar "arr")) (EApp (EApp (EVar "arrayFill") (EVar "x")) (EVar "arr")))
-(DTypeSig true "blit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyEffect ("Mut") None (TyCon "Unit"))))))))
+(DTypeSig true "blit" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Unit")))))))
 (DFunDef false "blit" ((PVar "src") (PVar "srcOff") (PVar "dst") (PVar "dstOff") (PVar "len")) (EIf (EBinOp "<" (EVar "len") (ELit (LInt 0))) (EApp (EVar "panic") (ELit (LString "Array.blit: negative length"))) (EIf (EBinOp "<" (EVar "srcOff") (ELit (LInt 0))) (EApp (EVar "panic") (ELit (LString "Array.blit: negative srcOff"))) (EIf (EBinOp "<" (EVar "dstOff") (ELit (LInt 0))) (EApp (EVar "panic") (ELit (LString "Array.blit: negative dstOff"))) (EIf (EBinOp ">" (EBinOp "+" (EVar "srcOff") (EVar "len")) (EApp (EVar "arrayLength") (EVar "src"))) (EApp (EVar "panic") (ELit (LString "Array.blit: source out of bounds"))) (EIf (EBinOp ">" (EBinOp "+" (EVar "dstOff") (EVar "len")) (EApp (EVar "arrayLength") (EVar "dst"))) (EApp (EVar "panic") (ELit (LString "Array.blit: destination out of bounds"))) (EApp (EApp (EApp (EApp (EApp (EVar "arrayBlit") (EVar "src")) (EVar "srcOff")) (EVar "dst")) (EVar "dstOff")) (EVar "len"))))))))
-(DTypeSig true "sortInPlaceBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") (Some "e") (TyCon "Unit")))))
+(DTypeSig true "sortInPlaceBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect () (Some "e") (TyCon "Unit")))))
 (DFunDef false "sortInPlaceBy" ((PVar "cmp") (PVar "arr")) (EBlock (DoLet false false (PVar "sorted") (EApp (EApp (EVar "sortBy") (EVar "cmp")) (EVar "arr"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "arrayBlit") (EVar "sorted")) (ELit (LInt 0))) (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))))))
-(DTypeSig true "sortInPlace" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect ("Mut") None (TyCon "Unit")))))
+(DTypeSig true "sortInPlace" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Unit"))))
 (DFunDef false "sortInPlace" ((PVar "arr")) (EApp (EApp (EVar "sortInPlaceBy") (EMethodRef "compare")) (EVar "arr")))
 (DTypeSig true "sortBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Array") (TyVar "a"))))))
 (DFunDef false "sortBy" ((PVar "cmp") (PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoExpr (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 1))) (EApp (EVar "arrayCopy") (EVar "arr")) (EBlock (DoLet false false (PVar "mid") (EBinOp "/" (EVar "n") (ELit (LInt 2)))) (DoLet false false (PVar "left") (EApp (EApp (EVar "arrayMakeWith") (EVar "mid")) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))))) (DoLet false false (PVar "right") (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "n") (EVar "mid"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "mid") (EVar "i"))) (EVar "arr"))))) (DoExpr (EApp (EApp (EApp (EVar "merge") (EVar "cmp")) (EApp (EApp (EVar "sortBy") (EVar "cmp")) (EVar "left"))) (EApp (EApp (EVar "sortBy") (EVar "cmp")) (EVar "right")))))))))

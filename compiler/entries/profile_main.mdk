@@ -34,7 +34,7 @@ main = match args ()
   runtimePath::corePath::targetPath::_ => run runtimePath corePath targetPath
   _ => ePutStrLn "usage: MEDAKA_PERF=1 medaka run compiler/entries/profile_main.mdk <runtime.mdk> <core.mdk> <target.mdk>"
 
-run : String -> String -> String -> <IO, Mut> Unit
+run : String -> String -> String -> <IO> Unit
 run runtimePath corePath targetPath = match readFile runtimePath
   Err e => ePutStrLn e
   Ok rsrc => match readFile corePath
@@ -48,7 +48,7 @@ run runtimePath corePath targetPath = match readFile runtimePath
 --   parse-prelude  → parse target → desugar → resolve(raw prelude)
 --   → mark(desugared core) → typecheck(desugared runtime+core)
 -- Each line includes an allocation-delta column (Gc.allocated_bytes proxy, in MB).
-runStaged : Bool -> String -> String -> String -> <IO, Mut> Unit
+runStaged : Bool -> String -> String -> String -> <IO> Unit
 runStaged on rsrc csrc tsrc =
   let tTotal = now ()
   let aTotal = allocSnap ()

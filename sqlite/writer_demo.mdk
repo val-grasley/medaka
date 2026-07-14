@@ -36,12 +36,12 @@ rows = [
   [CInt 42, CText "Eve", CInt 127],
 ]
 
-main : <IO, Mut> Unit
+main : <IO> Unit
 main = match args ()
   [out] => run out
   _ => println "usage: writer_demo <out.db>"
 
-run : String -> <IO, Mut> Unit
+run : String -> <IO> Unit
 run out = match writeDatabase out tableName createSql 3 ipkIdx rows
   Err e => println "Error: \{e}"
   Ok _ => println "wrote \{out}"

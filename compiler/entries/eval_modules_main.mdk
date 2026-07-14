@@ -28,7 +28,7 @@ rootsOrDefault _ roots = roots
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
 
-run : String -> String -> List String -> <IO, Mut> Unit
+run : String -> String -> List String -> <IO> Unit
 run coreP entry roots = match readFile coreP
   Err e => ePutStrLn e
   Ok csrc => match loadProgram entry roots

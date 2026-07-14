@@ -13,6 +13,6 @@ import entries.entry_support.{driveRuntime, evalTypedString}
 
 main = driveRuntime emit
 
-emit : List Decl -> List Decl -> List Decl -> <IO, Mut> Unit
+emit : List Decl -> List Decl -> List Decl -> <IO> Unit
 emit runtimeDecls preludeDecls userDecls =
   putStr (evalTypedString runtimeDecls preludeDecls userDecls)

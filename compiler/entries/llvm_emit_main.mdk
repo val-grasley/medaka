@@ -26,7 +26,7 @@ main = match args ()
   [targetPath] => withTarget targetPath
   _ => ePutStrLn "usage: medaka run compiler/entries/llvm_emit_main.mdk <file.mdk>"
 
-withTarget : String -> <IO, Mut> Unit
+withTarget : String -> <IO> Unit
 withTarget targetPath = match readFile targetPath
   Ok targetSrc => putStr (emitProgram (lowerProgramEmit (annotateProgram (desugar (parse targetSrc)))))
   Err msg => ePutStrLn msg

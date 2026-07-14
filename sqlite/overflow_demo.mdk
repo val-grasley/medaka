@@ -123,7 +123,7 @@ renderRow pkIdx row =
 -- Commands
 -- ---------------------------------------------------------------------------
 
-main : <IO, FileRead, FileWrite, Mut> Unit
+main : <IO, FileRead, FileWrite> Unit
 main = match args ()
   "write"::out::sizes => doWrite out (rowsOf (map parseN sizes))
   "writemix"::out::sizes => doWrite out (mixRowsOf (map parseN sizes))
@@ -132,7 +132,7 @@ main = match args ()
   ["delete", db, rid] => doDelete db (parseN rid)
   _ => println "usage: overflow_demo write|writemix <out.db> <size>... | read <db> | update <db> <rowid> <newsize> | delete <db> <rowid>"
 
-doWrite : String -> List (List Cell) -> <IO, FileWrite, Mut> Unit
+doWrite : String -> List (List Cell) -> <IO, FileWrite> Unit
 doWrite out rows =
   let res = writeDatabase out tableName createSql 4 ipkIdx rows
   match res
@@ -152,7 +152,7 @@ dumpRows db = match scanTableRowsIpk db tableName
 -- UPDATE the `t` column of one row to a fresh `newSize`-byte text, exercising
 -- the mutate wall: this rewrites the WHOLE file, so it only works if every row
 -- in the table — including the multi-KB ones — can be re-emitted.
-doUpdate : String -> Int -> Int -> <IO, FileRead, FileWrite, Mut> Unit
+doUpdate : String -> Int -> Int -> <IO, FileRead, FileWrite> Unit
 doUpdate path rid newSize =
   let sets = [assign "t" (eLitT (textOf newSize)), assign "n" (eLitI newSize)]
   let res = update path tableName sets (eEq (eColInt "id") (eLitI rid))
@@ -160,7 +160,7 @@ doUpdate path rid newSize =
     Err e => println "Error: \{e}"
     Ok n => println "updated \{intToString n}"
 
-doDelete : String -> Int -> <IO, FileRead, FileWrite, Mut> Unit
+doDelete : String -> Int -> <IO, FileRead, FileWrite> Unit
 doDelete path rid =
   let res = delete path tableName (eEq (eColInt "id") (eLitI rid))
   match res

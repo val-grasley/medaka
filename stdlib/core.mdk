@@ -963,7 +963,7 @@ export interface Index c k v where
    Requires `Index c k v` (a container you can write into, you can also read
    from). -}
 export interface IndexMut c k v requires Index c k v where
-  setIndex : c -> k -> v -> <Mut> c
+  setIndex : c -> k -> v -> c
 
 {- | `index arr i` reads `arr`'s element at `i` (`arr[i]` sugar dispatches
    here).  O(1).  Raises the coded `indexError` (E-INDEX-OOB) when `i` is
