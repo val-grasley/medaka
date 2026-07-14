@@ -1,7 +1,10 @@
 -- TRMC stack-safety: a SINGLE-CLAUSE guarded cons-tail builder (`upto`) builds a
 -- 2,000,000-element list in O(1) stack (destination-passing loop, no recursive
 -- call), then a musttail accumulator length consumes it.  SIGSEGV(139) before
--- TRMC at ~80k cells; prints 2000000 after.
+-- TRMC at ~80k cells; prints 2000000 after.  `upto` is UNANNOTATED, so on the
+-- shipping (typechecked) path it carries a `$dict` param — the pin holds TMC to
+-- the dict-carrying guarded-clause shape.
+-- EXPECT-TMC: upto
 upto m n
   | m > n = []
   | otherwise = m :: upto (m + 1) n

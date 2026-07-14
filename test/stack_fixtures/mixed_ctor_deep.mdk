@@ -1,3 +1,4 @@
+-- EXPECT-TMC: build
 -- P3 (TMC-parity arc): a MIXED-ctor deep builder — the cons/ctor-tail leaves
 -- build TWO different constructors (LinkA / LinkB), the shape the retired
 -- wasm-only `wTrmcUniformCtor` gate used to reject (the LLVM backend always

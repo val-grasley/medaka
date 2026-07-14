@@ -1,6 +1,15 @@
 # WASM-TMC-GAP-DESIGN.md — TMC does not fire on constrained (dict-passed) builders
 
-**Status:** OPEN — diagnosed 2026-07-14, no fix implemented. The TMC-parity arc
+**Status:** FIXED (Stages 0–2 + 4 landed 2026-07-14; Stage 3 — the (b′) group dict
+relax — deliberately deferred, the dict veto stays on `dispNonDict` for groups).
+⚠️ One claim in §2.1 below proved WRONG during implementation: the self-call of a
+constrained define is a **`CDict self routes` spine, not a `CVar self` spine**, so
+`isSelfSatApp` did NOT "already match it" — the analysis had to learn the CDict head
+(`isSelfHead`/`isSelfSatApp` saturation = |args| + |routes| == lowered arity, routes
+identity-forwarded), `selfFree` needed a `mentionsSelfDict` structural walk (freeVars
+is as blind to a CDict fn name as to a CMethod name), and both leaf emitters now skip
+the loop-invariant leading dict slots when storing recomputed args.  The rest of the
+diagnosis held.  Originally: diagnosed 2026-07-14. The TMC-parity arc
 (`compiler/TRMC-DESIGN.md` Phase 3, `compiler/WASMGC-TRMC-DESIGN.md` §12) is
 *correct about parity*: both backends TMC the same functions, on the probe path
 **and** on the shipping path. What neither backend does is TMC a function that

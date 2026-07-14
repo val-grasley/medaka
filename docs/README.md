@@ -130,7 +130,7 @@ What's in the standard library, what's planned, module-by-module status.
 | [`WASM-POLY-NUM-DESIGN.md`](../compiler/WASM-POLY-NUM-DESIGN.md) | WASM-POLY-NUM-DESIGN — closing the wasm polymorphic-`Num` arithmetic gap | IMPLEMENTED |
 | [`WASM-SELFHOST-GAPS.md`](../compiler/WASM-SELFHOST-GAPS.md) | WasmGC self-host gap census | IMPLEMENTED |
 | [`WASM-SELFHOST-ROADMAP.md`](../compiler/WASM-SELFHOST-ROADMAP.md) | WASM-SELFHOST-ROADMAP.md — driving the WasmGC backend to compile the compiler | IMPLEMENTED |
-| [`WASM-TMC-GAP-DESIGN.md`](../compiler/WASM-TMC-GAP-DESIGN.md) | WASM-TMC-GAP-DESIGN.md — TMC does not fire on constrained (dict-passed) builders | OPEN |
+| [`WASM-TMC-GAP-DESIGN.md`](../compiler/WASM-TMC-GAP-DESIGN.md) | WASM-TMC-GAP-DESIGN.md — TMC does not fire on constrained (dict-passed) builders | FIXED |
 | [`WASMGC-DESIGN.md`](../compiler/WASMGC-DESIGN.md) | WASMGC-DESIGN.md — WasmGC backend implementation plan | IMPLEMENTED |
 | [`WASMGC-TRMC-DESIGN.md`](../compiler/WASMGC-TRMC-DESIGN.md) | WASMGC-TRMC-DESIGN.md — scoping the general fix for the WasmGC runtime stack overflow (layer-5) | IMPLEMENTED |
 | [`WS2-REKEY-DIAGNOSIS.md`](../compiler/WS2-REKEY-DIAGNOSIS.md) | WS-2 full re-key — diagnosis & deferral (module-qualified dict-arity identity) | PARTIAL |

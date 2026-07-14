@@ -1,3 +1,4 @@
+-- EXPECT-TMC: strip build
 -- WASMGC-TRMC Stage 1b (§9.1): a MULTI-CLAUSE, PATTERN-PARAM self-recursive builder
 -- of the `stripComments` shape — the lexer fn that overflows check_main under Node.
 -- The clause set is {cons-tail self-call, plain-tail-drop self-call, base}:
