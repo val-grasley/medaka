@@ -9,9 +9,130 @@ gh issue list --label "ws:perf" --state open
 
 **Load the `perf-hunt` skill before you start.**
 
-**The gate:** `test/diff_compiler_perf_scaling.sh` — it measures **ALLOCATION**, not wall-clock. GC
-bytes are deterministic, so the gate is machine-independent *and* noise-free, which no timing gate can
-be on a shared runner. Ratio per input doubling: linear ≈2.0×, n·log n ≈2.1×, **quadratic ≈4.0×**.
+**The gate:** `test/diff_compiler_perf_scaling.sh` — it grades **ALLOCATION** *and* (since #110) **TIME,
+per stage**. GC bytes are deterministic, so allocation is machine-independent and noise-free, which no
+timing gate can be on a shared runner; it stays the **primary** verdict. Ratio per input doubling: linear
+≈2.0×, n·log n ≈2.1×, **quadratic ≈4.0×**.
+
+---
+
+## ⚠️ THE THREE MEASUREMENT TRAPS (2026-07-14 — each produced a confidently WRONG answer first)
+
+### 1. TIME and ALLOCATION diverge. Grading one HIDES the other.
+**A `List` `contains` allocates NOTHING** — it is a pure traversal. So an O(n²)-in-time / O(n)-in-allocation
+defect is **invisible to an allocation-graded gate**. This is not hypothetical: it hid **two** real bugs.
+
+| bug | time ratio | allocation ratio |
+|---|---|---|
+| #78 `resolve` O(refs×decls) | 2.63×, **3.56×** → quadratic | 2.09×, 2.11× → *"ok"* |
+| #115 `typecheck` union-find | 3.17×, 4.15×, **6.69×** → *worse than* quadratic | 1.52×, 1.72×, **1.87× → SUBLINEAR** |
+
+**#115's ledger row even said the bug was FIXED — because the ALLOCATION half had been.** The time-side
+blow-up survived for a day under a green gate. **Ask of any perf gate: what defect class can my metric
+physically not see?**
+
+### 2. ⚠️ THE GC FAKES A QUADRATIC IN WALL-CLOCK. Pin the heap.
+On a **correct** compiler, per-stage time reads `exhaust-guards` **3.25×**, `desugar` 2.72× — apparently
+quadratic. They are not: at the next doubling they **collapse** (3.42 → 2.07, 2.91 → 2.16). A real quadratic
+*holds* ~4.0; this is a **STEP, not a curve** — a Boehm heap resize inside the measured range.
+
+> **`GC_INITIAL_HEAP_SIZE=2147483648` on every timing run.** It removes the step (3.25 → 2.17). The knob
+> cannot change emitted IR, so it is always safe. **An unpinned time measurement is a false-red generator.**
+
+### 3. NEVER grade a SUM of stages. Grade PER-STAGE.
+Dilution can only push a ratio **DOWN toward 1.0** — so a summed ratio reading **above** 2.0 means something
+in it is genuinely superlinear. A first cut of the #110 gate summed 4 stages and was silently adding the
+GC-step artifacts *into* resolve's clean signal:
+
+| metric | green (correct) | red (broken) | margin |
+|---|---|---|---|
+| summed 4 stages | 2.39–2.86 | 3.17–3.44 | **~8%** — would have flaked on CI |
+| **per-stage, heap pinned** | 2.12–2.35 | 3.56–3.89 | **~22% both sides** |
+
+Per-stage costs **nothing extra** — same runs, different accounting — and it names *which* stage regressed.
+
+### The rule that ties them together (for any new perf gate)
+> **An ABSOLUTE number may only be gated if the metric is DETERMINISTIC. A NOISY metric may only be gated as
+> a self-normalizing RATIO, with generous headroom.**
+
+Wall-clock on a shared runner ⇒ **never** an absolute ceiling. But a *ratio* is self-normalizing, and linear
+(2.0) vs quadratic (4.0) has a full 2× of headroom. Make it non-flaky with **min-of-K**: runner noise is
+**one-sided** (a stall only makes a run *slower*, never spuriously faster), so the **minimum** converges on
+the true cost from above. Plus: fail only on a **sustained** signal (both doublings), and enforce an absolute
+**floor** per stage — a 10–70 ms stage is too small to time-gate and must **SKIP LOUDLY**.
+
+⚠️ **And a LEDGERED stage may never SKIP.** When #115's fix took `match:typecheck` from 6.0 s to 75 ms, it fell
+*under* the floor and the SKIP arm swallowed the stale ledger entry — the gate printed *"0 known-superlinear,
+0 regressed"* and **exited 0**. Dropping below the floor is not an *absence* of signal for a ledgered stage;
+**it IS the signal.** "Too fast to measure" is what fixed looks like, and it must demand promotion.
+
+---
+
+## A PERF FIXTURE CAN BE STRUCTURALLY UNABLE TO TRIGGER THE PATH
+
+`gen_bindings` emitted `fN x = x + N` — **every body referenced only the local `x`**, so `lookupValue`'s
+short-circuiting `||` hit on element 1 and **never once scanned `env.values`**. N top-level bindings, all
+mutually unreferenced: **a shape no real program has.** One character (`x + N` → a call to `f(N-1)`) and it
+goes quadratic. **A perf fixture must look like real code — and cross-referencing is the part always
+forgotten.** Hence the `xref` shape.
+
+---
+
+## ⚠️ NOT every quadratic is a List. #115 was a UNION-FIND WITHOUT PATH COMPRESSION.
+
+The "a List scanned once per element" shape below is the *most common* cause, not the only one — and
+assuming it cost real time on #115. **The list scans were an amplifier, not the bug.** Stubbing them out
+made it 3.6× faster and **left the ratio at 6.23× — still superquadratic.**
+
+The real cause: `normalize` was a union-find FIND with **no path compression**, and `unifyVars` always links
+the current root to the *fresh* var it meets. Inferring **one large declaration** (an N-arm `match`, an
+N-element list literal) builds a `Link` chain of length N; every later `normalize` walks it. **O(N²)+ link
+steps in a loop that allocates nothing.**
+
+**How it was named — this is the technique to copy.** `perf record --call-graph dwarf,16384`, then a
+**stack-depth histogram** of the hot symbol's samples:
+```
+57.08%  mdk_types_typecheck__rootIdOf     <- flat top
+20.66%  mdk_types_typecheck__normalize
+ 2.52%  GC_malloc_kind                    <- allocation is NOTHING here
+...
+   2 120      <- rootIdOf frames per sample
+   4 125
+2315 127      <- perf's max-stack limit. The chains are DEEPER than perf can dump.
+```
+**`rootIdOf` was not hot from call COUNT — each call recursed hundreds of frames deep.** A flat profile alone
+would have sent you hunting a hot loop that does not exist. **When a symbol dominates, check its stack
+DEPTH, not just its count.**
+
+Discriminator worth stealing: the blow-up needed **one BIG declaration**, not many. `xref` has **16 000
+top-level decls and typechecks linearly**. If a fixture with many small decls is linear but one with a single
+large decl is not, you are looking at something that grows *within* one inference — a chain, a substitution,
+a constraint set — not a per-decl scan.
+
+---
+
+## Where `medaka build` time ACTUALLY goes (measured 2026-07-14) — it is NOT the front end
+
+For a **9-line** program, with the `MEDAKA_RT_OBJ` fast path already on:
+
+| | time | share |
+|---|---|---|
+| front end (`medaka check`) | 0.126 s | **12%** |
+| **`clang -O2` on the emitted IR** | **0.814 s** | **77%** |
+| emit + link | ~0.12 s | 11% |
+
+**A 9-line program emits 32,896 lines of IR — 272 `define`s, exactly ONE of which is its own.** The other
+**271 (99.6%) are prelude**, re-optimized by clang identically on every build.
+
+This reframes CI: the critical-path gate is `diff_compiler_engines` = **346 × (`medaka build` + clang)**, so
+**CI wall-clock is clang-bound, not compiler-bound.** Making the front end faster barely moves it. See #118
+(precompile the prelude → 11.4× on the clang step) and #120 (`--gc-sections` → 77% smaller binaries).
+
+⚠️ **Two shortcuts that are DEAD — do not re-try them:**
+- **`MEDAKA_CLANG_OPT=-O0`** (the knob exists, `build_cmd.mdk:442`). Cuts the engines gate 127 s → 76 s and is
+  **UNSOUND**: it **regresses `wasm/clos_reftco_indirect`** — clang's tail-call elimination for **indirect**
+  calls only runs at `-O1`+. The deep-TCO trap bites LLVM, not just wasm.
+- **`-O1`** — saves ~10% (0.740 s vs 0.821 s). Not worth a semantics risk.
 
 ---
 
