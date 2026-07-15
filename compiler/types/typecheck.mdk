@@ -2281,7 +2281,14 @@ findMatchWarningHelpEntry msg ((m, help)::rest)
 resetState : Unit -> Unit
 resetState _ =
   let _ = setRef tyvarCounter 0
-  let _ = seedEffectDomains ()
+  -- #80/#201: resetState does NOT (re-)seed effect domains.  effectDomains is now
+  -- owned by populateEffectDomains, called ONCE per compile over the WHOLE import
+  -- graph (checkProgramSeededSplit for the flat path; checkModulesPreamble /
+  -- elaborateModules driver preambles for the multi-module paths).  A per-module
+  -- re-seed here would wipe module A's declared effect domains before module B is
+  -- checked — a module using an effect declared in A would then see only builtins.
+  -- effectDomains has exactly ONE writer (populateEffectDomains → seedEffectDomains
+  -- + registerEffectDomain), so it persists untouched across the per-module resets.
   let _ = setRef effvarCounter 0
   let _ = setRef curEffect (EffRow [] None)
   let _ = setRef recordsRef []
@@ -12260,6 +12267,17 @@ checkModuleFull seedVars accData prog =
 checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> List (String, Scheme)
 checkModuleFullImpl mid seedVars accData implDecls prog =
   let _ = resetState ()
+  -- #201: the two stateless pre-inference validation passes the flat path
+  -- (checkProgramSeededSplit) runs, previously ABSENT from the module body so a
+  -- top-level `let rec` non-function OR a malformed/atomic effect param was
+  -- silently accepted when the offending decl lived in an imported module.  Both
+  -- are per-decl structural scans (per-module ≡ once-over-flat), pushing into
+  -- typeErrors.  The THIRD flat-path pass (populateEffectDomains) canNOT be hoisted
+  -- here — a per-module re-seed would wipe cross-module effect domains — it lives in
+  -- the driver preamble instead (checkModulesPreamble / elaborateModules); this pass
+  -- reads the domains that preamble established (dtopFor over effectDomains).
+  let _ = checkEffectParams prog
+  let _ = checkLetRecDecls prog
   let importerShadows = buildStandaloneShadows implDecls prog
   -- Scan the FULL visible universe (accData carries core's interfaces + earlier
   -- modules' PUBLIC ones, prog this module) for interface-method names, NOT just
@@ -13134,6 +13152,12 @@ foldModules worker collect base baseSeed coreV depEnv accData accAll ((mid, prog
 checkModulesPreamble : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, Scheme))
 checkModulesPreamble runtimeDecls coreDecls modules =
   let _ = resetCrossModuleState ()
+  -- #80/#201: populate effect domains ONCE over the WHOLE import graph (builtins +
+  -- every `effect …` decl in core or any module), BEFORE the per-module foldModules
+  -- loop, so a module using an effect declared in ANOTHER module sees its domain.
+  -- resetState no longer re-seeds, so this survives every per-module reset below.
+  -- Must precede the core checkModuleFull (it runs checkEffectParams, reading these).
+  let _ = populateEffectDomains (coreDecls ++ flatMap snd modules)
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
@@ -13400,6 +13424,12 @@ elaborateModules runtimeDecls coreDecls modulesIn =
   let _ = setRef mainSchemeRef None
   let _ = resetCrossModuleState ()
   let allDecls = coreDecls ++ flatMap snd modules
+  -- #80/#201: populate effect domains ONCE over the WHOLE import graph (builtins +
+  -- every `effect …` decl), BEFORE any per-module resetState (discovery scratch pass
+  -- + the elabModuleStamp loop both call it) can read them — resetState no longer
+  -- re-seeds, and effectDomains has a single writer (populateEffectDomains), so this
+  -- persists untouched through the whole emit pass.
+  let _ = populateEffectDomains allDecls
   -- P0-18: recover the definer-shadow map from the (already-mangled on the emit path)
   -- decls BEFORE marking/typecheck reads it.  Empty on the un-mangled path.  Set once
   -- here; per-module resetState (in checkModuleFullImpl) does NOT clear it.

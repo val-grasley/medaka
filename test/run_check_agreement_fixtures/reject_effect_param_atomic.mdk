@@ -1,0 +1,15 @@
+-- #201 / #80 PR-A (flat half): an atomic effect label given a parameter is
+-- rejected by checkEffectParams (T-EFFECT-PARAM: "label 'Bar' is atomic and
+-- takes no parameter").  `effect Bar` declares Bar with an atomic (Unit) domain,
+-- so the `<Bar "x">` annotation on `f` carries an illegal parameter.  This pass
+-- runs in the flat single-file path (checkProgramSeededSplit); the companion
+-- multi-module fixture lives in diff_compiler_check_cli_modules.sh (the same
+-- shape in an IMPORTED module was SILENTLY ACCEPTED before PR-A hoisted the pass
+-- into the module body AND populated effect domains over the whole import graph).
+-- check == run == build all REJECT via a clean diagnostic, never a runtime panic.
+effect Bar
+
+f : Int -> <Bar "x"> Int
+f n = n
+
+main = println "unreachable"

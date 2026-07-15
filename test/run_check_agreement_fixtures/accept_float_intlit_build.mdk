@@ -1,0 +1,14 @@
+-- #80 PR-A (BREAK #2 regression guard): a Float-typed value written as a bare
+-- INTEGER literal (`x : Float`, `x = 3`, no decimal point) must be stamped to a
+-- Float by setNumlitFloats and print as `3.0` — on the flat EMIT path (`medaka
+-- build`) as well as check/run.  The flat-emit path (elaborateDict, which sets
+-- implInferEnabled True) runs setNumlitFloats UNCONDITIONALLY; a naive PR-B merge
+-- that gates it on implInferEnabled alone would SKIP it on flat-emit, so the int
+-- literal would reach codegen unstamped → a Float-vs-Int run≠build miscompile.
+-- The eval/typecheck path is already covered by diff_fixtures/numlit_float_ctx;
+-- no existing fixture drove a Float bare-int literal through `medaka build` until
+-- this one.  check == run == build all ACCEPT, and the built binary prints 3.0.
+x : Float
+x = 3
+
+main = println x
