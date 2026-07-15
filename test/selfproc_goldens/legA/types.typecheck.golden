@@ -64,8 +64,7 @@ argImplDictRoutesFor : Map String (List ImplEntry) -> String -> String -> Mono -
 argImplDictRoutesForEncl : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Route
 argImplDictRoutesForGo : Map String (List ImplEntry) -> List ImplEntry -> String -> String -> String -> Mono -> List Route
 argImplReqRoutes : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Require -> List Route
-argImplRequiresRoutesRec : Map String (List ImplEntry) -> String -> String -> Mono -> List Route
-argImplRequiresRoutesRecEncl : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Route
+argImplRequiresRoutesRec : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Route
 argLitFits : Expr -> Mono -> Bool
 argMentions : List String -> Ty -> Bool
 argReqRoute : Map String (List ImplEntry) -> String -> String -> List (String, Mono) -> List Ty -> Route
@@ -1082,9 +1081,7 @@ rewriteRPDictArg : List String -> List String -> List String -> Expr -> Expr
 rootIdOf : Mono -> Int
 rootVarId : Mono -> Int
 routeLocalSym : Route -> String
-routeOfMono : Map String (List ImplEntry) -> Mono -> Route
-routeOfMonoEncl : Map String (List ImplEntry) -> String -> String -> Mono -> Route
-routeOfMonoTop : List Decl -> Map String (List ImplEntry) -> String -> Mono -> Route
+routeOf : Map String (List ImplEntry) -> String -> String -> Undetermined -> Mono -> Route
 routeRDictName : Route -> List String
 routeUndeterminedTop : List Decl -> Map String (List ImplEntry) -> String -> Route
 routesOfMonos : Map String (List ImplEntry) -> List Mono -> List Route
@@ -1258,6 +1255,7 @@ tyvarLevel : Ref Tyvar -> Int
 unboundSpineHead : Mono -> Bool
 unboundVarFresh : String -> Mono
 unboundVarMsg : String -> String
+undeterminedRoute : Map String (List ImplEntry) -> Undetermined -> Route
 unify : Mono -> Mono -> Unit
 unifyAll : Mono -> List Mono -> Unit
 unifyAllNumlit : Mono -> List Mono -> Unit
