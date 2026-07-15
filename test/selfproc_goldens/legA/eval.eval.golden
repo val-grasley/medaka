@@ -271,6 +271,7 @@ pFloatToBytes64 : Value a -> Value a
 pFloatToInt : Value a -> Value a
 pFloatToString : Value a -> Value a
 pFloor : Value a -> Value a
+pFlushStdout : Value a -> Value a
 pGetEnv : Value a -> <Env> Value a
 pHashBool : Value a -> Value a
 pHashChar : Value a -> Value a
