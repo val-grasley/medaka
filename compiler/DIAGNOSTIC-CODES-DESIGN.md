@@ -172,6 +172,7 @@ kebab-case; never renumber (append only).
 | `L-HS-DOLLAR` | stray `$` (Haskell low-precedence apply; suggest direct apply/parens/`\|>`) |
 | `L-BLOCKCOMMENT` | `/* … */` C-style block comment (suggest `{- … -}` block / `--` line) |
 | `L-SEMICOLON` | trailing `;` statement terminator (suggest newline/indentation separation) |
+| `L-INT-OVERFLOW` | integer literal whose magnitude exceeds `2^62` (the 63-bit tagged-`Int` range is `[-2^62, 2^62-1]`; the lexer admits magnitude `2^62` for the writable negative minimum `-2^62` and rejects `2^62+1` and above) |
 
 ### Parse
 | Code | Kind |
