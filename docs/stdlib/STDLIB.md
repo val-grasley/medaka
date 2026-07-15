@@ -1205,6 +1205,26 @@ which is what makes `impl Bimappable (,)` possible.
   both cases: a handler for `Err`, a handler for `Ok` (Haskell calls this
   `either`; Medaka names it for the type it eliminates)
 
+## Module 24 — `bits64` ✅ implemented (2026-07-15, issue #223)
+
+`stdlib/bits64.mdk` — 64-bit-**unsigned** arithmetic emulated over the 63-bit
+`Int` fixnum (which wraps and cannot hold a `uint64`). A `U64` is a 4-tuple of
+16-bit limbs `(Int, Int, Int, Int)`, least-significant first — so tuple
+instances already live in `core` and the import is near-free (no new `data`
+type / instance surface). Mirrors the limb algorithms the compiler hand-rolled
+in `compiler/eval/eval.mdk` for SplitMix64 / FNV-1a (issue #98). Pure, no
+externs (uses the `bitAnd`/`bitOr`/`bitXor`/`shiftLeft`/`shiftRight` prelude
+primitives). Not auto-prelude — `import bits64`.
+
+**Exports:** `U64` (type alias), `zero`/`one`/`ofInt` (construction; it is
+`ofInt` and not `fromInt` because the latter is the `Num` interface method and a
+top-level binding of that name poisons module inference),
+`isZero`/`cmp64` (predicates; `cmp64` → `Ordering`), `add64`/`sub64`/`mulLow64`
+(arithmetic mod 2^64, wrapping), `and64`/`or64`/`xor64` (bitwise),
+`shl64`/`shr64` (logical shifts by `n ∈ [0,63]`), `mod64` (exact modulo for any
+nonzero divisor up to 2^64−1, via schoolbook bit-by-bit long division). 29
+doctests (incl. wraparound + long-division cases).
+
 ---
 
 ## Capability stratification audit (Phase 146, 2026-06-06)
