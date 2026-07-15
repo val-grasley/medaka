@@ -293,10 +293,10 @@ for f in $changed; do
   case "$f" in
     # ── front-end: everything downstream of it is suspect ──
     compiler/frontend/lexer.mdk)
-      add 'diff_compiler_lex*'; add 'diff_compiler_positions'
+      add 'diff_compiler_lex*'
       add 'diff_compiler_parse*'; add 'diff_compiler_snapshot*' ;;
     compiler/frontend/parser.mdk|compiler/frontend/ast.mdk)
-      add 'diff_compiler_parse*'; add 'diff_compiler_positions'
+      add 'diff_compiler_parse*'
       add 'diff_compiler_snapshot*'; add 'diff_compiler_fmt' ;;
     compiler/frontend/desugar.mdk)
       add 'diff_compiler_snapshot*'; add 'diff_compiler_eval*' ;;

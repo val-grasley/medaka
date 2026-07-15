@@ -40,7 +40,8 @@ FMT="$ROOT/test/bin/fmt_main"
 [ -x "$FMT" ] || { echo "build oracles first: sh test/build_oracles.sh --build-one fmt_main (missing $FMT)"; exit 2; }
 
 # NOTE on the sibling gates' "Unit auto-print" convention (test/diff_compiler_fmt.sh,
-# test/diff_compiler_printer.sh both pipe through a `strip_unit` that drops a trailing
+# and the retired printer gate — now the # PRINTER snapshot section — both piped
+# through a `strip_unit` that drops a trailing
 # "()"): that convention does NOT apply here, verified empirically against this build —
 # parse_main and fmt_main are BOTH `main : <IO> Unit` (a `match args () { ... }` whose
 # every arm is Unit-typed: putStr/ePutStrLn), and `shouldAutoPrintMain`

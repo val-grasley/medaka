@@ -151,6 +151,14 @@ import frontend.parser.{
   parseErrorLine,
   parseErrorCol,
   parseErrorMessage,
+  parseWithPositions,
+  Positions,
+  DeclPos,
+  positionsDecls,
+  positionsVariantLines,
+  positionsLastContentLine,
+  declPosLine,
+  declPosEndLine,
 }
 import tools.printer.{programToString}
 import frontend.desugar.{desugar}
@@ -240,6 +248,7 @@ snapSections = [
   "SOURCE",
   "TOKENS",
   "COMMENTS",
+  "POSITIONS",
   "PARSE",
   "PRINTER",
   "DESUGAR",
@@ -464,6 +473,26 @@ escNlFrom cs i
   | arrayGetUnsafe i cs == '\n' = "\\n" :: escNlFrom cs (i + 1)
   | otherwise = charToStr (arrayGetUnsafe i cs) :: escNlFrom cs (i + 1)
 
+-- # POSITIONS renders the parser's per-decl (line:end_line) + variant-line +
+-- last-content-line side-channel, in the DECLS/VARIANTS/LASTLINE form the retired
+-- diff_compiler_positions gate (positions_main = parseWithPositions) checked.
+positionsOf : String -> String
+positionsOf src = match parseWithPositions src
+  (_decls, pos) => renderPositions pos
+
+renderPositions : Positions -> String
+renderPositions p =
+  let decls = stringConcat (map renderDeclPos (positionsDecls p))
+  let vars = stringConcat (map renderVariant (positionsVariantLines p))
+  "=== DECLS ===\n\{decls}=== VARIANTS ===\n\{vars}=== LASTLINE ===\n\{intToString (positionsLastContentLine p)}\n"
+
+renderDeclPos : DeclPos -> String
+renderDeclPos d =
+  "\{intToString (declPosLine d)}:\{intToString (declPosEndLine d)}\n"
+
+renderVariant : Int -> String
+renderVariant n = "\{intToString n}\n"
+
 parseErrText : Int -> Int -> String -> String
 parseErrText line col msg =
   "parse error at \{intToString line}:\{intToString col}: \{msg}\n"
@@ -655,6 +684,7 @@ workerRender root sel runtimeDecls coreDecls path = match readFile path
     let _ = emitRaw "SOURCE" src
     let _ = if wants sel "TOKENS" then emitSection root "TOKENS" (tokensOf src) else ()
     let _ = if wants sel "COMMENTS" then emitSection root "COMMENTS" (commentsOf src) else ()
+    let _ = if wants sel "POSITIONS" then emitSection root "POSITIONS" (positionsOf src) else ()
     match parseResult src
       -- parseResult, not parse: a parse failure is a rendered section, not a panic.
       --

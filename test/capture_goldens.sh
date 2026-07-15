@@ -293,7 +293,7 @@ oracle_eval_typed() {
 # rows: "<glob>::<oracle-tag>::<golden-suffix>"
 # FROZEN families omitted (eval/eval_prelude/eval_list/positions_dump/comment_dump/
 # tc_probe/diag_analyze — OCaml dev/ probes, no native equivalent;
-# fmt/print_probe — require test/bin/fmt_main + printer_main which need a fresh
+# fmt — requires test/bin/fmt_main which needs a fresh
 # native build; eval_typed_modules/build_*/test/new/native_cli — require an
 # up-to-date native binary to reproduce committed goldens).
 ROWS="
@@ -477,8 +477,8 @@ fi
 # the worktree binary may be stale relative to the June 26 default-method
 # specialization changes (commit 265b0a2).  Re-capture after Phase 3 rebuild.
 
-# print_probe : FROZEN — requires test/bin/printer_main (built by build_oracles.sh
-# after a full native rebuild in Phase 3).  Committed .printer.golden are the reference.
+# print_probe : MIGRATED to the # PRINTER section of
+# test/diff_compiler_snapshot_frontend.sh (#81 C-track); re-cut with its --bless.
 
 # stack : FROZEN (native canonical; eval_probe.exe had no native equivalent —
 # LIB-REMOVAL-DESIGN §6 Stage B/D).  Committed goldens are the reference.
