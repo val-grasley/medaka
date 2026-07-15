@@ -208,8 +208,10 @@ resErrorSexp : ResError -> String
 resolveModule : List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModuleG : List String -> List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModulesErrors : List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesErrorsByPathGo : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List String
 resolveModulesErrorsG : Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
 resolveModulesToHumane : List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumaneByPath : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
 resolveModulesToHumaneG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
 resolveModulesToHumaneGF : String -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
 resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl) -> String
