@@ -487,5 +487,79 @@ case "$dep_out" in
   *) fail=$((fail+1)); printf 'FAIL dep-untrusted (#42 boundary BROKEN: dep internal-extern not rejected: [%s])\n' "$dep_out" ;;
 esac
 
+# 15. #201 (letrec, MULTI-MODULE half).  A top-level `let rec` non-function binding
+#     in an IMPORTED module was SILENTLY ACCEPTED — the flat single-file path runs
+#     checkLetRecDecls but the multi-module body (checkModuleFullImpl) did not.  PR-A
+#     hoists the pass into the module body, so the imported bad decl now rejects with
+#     a LOCATED diagnostic (dep.mdk:L:C:) and exit 1.  The flat half is pinned by
+#     test/run_check_agreement_fixtures/reject_toplevel_letrec_nonfunction.mdk.
+cat > "$TMP/lrdep.mdk" <<'EOF'
+export loop : Int
+let rec loop = loop
+EOF
+cat > "$TMP/lruse.mdk" <<'EOF'
+import lrdep.{loop}
+main = println loop
+EOF
+lr_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/lruse.mdk" 2>&1)"
+lr_code=$?
+case "$lr_out" in
+  *lrdep.mdk:*:*:*"is bound by 'let rec' but its right-hand side is not a function"*)
+    if [ "$lr_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   letrec-xmod (#201: imported let-rec non-function located + rejected)\n'
+    else fail=$((fail+1)); printf 'FAIL letrec-xmod (located but exit %d)\n' "$lr_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL letrec-xmod (#201 regressed: imported let-rec non-function not rejected: [%s])\n' "$lr_out" ;;
+esac
+
+# 16. #201 (effect-param, MULTI-MODULE half).  An atomic effect label given a
+#     parameter in an IMPORTED module was SILENTLY ACCEPTED — the flat path runs
+#     checkEffectParams, the multi-module body did not.  PR-A hoists the pass into
+#     the module body, so the imported bad sig now rejects located + exit 1.  The
+#     flat half is pinned by run_check_agreement_fixtures/reject_effect_param_atomic.
+cat > "$TMP/effdep.mdk" <<'EOF'
+effect Bar
+
+export f : Int -> <Bar "x"> Int
+f n = n
+EOF
+cat > "$TMP/effuse.mdk" <<'EOF'
+import effdep.{f}
+main = println (f 3)
+EOF
+eff_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/effuse.mdk" 2>&1)"
+eff_code=$?
+case "$eff_out" in
+  *effdep.mdk:*:*:*"is atomic and takes no parameter"*)
+    if [ "$eff_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   effect-param-xmod (#201: imported atomic-effect param located + rejected)\n'
+    else fail=$((fail+1)); printf 'FAIL effect-param-xmod (located but exit %d)\n' "$eff_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL effect-param-xmod (#201 regressed: imported effect-param error not rejected: [%s])\n' "$eff_out" ;;
+esac
+
+# 17. CROSS-MODULE effect-domain population (#80 BREAK #3 guard / over-rejection).
+#     Module A declares `effect MyEff Prefix`; module B uses `<MyEff "svc/*">` with a
+#     VALID prefix parameter.  This MUST be ACCEPTED: PR-A populates effect domains
+#     ONCE over the WHOLE import graph in the driver preamble (checkModulesPreamble /
+#     elaborateModules) and stops resetState from re-seeding, so B sees A's declared
+#     Prefix domain.  A naive per-module hoist of populateEffectDomains would wipe A's
+#     domain before B, leaving only builtins → B would FALSELY reject `MyEff` as
+#     atomic ("label 'MyEff' is atomic and takes no parameter").  So a spurious reject
+#     here means the cross-module effect-domain population regressed.
+cat > "$TMP/effprov.mdk" <<'EOF'
+effect MyEff Prefix
+
+export ping : Unit -> <MyEff "svc/*"> Int
+ping _ = 0
+EOF
+cat > "$TMP/effok.mdk" <<'EOF'
+import effprov.{ping}
+main = println (ping ())
+EOF
+effok_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/effok.mdk" 2>&1)"
+effok_code=$?
+case "$effok_out" in
+  *"is atomic and takes no parameter"*) fail=$((fail+1)); printf 'FAIL effect-xmod/accept (BREAK #3: cross-module effect domain not populated: [%s])\n' "$effok_out" ;;
+  *) if [ "$effok_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   effect-xmod/accept (cross-module Prefix effect domain populated over the graph)\n'
+     else fail=$((fail+1)); printf 'FAIL effect-xmod/accept (exit %d: [%s])\n' "$effok_code" "$effok_out"; fi ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

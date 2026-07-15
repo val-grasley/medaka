@@ -1,0 +1,10 @@
+-- #201 / #80 PR-A (flat half): a top-level `let rec` binding whose right-hand
+-- side is not a function is rejected by checkLetRecDecls (T-NONREC-VALUE-LET).
+-- This pass runs in the flat single-file path (checkProgramSeededSplit); the
+-- companion multi-module fixture lives in diff_compiler_check_cli_modules.sh
+-- (the same `let rec loop = loop` in an IMPORTED module was SILENTLY ACCEPTED
+-- before PR-A hoisted the pass into the module body).  check == run == build all
+-- REJECT via a clean diagnostic, never a runtime panic.
+let rec loop = loop
+
+main = println "unreachable"

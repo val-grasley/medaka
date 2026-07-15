@@ -1,0 +1,20 @@
+-- #80 PR-A (BREAK #1 regression guard, CI-wired): a user top-level fn that
+-- shadows a prelude interface method with an APPLIED-type parameter must
+-- TYPE-CHECK on the flat single-file path.  The flat path flattens core ++ user
+-- and infers the prelude's OWN prop/default/`neq` bodies in a separately-scoped
+-- phase (dropSchemesNamed methodNames) precisely so the user's `eq : List Int ->
+-- List Int -> Bool` scheme does NOT shadow `Eq.eq` inside core's constrained
+-- bodies — otherwise `not (eq x y)` unifies the element against `List Int` and
+-- the program is spuriously rejected "List Int vs Int".  PR-B must keep this
+-- two-phase inference as a Flat-mode branch (never "unify by picking the module
+-- structure").  The exact List-Int-vs-Int shape was previously guarded only by
+-- the ORPHAN test/native_fixtures/run.sh; this wires it into CI.
+eq : List Int -> List Int -> Bool
+eq a b = True
+
+gt : Exp Int -> Exp Int -> Exp Bool
+gt a b = MkExp
+
+data Exp a = MkExp
+
+main = println "ok"
