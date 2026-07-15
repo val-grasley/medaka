@@ -195,42 +195,14 @@ intMaxBound	wasm	TRAP-STUB	lowers to `unreachable` (wasm_emit.mdk:4116) — boun
 # --- assertSnapshot (1) — TODO, same as the llvm row. ---
 assertSnapshot	wasm	TODO	unimplemented in all 3 engines, no stdlib caller — forward-declared snapshot-testing primitive, not an asymmetric regression
 
-# --- WASM-GAP (45) — genuinely unported, no structural blocker like net's.
+# --- WASM-GAP (18) — genuinely unported, no structural blocker like net's.
 #     Grouped by theme below; each still gets its own row. ---
-
-# libm math (23): LLVM ports these to direct `call double @mdk_<name>`
-# (isMathUnary/isMathBinary); wasm has no libm host-import or WAT
-# implementation for any of them yet.
-acos	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm (no libm host-import/WAT impl)
-asin	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-atan	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-atan2	wasm	WASM-GAP	libm binary math extern — ported in llvm (isMathBinary), not yet in wasm
-cbrt	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-ceil	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-cos	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-cosh	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-exp	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-floatRem	wasm	WASM-GAP	fmod(a,b) — ported in llvm (isNumExtern direct list), not yet in wasm
-floor	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-hypot	wasm	WASM-GAP	libm binary math extern — ported in llvm (isMathBinary), not yet in wasm
-log	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-log10	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-log2	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-pow	wasm	WASM-GAP	libm binary math extern — ported in llvm (isMathBinary), not yet in wasm
-round	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-sin	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-sinh	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-sqrt	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-tan	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-tanh	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-trunc	wasm	WASM-GAP	libm unary math extern — ported in llvm (isMathUnary), not yet in wasm
-
-# bitwise (3) + intBitsToFloat (1): wasm's isLeafExternW ports bitAnd/
-# shiftLeft/shiftRight only; llvm's isBitExtern ports all six.
-bitNot	wasm	WASM-GAP	ported in llvm (isBitExtern), not yet in wasm (isLeafExternW only has bitAnd/shiftLeft/shiftRight)
-bitOr	wasm	WASM-GAP	ported in llvm (isBitExtern), not yet in wasm (isLeafExternW only has bitAnd/shiftLeft/shiftRight)
-bitXor	wasm	WASM-GAP	ported in llvm (isBitExtern), not yet in wasm (isLeafExternW only has bitAnd/shiftLeft/shiftRight)
-intBitsToFloat	wasm	WASM-GAP	ported in llvm (isNumExtern direct list), not yet in wasm
+#
+# #101 LANDED (2026-07-15): the 23 libm math (sqrt/floor/ceil/trunc/round +
+# transcendentals + pow/atan2/hypot + floatRem) and 4 bitwise (bitOr/bitXor/bitNot +
+# intBitsToFloat) externs are now ported to wasm — IEEE-exact ops → native f64 opcodes,
+# round → $mdk_round (C half-away-from-zero), transcendentals → JS Math.* host imports,
+# bitwise → i64 ops over the box/unbox seam.  Their rows were deleted from here.
 
 # perf (4): llvm's isPerfExtern does real gettimeofday/clock_gettime/nanosleep/
 # GC-byte-counter FFI; wasm has none of it (no host-import wired for it).

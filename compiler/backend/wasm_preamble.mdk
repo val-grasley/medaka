@@ -775,15 +775,18 @@ rngRuntimeLines = [
   "    (local.set $z (i64.mul (i64.xor (local.get $z) (i64.shr_u (local.get $z) (i64.const 30))) (i64.const 0xBF58476D1CE4E5B9)))",
   "    (local.set $z (i64.mul (i64.xor (local.get $z) (i64.shr_u (local.get $z) (i64.const 27))) (i64.const 0x94D049BB133111EB)))",
   "    (i64.xor (local.get $z) (i64.shr_u (local.get $z) (i64.const 31))))",
-  "  ;; randomInt lo hi : i32 lo/hi -> i32 in [lo,hi] (INCLUSIVE).  range<=0 -> lo.",
-  "  (func $mdk_random_int (param $lo i32) (param $hi i32) (result i32)",
-  "    (local $range i32)",
-  "    (local.set $range (i32.add (i32.sub (local.get $hi) (local.get $lo)) (i32.const 1)))",
-  "    (if (result i32) (i32.le_s (local.get $range) (i32.const 0))",
+  "  ;; #179 randomInt lo hi : i64 lo/hi -> i64 in [lo,hi] (INCLUSIVE).  range<=0 -> lo.",
+  "  ;; i64 (not i32): a range > 2^30 (e.g. randomInt 0 1000000000000000) overflows i32 —",
+  "  ;; and the old ref.i31 box at the call site trapped `illegal cast` on the large draw.",
+  "  ;; Byte-identical to native mdk_random_int: unsigned modulus of (hi-lo+1).",
+  "  (func $mdk_random_int (param $lo i64) (param $hi i64) (result i64)",
+  "    (local $range i64)",
+  "    (local.set $range (i64.add (i64.sub (local.get $hi) (local.get $lo)) (i64.const 1)))",
+  "    (if (result i64) (i64.le_s (local.get $range) (i64.const 0))",
   "      (then (local.get $lo))",
   "      (else",
-  "        (i32.add (local.get $lo)",
-  "          (i32.wrap_i64 (i64.rem_u (call $mdk_next_u64) (i64.extend_i32_s (local.get $range))))))))",
+  "        (i64.add (local.get $lo)",
+  "          (i64.rem_u (call $mdk_next_u64) (local.get $range))))))",
   "  (func $mdk_random_bool (result i32)",
   "    (i32.wrap_i64 (i64.and (call $mdk_next_u64) (i64.const 1))))",
   "  (func $mdk_random_char (result i32)",
@@ -918,6 +921,38 @@ floatFmtImportLines = [
   "  (import \"env\" \"mdk_float_fmt_byte\" (func $mdk_float_fmt_byte (param i32) (result i32)))",
 ]
 
+-- #101: the libm transcendental (+ pow/atan2/hypot) math externs.  WasmGC has no libm,
+-- so — like the floatToString %.12g formatter — each is a HOST IMPORT backed by JS
+-- `Math.*` (byte-identical to C libm on the values these fixtures exercise; sub-ULP
+-- transcendental divergences would be masked by the %.12g truncation and, if ever
+-- printed-divergent, are ledgered as native:libm-vs-jsmath-ulp — see
+-- test/engine_divergence.txt).  IEEE-exact ops (sqrt/floor/ceil/trunc/round) and
+-- floatRem lower to native f64 opcodes / $mdk_round / $mdk_float_rem — NOT host imports.
+-- Every JS harness that instantiates a module (test/wasm/run.js + the playground
+-- worker.js / compile.mjs / *_test.mjs) provides these $mdk_<name> functions.
+-- Gated on useMathRef (set by noteW8Extern when a host-math extern is referenced).
+export mathHostImportLines : List String
+mathHostImportLines = [
+  "  ;; -- #101 libm math host seam (JS Math.*, see run.js / worker.js) --",
+  "  (import \"env\" \"mdk_cbrt\" (func $mdk_cbrt (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_exp\" (func $mdk_exp (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_log\" (func $mdk_log (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_log2\" (func $mdk_log2 (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_log10\" (func $mdk_log10 (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_sin\" (func $mdk_sin (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_cos\" (func $mdk_cos (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_tan\" (func $mdk_tan (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_asin\" (func $mdk_asin (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_acos\" (func $mdk_acos (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_atan\" (func $mdk_atan (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_sinh\" (func $mdk_sinh (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_cosh\" (func $mdk_cosh (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_tanh\" (func $mdk_tanh (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_pow\" (func $mdk_pow (param f64) (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_atan2\" (func $mdk_atan2 (param f64) (param f64) (result f64)))",
+  "  (import \"env\" \"mdk_hypot\" (func $mdk_hypot (param f64) (param f64) (result f64)))",
+]
+
 -- stringToFloat host seam: the guest pushes the string's bytes via the path channel
 -- (mdk_path_reset + mdk_path_push, shared with IO) then calls mdk_str_to_float which
 -- reads pathBuf as a UTF-8 string and returns Number(str) as an f64.  run.js implements
@@ -981,6 +1016,14 @@ floatRuntimeLines = [
   "  ;; floatRem a b = a - b*trunc(a/b)  (== C fmod == LLVM frem); backs `Float % Float`.",
   "  (func $mdk_float_rem (param $a f64) (param $b f64) (result f64)",
   "    (f64.sub (local.get $a) (f64.mul (local.get $b) (f64.trunc (f64.div (local.get $a) (local.get $b))))))",
+  "  ;; #101 round : C round() — round to nearest, HALVES AWAY FROM ZERO (NOT f64.nearest,",
+  "  ;; which is round-half-to-even).  round(x) = copysign(floor(abs(x)+0.5), x); matches",
+  "  ;; native mdk_round for every finite value with |x| < 2^52 (integers above are already",
+  "  ;; exact and pass through: abs+0.5 rounds back).",
+  "  (func $mdk_round (param $x f64) (result f64)",
+  "    (f64.copysign",
+  "      (f64.floor (f64.add (f64.abs (local.get $x)) (f64.const 0.5)))",
+  "      (local.get $x)))",
   "  ;; floatToString : the host formats (%.12g + .0 rule) into a cache; copy the bytes",
   "  ;; into a fresh $str.  cp_count == byte_len (the %.12g output is ASCII).",
   "  (func $mdk_float_to_str (param $d f64) (result (ref $str))",

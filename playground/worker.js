@@ -109,6 +109,16 @@ self.onmessage = function(e) {
       return floatFmtBuf.length;
     },
     mdk_float_fmt_byte: (i) => floatFmtBuf[i] & 0xff,
+    // #101 libm math host seam (JS Math.*): the transcendentals + pow/atan2/hypot have
+    // no WasmGC opcode, so the playground provides them here (real, pure).  The IEEE-exact
+    // ops (sqrt/floor/ceil/trunc/round) + floatRem lower to wasm opcodes / WAT helpers and
+    // never reach a host import.  Extra unused entries are harmless (imports are by name).
+    mdk_cbrt: Math.cbrt, mdk_exp: Math.exp, mdk_log: Math.log,
+    mdk_log2: Math.log2, mdk_log10: Math.log10,
+    mdk_sin: Math.sin, mdk_cos: Math.cos, mdk_tan: Math.tan,
+    mdk_asin: Math.asin, mdk_acos: Math.acos, mdk_atan: Math.atan,
+    mdk_sinh: Math.sinh, mdk_cosh: Math.cosh, mdk_tanh: Math.tanh,
+    mdk_pow: Math.pow, mdk_atan2: Math.atan2, mdk_hypot: Math.hypot,
     // layer-6 stringToFloat: real, pure — parse the pathBuf bytes as a float via
     // Number() (byte-identical to C strtod on the valid-decimal subset medaka uses).
     mdk_str_to_float: () => { const s = takePath(); return Number(s); },

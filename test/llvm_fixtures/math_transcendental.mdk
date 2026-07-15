@@ -1,0 +1,7 @@
+-- #101: locks the paths NOT covered by math_externs.mdk (sqrt/cos/floor/pow/hypot):
+-- the transcendental JS-Math.* HOST-IMPORT path on wasm (sin/exp/log), round's C
+-- half-away-from-zero rounding (round 2.5 == 3.0, NOT f64.nearest's 2.0), and floatRem
+-- (fmod).  eval routes through the runtime.mdk externs, native through libm, wasm
+-- through Math.* imports / $mdk_round / $mdk_float_rem — all must agree.
+-- sin 0.0 + exp 0.0 + log 1.0 + round 2.5 + floatRem 10.0 3.0 = 0 + 1 + 0 + 3 + 1 = 5.0
+main = sin 0.0 + exp 0.0 + log 1.0 + round 2.5 + floatRem 10.0 3.0

@@ -132,6 +132,12 @@ of the new gate.
 
 ### 3.2 `wasm:codegen-bug` — 7 fixtures. The WasmGC backend is wrong.
 
+> **`rng_int_big` FIXED 2026-07-15 (#179).** A later `wasm:codegen-bug` row (added by
+> #98) — `randomInt 0 1000000000000000` drew 457532755261734, which the old lowering
+> wrapped in a bare `ref.i31` and trapped `illegal cast`. `$mdk_random_int` is now
+> i64→i64 and the result reboxes through the `$mdk_box_int` seam (i31 / `$boxint`), so a
+> draw above ±2^30 is representable. eval == native == wasm; row promoted out of the ledger.
+
 All seven are from `test/llvm_fixtures/` — a corpus the wasm backend had never seen.
 
 | fixture | eval | native | wasm | diagnosis |
@@ -275,7 +281,15 @@ auto-print wrap (`main = println <e>`) cannot resolve a `Display` instance →
 `Ambiguous instance for Display`. Arguably a real diagnostic gap for bottom-typed
 mains.
 
-### 4.7 `wasm:emitter-gap` — 29 fixtures
+### 4.7 `wasm:emitter-gap` — 26 fixtures
+
+> **`math_externs`, `bitwise_ops`, `lit_int_large_tag` FIXED 2026-07-15 (#101).** The 23
+> libm math externs (sqrt/floor/ceil/trunc/round + transcendentals + pow/atan2/hypot +
+> floatRem) and the 4 bitwise externs (bitOr/bitXor/bitNot + intBitsToFloat) are now
+> ported to wasm — IEEE-exact ops → native f64 opcodes, `round` → `$mdk_round`
+> (C round(), half away from zero), transcendentals → JS `Math.*` host imports, bitwise →
+> i64 ops over the `$mdk_box_int`/`$mdk_unbox_int` seam. `lit_int_large_tag` was a fourth
+> row here (it uses `intBitsToFloat`). All three promoted; capability rows deleted.
 
 The WasmGC emitter cannot produce a module that assembles and validates. It reports
 its own gaps, which is to its credit. Distinct causes, by frequency:
