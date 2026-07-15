@@ -1,0 +1,16 @@
+# META
+source_lines=10
+stages=EVAL
+# SOURCE
+-- Method-level-constraint dict-passing (Phase 69.x-e): an interface method whose
+-- signature carries a `=>` constraint over a tyvar that is NOT the interface param
+-- — the canonical case is `foldMap : Monoid m => (a -> m) -> t a -> m`, where
+-- `Monoid m` constrains the result monoid `m`, independent of the container `t`.
+-- The default body `foldMap f = fold (acc x => acc ++ f x) empty` uses the
+-- return-position `empty` at type `m`, which has no discriminating argument; the
+-- caller supplies the `Monoid (List Int)` dict (RKey "List"), threaded as a leading
+-- `$dict_foldMap_0` param so the in-body `empty` resolves to `[]`.
+dup x = [x, x]
+main = println (foldMap dup [1, 2, 3])
+# EVAL
+[1, 1, 2, 2, 3, 3]

@@ -668,9 +668,11 @@ All bootstrap/check/eval/core_ir/llvm_modules/selfcompile_fixpoint gates green.
   ONLY on the no-resolve differential path (`dev/tc_probe.exe` oracle vs
   `compiler/entries/typecheck_main.mdk`) — the full front-end (`compiler/tools/check.mdk`) catches them
   in resolve first and stops before typecheck (by design). New gate +
-  fixtures: `test/diff_compiler_typecheck_panic_errors.sh` reading
-  `test/typecheck_panic_fixtures/` (6 fixtures, driver-A/no-resolve only, all == oracle,
-  no panic). No regression across bootstrap/check/eval/core_ir/llvm_modules/fixpoint.
+  fixtures: `test/typecheck_panic_fixtures/` (driver-A/no-resolve only, all == oracle,
+  no panic), rendered into the `# TYPES` snapshot section by
+  `test/diff_compiler_snapshot_types.sh` (was the standalone
+  `diff_compiler_typecheck_panic_errors.sh`, migrated to the snapshot family #81 R5). No
+  regression across bootstrap/check/eval/core_ir/llvm_modules/fixpoint.
 - **D2. `LetRecNonFunction` guard absent** from `processSCC` (`typecheck.mdk:3161-3315`
   vs oracle `typecheck.ml:2591-2597`) — recursive value bindings infer or loop instead
   of the dedicated error. [NEW] ✅ CLOSED (2026-06-10): added `checkLetRecDecls` +

@@ -1,0 +1,13 @@
+# META
+source_lines=7
+stages=EVAL
+# SOURCE
+-- Method-level-constraint dict-passing (Phase 69.x-e) at a DIFFERENT result monoid:
+-- the same `foldMap`, but the mapping function returns `String`, so the supplied
+-- method-level dict is `Monoid String` (RKey "String") and the in-body `empty`
+-- resolves to `""` — confirming the dict is per-call (the result monoid), not pinned
+-- to the container.  `<1><2><3>` is the String-monoid concatenation.
+lbl x = "<" ++ intToString x ++ ">"
+main = println (foldMap lbl [1, 2, 3])
+# EVAL
+<1><2><3>

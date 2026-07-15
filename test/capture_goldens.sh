@@ -253,7 +253,7 @@ fi
 # gates on a STRICTER/DIFFERENT check than the probes it's supposed to stand in
 # for (e.g. it rejects `test/eval_dict_fixtures/inferred_chain.mdk` with
 # "Ambiguous instance for `Semigroup`" — a program the dict-passing probe
-# resolves and diff_compiler_eval_dict.sh runs green, 26/26). A `medaka run`
+# resolves and diff_compiler_eval_dict_batch.sh runs green, 26/26). A `medaka run`
 # oracle silently regenerated a "drifted" golden that was never wrong — the
 # committed golden was right, `medaka run` was the wrong reference. Mirror the
 # gate's REAL producer exactly (test/bin/eval_dict_main / eval_typed_main with

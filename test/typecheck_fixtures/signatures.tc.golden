@@ -1,9 +1,0 @@
-f : Int -> Int
-g : a -> a
-h : (a -> b) -> a -> b
-konst : a -> b -> a
-poly : a -> (a, a)
-safeHead : List a -> Opt a
-mapO : (a -> b) -> Opt a -> Opt b
-ann : Int
-strAnn : String

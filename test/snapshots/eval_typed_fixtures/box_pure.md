@@ -1,0 +1,16 @@
+# META
+source_lines=10
+stages=EVAL
+# SOURCE
+data Box a = Box a deriving (Debug)
+impl Mappable Box where
+  map f (Box x) = Box (f x)
+impl Applicative Box where
+  pure x = Box x
+  ap (Box f) (Box x) = Box (f x)
+wrapIt : Int -> Box Int
+wrapIt n = pure n
+runWrap (Box x) = x
+main = println (debug (wrapIt 7))
+# EVAL
+Box 7
