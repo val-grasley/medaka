@@ -116,7 +116,8 @@ add() { case " $pats " in *" $1 "*) ;; *) pats="$pats $1" ;; esac; }
 #
 # ⚠️ The exclude-list is NOT written here. It is test/CI-COVERAGE-TOOLS.txt — see
 # _gate_candidates below for why a second copy of it in this file was itself a bug.
-# ── THE GATE UNIVERSE: every TRACKED .sh in the repo that is not a TOOL ───────
+# ── THE GATE UNIVERSE: every TRACKED-OR-UNTRACKED-NOT-IGNORED .sh in the repo
+#    that is not a TOOL ─────────────────────────────────────────────────────
 #
 # This used to enumerate `test/*.sh` + `test/wasm/*.sh`, filtered by a hand-written
 # _NONGATE list. Both halves were the same bug, and it is the bug this whole workstream
@@ -138,11 +139,22 @@ add() { case " $pats " in *" $1 "*) ;; *) pats="$pats $1" ;; esac; }
 #
 # `git ls-files`, not a filesystem walk: this box keeps ~30 agent worktrees under
 # `.claude/worktrees/`, and a `find` from the main checkout would happily enumerate every
-# OTHER worktree's copy of every gate. A gate is a tracked file.
+# OTHER worktree's copy of every gate. `git -C "$ROOT" ls-files` (tracked and, via
+# `-o --exclude-standard`, untracked-not-ignored) stays scoped to THIS worktree's
+# working tree, so it can't leak another worktree's files the way `find` would.
+#
+# Tracked-only was itself a bug (#257): `changed` (~line 68) deliberately folds in
+# untracked-not-ignored files via `git ls-files -o --exclude-standard` so a brand-new,
+# not-yet-`git add`ed gate script is exercised — but a tracked-only candidate universe
+# couldn't count that same file, so `total_gates` undercounted by exactly the untracked
+# gates in `$gates`. The union below mirrors the same `-o --exclude-standard` `changed`
+# already uses, so the denominator covers exactly what `$gates` can ever contain.
 _TOOLS=" $(grep -v '^[[:space:]]*#' "$ROOT/test/CI-COVERAGE-TOOLS.txt" 2>/dev/null \
            | awk 'NF { print $1 }' | tr '\n' ' ')"
 _gate_candidates() {
-  git -C "$ROOT" ls-files '*.sh' 2>/dev/null | while IFS= read -r _rel; do
+  { git -C "$ROOT" ls-files '*.sh' 2>/dev/null; \
+    git -C "$ROOT" ls-files -o --exclude-standard '*.sh' 2>/dev/null; } \
+    | sort -u | while IFS= read -r _rel; do
     case "$_TOOLS" in *" ${_rel%.sh} "*) continue ;; esac
     [ -f "$ROOT/$_rel" ] || continue
     printf '%s\n' "$ROOT/$_rel"
