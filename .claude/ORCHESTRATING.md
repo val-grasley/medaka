@@ -170,6 +170,28 @@ state, not just failures** — a monitor that greps only for red is *silent* thr
 timeout, or a crashloop, and silence is indistinguishable from "still running." Seed the seen-set with
 already-completed runs at arm time.
 
+#### ⚠️ Build the monitor so it CANNOT lie silently — verify it emits BEFORE trusting it
+
+A monitor that returns empty forever looks identical to "still green." Every broken monitor this
+session failed the same way: it queried something that returned nothing, and nothing = no event = false
+calm. Before you rely on a watcher, **run its exact query once by hand and confirm it returns rows.**
+
+- **`gh pr checks <n> --json …` DOES NOT EXIST in this repo's `gh`** — `gh pr checks` has no `--json`
+  flag (that is `gh pr view --json statusCheckRollup`). The `--json` form errors to stderr and prints
+  nothing to stdout, so a monitor built on it spams "no checks yet" forever and never sees green. Parse
+  **plain `gh pr checks <n>`** output instead (tab-separated `name<TAB>state<TAB>…`); a
+  separator-agnostic `grep -qw pending` over the whole block is robust.
+- **Guard on EMPTY output, not exit code.** `gh pr checks` exits non-zero on pending/fail while still
+  printing the table; `... || true` keeps the table. `if [ -z "$out" ]; then wait; fi` — never treat an
+  empty result as a terminal state.
+- **For "tell me ONCE when X finishes" (a PR's CI, a build), prefer a `Bash run_in_background`
+  until-loop over a `Monitor`.** It fires a single completion notification when the condition is true
+  and exits — no per-poll spam, no auto-stop for being too chatty. Reserve `Monitor` for
+  one-event-per-occurrence streams.
+- **A merge watcher must also watch CI-red-while-OPEN.** Polling only for `MERGED`/`CLOSED` is blind to
+  a queue-bounce (the PR goes back to OPEN with a failed `merge_group` run) — that looks identical to
+  "still queued." Bound the wait (e.g. ~30 iterations) so it can't hang forever, and re-check on exit.
+
 When CI goes red, **act, don't just report**:
 
 1. **Diagnose from the log** (`gh run view <id> --log-failed`): infra/workflow bug, real regression, or
@@ -481,19 +503,45 @@ despite SYNTAX.md advertising it; `emitProgram` name-colliding across two backen
 dash so a gate could not even be parsed. **Every one was a real, filed-worthy defect that surfaced
 only because an agent happened to mention it in passing.**
 
-**The orchestrator TRIAGES the report.** Per item: reproduce it (the gap docs lie), then fix it, file
-it in the backlog / `PLAN.md`, or record it as a known-red ledger entry with accidental-fix detection.
+**The orchestrator TRIAGES every friction item into exactly one of three outcomes — decide, don't
+defer.** First **reproduce it** (the gap docs lie, and so do agents — a plausible root cause is a
+*claim*, not a fact; grep-prove it at the source before acting), then pick:
+
+1. **Immediate fix** — small, mechanical, and blocking or high-value: a stale glob, a one-line
+   directive, a golden re-bless, a doc that's actively breaking agents. Do it now (yourself if trivial,
+   or fold into the responsible agent). Don't file a ticket for a three-character fix.
+2. **File a GitHub issue** — real but not for right now, or out of your lane, or needs a decision.
+   Label it (`S*` severity + `ws:*` + `verified`/`needs-repro`), and if you only reproduced the
+   *symptom*, file the symptom as verified and the agent's *mechanism* as a hypothesis (`needs-repro`) —
+   don't launder an unverified root cause into a confident issue. Closing something as already-fixed is
+   also a valid triage outcome; say so.
+3. **No action** — a non-issue, already fixed, or working-as-intended. Say *why* in one line so it
+   doesn't come back as a mystery; don't silently drop it.
+
 **Do not let it evaporate.** A stdlib gap found by USE comes with a real call site attached — worth far
-more than one found by planning.
+more than one found by planning. (Every friction item this session resolved to one of these three; the
+trap is treating "I'll remember it" as a fourth option — you won't.)
 
 ---
 
-## Review every agent PR before merging
+## Review every agent PR before merging — a REQUIRED step in the merge flow, not an optional extra
 
-An agent's own report is a claim, not a review. After CI is green, spawn a **Sonnet reviewer** over the
-diff (playbook: **`.claude/skills/pr-review/SKILL.md`**). Keep it READ-ONLY — it reports; you decide;
-the *authoring* agent fixes (it has the context). **Gates prove *behavior*; the reviewer judges
-*craft*.** Green CI on a bad diff is still a bad diff.
+**The merge flow is: CI green → independent reviewer → enqueue. Never skip the middle step.** An
+agent's own report is a claim, not a review — and a green CI on a bad diff is still a bad diff. So on
+**every** agent-authored PR, once CI is green, spawn a READ-ONLY **Sonnet reviewer** over the diff
+(playbook: **`.claude/skills/pr-review/SKILL.md`**) and enqueue *only* after it returns APPROVE. It
+reports; you decide; the *authoring* agent fixes (it has the context). **Gates prove *behavior*; the
+reviewer judges *craft*.**
+
+- **Point the reviewer at the risk this specific change carries**, not a generic pass: byte-exactness
+  for a data path, behavior-equivalence for a consolidation/migration (does the canonical match the
+  clone it replaced — keep-first vs keep-last, trailing-newline handling, first-match?), the
+  newly-accepted frontier for a feature. A generic "review this" finds less than a targeted one.
+- **A change YOU verified hands-on** (e.g. an emitter fix you built + ran the fixpoint + diffed RNG
+  byte-for-byte yourself) can count as the review — you did the reviewer's job directly. Say so. But
+  don't self-certify an agent's diff you only *read*; spawn the reviewer.
+- Run it AFTER green (a red CI may change the diff, wasting the review). Reviews are cheap and parallel;
+  there is no excuse to enqueue unreviewed.
 
 It has twice returned **do-not-merge** on a diff whose own gates were green, both times on this repo's
 #1 bug class (check green / run dies) — e.g. import aliasing left an aliased *interface method* unbound
@@ -610,6 +658,15 @@ that drift detector is exactly what proves the seed was not contaminated. Do thi
 On your side: **never run `refresh_seed.sh`, `make medaka`, or `git add -A` in a tree you have not just
 confirmed clean** (`git status --short`). A shared worktree makes "capture my diff" unsound.
 
+- **Cap concurrent write agents at 3 — a hard ceiling, not a target.** Each runs a heavy `make medaka`,
+  and this box is shared with other sessions. Want a 4th? **Queue it**; spawn when a slot frees. Do NOT
+  instead cap `JOBS` to fit more agents — that's the wrong lever (it makes each build *slower*, +54%,
+  and starves everyone longer). Read-only agents (audits, scoping, reviewers) don't count against the 3
+  — they don't build.
+- **Check box load BEFORE spawning a build-heavy agent.** Run `uptime`; if the 1-min load average is
+  already high (say >6–8 on this 12-core box) or ≥3 heavy builds are live, **queue, don't spawn** — a
+  full local suite + oracle build pushes load past 10 and turns everyone's 30-second gate into minutes.
+  This is a real cost to other agents on the box, not an aesthetic preference.
 - Parallelize only **non-overlapping files**. Never two agents on one file; never pile agents onto the
   single hottest file. Sequential when they share a file.
 - **The MERGE is where integration bugs live.** Two agents on genuinely disjoint files both reported
