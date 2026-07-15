@@ -28,7 +28,6 @@ import types.typecheck.{
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableEmitArgStampPasses,
   mainTypeIsUnit,
   mainTypeIsFloat,
 }
@@ -61,7 +60,6 @@ main = driveModules runEmit
 
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 runEmit runtimeDecls coreDecls modules =
-  let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls = coreD ++ flatMap snd modules2

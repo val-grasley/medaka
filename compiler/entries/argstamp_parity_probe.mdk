@@ -1,31 +1,20 @@
--- ARGSTAMP-UNIFY-PLAN.md Phase 0 — TEMP parity probe (delete at unification end).
+-- ARGSTAMP-UNIFY-PLAN.md Phase 0 — parity probe (retained post-unification).
 --
--- Identical to eval_dict_main.mdk EXCEPT it reads a leading mode arg that toggles
--- `emitArgStampPasses` before elaboration, so the SAME eval-dict corpus can be run
--- under BOTH dispatch-elaboration modes (EMIT/True vs EVAL/False) and its PROGRAM
--- OUTPUT diffed.  Establishes the Phase-0 baseline: which fixtures' output is
--- already byte-identical under both flags (the plan predicts most are, the fork
--- being elaboration-internal).
+-- Historically toggled a two-moded elaboration flag between EMIT and EVAL modes so
+-- the SAME eval-dict corpus could be diffed under both.  That flag was RETIRED in
+-- #157 (elaboration is now single-mode), so the leading ON|OFF arg is vestigial:
+-- both modes elaborate identically and the probe now trivially reports full parity.
+-- Kept as a harmless output-diff harness; NOT in the emitter graph
+-- (selfcompile_fixpoint must stay green).
 --
 --   medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>
---
--- ON  => enableEmitArgStampPasses () first  (full static dict-threading, the EMIT mode)
--- OFF => leave emitArgStampPasses False (reduced dict layer + runtime arg-tag, EVAL mode)
---
--- Probe-only entry: NOT in the emitter graph (selfcompile_fixpoint must stay green).
 
-import types.typecheck.{enableEmitArgStampPasses}
 import frontend.ast.{Decl}
 import entries.entry_support.{driveRuntimeArgs, evalDictString}
 
 main = match args ()
-  mode::rest => withMode mode rest
+  _::rest => driveRuntimeArgs rest emit
   _ => ePutStrLn "usage: medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
-
-withMode : String -> List String -> <IO> Unit
-withMode mode rest =
-  let _ = if mode == "ON" then enableEmitArgStampPasses () else ()
-  driveRuntimeArgs rest emit
 
 emit : List Decl -> List Decl -> List Decl -> <IO> Unit
 emit runtimeDecls preludeDecls userDecls =

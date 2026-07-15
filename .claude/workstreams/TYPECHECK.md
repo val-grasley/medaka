@@ -53,9 +53,9 @@ Every consolidation PR must show byte-identical goldens for the gates its diff t
 `test/selfcompile_fixpoint.sh` (C3a/C3b YES) **plus** `test/typecheck_compiler_source.sh`. The last
 one is not optional and not redundant: **the build does not gate on type errors** — an ill-typed
 compiler builds green through all 80+ gates. It is also the *only* thing that catches a stale
-caller after a signature change. The ONE deliberate exception to byte-identical is #157
-(`emitArgStampPasses` retirement), where golden churn is expected, designed in advance, and
-blessed by named path.
+caller after a signature change. The ONE deliberate exception to byte-identical was #157
+(the emitArgStampPasses retirement — now landed), which moved the compiler self-snapshot
+goldens (comment-only) and was blessed by named path.
 
 ### 2. ORDER IS SEMANTICS — the map-ification trap
 The `List` scans you are replacing are not incidental: reverse-declaration-order scanning,

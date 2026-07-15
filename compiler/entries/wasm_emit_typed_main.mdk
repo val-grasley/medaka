@@ -30,7 +30,6 @@ import types.typecheck.{
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableEmitArgStampPasses,
 }
 import eval.eval.{funNamesOf, dropShadowedExp}
 import ir.core_ir_lower.{lowerProgramEmit, declSigTypeNames, ctorFieldTypeNames}
@@ -49,7 +48,6 @@ emit runtimeDecls preludeDecls userDecls =
 
 runEmit : List Decl -> List Decl -> List Decl -> String
 runEmit runtimeDecls preludeDecls userDecls =
-  let _ = enableEmitArgStampPasses ()
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
   let combined = livePrelude ++ userDecls

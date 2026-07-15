@@ -58,14 +58,10 @@
 -- renders a `# PARSE` section holding the diagnostic instead of killing the process —
 -- which is what makes the front-end error corpora snapshot-able at all.
 --
--- ── two engine modes in one process ──────────────────────────────────────────
--- `typecheck.emitArgStampPasses` forks the compiler between the EVAL path and the
--- EMIT path.  Every other driver is single-mode (a probe binary is one or the other),
--- so it only ever flips the flag ON, and `resetState` deliberately leaves it alone.
--- This runner renders BOTH, so it drives the OFF-mode stages first, flips the flag ON
--- for LLVM/WASM, and resets it to OFF at the top of every fixture
--- (`setEmitArgStampPasses`).  Without the reset, fixture #1's LLVM emit would leave
--- every later fixture's TYPES/CORE_IR/EVAL silently on the emit path.
+-- ── one elaboration mode ─────────────────────────────────────────────────────
+-- Elaboration is single-mode (#157): TYPES / CORE_IR / EVAL / LLVM / WASM all
+-- elaborate identically, so this runner can render every section of every fixture
+-- in one process with no per-stage or per-fixture mode flag to save and restore.
 --
 -- ── crash-resume ─────────────────────────────────────────────────────────────
 -- ~12 of 1,461 fixtures genuinely panic (and `stack_overflow_fixtures` SIGSEGVs the C
@@ -170,7 +166,6 @@ import types.typecheck.{
   elaborateOne,
   elaborateDict,
   constrainedSigNames,
-  setEmitArgStampPasses,
   mainTypeIsUnit,
   mainTypeIsFloat,
   hadTypeErrors,
@@ -502,7 +497,6 @@ evalOf runtimeDecls coreDecls d =
 -- point: wasm coverage drift becomes a visible diff instead of silence.
 emitBoth : String -> List String -> List Decl -> List Decl -> <IO> Unit
 emitBoth root sel runtimeDecls userDecls =
-  let _ = setEmitArgStampPasses True
   let userNames = funNamesOf userDecls
   let dictNames = constrainedSigNames userDecls
   let allDecls = elaborateDict runtimeDecls dictNames userNames userDecls
@@ -619,8 +613,6 @@ workerLoop root sel runtimeDecls coreDecls (f::rest) =
 
 workerOne : String -> List String -> List Decl -> List Decl -> String -> <IO> Unit
 workerOne root sel runtimeDecls coreDecls path =
-  -- restore the OFF (eval) mode a previous fixture's LLVM emit turned ON.
-  let _ = setEmitArgStampPasses False
   let _ = putLineFlush "BEGIN \{path}"
   let _ = workerRender root sel runtimeDecls coreDecls path
   putLineFlush "END \{path}"
@@ -663,7 +655,7 @@ workerStages root sel runtimeDecls coreDecls decls =
   -- A fixture with no main simply has no EVAL/LLVM/WASM to show, so those sections are
   -- OMITTED — absent, not empty.
   if hasMain d then
-    -- EMIT (flips emitArgStampPasses ON) ... then EVAL, dead last.
+    -- EMIT first ... then EVAL, dead last.
     --
     -- EVAL goes last because it is the only stage that RUNS the fixture, so it is by
     -- far the likeliest to take the process down — and whatever kills it must not also
@@ -674,8 +666,6 @@ workerStages root sel runtimeDecls coreDecls decls =
       emitBoth root sel runtimeDecls d
     else
       ()
-    -- ...and hand EVAL the OFF (eval-path) mode that emitBoth just turned on.
-    let _ = setEmitArgStampPasses False
     if wants sel "EVAL" then emitSection root "EVAL" (evalOf runtimeDecls coreDecls d) else ()
   else
     ()

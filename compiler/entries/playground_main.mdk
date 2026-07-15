@@ -95,7 +95,6 @@ import types.typecheck.{
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableEmitArgStampPasses,
   mainTypeIsFloat,
   mainTypeIsUnit,
   Scheme,
@@ -273,7 +272,6 @@ doEmit rsrc csrc tsrc entry roots warnTriples = match loadProgram entry roots
     let rt = desugar (parse rsrc)
     let core = desugar (parse csrc)
     let modules = map desugarPair mods
-    let _ = enableEmitArgStampPasses ()
     let (coreMangled, modulesMangled) = mangleUnits core modules
     let _ = elaborateModules rt coreMangled modulesMangled
     if shouldAutoPrintMain core modules then
@@ -309,7 +307,6 @@ desugarPair (mid, p) = (mid, desugar p)
 
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 runEmit runtimeDecls coreDecls modules =
-  let _ = enableEmitArgStampPasses ()
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls0 = coreD ++ flatMap snd modules2

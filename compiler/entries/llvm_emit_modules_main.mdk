@@ -14,8 +14,8 @@
 -- elaborated core + flattened module decls are lowered to Core IR and emitted as
 -- textual LLVM IR to stdout — same shape as llvm_emit_typed_main.mdk.
 --
--- E4 (LANDED): the driver calls enableEmitArgStampPasses (), so elaborateModules's
--- dictPassModulesIfEnabled enabled branch runs the joint arg-position dict-pass
+-- E4 (LANDED): elaborateModules's dictPassModulesIfEnabled runs the joint
+-- arg-position dict-pass unconditionally (single elaboration mode, #157)
 -- (constrained-fn dict params threaded through call sites cross-module).  The
 -- earlier "Pre-E4 no-op" note here was STALE — arg-position dict-passing IS active
 -- on this path (verified: a cross-module `Eq a => x == y` builds + runs native ==
@@ -144,5 +144,5 @@ emitTail runtimeDecls coreD modules2 =
 -- Dict-name wiring mirrored from llvm_emit_typed_main.mdk: coreD is the
 -- elaborated prelude, allDecls the whole program.  THIS `let _` is itself inert
 -- (the result is discarded) — the real arg-/return-position dict-passing happens
--- INSIDE elaborateModules above (E4 landed; enableEmitArgStampPasses drives it).  Kept for
+-- INSIDE elaborateModules above (E4 landed; runs unconditionally).  Kept for
 -- parity with the single-file typed driver.

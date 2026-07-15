@@ -376,10 +376,8 @@ elabWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List D
 elaborateDict : List Decl -> List String -> List String -> List Decl -> List Decl
 elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
 elaborateOne : List Decl -> List Decl -> (String, List Decl) -> List Decl
-emitArgStampPasses : Ref Bool
 emitCyclicAliasErrors : List String -> Unit
 emitSwapDiag : String -> Expr -> Expr -> Option Mono
-enableEmitArgStampPasses : Unit -> Unit
 enclDictVarOf : Mono -> String -> Option String
 enclSlot : String -> Mono -> Option Int
 endsWithStr : String -> String -> Bool
@@ -1110,7 +1108,6 @@ seedSchemesOut : Ref (List (String, Scheme))
 selfBinding : String -> (String, String)
 setCardCap : Int
 setCoherenceUserDecls : List Decl -> Unit
-setEmitArgStampPasses : Bool -> Unit
 setLocIfSome : Option Loc -> Unit
 setNumlitFloats : Unit -> Unit
 setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> Unit

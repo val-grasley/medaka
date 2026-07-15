@@ -17,7 +17,6 @@ import types.typecheck.{
   constrainedSigNames,
   preludeReturnPosDictNames,
   preludeArgPosDictNames,
-  enableEmitArgStampPasses,
   mainTypeIsUnit,
   mainTypeIsFloat,
 }
@@ -52,7 +51,6 @@ emit runtimeDecls preludeDecls userDecls =
 
 runEmit : List Decl -> List Decl -> List Decl -> String
 runEmit runtimeDecls preludeDecls userDecls =
-  let _ = enableEmitArgStampPasses ()
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
   let combined = livePrelude ++ userDecls
