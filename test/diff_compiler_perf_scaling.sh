@@ -96,11 +96,21 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE="$ROOT/test/bin/profile_main"
+# The MULTI-MODULE profiler (issue #153). The single-file PROFILE above cannot see
+# the O(modules^2) family (checkModuleFullImpl / elabModuleStamp) because it never
+# runs the multi-module driver — a gate must run where the bug lands. This one is
+# profile_modules_main: loadProgram -> desugar -> markModules -> checkModules,
+# emitting the SAME `[perf] <stage> <t>s <mb>MB` line protocol as PROFILE.
+PROFILE_MODULES="$ROOT/test/bin/profile_modules_main"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
 [ -x "$PROFILE" ] || {
   echo "build oracles first: sh test/build_oracles.sh --build-one profile_main (missing $PROFILE)"
+  exit 2
+}
+[ -x "$PROFILE_MODULES" ] || {
+  echo "build oracles first: sh test/build_oracles.sh --build-one profile_modules_main (missing $PROFILE_MODULES)"
   exit 2
 }
 
@@ -150,7 +160,29 @@ TIME_HEAP="${PERF_TIME_HEAP:-2147483648}"
 # (nothing ran it for months) and how diff_compiler_lint_multi sat "skipped" while
 # also failing. Do not "simplify" this into a skip.
 #
-# (Currently EMPTY — every shape scales sub-quadratically. Long may it last.)
+# CURRENT ENTRIES:
+#
+#   modules — the O(modules^2) family (issue #153), measured through the
+#           multi-module driver (profile_modules_main -> checkModules). N import-
+#           chained modules, K=8 impls each; the accumulated decl universe that
+#           checkModuleFullImpl rescans per module and elabModuleStamp rebuilds via
+#           buildKeyTable(accAll ++ prog) grows O(modules), rescanned per module =
+#           O(modules^2). This is a REAL, UNFIXED quadratic filed as #154/#150 —
+#           NOT a shape that should be green. It is ledgered (not shipped red)
+#           BECAUSE those fixes have not landed: the ledger asserts the current bad
+#           net-total-allocation ratio so the gate is green now, FAILS if the ratio
+#           worsens (KNOWN_CEIL_modules), and FAILS demanding promotion the moment
+#           #154/#150 drop it back to linear (KNOWN_FIXED_modules) — which is the
+#           measurement those Phase-2 fixes were asked to turn green. The fixture
+#           TYPECHECKS 0-DIAGNOSTIC (proven with `medaka check`) — see gen_modules;
+#           a resolve-broken fixture would measure a DIFFERENT module-count-scaling
+#           mechanism (per-module rebinding of unresolved names), not this one.
+#           MEASURED (this box, deterministic net-total alloc, N=100/200/400, K=8):
+#             net-N 286 MB -> net-2N 927 MB -> net-4N 3313 MB   r1=3.24 r2=3.57
+#           and the typecheck stage in isolation (where the bug lives) r1=3.50
+#           r2=3.78. The ratio CLIMBS toward the pure-quadratic 4.0 as N grows
+#           (typecheck alloc 3.78 -> 3.91 at N=400/800), so it is a quadratic, not a
+#           heap-resize step. TIME is separately ledgered in KNOWN_SLOW_TIME.
 #
 # HISTORY — entries that were fixed and promoted OUT of this ledger:
 #
@@ -168,7 +200,12 @@ TIME_HEAP="${PERF_TIME_HEAP:-2147483648}"
 #           Now: rows are bucketed by head constructor in ONE pass, the oracle is
 #           an OrdMap, and the redundancy fold skips arms that provably cannot be
 #           unreachable. 3.10x -> 2.18x; 274 MB -> 118 MB at N=1000.
-KNOWN_SUPERLINEAR=""
+KNOWN_SUPERLINEAR="modules"
+# Graded on net-TOTAL allocation r2 (the 2N->4N doubling). Allocation is
+# DETERMINISTIC, so these are exact, not sampled. CEIL fails-if-worse (headroom
+# below the pure-quadratic 4.0); FIXED fails-and-demands-promotion when a real fix
+# drops r2 below it (linear ~= 2.0, so 2.7 leaves margin without flapping).
+KNOWN_CEIL_modules="4.0";   KNOWN_FIXED_modules="2.7"
 
 is_known() {
   for k in $KNOWN_SUPERLINEAR; do [ "$k" = "$1" ] && return 0; done
@@ -200,6 +237,13 @@ trap 'rm -rf "$WORK"' EXIT
 #              actually walks the scope chain, which is where #78's resolve
 #              quadratic lived. Graded on TIME (see file header), not
 #              allocation — the #78 bug was a pure scan, near-zero extra alloc.
+#   modules  — MULTI-MODULE (issue #153). The five shapes above are single-file,
+#              so they run only the single-file driver and are STRUCTURALLY BLIND
+#              to the O(modules^2) family in checkModuleFullImpl / elabModuleStamp.
+#              This shape runs the multi-module driver (profile_modules_main) over
+#              N import-chained modules — see gen_modules and the dedicated block
+#              after the single-file loop. It is a LEDGERED, currently-UNFIXED
+#              quadratic (#154/#150); see KNOWN_SUPERLINEAR / KNOWN_SLOW_TIME.
 gen_bindings() {
   n=$1; f=$2; : > "$f"
   i=0; while [ "$i" -lt "$n" ]; do
@@ -254,11 +298,87 @@ gen_xref() {
   done >> "$f"
 }
 
+# gen_modules — the ONLY multi-module generator (issue #153). Writes N separate
+# .mdk files into DIR, chained by import (m0 <- m1 <- ... <- m{N-1} <- entry), each
+# module defining K data types + K impls of a shared interface `Widget`,
+# re-exporting `Widget(..)` and its method `wval` down the chain, and EXERCISING
+# every one of its K impls in a local `useI` value. Unlike the five single-file
+# shapes, this one is DIRECTORY-shaped: the modules block below feeds `entry.mdk` +
+# DIR to profile_modules_main so loadProgram walks the whole chain and checkModules
+# runs over the accumulated decl universe — which is exactly what the O(modules^2)
+# family (checkModuleFullImpl's per-module rescan, elabModuleStamp's
+# buildKeyTable(accAll ++ prog)) scales with.
+#
+# ⚠️ THE FIXTURE MUST RESOLVE CLEANLY, or the gate measures the WRONG quadratic.
+# profile_modules_main drives markModules/checkModules, which do NOT run
+# frontend.resolve and DISCARD its result — so a resolve-BROKEN fixture still prints
+# growing MB, but that growth can be the compiler re-failing to bind the same
+# unresolved names once per module (a different module-count-scaling mechanism),
+# NOT the checkModuleFullImpl/elabModuleStamp rescan #154/#150 are about. An earlier
+# cut of this generator was resolve-broken exactly this way (bare `import m.{Widget}`
+# does not re-export; plain `export data` is VisAbstract so the constructor is not
+# exported; the interface method `wval` was never imported). The three fixes below
+# are load-bearing and each was reproduced with `medaka check`:
+#   * `export import` — re-export Widget+wval down the chain (plain import does not).
+#   * `public export data` — export the CONSTRUCTOR (plain `export data` is abstract).
+#   * import `Widget(..), wval` — bring the interface's METHOD into scope to dispatch.
+# The corrected fixture typechecks 0-diagnostic AND still exhibits O(modules^2) in
+# typecheck (r2: net alloc 3.57, typecheck alloc 3.78, typecheck time 4.12 at
+# N=100/200/400, K=8) — STRONGER than the broken one, confirming the quadratic is
+# the real accumulated-universe rescan, not a binding-failure artifact.
+#
+# WHY K>1 and WHY IMPLS. A plain function chain (each module one `fN x = ...`)
+# scales LINEARLY here (measured typecheck alloc 1.72x/1.84x/1.91x) — the
+# accumulated universe those passes rescan is IMPL/interface/data decls, not plain
+# bindings, so plain functions never populate it. K impls per module do, and K is a
+# linear multiplier on the quadratic coefficient, so a modest constant K keeps the
+# module COUNT (and thus the file count and the gate's wall time) small while the
+# quadratic still dominates by N=100. "Constant decls per module, scale the module
+# count" — issue #153's fix shape.
+gen_modules() {
+  n=$1; dir=$2; k=$3
+  rm -rf "$dir"; mkdir -p "$dir"
+  {
+    printf 'export interface Widget a where\n  wval : a -> Int\n\n'
+    j=0; while [ "$j" -lt "$k" ]; do
+      printf 'public export data T0_%s = T0_%s\nexport impl Widget T0_%s where\n  wval _ = %s\n' "$j" "$j" "$j" "$j"
+      j=$((j+1))
+    done
+    printf 'export use0 : Int\nuse0 = '
+    j=0; while [ "$j" -lt "$k" ]; do [ "$j" -gt 0 ] && printf ' + '; printf 'wval T0_%s' "$j"; j=$((j+1)); done
+    printf '\n'
+  } > "$dir/m0.mdk"
+  i=1
+  while [ "$i" -lt "$n" ]; do
+    prev=$((i - 1))
+    {
+      printf 'export import m%s.{Widget(..), wval}\n' "$prev"
+      j=0; while [ "$j" -lt "$k" ]; do
+        printf 'public export data T%s_%s = T%s_%s\nexport impl Widget T%s_%s where\n  wval _ = %s\n' \
+          "$i" "$j" "$i" "$j" "$i" "$j" "$j"
+        j=$((j+1))
+      done
+      printf 'export use%s : Int\nuse%s = ' "$i" "$i"
+      j=0; while [ "$j" -lt "$k" ]; do [ "$j" -gt 0 ] && printf ' + '; printf 'wval T%s_%s' "$i" "$j"; j=$((j+1)); done
+      printf '\n'
+    } > "$dir/m$i.mdk"
+    i=$((i+1))
+  done
+  top=$((n - 1))
+  printf 'import m%s.{Widget(..), wval, T%s_0(..)}\nmain = println (wval T%s_0)\n' "$top" "$top" "$top" > "$dir/entry.mdk"
+}
+
 # ── Measure ──────────────────────────────────────────────────────────────────
 # Returns TOTAL allocated MB for one fixture. Allocation is deterministic, so ONE
 # run suffices — no min-of-K needed, and no noise to average away.
 alloc_of() {
   MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$1" 2>&1 \
+    | awk '/^\[perf\] total/ { gsub(/MB/,"",$4); print $4; exit }'
+}
+
+# Same, but through the MULTI-MODULE driver (issue #153). Args: <entry.mdk> <root>.
+alloc_of_modules() {
+  MEDAKA_PERF=1 "$PROFILE_MODULES" "$RUNTIME" "$CORE" "$1" "$2" 2>&1 \
     | awk '/^\[perf\] total/ { gsub(/MB/,"",$4); print $4; exit }'
 }
 
@@ -295,6 +415,21 @@ stage_times_min() {
   while [ "$i" -lt "$k" ]; do
     GC_INITIAL_HEAP_SIZE="$TIME_HEAP" MEDAKA_PERF=1 \
       "$PROFILE" "$RUNTIME" "$CORE" "$fixture" 2>&1 \
+      | awk '/^\[perf\] / { t = $3; gsub(/s$/, "", t); printf "%s %s\n", $2, t }'
+    i=$((i+1))
+  done | awk '
+      { if (!($1 in m) || $2 + 0 < m[$1] + 0) m[$1] = $2 }
+      END { for (st in m) printf "%s %s\n", st, m[st] }
+    '
+}
+
+# Same, but through the MULTI-MODULE driver. Args: <entry.mdk> <root> <k>.
+stage_times_min_modules() {
+  entry="$1"; root="$2"; k="$3"
+  i=0
+  while [ "$i" -lt "$k" ]; do
+    GC_INITIAL_HEAP_SIZE="$TIME_HEAP" MEDAKA_PERF=1 \
+      "$PROFILE_MODULES" "$RUNTIME" "$CORE" "$entry" "$root" 2>&1 \
       | awk '/^\[perf\] / { t = $3; gsub(/s$/, "", t); printf "%s %s\n", $2, t }'
     i=$((i+1))
   done | awk '
@@ -345,9 +480,22 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck"
 # Ceilings gate r2. They are set with real headroom over the observed spread
 # (match r2 3.23-3.36, listlit r2 3.39-3.55 across 3 batches) because a ratio at
 # these small absolute times is the least stable number this gate computes.
-KNOWN_SLOW_TIME=""   # drained by #115 (union-find path compression): match 6.0s->0.11s, listlit 5.3s->0.06s
+# modules:typecheck — the TIME side of the O(modules^2) family (issue #153), the
+# axis allocation is weakest on for a scan-heavy quadratic. Measured through the
+# multi-module driver (min-of-K, heap pinned, N=100/200/400, K=8) on the
+# resolve-CLEAN fixture, typecheck at N=400 is ~4.5s (well over the 200ms floor),
+# r1=3.89 r2=4.12 — the ratio EXCEEDS the pure-quadratic 4.0 in this pre-asymptotic
+# regime (constant/linear terms already negligible), as match:typecheck did before
+# #115 (it reached 6.56 at N=4000). Observed r2 spread 4.1-4.3 across runs; ceiling
+# 5.6 gives listlit-precedent headroom over that band plus time noise, still
+# catching a genuine worsening. Same
+# self-draining contract as the alloc entry: promoted out when #154/#150 land (the
+# fix drops typecheck under the 200ms floor at the largest N, tripping the "too FAST
+# to time-gate" promotion branch).
+KNOWN_SLOW_TIME="modules:typecheck"   # match/listlit drained by #115: match 6.0s->0.11s, listlit 5.3s->0.06s
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
+KNOWN_TCEIL_modules_typecheck="5.6";  KNOWN_TFIXED_modules_typecheck="2.70"
 
 is_known_time() {
   for k in $KNOWN_SLOW_TIME; do [ "$k" = "$1" ] && return 0; done
@@ -561,6 +709,112 @@ for shape in bindings match listlit nesting xref; do
     printf '%s' "$time_lines"
   fi
 done
+
+# ── SHAPE: modules — the O(modules^2) family (issue #153) ─────────────────────
+#
+# This is the WHOLE POINT of #153: the five shapes above are single-file, so they
+# run only the single-file driver and are STRUCTURALLY BLIND to the multi-module
+# passes (checkModuleFullImpl, elabModuleStamp) where the module-count quadratics
+# live. This shape runs the MULTI-MODULE driver (profile_modules_main:
+# loadProgram -> markModules -> checkModules) over N import-chained modules so the
+# accumulated-decl rescans actually execute. It is graded on BOTH net-total
+# allocation (its own baseline, subtracted like the single-file shapes) AND, since
+# the scan-heavy part is time-dominant, the per-stage `typecheck` TIME. It is a
+# LEDGERED entry (KNOWN_SUPERLINEAR + KNOWN_SLOW_TIME): a real, currently-UNFIXED
+# quadratic (#154/#150), recorded so the gate is green now yet self-drains the
+# instant those fixes land. See both ledger blocks above for the contract.
+MOD_N="${PERF_MOD_N:-100}"
+MOD_K="${PERF_MOD_K:-8}"
+mn1="$MOD_N"; mn2=$((MOD_N * 2)); mn3=$((MOD_N * 4))
+md1="$WORK/modules_$mn1"; md2="$WORK/modules_$mn2"; md3="$WORK/modules_$mn3"
+gen_modules "$mn1" "$md1" "$MOD_K"
+gen_modules "$mn2" "$md2" "$MOD_K"
+gen_modules "$mn3" "$md3" "$MOD_K"
+
+# Own baseline: this driver's fixed prelude cost differs from the single-file one.
+MBASE_DIR="$WORK/modules_base"; mkdir -p "$MBASE_DIR"
+printf 'main = println 1\n' > "$MBASE_DIR/entry.mdk"
+MBASE_ALLOC="$(alloc_of_modules "$MBASE_DIR/entry.mdk" "$MBASE_DIR")"
+
+ma1="$(alloc_of_modules "$md1/entry.mdk" "$md1")"
+ma2="$(alloc_of_modules "$md2/entry.mdk" "$md2")"
+ma3="$(alloc_of_modules "$md3/entry.mdk" "$md3")"
+
+# A shape that cannot be measured is a HARNESS failure, never a silent pass — same
+# contract as the single-file loop.
+case "$MBASE_ALLOC$ma1$ma2$ma3" in
+  *[!0-9.]*|"")
+    echo "FAIL modules: profiler produced no allocation figure (harness bug)"
+    fail=$((fail+1)) ;;
+  *)
+    # typecheck-stage TIME, min-of-K, heap pinned (rule 2/3). The other stages
+    # (load/mark/desugar) scale linearly and sit under the 200ms floor at these N,
+    # so typecheck is the one time signal worth grading — and the one the ledger
+    # names.
+    mt1="$(stage_times_min_modules "$md1/entry.mdk" "$md1" "$PERF_K" | awk '$1=="typecheck"{print $2}')"
+    mt2="$(stage_times_min_modules "$md2/entry.mdk" "$md2" "$PERF_K" | awk '$1=="typecheck"{print $2}')"
+    mt3="$(stage_times_min_modules "$md3/entry.mdk" "$md3" "$PERF_K" | awk '$1=="typecheck"{print $2}')"
+
+    mnet1="$(awk -v a="$ma1" -v b="$MBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
+    mnet2="$(awk -v a="$ma2" -v b="$MBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
+    mnet3="$(awk -v a="$ma3" -v b="$MBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
+    mar1="$(awk -v a="$mnet1" -v b="$mnet2" 'BEGIN{printf "%.2f", (a+0>0)? b/a : 0}')"
+    mar2="$(awk -v a="$mnet2" -v b="$mnet3" 'BEGIN{printf "%.2f", (a+0>0)? b/a : 0}')"
+
+    # ── ALLOC verdict against the KNOWN_SUPERLINEAR ledger for `modules` ──
+    aworse="$(awk -v r="$mar2" -v c="$KNOWN_CEIL_modules"  'BEGIN{print (r > c) ? 1 : 0}')"
+    abetter="$(awk -v r="$mar2" -v f="$KNOWN_FIXED_modules" 'BEGIN{print (r < f) ? 1 : 0}')"
+
+    if [ "$aworse" = "1" ]; then
+      fail=$((fail+1))
+      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** KNOWN-BAD, AND GOT WORSE (ceiling %s) **\n' \
+        "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "$mar1" "$mar2" "$KNOWN_CEIL_modules"
+    elif [ "$abetter" = "1" ]; then
+      fail=$((fail+1))
+      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** PROMOTE: now scales LINEARLY **\n' \
+        "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "$mar1" "$mar2"
+      printf '           The O(modules^2) alloc bug (#154/#150) is FIXED. Remove "modules" from\n'
+      printf '           KNOWN_SUPERLINEAR in %s and promote this shape to a hard gate.\n' "$(basename "$0")"
+    else
+      known=$((known+1))
+      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  known-superlinear (#153; alloc ceiling %s)\n' \
+        "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "$mar1" "$mar2" "$KNOWN_CEIL_modules"
+    fi
+
+    # ── TIME verdict against the KNOWN_SLOW_TIME ledger for `modules:typecheck` ──
+    if [ -z "$mt1" ] || [ -z "$mt2" ] || [ -z "$mt3" ]; then
+      echo "           time typecheck: NO MEASUREMENT from the profiler (harness bug)"
+      fail=$((fail+1))
+    else
+      below="$(awk -v v="$mt3" -v f="$TIME_FLOOR" 'BEGIN{print (v + 0 < f + 0) ? 1 : 0}')"
+      if [ "$below" = "1" ]; then
+        # A ledgered stage dropping under the floor IS the fix signal — promote,
+        # never skip (see rule 4's ledger carve-out in the single-file loop).
+        ms3="$(awk -v v="$mt3" 'BEGIN{printf "%.0f", v*1000}')"
+        msf="$(awk -v f="$TIME_FLOOR" 'BEGIN{printf "%.0f", f*1000}')"
+        fail=$((fail+1))
+        printf '           time typecheck: ** PROMOTE: now too FAST to time-gate ** %s ms at N=%s < %s ms floor\n' "$ms3" "$mn3" "$msf"
+        printf '           The O(modules^2) time bug (#154/#150) is FIXED. Remove "modules:typecheck" from KNOWN_SLOW_TIME.\n'
+      else
+        mtr1="$(awk -v a="$mt1" -v b="$mt2" 'BEGIN{printf "%.2f", b/a}')"
+        mtr2="$(awk -v a="$mt2" -v b="$mt3" 'BEGIN{printf "%.2f", b/a}')"
+        tworse="$(awk -v r="$mtr2" -v c="$KNOWN_TCEIL_modules_typecheck"  'BEGIN{print (r > c) ? 1 : 0}')"
+        tbetter="$(awk -v r="$mtr2" -v f="$KNOWN_TFIXED_modules_typecheck" 'BEGIN{print (r < f) ? 1 : 0}')"
+        if [ "$tworse" = "1" ]; then
+          fail=$((fail+1))
+          printf '           time typecheck: ** KNOWN-SLOW, AND GOT WORSE ** r1=%s r2=%s (ceiling %s)\n' "$mtr1" "$mtr2" "$KNOWN_TCEIL_modules_typecheck"
+        elif [ "$tbetter" = "1" ]; then
+          fail=$((fail+1))
+          printf '           time typecheck: ** PROMOTE: now scales LINEARLY ** r2=%s (< %s)\n' "$mtr2" "$KNOWN_TFIXED_modules_typecheck"
+          printf '           Remove "modules:typecheck" from KNOWN_SLOW_TIME — the bug is FIXED.\n'
+        else
+          known=$((known+1))
+          printf '           time typecheck: known-slow (TIME) %ss -> %ss -> %ss  r1=%s r2=%s — ledgered (#153)\n' \
+            "$mt1" "$mt2" "$mt3" "$mtr1" "$mtr2"
+        fi
+      fi
+    fi ;;
+esac
 
 printf -- '---------------------------------------------------------------------\n'
 printf '%d ok, %d known-superlinear (ledgered), %d regressed (threshold %sx per doubling)\n' "$pass" "$known" "$fail" "$THRESH"
