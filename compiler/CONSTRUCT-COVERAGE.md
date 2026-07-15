@@ -1,8 +1,10 @@
 # CONSTRUCT-COVERAGE.md — `medaka build` native coverage matrix
 
-**Status:** PARTIAL — actively maintained (last substantive update 2026-07-10). Per its
-own Summary: 123+ PASS fixtures; genuine remaining emitter gaps are same-head-tycon
-dispatch (C7-native) and overlapping-tuple-impl. The `## Gaps` sections are authoritative
+**Status:** PARTIAL — actively maintained (last substantive update 2026-07-15). Per its
+own Summary: 123+ PASS fixtures; the four residuals open as of 2026-07-10 (range-pattern
+EMIT, C7-native same-head dispatch, Gap F Layer 2 dict routing, two-level+ nested-dict
+SIGSEGV) were all verified CLOSED 2026-07-15 (issue #65 soundness-repro sweep on
+`e4fff14e`) — see the dated CLOSED notes in §Gaps. The `## Gaps` sections are authoritative
 over the per-row matrix when they disagree. Bare `compiler/*.mdk` path citations in this
 doc have been corrected to their post-restructure subfolder paths (2026-07-13 doc pass);
 `lib/*.ml` citations are historical OCaml-oracle comparisons from before the 2026-06-26
@@ -21,7 +23,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 
 ## Summary
 
-**123+ PASS fixtures** (gate `build_construct_coverage.sh` is the authoritative PASS list; the per-row matrix below may lag — the **§Gaps** sections are authoritative for each gap's closed/open status). Started 114 PASS / 15 GAP; closed F1·H-a·D1·D2·B1·B2 overnight. **2026-06-18 audit** confirmed additional closures: Gap C all residuals (C1/C2/C3/C4/C5b/C6/C7/C8), Gap H entirely (map+set now PASS in `medaka build`), A1/A4/A5/A8/A9/A11 reclassified as by-design or closed. Genuine remaining emitter gaps: same-head-tycon dispatch (C7-native) + overlapping-tuple-impl. A7 re-classified as a resolve/eval gap. Re-scoped: A2/A3 range patterns = compiler typecheck (`PRng` in `inferPat`), not parser.
+**123+ PASS fixtures** (gate `build_construct_coverage.sh` is the authoritative PASS list; the per-row matrix below may lag — the **§Gaps** sections are authoritative for each gap's closed/open status). Started 114 PASS / 15 GAP; closed F1·H-a·D1·D2·B1·B2 overnight. **2026-06-18 audit** confirmed additional closures: Gap C all residuals (C1/C2/C3/C4/C5b/C6/C7/C8), Gap H entirely (map+set now PASS in `medaka build`), A1/A4/A5/A8/A9/A11 reclassified as by-design or closed. A7 re-classified as a resolve/eval gap. Re-scoped: A2/A3 range patterns = compiler typecheck (`PRng` in `inferPat`), not parser. **2026-07-15 (issue #65 sweep, `e4fff14e`):** A2/A3 EMIT, C7-native same-head dispatch, Gap F Layer 2, and two-level+ nested-dict SIGSEGV all verified CLOSED — no genuine emitter dispatch gaps remain open in this doc.
 
 ---
 
@@ -113,8 +115,8 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Match record pattern `Person { name }` | PASS | `match_record_pat.mdk` |
 | Match record pattern with rest `{ ... }` | PASS | `record_pat_rest.mdk` |
 | Match string literal `"Alice"` | PASS | `match_string_pat.mdk` |
-| Match int range pattern `1..9` | TYPECHECK-CLOSED, EMIT-OPEN | typecheck `range_pat.mdk`; see §Gaps A2/A3 |
-| Match char range pattern `'a'..='z'` | TYPECHECK-CLOSED, EMIT-OPEN | typecheck `range_pat.mdk`; see §Gaps A2/A3 |
+| Match int range pattern `1..9` | CLOSED (2026-07-15) | typecheck+emit `range_pat.mdk`; see §Gaps A2/A3 |
+| Match char range pattern `'a'..='z'` | CLOSED (2026-07-15) | typecheck+emit `range_pat.mdk`; see §Gaps A2/A3 |
 | Match negative literal `-1` | GAP | see §Gaps below |
 | Match inline `\|` form (`match x \| p => e \| _ => e`) | GAP | see §Gaps below |
 | Refutable match-arm pattern-guard `x if Some y <- f x` | PASS (CLOSED 2026-06-15) | `test/llvm_fixtures/guard_match_*.mdk` |
@@ -317,8 +319,8 @@ errors in `medaka build`, or have been re-classified after the 2026-06-18 audit.
 | # | Construct | Error | Repro |
 |---|-----------|-------|-------|
 | A1 | Match inline `\|` form: `match x \| 0 => "z" \| _ => "o"` | **BY DESIGN** — OCaml reference ALSO rejects this (verified); indentation-based match grammar only. Adding it to compiler would DIVERGE from the oracle. Not a gap. | `let r = match 0 \| 0 => "zero" \| _ => "other"` |
-| A2 | Match int range pattern `1..9` | TYPECHECK-CLOSED (2026-06-10); EMIT-OPEN | `match n` / `  1..9 => "digit"` / `  _ => "other"` |
-| A3 | Match char range pattern `'a'..='z'` | TYPECHECK-CLOSED (2026-06-10); EMIT-OPEN | `match c` / `  'a'..='z' => True` / `  _ => False` |
+| A2 | Match int range pattern `1..9` | **CLOSED** — TYPECHECK 2026-06-10; EMIT 2026-07-15 (issue #65 sweep, `e4fff14e`) | `match n` / `  1..9 => "digit"` / `  _ => "other"` |
+| A3 | Match char range pattern `'a'..='z'` | **CLOSED** — TYPECHECK 2026-06-10; EMIT 2026-07-15 (issue #65 sweep, `e4fff14e`) | `match c` / `  'a'..='z' => True` / `  _ => False` |
 | A4 | Match negative literal pattern `-1` | NOT A GAP — ref REJECTS it too | `match n` / `  -1 => "minus"` / `  _ => "other"` |
 
 **Triage (2026-06-10, indentation-form repros — the table's original `\|`-form
@@ -332,8 +334,8 @@ repros all hit A1 first, masking the real downstream behavior):**
   Reclassify as design-decision (do not add) unless the reference grammar gains
   it first.
 
-- **A2 / A3** (int / char range patterns `1..9`, `'a'..='z'`) — **TYPECHECK
-  CLOSED 2026-06-10; EMIT still OPEN.** The compiler *parser already accepts them*
+- **A2 / A3** (int / char range patterns `1..9`, `'a'..='z'`) — **CLOSED:
+  TYPECHECK 2026-06-10, EMIT 2026-07-15.** The compiler *parser already accepts them*
   (`parsePatAtom` → `intPatRest`/`charPatRest` → `PRng`, parser.mdk:1216-1255).
   **Selfhost typecheck now handles them**: `inferPat` gained a `PRng` arm
   (`inferPatRng`, typecheck.mdk:~1180) mirroring the oracle (`lib/typecheck.ml:1299`):
@@ -342,22 +344,25 @@ repros all hit A1 first, masking the real downstream behavior):**
   compiler == oracle on `test/typecheck_fixtures/range_pat.mdk` (`Int -> String`,
   `Char -> Bool`). Selfhost **eval** already handled `PRng` (`bootstrap_eval.sh`'s
   `range_pat_tree.mdk`).
-  **EMIT remains a gap** (`medaka build`): two missing pieces in `llvm_emit.mdk`.
-  (1) `bindPattern` has no `PRng` arm → falls through to `gapEnv`
+  **EMIT was a gap** (`medaka build`) — historically two missing pieces in `llvm_emit.mdk`.
+  (1) `bindPattern` had no `PRng` arm → fell through to `gapEnv`
   (llvm_emit.mdk:382) and `panic: unsupported pattern in match arm … PRng`.
   (2) More fundamentally, the decision-tree lowering (`core_ir_lower.mdk`)
   canonicalises `PRng` to `PWild` in the matrix (`canonPat`) and routes the arm
   through `CTGuard` (`patNeedsGuard (PRng …) = True`), but the arm's explicit
   `guards` list is **empty** — the range bound lives in the *pattern*, not a
-  `CGuard`. `emitGuardedArm` (llvm_emit.mdk:3507) only emits tests for the
+  `CGuard`. `emitGuardedArm` (llvm_emit.mdk:3507) only emitted tests for the
   explicit `guards`, so even past the `bindPattern` panic it would emit **no
   range-comparison test** and fire the arm unconditionally (the `50` scrutinee
-  would wrongly match `1..9`). Closing emit requires a NEW range-test lowering: a
+  would wrongly match `1..9`). Closing emit required a NEW range-test lowering: a
   `bindPattern` `PRng` no-op arm PLUS synthesizing the comparison
   (`lo <= v && v <= hi` for `..=`, `lo <= v && v < hi` for `..`) as an emitted
-  guard test branching to the `CTGuard` fail subtree. That is a genuine emit
-  feature (a range-comparison test the emitter does not produce) — deferred,
-  STOPPED per task guardrails (not built unattended).
+  guard test branching to the `CTGuard` fail subtree. **CLOSED 2026-07-15** —
+  verified via issue #65 soundness-repro sweep on `e4fff14e`: `match n` /
+  `  1..9 => "digit"` / `  _ => "other"` agrees between `run` and `build` for
+  both in-range (`5` → `digit`) and out-of-range (`50` → `other`) scrutinees;
+  char ranges and boundary values agree too. The emitter now emits the
+  range-comparison test described above.
   *Caveat (unchanged):* the compiler parser's range **bounds** reject `MINUS INT`
   (`intBoundFor` only matches `TInt`), so negative range bounds (`-1..1`, which
   the ref accepts via parser.mly:561-566) remain a separate compiler-parser gap.
@@ -380,7 +385,7 @@ repros all hit A1 first, masking the real downstream behavior):**
 | A10 | Annotated `let x : T = e` in block (block form) | Both ref and compiler fail; ref: `Parse error` | N/A — both parsers reject this |
 | A11 | `@`-pattern in lambda / function param (e.g. `setX v p@(Pt {x,y}) = ...`) | ✅ CLOSED (2026-06-18 audit) — works in both fn params AND lambda | `f p@{x,y} = x` |
 
-**Fix target:** `compiler/frontend/parser.mdk` for A2/A3 emit; A7 CLOSED (see above).
+**Fix target:** none remaining — A2/A3 CLOSED 2026-07-15 (see above); A7 CLOSED (see above).
 
 ---
 
@@ -431,9 +436,8 @@ not produced by current `compiler/` source.
 
 **Verification (2026-06-18 audit):** C1/C5b (tuple-as-dispatch-tag), nested element dicts (`debug` on `List a`, `List (Int,Int)`, up to 3-level `List(List(List Int))`), lambda-bound constraint (`g = x => debug x`), and unannotated generic `f x = println x`/`debug x`/`display x` — ALL CLOSED, incidentally by the float-soundness arc reworking the emitter dict paths.
 
-**Genuine emitter dispatch residuals (2026-06-18 audit, both reproduced as open):**
-- **C7-native same-head dispatch** — `medaka build` fails on two `impl`s of one interface sharing a head tycon with different type args (e.g. `impl Def (MyPair Int Bool)` + `impl Def (MyPair Bool Int)`): `error: emitter failed — no impl of method … (slice 6)`. Interpreter (`run`) is correct. Emitter dispatch is head-tag-keyed; can't disambiguate type args.
-- ~~**Overlapping tuple-impl dispatch (both backends)** — with `impl Foo (Int,Int)` AND `impl Foo ((Int,Int),(Int,Int))`, a pair-of-pairs arg dispatches to the `(Int,Int)` impl (wrong) in BOTH `run` and `build`. Most-specific-resolution bug.~~ ❌ **DISPROVEN — does not reproduce** (re-checked on `e34e2b46`, 2026-07-14). Both impls declared, `foo ((1,2),(3,4))` correctly selects the pair-of-pairs impl under `run`. **Do not re-file this without a fresh repro.**
+**Emitter dispatch residuals (2026-06-18 audit) — all CLOSED as of 2026-07-15:**
+- **C7-native same-head dispatch** — ✅ **CLOSED (2026-07-15, issue #65 sweep, `e4fff14e`).** `medaka build` previously failed on two `impl`s of one interface sharing a head tycon with different type args (e.g. `impl Def (MyPair Int Bool)` + `impl Def (MyPair Bool Int)`): `error: emitter failed — no impl of method … (slice 6)`. Interpreter (`run`) was already correct. Verified fixed: both impls now build and dispatch correctly per call site.
 
 Historical table (as of 2026-06-10; statuses updated below):
 
@@ -448,7 +452,7 @@ Historical table (as of 2026-06-10; statuses updated below):
 | C7 | Array `[|1..=5|]` with `debug` (requires `import array`) | `Debug (Array Int)` | ✅ CLOSED (requires `import array`) |
 | C8 | Array slice `arr.[1..3]` with `debug` on result (requires `import array`) | `Debug (Array Int)` | ✅ CLOSED (requires `import array`) |
 
-**Remaining genuine emitter dispatch gap:** same-head-tycon dispatch + overlapping-tuple-impl (see above).
+**Remaining genuine emitter dispatch gap:** none — same-head-tycon dispatch CLOSED 2026-07-15 (see above).
 
 ---
 
@@ -561,7 +565,7 @@ emitter graph still DCEs + reproduces byte-for-byte); `bootstrap_eval` 20/0.
 
 | # | Construct | Oracle | Native | Note |
 |---|-----------|--------|--------|------|
-| F1 | `f s = println s; main = f "hello"` (UNANNOTATED — generic `Display a`) | `hello` | SIGSEGV (exit 133) | Two layers. Layer 1 (return-type inference) FIXED 2026-06-10. Layer 2 (dict routing) is a compiler-typecheck/dict_pass gap, NOT an emitter gap — out of EMIT-ONLY scope. |
+| F1 | `f s = println s` / `main = f "hello"` (UNANNOTATED — generic `Display a`) | `hello` | `hello` — **CLOSED (2026-07-15)** | Two layers. Layer 1 (return-type inference) FIXED 2026-06-10. Layer 2 (dict routing) FIXED 2026-07-15 — verified via issue #65 sweep on `e4fff14e`. |
 | F1b | `f : String -> <IO> Unit; f s = println s; main = f "hello"` (CONCRETE-annotated) | `hello` | `hello\n()` PASS | FIXED 2026-06-10 by the return-type-propagation fix (see below). Was `hello\n0` before. Fixture: `println_param_fn_typed.mdk` |
 
 **Layer 1 (return-type inference) — FIXED (Stage 3 #2b layering, construct-gap F1, 2026-06-10).**
@@ -576,22 +580,21 @@ fname`, mirroring the emit path (`emitDictApp`/`emitMethod` both type their resu
 via `fnRetTy e name`). This makes the CONCRETE-annotated form (F1b) emit
 `hello\n()` and the diff/fixpoint gates stay byte-identical.
 
-**Layer 2 (dict routing) — STILL OPEN, NOT an emitter gap.** With `f` left
+**Layer 2 (dict routing) — CLOSED (2026-07-15).** With `f` left
 UNANNOTATED, the typechecker generalizes it to `Display a => a -> <IO> Unit`, so
 `f` should receive a leading Display **dict parameter** and forward it (`RDictFwd`)
-into the `println` call. The compiler dict-pass does NOT do this: `mdk_f` is
-emitted as `mdk_f(i64 %arg0)` (no dict param) and `f`'s body calls
+into the `println` call. Historically the compiler dict-pass did NOT do this: `mdk_f` was
+emitted as `mdk_f(i64 %arg0)` (no dict param) and `f`'s body called
 `mdk_println(i64 0, i64 %arg0)` — dict word `0` (`RNone`). `println`'s body is a
-Display dict-dispatch switch over its dict arg; dict `0` matches no impl tag and
-falls to the `unreachable` terminator → SIGSEGV. The emitter is faithfully
-lowering what dict_pass produced; the missing leading dict param + `RDictFwd` route
-is upstream in `compiler/types/typecheck.mdk` (dict-passing for a user fn that is generic
-over a constraint consumed by a return-position constrained call). This is an
-EMIT-ONLY-out-of-scope dispatch fix, deferred.
+Display dict-dispatch switch over its dict arg; dict `0` matched no impl tag and
+fell to the `unreachable` terminator → SIGSEGV. **Verified fixed** via issue #65
+sweep on `e4fff14e`: an unannotated `f x = println "\{x}"`-shaped function now
+infers `Display a => …` and builds+runs clean over multiple types — the leading
+dict param + `RDictFwd` route described above is now produced.
 
-**Fix target (Layer 2):** `compiler/types/typecheck.mdk` — give a user fn generic over a
-constraint used in a return-position constrained call a leading dict parameter and
-route the constrained call through `RDictFwd` (not `RNone`).
+**Fix target (Layer 2):** CLOSED — was `compiler/types/typecheck.mdk` (a user fn generic over a
+constraint used in a return-position constrained call now gets a leading dict parameter and
+routes the constrained call through `RDictFwd`, not `RNone`).
 
 ---
 
@@ -818,7 +821,7 @@ Two distinct compiler-only root causes (oracle is correct in both):
   `f s = println s; main = f "hello"` → native `hello` == oracle; `f s = display s`, f→g
   promotion chains, multi-type use all native==oracle. Fixture
   `test/llvm_fixtures_modules/promoted_arg_dict/`.
-- **Cause B (H-b2 ≡ audit L2) — ✅ CLOSED (one-level, 2026-06-10):** `routeOfMono`
+- **Cause B (H-b2 ≡ audit L2) — ✅ CLOSED (one-level, 2026-06-10; two-level+ nesting CLOSED 2026-07-15):** `routeOfMono`
   returned `RKey tag []` — dropped nested element reqs (`Eq a` inside
   `Eq (Box a) requires Eq a`). The real victim was the build/module path:
   `elabModuleStamp` passed an EMPTY implTable into `resolveSites`/`resolveDictApps`,
@@ -830,9 +833,12 @@ Two distinct compiler-only root causes (oracle is correct in both):
   `collectDictSites` scan the `EMethodAt` impl-/method-route lists so `usesImplDict`
   sees a nested arg-position `RDict $dict_<m>_<slot>` and `implDictPassMethods`
   prepends the param. Additive (goldens byte-identical, fixpoint holds). Box repro +
-  `import set.{Set}` build native == oracle (`True`, no SIGSEGV). RESIDUAL: two-level+
-  nesting still SIGSEGVs (emitter `dictWordOfRoute` materializes only the head tag —
-  flat i64 dict word can't carry a nested dict); `map`/Map blocked on a SEPARATE
+  `import set.{Set}` build native == oracle (`True`, no SIGSEGV). Two-level+ nesting
+  (emitter `dictWordOfRoute` previously materialized only the head tag — a flat i64
+  dict word couldn't carry a nested dict) is now **CLOSED too (2026-07-15, issue #65
+  sweep, `e4fff14e`)**: `Box (List (List Int))`, `Box (Box (Box Int))`, and
+  `Pair (Box) (Box)` all build+run `True` — the machinery now materializes nested
+  reqs recursively. `map`/Map remains blocked on a SEPARATE
   arg-tag `toList` gap. Fixtures: `test/construct_fixtures/nested_requires_dict.mdk`,
   `test/eval_dict_fixtures/nested_requires_box.mdk`.
 - F1-L2 ≠ H-b2 (upstream promotion vs downstream nested route). D11 (driver coverage) is

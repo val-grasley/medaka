@@ -1,5 +1,5 @@
 # META
-source_lines=1603
+source_lines=1669
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka lexer — Stage 1 port of `lib/lexer.mll`.
@@ -403,6 +403,31 @@ parseIntFrom src p endp acc
   | otherwise =
     parseIntFrom src (p + 1) endp (acc * 10 + (charCode (at src p) - 48))
 
+-- ── Int-literal range guard ─────────────────────────────────────────────
+-- The tagged-Int rep is 63-bit (`word = (n << 1) | 1`, `runtime/medaka_rt.c`),
+-- so `Int` spans [-2^62, 2^62-1]. The lexer sees only the unsigned digits (the
+-- `-` is a separate token, negated in the parser), and the negative minimum
+-- -2^62 must stay writable, so the largest admissible magnitude is
+-- 2^62 = 4611686018427387904 (19 digits). A bare positive 2^62 still wraps
+-- (the lexer can't see the sign); 2^62+1 and above are rejected outright.
+-- `parseIntFrom` accumulates in the compiler's own 63-bit `Int` and would wrap,
+-- so overflow is detected on the digit STRING (length, then lexicographic order,
+-- which coincides with numeric order at equal length), never by arithmetic.
+dropZerosL : List Char -> List Char
+dropZerosL ('0'::rest) = dropZerosL rest
+dropZerosL xs = xs
+
+-- Digits of the literal with underscores AND leading zeros removed.
+cleanDigits : Array Char -> Int -> Int -> String
+cleanDigits src start endp =
+  stringFromChars (arrayFromList (dropZerosL (collectNoUs src start endp)))
+
+intLitOverflows : Array Char -> Int -> Int -> Bool
+intLitOverflows src start endp =
+  let ds = cleanDigits src start endp
+  let n = stringLength ds
+  n > 19 || n == 19 && ds > "4611686018427387904"
+
 -- ── Keyword table ───────────────────────────────────────────────────────
 -- True/False are NOT here: they start uppercase, so the OCaml lexer emits them
 -- as UPPER (keyword_or_ident only fires for lowercase/underscore lexemes).
@@ -599,16 +624,57 @@ isFloatAt src len e1 = e1 < len
   && e1 + 1 < len
   && isDigit (at src (e1 + 1))
 
+isExpMarker : Char -> Bool
+isExpMarker c = c == 'e' || c == 'E'
+
+-- Optional decimal exponent `[eE][+-]?[0-9]+` (underscores allowed in the digits,
+-- stripped later by `substrNoUs`). Returns the position AFTER the exponent, or `p`
+-- unchanged when there is no valid exponent — a bare `e`/`E` NOT followed by an
+-- (optionally signed) digit is left for identifier lexing, so `1e`, `x1e`, and the
+-- identifier `e12` are untouched; only `<digits>[.<digits>]e[+-]?<digits>` floats.
+expEnd : Array Char -> Int -> Int -> Int
+expEnd src len p
+  | p < len && isExpMarker (at src p) =
+    let q = if p + 1 < len && (at src (p + 1) == '+' || at src (p + 1) == '-') then
+      p + 2
+    else
+      p + 1
+    if q < len && isDigit (at src q) then digitsEnd src len q else p
+  | otherwise = p
+
 numFinish : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 numFinish src len pos e1 depth id
   | isFloatAt src len e1 = floatTok src len pos e1 depth id
+  | expEnd src len e1 > e1 =
+    floatTokEnd src len pos (expEnd src len e1) depth id
+  | intLitOverflows src pos e1 =
+    lexErrorTok pos "integer literal too large for Int (max magnitude 2^62)"
   | otherwise =
     RTok (TInt (parseIntFrom src pos e1 0)) pos e1 :: scan src len e1 depth id
 
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTok src len pos e1 depth id =
   let e2 = digitsEnd src len (e1 + 1)
-  RTok (TFloat (fromOption 0.0 (stringToFloat (substrNoUs src pos e2)))) pos e2 :: scan src len e2 depth id
+  floatTokEnd src len pos (expEnd src len e2) depth id
+
+-- A Float is finite iff `f * 0.0 == 0.0`: for ±inf, `inf * 0.0` is NaN and
+-- `NaN == 0.0` is False; for NaN, `NaN == 0.0` is likewise False. There is no
+-- `isFinite` extern, so this arithmetic identity is the detection.
+floatIsFinite : Float -> Bool
+floatIsFinite f = f * 0.0 == 0.0
+
+-- Emit a `TFloat` spanning [pos, endp). `substrNoUs` strips underscores across the
+-- whole mantissa+exponent, and `stringToFloat` (strtod) reads the exponent form.
+-- A literal whose magnitude overflows the IEEE-754 double range parses to `inf`,
+-- which the native backend would emit as an invalid `store double inf`; reject it
+-- at the source with a located error rather than let it reach codegen.
+floatTokEnd : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
+floatTokEnd src len pos endp depth id =
+  let f = fromOption 0.0 (stringToFloat (substrNoUs src pos endp))
+  if floatIsFinite f then
+    RTok (TFloat f) pos endp :: scan src len endp depth id
+  else
+    lexErrorTok pos "float literal out of range (overflows to infinity)"
 
 -- strings (escapes processed into the content; `\{` opens an interpolation).
 -- `startQ` is the offset of the OPENING quote (captured at the call site in
@@ -1817,6 +1883,13 @@ collectComments s =
 (DFunDef false "substrNoUs" ((PVar "src") (PVar "start") (PVar "endp")) (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EApp (EApp (EApp (EVar "collectNoUs") (EVar "src")) (EVar "start")) (EVar "endp")))))
 (DTypeSig false "parseIntFrom" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))))
 (DFunDef false "parseIntFrom" ((PVar "src") (PVar "p") (PVar "endp") (PVar "acc")) (EIf (EBinOp ">=" (EVar "p") (EVar "endp")) (EVar "acc") (EIf (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "p")) (ELit (LChar "_"))) (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "endp")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "endp")) (EBinOp "+" (EBinOp "*" (EVar "acc") (ELit (LInt 10))) (EBinOp "-" (EApp (EVar "charCode") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (ELit (LInt 48))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "dropZerosL" (TyFun (TyApp (TyCon "List") (TyCon "Char")) (TyApp (TyCon "List") (TyCon "Char"))))
+(DFunDef false "dropZerosL" ((PCons (PLit (LChar "0")) (PVar "rest"))) (EApp (EVar "dropZerosL") (EVar "rest")))
+(DFunDef false "dropZerosL" ((PVar "xs")) (EVar "xs"))
+(DTypeSig false "cleanDigits" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
+(DFunDef false "cleanDigits" ((PVar "src") (PVar "start") (PVar "endp")) (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EApp (EVar "dropZerosL") (EApp (EApp (EApp (EVar "collectNoUs") (EVar "src")) (EVar "start")) (EVar "endp"))))))
+(DTypeSig false "intLitOverflows" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
+(DFunDef false "intLitOverflows" ((PVar "src") (PVar "start") (PVar "endp")) (EBlock (DoLet false false (PVar "ds") (EApp (EApp (EApp (EVar "cleanDigits") (EVar "src")) (EVar "start")) (EVar "endp"))) (DoLet false false (PVar "n") (EApp (EVar "stringLength") (EVar "ds"))) (DoExpr (EBinOp "||" (EBinOp ">" (EVar "n") (ELit (LInt 19))) (EBinOp "&&" (EBinOp "==" (EVar "n") (ELit (LInt 19))) (EBinOp ">" (EVar "ds") (ELit (LString "4611686018427387904"))))))))
 (DTypeSig false "keywordOrIdent" (TyFun (TyCon "String") (TyCon "Token")))
 (DFunDef false "keywordOrIdent" ((PLit (LString "let"))) (EVar "TLet"))
 (DFunDef false "keywordOrIdent" ((PLit (LString "rec"))) (EVar "TRec"))
@@ -1898,10 +1971,18 @@ collectComments s =
 (DFunDef false "scanNumber" ((PVar "src") (PVar "len") (PVar "pos") (PVar "depth") (PVar "id")) (EIf (EApp (EApp (EApp (EVar "isRadixPrefix") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EApp (EApp (EVar "scanRadix") (EVar "src")) (EVar "len")) (EVar "pos")) (EVar "depth")) (EVar "id")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "numFinish") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EVar "pos"))) (EVar "depth")) (EVar "id")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "isFloatAt" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
 (DFunDef false "isFloatAt" ((PVar "src") (PVar "len") (PVar "e1")) (EBinOp "&&" (EBinOp "&&" (EBinOp "&&" (EBinOp "<" (EVar "e1") (EVar "len")) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "e1")) (ELit (LChar ".")))) (EBinOp "<" (EBinOp "+" (EVar "e1") (ELit (LInt 1))) (EVar "len"))) (EApp (EVar "isDigit") (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "e1") (ELit (LInt 1)))))))
+(DTypeSig false "isExpMarker" (TyFun (TyCon "Char") (TyCon "Bool")))
+(DFunDef false "isExpMarker" ((PVar "c")) (EBinOp "||" (EBinOp "==" (EVar "c") (ELit (LChar "e"))) (EBinOp "==" (EVar "c") (ELit (LChar "E")))))
+(DTypeSig false "expEnd" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
+(DFunDef false "expEnd" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EBinOp "&&" (EBinOp "<" (EVar "p") (EVar "len")) (EApp (EVar "isExpMarker") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p")))) (EBlock (DoLet false false (PVar "q") (EIf (EBinOp "&&" (EBinOp "<" (EBinOp "+" (EVar "p") (ELit (LInt 1))) (EVar "len")) (EBinOp "||" (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (ELit (LChar "+"))) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (ELit (LChar "-"))))) (EBinOp "+" (EVar "p") (ELit (LInt 2))) (EBinOp "+" (EVar "p") (ELit (LInt 1))))) (DoExpr (EIf (EBinOp "&&" (EBinOp "<" (EVar "q") (EVar "len")) (EApp (EVar "isDigit") (EApp (EApp (EVar "at") (EVar "src")) (EVar "q")))) (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EVar "q")) (EVar "p")))) (EIf (EVar "otherwise") (EVar "p") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "numFinish" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok")))))))))
-(DFunDef false "numFinish" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EIf (EApp (EApp (EApp (EVar "isFloatAt") (EVar "src")) (EVar "len")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTok") (EVar "src")) (EVar "len")) (EVar "pos")) (EVar "e1")) (EVar "depth")) (EVar "id")) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TInt") (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EVar "pos")) (EVar "e1")) (ELit (LInt 0))))) (EVar "pos")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "e1")) (EVar "depth")) (EVar "id"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "numFinish" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EIf (EApp (EApp (EApp (EVar "isFloatAt") (EVar "src")) (EVar "len")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTok") (EVar "src")) (EVar "len")) (EVar "pos")) (EVar "e1")) (EVar "depth")) (EVar "id")) (EIf (EBinOp ">" (EApp (EApp (EApp (EVar "expEnd") (EVar "src")) (EVar "len")) (EVar "e1")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTokEnd") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EVar "expEnd") (EVar "src")) (EVar "len")) (EVar "e1"))) (EVar "depth")) (EVar "id")) (EIf (EApp (EApp (EApp (EVar "intLitOverflows") (EVar "src")) (EVar "pos")) (EVar "e1")) (EApp (EApp (EVar "lexErrorTok") (EVar "pos")) (ELit (LString "integer literal too large for Int (max magnitude 2^62)"))) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TInt") (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EVar "pos")) (EVar "e1")) (ELit (LInt 0))))) (EVar "pos")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "e1")) (EVar "depth")) (EVar "id"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "floatTok" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok")))))))))
-(DFunDef false "floatTok" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "e2") (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "e1") (ELit (LInt 1))))) (DoExpr (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TFloat") (EApp (EApp (EVar "fromOption") (ELit (LFloat 0.0))) (EApp (EVar "stringToFloat") (EApp (EApp (EApp (EVar "substrNoUs") (EVar "src")) (EVar "pos")) (EVar "e2")))))) (EVar "pos")) (EVar "e2")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "e2")) (EVar "depth")) (EVar "id"))))))
+(DFunDef false "floatTok" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "e2") (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "e1") (ELit (LInt 1))))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTokEnd") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EVar "expEnd") (EVar "src")) (EVar "len")) (EVar "e2"))) (EVar "depth")) (EVar "id")))))
+(DTypeSig false "floatIsFinite" (TyFun (TyCon "Float") (TyCon "Bool")))
+(DFunDef false "floatIsFinite" ((PVar "f")) (EBinOp "==" (EBinOp "*" (EVar "f") (ELit (LFloat 0.0))) (ELit (LFloat 0.0))))
+(DTypeSig false "floatTokEnd" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok")))))))))
+(DFunDef false "floatTokEnd" ((PVar "src") (PVar "len") (PVar "pos") (PVar "endp") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "f") (EApp (EApp (EVar "fromOption") (ELit (LFloat 0.0))) (EApp (EVar "stringToFloat") (EApp (EApp (EApp (EVar "substrNoUs") (EVar "src")) (EVar "pos")) (EVar "endp"))))) (DoExpr (EIf (EApp (EVar "floatIsFinite") (EVar "f")) (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TFloat") (EVar "f"))) (EVar "pos")) (EVar "endp")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "endp")) (EVar "depth")) (EVar "id"))) (EApp (EApp (EVar "lexErrorTok") (EVar "pos")) (ELit (LString "float literal out of range (overflows to infinity)")))))))
 (DTypeSig false "scanStr" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "RawTok"))))))))))
 (DFunDef false "scanStr" ((PVar "src") (PVar "len") (PVar "p") (PVar "startQ") (PVar "depth") (PVar "id") (PVar "acc")) (EIf (EBinOp ">=" (EVar "p") (EVar "len")) (EApp (EApp (EVar "lexErrorTok") (EVar "p")) (ELit (LString "unterminated string literal"))) (EIf (EApp (EVar "isQuote") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TString") (EVar "acc"))) (EVar "startQ")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "depth")) (EVar "id"))) (EIf (EBinOp "&&" (EApp (EVar "isBackslash") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EBinOp "<" (EBinOp "+" (EVar "p") (ELit (LInt 1))) (EVar "len"))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "scanStrEsc") (EVar "src")) (EVar "len")) (EVar "p")) (EVar "startQ")) (EVar "depth")) (EVar "id")) (EVar "acc")) (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1))))) (EIf (EApp (EVar "isBackslash") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EApp (EApp (EVar "lexErrorTok") (EVar "p")) (ELit (LString "unterminated string literal"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "scanStr") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "startQ")) (EVar "depth")) (EVar "id")) (EBinOp "++" (EVar "acc") (EApp (EVar "charToStr") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DTypeSig false "scanStrEsc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Char") (TyApp (TyCon "List") (TyCon "RawTok")))))))))))
@@ -2449,6 +2530,13 @@ collectComments s =
 (DFunDef false "substrNoUs" ((PVar "src") (PVar "start") (PVar "endp")) (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EApp (EApp (EApp (EVar "collectNoUs") (EVar "src")) (EVar "start")) (EVar "endp")))))
 (DTypeSig false "parseIntFrom" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))))
 (DFunDef false "parseIntFrom" ((PVar "src") (PVar "p") (PVar "endp") (PVar "acc")) (EIf (EBinOp ">=" (EVar "p") (EVar "endp")) (EVar "acc") (EIf (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "p")) (ELit (LChar "_"))) (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "endp")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "endp")) (EBinOp "+" (EBinOp "*" (EVar "acc") (ELit (LInt 10))) (EBinOp "-" (EApp (EVar "charCode") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (ELit (LInt 48))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "dropZerosL" (TyFun (TyApp (TyCon "List") (TyCon "Char")) (TyApp (TyCon "List") (TyCon "Char"))))
+(DFunDef false "dropZerosL" ((PCons (PLit (LChar "0")) (PVar "rest"))) (EApp (EVar "dropZerosL") (EVar "rest")))
+(DFunDef false "dropZerosL" ((PVar "xs")) (EVar "xs"))
+(DTypeSig false "cleanDigits" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
+(DFunDef false "cleanDigits" ((PVar "src") (PVar "start") (PVar "endp")) (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EApp (EVar "dropZerosL") (EApp (EApp (EApp (EVar "collectNoUs") (EVar "src")) (EVar "start")) (EVar "endp"))))))
+(DTypeSig false "intLitOverflows" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
+(DFunDef false "intLitOverflows" ((PVar "src") (PVar "start") (PVar "endp")) (EBlock (DoLet false false (PVar "ds") (EApp (EApp (EApp (EVar "cleanDigits") (EVar "src")) (EVar "start")) (EVar "endp"))) (DoLet false false (PVar "n") (EApp (EVar "stringLength") (EVar "ds"))) (DoExpr (EBinOp "||" (EBinOp ">" (EVar "n") (ELit (LInt 19))) (EBinOp "&&" (EBinOp "==" (EVar "n") (ELit (LInt 19))) (EBinOp ">" (EVar "ds") (ELit (LString "4611686018427387904"))))))))
 (DTypeSig false "keywordOrIdent" (TyFun (TyCon "String") (TyCon "Token")))
 (DFunDef false "keywordOrIdent" ((PLit (LString "let"))) (EVar "TLet"))
 (DFunDef false "keywordOrIdent" ((PLit (LString "rec"))) (EVar "TRec"))
@@ -2530,10 +2618,18 @@ collectComments s =
 (DFunDef false "scanNumber" ((PVar "src") (PVar "len") (PVar "pos") (PVar "depth") (PVar "id")) (EIf (EApp (EApp (EApp (EVar "isRadixPrefix") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EApp (EApp (EVar "scanRadix") (EVar "src")) (EVar "len")) (EVar "pos")) (EVar "depth")) (EVar "id")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "numFinish") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EVar "pos"))) (EVar "depth")) (EVar "id")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "isFloatAt" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
 (DFunDef false "isFloatAt" ((PVar "src") (PVar "len") (PVar "e1")) (EBinOp "&&" (EBinOp "&&" (EBinOp "&&" (EBinOp "<" (EVar "e1") (EVar "len")) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "e1")) (ELit (LChar ".")))) (EBinOp "<" (EBinOp "+" (EVar "e1") (ELit (LInt 1))) (EVar "len"))) (EApp (EVar "isDigit") (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "e1") (ELit (LInt 1)))))))
+(DTypeSig false "isExpMarker" (TyFun (TyCon "Char") (TyCon "Bool")))
+(DFunDef false "isExpMarker" ((PVar "c")) (EBinOp "||" (EBinOp "==" (EVar "c") (ELit (LChar "e"))) (EBinOp "==" (EVar "c") (ELit (LChar "E")))))
+(DTypeSig false "expEnd" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
+(DFunDef false "expEnd" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EBinOp "&&" (EBinOp "<" (EVar "p") (EVar "len")) (EApp (EVar "isExpMarker") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p")))) (EBlock (DoLet false false (PVar "q") (EIf (EBinOp "&&" (EBinOp "<" (EBinOp "+" (EVar "p") (ELit (LInt 1))) (EVar "len")) (EBinOp "||" (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (ELit (LChar "+"))) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (ELit (LChar "-"))))) (EBinOp "+" (EVar "p") (ELit (LInt 2))) (EBinOp "+" (EVar "p") (ELit (LInt 1))))) (DoExpr (EIf (EBinOp "&&" (EBinOp "<" (EVar "q") (EVar "len")) (EApp (EVar "isDigit") (EApp (EApp (EVar "at") (EVar "src")) (EVar "q")))) (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EVar "q")) (EVar "p")))) (EIf (EVar "otherwise") (EVar "p") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "numFinish" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok")))))))))
-(DFunDef false "numFinish" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EIf (EApp (EApp (EApp (EVar "isFloatAt") (EVar "src")) (EVar "len")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTok") (EVar "src")) (EVar "len")) (EVar "pos")) (EVar "e1")) (EVar "depth")) (EVar "id")) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TInt") (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EVar "pos")) (EVar "e1")) (ELit (LInt 0))))) (EVar "pos")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "e1")) (EVar "depth")) (EVar "id"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "numFinish" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EIf (EApp (EApp (EApp (EVar "isFloatAt") (EVar "src")) (EVar "len")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTok") (EVar "src")) (EVar "len")) (EVar "pos")) (EVar "e1")) (EVar "depth")) (EVar "id")) (EIf (EBinOp ">" (EApp (EApp (EApp (EVar "expEnd") (EVar "src")) (EVar "len")) (EVar "e1")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTokEnd") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EVar "expEnd") (EVar "src")) (EVar "len")) (EVar "e1"))) (EVar "depth")) (EVar "id")) (EIf (EApp (EApp (EApp (EVar "intLitOverflows") (EVar "src")) (EVar "pos")) (EVar "e1")) (EApp (EApp (EVar "lexErrorTok") (EVar "pos")) (ELit (LString "integer literal too large for Int (max magnitude 2^62)"))) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TInt") (EApp (EApp (EApp (EApp (EVar "parseIntFrom") (EVar "src")) (EVar "pos")) (EVar "e1")) (ELit (LInt 0))))) (EVar "pos")) (EVar "e1")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "e1")) (EVar "depth")) (EVar "id"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "floatTok" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok")))))))))
-(DFunDef false "floatTok" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "e2") (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "e1") (ELit (LInt 1))))) (DoExpr (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TFloat") (EApp (EApp (EVar "fromOption") (ELit (LFloat 0.0))) (EApp (EVar "stringToFloat") (EApp (EApp (EApp (EVar "substrNoUs") (EVar "src")) (EVar "pos")) (EVar "e2")))))) (EVar "pos")) (EVar "e2")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "e2")) (EVar "depth")) (EVar "id"))))))
+(DFunDef false "floatTok" ((PVar "src") (PVar "len") (PVar "pos") (PVar "e1") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "e2") (EApp (EApp (EApp (EVar "digitsEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "e1") (ELit (LInt 1))))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "floatTokEnd") (EVar "src")) (EVar "len")) (EVar "pos")) (EApp (EApp (EApp (EVar "expEnd") (EVar "src")) (EVar "len")) (EVar "e2"))) (EVar "depth")) (EVar "id")))))
+(DTypeSig false "floatIsFinite" (TyFun (TyCon "Float") (TyCon "Bool")))
+(DFunDef false "floatIsFinite" ((PVar "f")) (EBinOp "==" (EBinOp "*" (EVar "f") (ELit (LFloat 0.0))) (ELit (LFloat 0.0))))
+(DTypeSig false "floatTokEnd" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok")))))))))
+(DFunDef false "floatTokEnd" ((PVar "src") (PVar "len") (PVar "pos") (PVar "endp") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "f") (EApp (EApp (EVar "fromOption") (ELit (LFloat 0.0))) (EApp (EVar "stringToFloat") (EApp (EApp (EApp (EVar "substrNoUs") (EVar "src")) (EVar "pos")) (EVar "endp"))))) (DoExpr (EIf (EApp (EVar "floatIsFinite") (EVar "f")) (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TFloat") (EVar "f"))) (EVar "pos")) (EVar "endp")) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EVar "endp")) (EVar "depth")) (EVar "id"))) (EApp (EApp (EVar "lexErrorTok") (EVar "pos")) (ELit (LString "float literal out of range (overflows to infinity)")))))))
 (DTypeSig false "scanStr" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "RawTok"))))))))))
 (DFunDef false "scanStr" ((PVar "src") (PVar "len") (PVar "p") (PVar "startQ") (PVar "depth") (PVar "id") (PVar "acc")) (EIf (EBinOp ">=" (EVar "p") (EVar "len")) (EApp (EApp (EVar "lexErrorTok") (EVar "p")) (ELit (LString "unterminated string literal"))) (EIf (EApp (EVar "isQuote") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TString") (EVar "acc"))) (EVar "startQ")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "depth")) (EVar "id"))) (EIf (EBinOp "&&" (EApp (EVar "isBackslash") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EBinOp "<" (EBinOp "+" (EVar "p") (ELit (LInt 1))) (EVar "len"))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "scanStrEsc") (EVar "src")) (EVar "len")) (EVar "p")) (EVar "startQ")) (EVar "depth")) (EVar "id")) (EVar "acc")) (EApp (EApp (EVar "at") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1))))) (EIf (EApp (EVar "isBackslash") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EApp (EApp (EVar "lexErrorTok") (EVar "p")) (ELit (LString "unterminated string literal"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "scanStr") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "startQ")) (EVar "depth")) (EVar "id")) (EBinOp "++" (EVar "acc") (EApp (EVar "charToStr") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DTypeSig false "scanStrEsc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "Char") (TyApp (TyCon "List") (TyCon "RawTok")))))))))))

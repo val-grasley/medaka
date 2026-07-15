@@ -1,5 +1,5 @@
 # META
-source_lines=643
+source_lines=693
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/driver/build_cmd.mdk — `medaka build` ported to self-hosted Medaka
@@ -156,6 +156,54 @@ cleanupTempDir dir = match listDir dir
     let _ = removeDir dir
     ()
 
+-- ---- startup sweep of leaked scratch dirs (issue #97) ----
+-- A build stages scratch under makeTempDir's /tmp/medaka_build_* dir and removes
+-- it on the NORMAL exit path (cleanupTempDir).  A build KILLED before that runs —
+-- `timeout`, Ctrl-C, OOM, SIGKILL — leaks its dir.  Over a long multi-agent
+-- session these accumulated to 96% of a 16 GB RAM-backed tmpfs (1,041 dirs).  A
+-- signal trap cannot cover SIGKILL, so instead every build, at startup, sweeps
+-- dirs that are provably NOT in use BEFORE creating its own (issue #97 option 2).
+--
+-- CONCURRENCY SAFETY is the hard constraint: this is the exact file whose
+-- per-process-dir design fixed a 19/20 silent-WRONG-binary race, and a sweep that
+-- deletes a LIVE build's dir reintroduces it.  The guard is AGE: a dir is removed
+-- only if its mtime is older than 6 HOURS — far beyond any real build (seconds to
+-- minutes).  A just-created or in-progress dir has a recent mtime, so a
+-- concurrently-starting build (parallel worktrees on the same box) is never
+-- swept — the age gate IS the concurrency guard.  The predicate is evaluated by
+-- `find -mmin +360`, atomic w.r.t. the filesystem and supported by BOTH GNU find
+-- (Linux) and BSD find (macOS), so no "now" primitive is needed and the module
+-- stays self-contained.
+--
+-- BEST-EFFORT: the sweep must never fail or slow a build.  Every failure mode —
+-- `find` absent, a foreign user's dir we cannot remove, a dir another process
+-- removed mid-sweep — is swallowed (the Err arm is (), and cleanupTempDir already
+-- discards every Result).  A leaked dir only ever holds the flat files a build
+-- stages (program.ll, the gc probe, a stub .mdk / obj), so cleanupTempDir's
+-- listDir + flat removeFile + removeDir tears it down exactly as for a live build.
+sweepStaleTempDirs : Unit -> <IO> Unit
+sweepStaleTempDirs _ =
+  let findArgs = [
+    "/tmp",
+    "-maxdepth",
+    "1",
+    "-type",
+    "d",
+    "-name",
+    "medaka_build_*",
+    "-mmin",
+    "+360",
+  ]
+  match runCommand "find" findArgs
+    Ok (_, out, _) => sweepEachStale (splitWS out)
+    Err _ => ()
+
+sweepEachStale : List String -> <IO> Unit
+sweepEachStale [] = ()
+sweepEachStale (d::rest) =
+  let _ = cleanupTempDir d
+  sweepEachStale rest
+
 -- ---- Boehm GC flag detection (pkg-config → brew → bare -lgc) ----
 -- Returns Some (cflags, libs) or None.  tmpDir is the caller's per-invocation
 -- scratch dir (the bare-lgc probe is staged inside it).
@@ -270,8 +318,10 @@ keepIrNote path contents = match writeFile path contents
 --             MEDAKA_KEEP_IR inside effectiveKeepIr)
 export runBuild : String -> String -> String -> BuildTarget -> String -> String -> Bool -> <IO> BuildResult
 runBuild root medaka cc TNative inputAbs outPath keepIrCli =
+  let _ = sweepStaleTempDirs ()
   runBuildNative root medaka cc inputAbs outPath keepIrCli
 runBuild root medaka cc TWasm inputAbs outPath keepIrCli =
+  let _ = sweepStaleTempDirs ()
   runBuildWasm root medaka inputAbs outPath keepIrCli
 
 -- ---- native (LLVM/clang) target — the original path ----
@@ -677,6 +727,11 @@ emitRtObj cc root outObjPath = match makeTempDir ()
 (DFunDef false "removeEntries" ((PVar "dir") (PCons (PVar "n") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "removeFile") (EApp (EApp (EVar "joinPath") (EVar "dir")) (EVar "n")))) (DoExpr (EApp (EApp (EVar "removeEntries") (EVar "dir")) (EVar "rest")))))
 (DTypeSig false "cleanupTempDir" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "cleanupTempDir" ((PVar "dir")) (EMatch (EApp (EVar "listDir") (EVar "dir")) (arm (PCon "Err" PWild) () (ELit LUnit)) (arm (PCon "Ok" (PVar "entries")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "removeEntries") (EVar "dir")) (EVar "entries"))) (DoLet false false PWild (EApp (EVar "removeDir") (EVar "dir"))) (DoExpr (ELit LUnit))))))
+(DTypeSig false "sweepStaleTempDirs" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
+(DFunDef false "sweepStaleTempDirs" (PWild) (EBlock (DoLet false false (PVar "findArgs") (EListLit (ELit (LString "/tmp")) (ELit (LString "-maxdepth")) (ELit (LString "1")) (ELit (LString "-type")) (ELit (LString "d")) (ELit (LString "-name")) (ELit (LString "medaka_build_*")) (ELit (LString "-mmin")) (ELit (LString "+360")))) (DoExpr (EMatch (EApp (EApp (EVar "runCommand") (ELit (LString "find"))) (EVar "findArgs")) (arm (PCon "Ok" (PTuple PWild (PVar "out") PWild)) () (EApp (EVar "sweepEachStale") (EApp (EVar "splitWS") (EVar "out")))) (arm (PCon "Err" PWild) () (ELit LUnit))))))
+(DTypeSig false "sweepEachStale" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
+(DFunDef false "sweepEachStale" ((PList)) (ELit LUnit))
+(DFunDef false "sweepEachStale" ((PCons (PVar "d") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "cleanupTempDir") (EVar "d"))) (DoExpr (EApp (EVar "sweepEachStale") (EVar "rest")))))
 (DTypeSig false "detectGC" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "detectGC" ((PVar "cc") (PVar "tmpDir")) (EMatch (EApp (EApp (EVar "runCommand") (ELit (LString "pkg-config"))) (EListLit (ELit (LString "--exists")) (ELit (LString "bdw-gc")))) (arm (PCon "Ok" (PTuple (PLit (LInt 0)) PWild PWild)) () (EBlock (DoLet false false (PVar "cflags") (EApp (EApp (EVar "gcQuery") (ELit (LString "pkg-config"))) (EListLit (ELit (LString "--cflags")) (ELit (LString "bdw-gc"))))) (DoLet false false (PVar "libs") (EApp (EApp (EVar "gcQuery") (ELit (LString "pkg-config"))) (EListLit (ELit (LString "--libs")) (ELit (LString "bdw-gc"))))) (DoExpr (EApp (EVar "Some") (ETuple (EApp (EVar "splitWS") (EVar "cflags")) (EApp (EVar "splitWS") (EVar "libs"))))))) (arm PWild () (EApp (EApp (EVar "detectGCBrew") (EVar "cc")) (EVar "tmpDir")))))
 (DTypeSig false "gcQuery" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "String")))))
@@ -694,8 +749,8 @@ emitRtObj cc root outObjPath = match makeTempDir ()
 (DTypeSig false "keepIrNote" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "String")))))
 (DFunDef false "keepIrNote" ((PVar "path") (PVar "contents")) (EMatch (EApp (EApp (EVar "writeFile") (EVar "path")) (EVar "contents")) (arm (PCon "Ok" PWild) () (EBinOp "++" (ELit (LString "\nkept IR: ")) (EVar "path"))) (arm (PCon "Err" (PVar "e")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "\nwarning: could not keep IR at ")) (EApp (EVar "display") (EVar "path"))) (ELit (LString ": "))) (EVar "e")))))
 (DTypeSig true "runBuild" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "BuildTarget") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "BuildResult"))))))))))
-(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TNative") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuildNative") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))
-(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TWasm") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EApp (EApp (EApp (EApp (EApp (EVar "runBuildWasm") (EVar "root")) (EVar "medaka")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))
+(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TNative") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EBlock (DoLet false false PWild (EApp (EVar "sweepStaleTempDirs") (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuildNative") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))))
+(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TWasm") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EBlock (DoLet false false PWild (EApp (EVar "sweepStaleTempDirs") (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "runBuildWasm") (EVar "root")) (EVar "medaka")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))))
 (DTypeSig false "runBuildNative" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "BuildResult")))))))))
 (DFunDef false "runBuildNative" ((PVar "root") (PVar "medaka") (PVar "cc") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EMatch (EApp (EVar "makeTempDir") (ELit LUnit)) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "BuildErr") (EBinOp "++" (EBinOp "++" (ELit (LString "error: could not create a scratch directory for the build: ")) (EApp (EVar "display") (EVar "e"))) (ELit (LString ""))))) (arm (PCon "Ok" (PVar "tmpDir")) () (EBlock (DoLet false false (PVar "res") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuildNativeIn") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "inputAbs")) (EVar "outPath")) (EVar "tmpDir")) (EVar "keepIrCli"))) (DoLet false false PWild (EApp (EVar "cleanupTempDir") (EVar "tmpDir"))) (DoExpr (EVar "res"))))))
 (DTypeSig false "runBuildNativeIn" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "BuildResult"))))))))))
@@ -754,6 +809,11 @@ emitRtObj cc root outObjPath = match makeTempDir ()
 (DFunDef false "removeEntries" ((PVar "dir") (PCons (PVar "n") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "removeFile") (EApp (EApp (EVar "joinPath") (EVar "dir")) (EVar "n")))) (DoExpr (EApp (EApp (EVar "removeEntries") (EVar "dir")) (EVar "rest")))))
 (DTypeSig false "cleanupTempDir" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "cleanupTempDir" ((PVar "dir")) (EMatch (EApp (EVar "listDir") (EVar "dir")) (arm (PCon "Err" PWild) () (ELit LUnit)) (arm (PCon "Ok" (PVar "entries")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "removeEntries") (EVar "dir")) (EVar "entries"))) (DoLet false false PWild (EApp (EVar "removeDir") (EVar "dir"))) (DoExpr (ELit LUnit))))))
+(DTypeSig false "sweepStaleTempDirs" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Unit"))))
+(DFunDef false "sweepStaleTempDirs" (PWild) (EBlock (DoLet false false (PVar "findArgs") (EListLit (ELit (LString "/tmp")) (ELit (LString "-maxdepth")) (ELit (LString "1")) (ELit (LString "-type")) (ELit (LString "d")) (ELit (LString "-name")) (ELit (LString "medaka_build_*")) (ELit (LString "-mmin")) (ELit (LString "+360")))) (DoExpr (EMatch (EApp (EApp (EVar "runCommand") (ELit (LString "find"))) (EVar "findArgs")) (arm (PCon "Ok" (PTuple PWild (PVar "out") PWild)) () (EApp (EVar "sweepEachStale") (EApp (EVar "splitWS") (EVar "out")))) (arm (PCon "Err" PWild) () (ELit LUnit))))))
+(DTypeSig false "sweepEachStale" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
+(DFunDef false "sweepEachStale" ((PList)) (ELit LUnit))
+(DFunDef false "sweepEachStale" ((PCons (PVar "d") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "cleanupTempDir") (EVar "d"))) (DoExpr (EApp (EVar "sweepEachStale") (EVar "rest")))))
 (DTypeSig false "detectGC" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "detectGC" ((PVar "cc") (PVar "tmpDir")) (EMatch (EApp (EApp (EVar "runCommand") (ELit (LString "pkg-config"))) (EListLit (ELit (LString "--exists")) (ELit (LString "bdw-gc")))) (arm (PCon "Ok" (PTuple (PLit (LInt 0)) PWild PWild)) () (EBlock (DoLet false false (PVar "cflags") (EApp (EApp (EVar "gcQuery") (ELit (LString "pkg-config"))) (EListLit (ELit (LString "--cflags")) (ELit (LString "bdw-gc"))))) (DoLet false false (PVar "libs") (EApp (EApp (EVar "gcQuery") (ELit (LString "pkg-config"))) (EListLit (ELit (LString "--libs")) (ELit (LString "bdw-gc"))))) (DoExpr (EApp (EVar "Some") (ETuple (EApp (EVar "splitWS") (EVar "cflags")) (EApp (EVar "splitWS") (EVar "libs"))))))) (arm PWild () (EApp (EApp (EVar "detectGCBrew") (EVar "cc")) (EVar "tmpDir")))))
 (DTypeSig false "gcQuery" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "String")))))
@@ -771,8 +831,8 @@ emitRtObj cc root outObjPath = match makeTempDir ()
 (DTypeSig false "keepIrNote" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "String")))))
 (DFunDef false "keepIrNote" ((PVar "path") (PVar "contents")) (EMatch (EApp (EApp (EVar "writeFile") (EVar "path")) (EVar "contents")) (arm (PCon "Ok" PWild) () (EBinOp "++" (ELit (LString "\nkept IR: ")) (EVar "path"))) (arm (PCon "Err" (PVar "e")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "\nwarning: could not keep IR at ")) (EApp (EMethodRef "display") (EVar "path"))) (ELit (LString ": "))) (EVar "e")))))
 (DTypeSig true "runBuild" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "BuildTarget") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "BuildResult"))))))))))
-(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TNative") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuildNative") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))
-(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TWasm") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EApp (EApp (EApp (EApp (EApp (EVar "runBuildWasm") (EVar "root")) (EVar "medaka")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))
+(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TNative") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EBlock (DoLet false false PWild (EApp (EVar "sweepStaleTempDirs") (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuildNative") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))))
+(DFunDef false "runBuild" ((PVar "root") (PVar "medaka") (PVar "cc") (PCon "TWasm") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EBlock (DoLet false false PWild (EApp (EVar "sweepStaleTempDirs") (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "runBuildWasm") (EVar "root")) (EVar "medaka")) (EVar "inputAbs")) (EVar "outPath")) (EVar "keepIrCli")))))
 (DTypeSig false "runBuildNative" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "BuildResult")))))))))
 (DFunDef false "runBuildNative" ((PVar "root") (PVar "medaka") (PVar "cc") (PVar "inputAbs") (PVar "outPath") (PVar "keepIrCli")) (EMatch (EApp (EVar "makeTempDir") (ELit LUnit)) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "BuildErr") (EBinOp "++" (EBinOp "++" (ELit (LString "error: could not create a scratch directory for the build: ")) (EApp (EMethodRef "display") (EVar "e"))) (ELit (LString ""))))) (arm (PCon "Ok" (PVar "tmpDir")) () (EBlock (DoLet false false (PVar "res") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "runBuildNativeIn") (EVar "root")) (EVar "medaka")) (EVar "cc")) (EVar "inputAbs")) (EVar "outPath")) (EVar "tmpDir")) (EVar "keepIrCli"))) (DoLet false false PWild (EApp (EVar "cleanupTempDir") (EVar "tmpDir"))) (DoExpr (EVar "res"))))))
 (DTypeSig false "runBuildNativeIn" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyEffect ("IO") None (TyCon "BuildResult"))))))))))

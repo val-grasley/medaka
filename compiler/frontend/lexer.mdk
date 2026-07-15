@@ -399,6 +399,31 @@ parseIntFrom src p endp acc
   | otherwise =
     parseIntFrom src (p + 1) endp (acc * 10 + (charCode (at src p) - 48))
 
+-- ── Int-literal range guard ─────────────────────────────────────────────
+-- The tagged-Int rep is 63-bit (`word = (n << 1) | 1`, `runtime/medaka_rt.c`),
+-- so `Int` spans [-2^62, 2^62-1]. The lexer sees only the unsigned digits (the
+-- `-` is a separate token, negated in the parser), and the negative minimum
+-- -2^62 must stay writable, so the largest admissible magnitude is
+-- 2^62 = 4611686018427387904 (19 digits). A bare positive 2^62 still wraps
+-- (the lexer can't see the sign); 2^62+1 and above are rejected outright.
+-- `parseIntFrom` accumulates in the compiler's own 63-bit `Int` and would wrap,
+-- so overflow is detected on the digit STRING (length, then lexicographic order,
+-- which coincides with numeric order at equal length), never by arithmetic.
+dropZerosL : List Char -> List Char
+dropZerosL ('0'::rest) = dropZerosL rest
+dropZerosL xs = xs
+
+-- Digits of the literal with underscores AND leading zeros removed.
+cleanDigits : Array Char -> Int -> Int -> String
+cleanDigits src start endp =
+  stringFromChars (arrayFromList (dropZerosL (collectNoUs src start endp)))
+
+intLitOverflows : Array Char -> Int -> Int -> Bool
+intLitOverflows src start endp =
+  let ds = cleanDigits src start endp
+  let n = stringLength ds
+  n > 19 || n == 19 && ds > "4611686018427387904"
+
 -- ── Keyword table ───────────────────────────────────────────────────────
 -- True/False are NOT here: they start uppercase, so the OCaml lexer emits them
 -- as UPPER (keyword_or_ident only fires for lowercase/underscore lexemes).
@@ -595,16 +620,57 @@ isFloatAt src len e1 = e1 < len
   && e1 + 1 < len
   && isDigit (at src (e1 + 1))
 
+isExpMarker : Char -> Bool
+isExpMarker c = c == 'e' || c == 'E'
+
+-- Optional decimal exponent `[eE][+-]?[0-9]+` (underscores allowed in the digits,
+-- stripped later by `substrNoUs`). Returns the position AFTER the exponent, or `p`
+-- unchanged when there is no valid exponent — a bare `e`/`E` NOT followed by an
+-- (optionally signed) digit is left for identifier lexing, so `1e`, `x1e`, and the
+-- identifier `e12` are untouched; only `<digits>[.<digits>]e[+-]?<digits>` floats.
+expEnd : Array Char -> Int -> Int -> Int
+expEnd src len p
+  | p < len && isExpMarker (at src p) =
+    let q = if p + 1 < len && (at src (p + 1) == '+' || at src (p + 1) == '-') then
+      p + 2
+    else
+      p + 1
+    if q < len && isDigit (at src q) then digitsEnd src len q else p
+  | otherwise = p
+
 numFinish : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 numFinish src len pos e1 depth id
   | isFloatAt src len e1 = floatTok src len pos e1 depth id
+  | expEnd src len e1 > e1 =
+    floatTokEnd src len pos (expEnd src len e1) depth id
+  | intLitOverflows src pos e1 =
+    lexErrorTok pos "integer literal too large for Int (max magnitude 2^62)"
   | otherwise =
     RTok (TInt (parseIntFrom src pos e1 0)) pos e1 :: scan src len e1 depth id
 
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTok src len pos e1 depth id =
   let e2 = digitsEnd src len (e1 + 1)
-  RTok (TFloat (fromOption 0.0 (stringToFloat (substrNoUs src pos e2)))) pos e2 :: scan src len e2 depth id
+  floatTokEnd src len pos (expEnd src len e2) depth id
+
+-- A Float is finite iff `f * 0.0 == 0.0`: for ±inf, `inf * 0.0` is NaN and
+-- `NaN == 0.0` is False; for NaN, `NaN == 0.0` is likewise False. There is no
+-- `isFinite` extern, so this arithmetic identity is the detection.
+floatIsFinite : Float -> Bool
+floatIsFinite f = f * 0.0 == 0.0
+
+-- Emit a `TFloat` spanning [pos, endp). `substrNoUs` strips underscores across the
+-- whole mantissa+exponent, and `stringToFloat` (strtod) reads the exponent form.
+-- A literal whose magnitude overflows the IEEE-754 double range parses to `inf`,
+-- which the native backend would emit as an invalid `store double inf`; reject it
+-- at the source with a located error rather than let it reach codegen.
+floatTokEnd : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
+floatTokEnd src len pos endp depth id =
+  let f = fromOption 0.0 (stringToFloat (substrNoUs src pos endp))
+  if floatIsFinite f then
+    RTok (TFloat f) pos endp :: scan src len endp depth id
+  else
+    lexErrorTok pos "float literal out of range (overflows to infinity)"
 
 -- strings (escapes processed into the content; `\{` opens an interpolation).
 -- `startQ` is the offset of the OPENING quote (captured at the call site in
