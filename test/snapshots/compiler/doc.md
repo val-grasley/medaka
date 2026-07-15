@@ -1,5 +1,5 @@
 # META
-source_lines=404
+source_lines=385
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/doc.mdk — the native `medaka doc` documentation extractor.
@@ -40,7 +40,7 @@ import frontend.ast.{
 }
 import frontend.desugar.{desugar}
 import types.typecheck.{Scheme(..), ppScheme, checkProgramSchemesWithRuntime}
-import support.util.{joinWith, reverseL, escStr, stringTrim}
+import support.util.{joinWith, reverseL, escStr, stringTrim, splitNl}
 import support.path.{baseOf, chopExt}
 
 -- ── doc_entry ──────────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ expandComment c =
     -- OCaml String.sub t 2 (n-4): start 2, LENGTH n-4 → end index n-2.
     -- stringSlice takes (start, end), so end = n-2 (drops the 2-char `-}`).
     let inner = if n >= 4 then dsub 2 (n - 2) t else ""
-    expandBlockLines (commentLine c) 0 (splitNlDoc inner)
+    expandBlockLines (commentLine c) 0 (splitNl inner)
   else
     [(commentLine c, commentBody t)]
 
@@ -139,26 +139,7 @@ expandBlockLines _ _ [] = []
 expandBlockLines baseLine i (line::rest) =
   (baseLine + i, stringTrim line) :: expandBlockLines baseLine (i + 1) rest
 
--- Split a string on '\n' (mirror doctest splitNl; String.split_on_char '\n').
-splitNlDoc : String -> List String
-splitNlDoc s =
-  let cs = stringToChars s
-  splitNlGoDoc cs (arrayLength cs) 0 0
-
-splitNlGoDoc : Array Char -> Int -> Int -> Int -> List String
-splitNlGoDoc cs n start i
-  | i >= n = [charsSliceDoc cs start n]
-  | arrayGetUnsafe i cs == '\n' =
-    charsSliceDoc cs start i :: splitNlGoDoc cs n (i + 1) (i + 1)
-  | otherwise = splitNlGoDoc cs n start (i + 1)
-
-charsSliceDoc : Array Char -> Int -> Int -> String
-charsSliceDoc cs a b = stringFromChars (arrayFromList (charsSliceGoDoc cs a b))
-
-charsSliceGoDoc : Array Char -> Int -> Int -> List Char
-charsSliceGoDoc cs a b
-  | a >= b = []
-  | otherwise = arrayGetUnsafe a cs :: charsSliceGoDoc cs (a + 1) b
+-- splitNl → support/util.mdk (imported above; #242 dedup of the splitNl cluster).
 
 -- ── comment table: line -> text (assoc list; later entries win, like
 -- Hashtbl.replace which keeps the last inserted for a key) ──────────────────
@@ -412,7 +393,7 @@ docSchemesFor runtimeSrc coreSrc rawUser =
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" true) (mem "Ty" true) (mem "Constraint" true) (mem "DataVis" true) (mem "Variant" true) (mem "ConPayload" true) (mem "Field" true) (mem "IfaceMethod" true) (mem "Require" true) (mem "LetBind" true))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "Scheme" true) (mem "ppScheme" false) (mem "checkProgramSchemesWithRuntime" false))))
-(DUse false (UseGroup ("support" "util") ((mem "joinWith" false) (mem "reverseL" false) (mem "escStr" false) (mem "stringTrim" false))))
+(DUse false (UseGroup ("support" "util") ((mem "joinWith" false) (mem "reverseL" false) (mem "escStr" false) (mem "stringTrim" false) (mem "splitNl" false))))
 (DUse false (UseGroup ("support" "path") ((mem "baseOf" false) (mem "chopExt" false))))
 (DData Private "DocEntry" () ((variant "DocEntry" (ConPos (TyCon "String") (TyCon "String") (TyCon "String")))) ())
 (DTypeSig false "dlen" (TyFun (TyCon "String") (TyCon "Int")))
@@ -437,18 +418,10 @@ docSchemesFor runtimeSrc coreSrc rawUser =
 (DTypeSig false "commentBody" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "commentBody" ((PVar "t")) (EIf (EBinOp "==" (EVar "t") (ELit (LString "--"))) (ELit (LString "")) (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 3))) (EBinOp "==" (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 0))) (ELit (LInt 3))) (EVar "t")) (ELit (LString "-- ")))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 3))) (EApp (EVar "dlen") (EVar "t"))) (EVar "t")) (EIf (EBinOp ">" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 2))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 2))) (EApp (EVar "dlen") (EVar "t"))) (EVar "t")) (ELit (LString ""))))))
 (DTypeSig false "expandComment" (TyFun (TyCon "Comment") (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "String")))))
-(DFunDef false "expandComment" ((PVar "c")) (EBlock (DoLet false false (PVar "t") (EApp (EVar "commentText") (EVar "c"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 2))) (EBinOp "==" (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 0))) (ELit (LInt 2))) (EVar "t")) (ELit (LString "{-")))) (EBlock (DoLet false false (PVar "n") (EApp (EVar "dlen") (EVar "t"))) (DoLet false false (PVar "inner") (EIf (EBinOp ">=" (EVar "n") (ELit (LInt 4))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 2))) (EBinOp "-" (EVar "n") (ELit (LInt 2)))) (EVar "t")) (ELit (LString "")))) (DoExpr (EApp (EApp (EApp (EVar "expandBlockLines") (EApp (EVar "commentLine") (EVar "c"))) (ELit (LInt 0))) (EApp (EVar "splitNlDoc") (EVar "inner"))))) (EListLit (ETuple (EApp (EVar "commentLine") (EVar "c")) (EApp (EVar "commentBody") (EVar "t"))))))))
+(DFunDef false "expandComment" ((PVar "c")) (EBlock (DoLet false false (PVar "t") (EApp (EVar "commentText") (EVar "c"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 2))) (EBinOp "==" (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 0))) (ELit (LInt 2))) (EVar "t")) (ELit (LString "{-")))) (EBlock (DoLet false false (PVar "n") (EApp (EVar "dlen") (EVar "t"))) (DoLet false false (PVar "inner") (EIf (EBinOp ">=" (EVar "n") (ELit (LInt 4))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 2))) (EBinOp "-" (EVar "n") (ELit (LInt 2)))) (EVar "t")) (ELit (LString "")))) (DoExpr (EApp (EApp (EApp (EVar "expandBlockLines") (EApp (EVar "commentLine") (EVar "c"))) (ELit (LInt 0))) (EApp (EVar "splitNl") (EVar "inner"))))) (EListLit (ETuple (EApp (EVar "commentLine") (EVar "c")) (EApp (EVar "commentBody") (EVar "t"))))))))
 (DTypeSig false "expandBlockLines" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "String")))))))
 (DFunDef false "expandBlockLines" (PWild PWild (PList)) (EListLit))
 (DFunDef false "expandBlockLines" ((PVar "baseLine") (PVar "i") (PCons (PVar "line") (PVar "rest"))) (EBinOp "::" (ETuple (EBinOp "+" (EVar "baseLine") (EVar "i")) (EApp (EVar "stringTrim") (EVar "line"))) (EApp (EApp (EApp (EVar "expandBlockLines") (EVar "baseLine")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))
-(DTypeSig false "splitNlDoc" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "splitNlDoc" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "splitNlGoDoc") (EVar "cs")) (EApp (EVar "arrayLength") (EVar "cs"))) (ELit (LInt 0))) (ELit (LInt 0))))))
-(DTypeSig false "splitNlGoDoc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "splitNlGoDoc" ((PVar "cs") (PVar "n") (PVar "start") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EApp (EApp (EVar "charsSliceDoc") (EVar "cs")) (EVar "start")) (EVar "n"))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "\n"))) (EBinOp "::" (EApp (EApp (EApp (EVar "charsSliceDoc") (EVar "cs")) (EVar "start")) (EVar "i")) (EApp (EApp (EApp (EApp (EVar "splitNlGoDoc") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "splitNlGoDoc") (EVar "cs")) (EVar "n")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "charsSliceDoc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
-(DFunDef false "charsSliceDoc" ((PVar "cs") (PVar "a") (PVar "b")) (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EApp (EApp (EApp (EVar "charsSliceGoDoc") (EVar "cs")) (EVar "a")) (EVar "b")))))
-(DTypeSig false "charsSliceGoDoc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Char"))))))
-(DFunDef false "charsSliceGoDoc" ((PVar "cs") (PVar "a") (PVar "b")) (EIf (EBinOp ">=" (EVar "a") (EVar "b")) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "a")) (EVar "cs")) (EApp (EApp (EApp (EVar "charsSliceGoDoc") (EVar "cs")) (EBinOp "+" (EVar "a") (ELit (LInt 1)))) (EVar "b"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "buildCommentTbl" (TyFun (TyApp (TyCon "List") (TyCon "Comment")) (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "String")))))
 (DFunDef false "buildCommentTbl" ((PVar "comments")) (EApp (EApp (EVar "concatMapDoc") (EVar "expandComment")) (EVar "comments")))
 (DTypeSig false "concatMapDoc" (TyFun (TyFun (TyVar "a") (TyApp (TyCon "List") (TyVar "b"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")))))
@@ -535,7 +508,7 @@ docSchemesFor runtimeSrc coreSrc rawUser =
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" true) (mem "Ty" true) (mem "Constraint" true) (mem "DataVis" true) (mem "Variant" true) (mem "ConPayload" true) (mem "Field" true) (mem "IfaceMethod" true) (mem "Require" true) (mem "LetBind" true))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "Scheme" true) (mem "ppScheme" false) (mem "checkProgramSchemesWithRuntime" false))))
-(DUse false (UseGroup ("support" "util") ((mem "joinWith" false) (mem "reverseL" false) (mem "escStr" false) (mem "stringTrim" false))))
+(DUse false (UseGroup ("support" "util") ((mem "joinWith" false) (mem "reverseL" false) (mem "escStr" false) (mem "stringTrim" false) (mem "splitNl" false))))
 (DUse false (UseGroup ("support" "path") ((mem "baseOf" false) (mem "chopExt" false))))
 (DData Private "DocEntry" () ((variant "DocEntry" (ConPos (TyCon "String") (TyCon "String") (TyCon "String")))) ())
 (DTypeSig false "dlen" (TyFun (TyCon "String") (TyCon "Int")))
@@ -560,18 +533,10 @@ docSchemesFor runtimeSrc coreSrc rawUser =
 (DTypeSig false "commentBody" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "commentBody" ((PVar "t")) (EIf (EBinOp "==" (EVar "t") (ELit (LString "--"))) (ELit (LString "")) (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 3))) (EBinOp "==" (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 0))) (ELit (LInt 3))) (EVar "t")) (ELit (LString "-- ")))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 3))) (EApp (EVar "dlen") (EVar "t"))) (EVar "t")) (EIf (EBinOp ">" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 2))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 2))) (EApp (EVar "dlen") (EVar "t"))) (EVar "t")) (ELit (LString ""))))))
 (DTypeSig false "expandComment" (TyFun (TyCon "Comment") (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "String")))))
-(DFunDef false "expandComment" ((PVar "c")) (EBlock (DoLet false false (PVar "t") (EApp (EVar "commentText") (EVar "c"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 2))) (EBinOp "==" (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 0))) (ELit (LInt 2))) (EVar "t")) (ELit (LString "{-")))) (EBlock (DoLet false false (PVar "n") (EApp (EVar "dlen") (EVar "t"))) (DoLet false false (PVar "inner") (EIf (EBinOp ">=" (EVar "n") (ELit (LInt 4))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 2))) (EBinOp "-" (EVar "n") (ELit (LInt 2)))) (EVar "t")) (ELit (LString "")))) (DoExpr (EApp (EApp (EApp (EVar "expandBlockLines") (EApp (EVar "commentLine") (EVar "c"))) (ELit (LInt 0))) (EApp (EVar "splitNlDoc") (EVar "inner"))))) (EListLit (ETuple (EApp (EVar "commentLine") (EVar "c")) (EApp (EVar "commentBody") (EVar "t"))))))))
+(DFunDef false "expandComment" ((PVar "c")) (EBlock (DoLet false false (PVar "t") (EApp (EVar "commentText") (EVar "c"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "dlen") (EVar "t")) (ELit (LInt 2))) (EBinOp "==" (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 0))) (ELit (LInt 2))) (EVar "t")) (ELit (LString "{-")))) (EBlock (DoLet false false (PVar "n") (EApp (EVar "dlen") (EVar "t"))) (DoLet false false (PVar "inner") (EIf (EBinOp ">=" (EVar "n") (ELit (LInt 4))) (EApp (EApp (EApp (EVar "dsub") (ELit (LInt 2))) (EBinOp "-" (EVar "n") (ELit (LInt 2)))) (EVar "t")) (ELit (LString "")))) (DoExpr (EApp (EApp (EApp (EVar "expandBlockLines") (EApp (EVar "commentLine") (EVar "c"))) (ELit (LInt 0))) (EApp (EVar "splitNl") (EVar "inner"))))) (EListLit (ETuple (EApp (EVar "commentLine") (EVar "c")) (EApp (EVar "commentBody") (EVar "t"))))))))
 (DTypeSig false "expandBlockLines" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "String")))))))
 (DFunDef false "expandBlockLines" (PWild PWild (PList)) (EListLit))
 (DFunDef false "expandBlockLines" ((PVar "baseLine") (PVar "i") (PCons (PVar "line") (PVar "rest"))) (EBinOp "::" (ETuple (EBinOp "+" (EVar "baseLine") (EVar "i")) (EApp (EVar "stringTrim") (EVar "line"))) (EApp (EApp (EApp (EVar "expandBlockLines") (EVar "baseLine")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))
-(DTypeSig false "splitNlDoc" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "splitNlDoc" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "splitNlGoDoc") (EVar "cs")) (EApp (EVar "arrayLength") (EVar "cs"))) (ELit (LInt 0))) (ELit (LInt 0))))))
-(DTypeSig false "splitNlGoDoc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "splitNlGoDoc" ((PVar "cs") (PVar "n") (PVar "start") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EApp (EApp (EVar "charsSliceDoc") (EVar "cs")) (EVar "start")) (EVar "n"))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "\n"))) (EBinOp "::" (EApp (EApp (EApp (EVar "charsSliceDoc") (EVar "cs")) (EVar "start")) (EVar "i")) (EApp (EApp (EApp (EApp (EVar "splitNlGoDoc") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "splitNlGoDoc") (EVar "cs")) (EVar "n")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "charsSliceDoc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
-(DFunDef false "charsSliceDoc" ((PVar "cs") (PVar "a") (PVar "b")) (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EApp (EApp (EApp (EVar "charsSliceGoDoc") (EVar "cs")) (EVar "a")) (EVar "b")))))
-(DTypeSig false "charsSliceGoDoc" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Char"))))))
-(DFunDef false "charsSliceGoDoc" ((PVar "cs") (PVar "a") (PVar "b")) (EIf (EBinOp ">=" (EVar "a") (EVar "b")) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "a")) (EVar "cs")) (EApp (EApp (EApp (EVar "charsSliceGoDoc") (EVar "cs")) (EBinOp "+" (EVar "a") (ELit (LInt 1)))) (EVar "b"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "buildCommentTbl" (TyFun (TyApp (TyCon "List") (TyCon "Comment")) (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "String")))))
 (DFunDef false "buildCommentTbl" ((PVar "comments")) (EApp (EApp (EVar "concatMapDoc") (EVar "expandComment")) (EVar "comments")))
 (DTypeSig false "concatMapDoc" (TyFun (TyFun (TyVar "a") (TyApp (TyCon "List") (TyVar "b"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")))))

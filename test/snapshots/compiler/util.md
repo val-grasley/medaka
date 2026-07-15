@@ -1,5 +1,5 @@
 # META
-source_lines=441
+source_lines=454
 stages=DESUGAR,MARK
 # SOURCE
 -- Shared internal helpers for the self-hosted compiler stages.  compiler
@@ -86,18 +86,26 @@ splitOnCharGo chars sep n start i
 export joinDot : List String -> String
 joinDot xs = joinWith "." xs
 
--- Deduplicate a String list keeping the FIRST occurrence in first-occurrence
--- order (NOT sorted).  Uses the shared support.ordmap weight-balanced tree as a
--- `seen` set for O(log n) membership → O(n·log n) overall, vs the naive O(n²)
--- list-scan copies the stages used to carry.
-export dedup : List String -> List String
-dedup xs = dedupGo xs omEmpty
+-- canonical for #242/#243: order-preserving dedup keeping the FIRST occurrence
+-- (NOT sorted), generalized over a String key projection.  Uses the shared
+-- support.ordmap weight-balanced tree as a `seen` set for O(log n) membership →
+-- O(n·log n) overall, vs the naive O(n²) list-scan copies the stages carry.
+-- This is the shared migration target other stages route their dedup/dedupBy
+-- clones through.  Keep it monomorphic (no prelude Foldable delegation) — `dedup`
+-- runs on HOT paths.
+export dedupBy : (a -> String) -> List a -> List a
+dedupBy key xs = dedupByGo key xs omEmpty
 
-dedupGo : List String -> OrdMap Unit -> List String
-dedupGo [] _ = []
-dedupGo (x::xs) seen = match omLookup x seen
-  Some _ => dedupGo xs seen
-  None => x :: dedupGo xs (omInsert x () seen)
+dedupByGo : (a -> String) -> List a -> OrdMap Unit -> List a
+dedupByGo _ [] _ = []
+dedupByGo key (x::xs) seen = match omLookup (key x) seen
+  Some _ => dedupByGo key xs seen
+  None => x :: dedupByGo key xs (omInsert (key x) () seen)
+
+-- canonical for #242/#243: the String-identity specialization of `dedupBy`.
+-- Kept so existing `dedup` callers are unchanged.
+export dedup : List String -> List String
+dedup xs = dedupBy identity xs
 
 -- Split a list into its leading prefix and final element: Some (init, last),
 -- or None for the empty list.  (Was duplicated byte-identically across ~10
@@ -263,6 +271,11 @@ schemeLineNameGo l i n
   | stringSlice i (i + 3) l == " : " = Some (stringSlice 0 i l)
   | otherwise = schemeLineNameGo l (i + 1) n
 
+-- NOTE (#243): this `isSome` duplicates the prelude's `isSome` (stdlib/core.mdk)
+-- byte-identically and is a deletion candidate — BUT the LOCKED typecheck.mdk
+-- imports it by name (`import support.util.{… isSome …}`, typecheck.mdk:94), so
+-- deleting it here breaks that import.  Blocked on the ws:typecheck arc (#160)
+-- dropping `isSome` from typecheck.mdk's import list first; then delete this.
 export isSome : Option a -> Bool
 isSome (Some _) = True
 isSome None = False
@@ -478,11 +491,13 @@ noneHeadTag = "__none__"
 (DFunDef false "splitOnCharGo" ((PVar "chars") (PVar "sep") (PVar "n") (PVar "start") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "arraySubChars") (EVar "chars")) (EVar "start")) (EVar "n")))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "chars")) (EVar "sep")) (EBinOp "::" (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "arraySubChars") (EVar "chars")) (EVar "start")) (EVar "i"))) (EApp (EApp (EApp (EApp (EApp (EVar "splitOnCharGo") (EVar "chars")) (EVar "sep")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "splitOnCharGo") (EVar "chars")) (EVar "sep")) (EVar "n")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig true "joinDot" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))
 (DFunDef false "joinDot" ((PVar "xs")) (EApp (EApp (EVar "joinWith") (ELit (LString "."))) (EVar "xs")))
+(DTypeSig true "dedupBy" (TyFun (TyFun (TyVar "a") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
+(DFunDef false "dedupBy" ((PVar "key") (PVar "xs")) (EApp (EApp (EApp (EVar "dedupByGo") (EVar "key")) (EVar "xs")) (EVar "omEmpty")))
+(DTypeSig false "dedupByGo" (TyFun (TyFun (TyVar "a") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "dedupByGo" (PWild (PList) PWild) (EListLit))
+(DFunDef false "dedupByGo" ((PVar "key") (PCons (PVar "x") (PVar "xs")) (PVar "seen")) (EMatch (EApp (EApp (EVar "omLookup") (EApp (EVar "key") (EVar "x"))) (EVar "seen")) (arm (PCon "Some" PWild) () (EApp (EApp (EApp (EVar "dedupByGo") (EVar "key")) (EVar "xs")) (EVar "seen"))) (arm (PCon "None") () (EBinOp "::" (EVar "x") (EApp (EApp (EApp (EVar "dedupByGo") (EVar "key")) (EVar "xs")) (EApp (EApp (EApp (EVar "omInsert") (EApp (EVar "key") (EVar "x"))) (ELit LUnit)) (EVar "seen")))))))
 (DTypeSig true "dedup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "dedup" ((PVar "xs")) (EApp (EApp (EVar "dedupGo") (EVar "xs")) (EVar "omEmpty")))
-(DTypeSig false "dedupGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "dedupGo" ((PList) PWild) (EListLit))
-(DFunDef false "dedupGo" ((PCons (PVar "x") (PVar "xs")) (PVar "seen")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "x")) (EVar "seen")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "dedupGo") (EVar "xs")) (EVar "seen"))) (arm (PCon "None") () (EBinOp "::" (EVar "x") (EApp (EApp (EVar "dedupGo") (EVar "xs")) (EApp (EApp (EApp (EVar "omInsert") (EVar "x")) (ELit LUnit)) (EVar "seen")))))))
+(DFunDef false "dedup" ((PVar "xs")) (EApp (EApp (EVar "dedupBy") (EVar "identity")) (EVar "xs")))
 (DTypeSig true "splitLast" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyVar "a")))))
 (DFunDef false "splitLast" ((PList)) (EVar "None"))
 (DFunDef false "splitLast" ((PList (PVar "x"))) (EApp (EVar "Some") (ETuple (EListLit) (EVar "x"))))
@@ -634,11 +649,13 @@ noneHeadTag = "__none__"
 (DFunDef false "splitOnCharGo" ((PVar "chars") (PVar "sep") (PVar "n") (PVar "start") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "arraySubChars") (EVar "chars")) (EVar "start")) (EVar "n")))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "chars")) (EVar "sep")) (EBinOp "::" (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "arraySubChars") (EVar "chars")) (EVar "start")) (EVar "i"))) (EApp (EApp (EApp (EApp (EApp (EVar "splitOnCharGo") (EVar "chars")) (EVar "sep")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "splitOnCharGo") (EVar "chars")) (EVar "sep")) (EVar "n")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig true "joinDot" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))
 (DFunDef false "joinDot" ((PVar "xs")) (EApp (EApp (EVar "joinWith") (ELit (LString "."))) (EVar "xs")))
+(DTypeSig true "dedupBy" (TyFun (TyFun (TyVar "a") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
+(DFunDef false "dedupBy" ((PVar "key") (PVar "xs")) (EApp (EApp (EApp (EVar "dedupByGo") (EVar "key")) (EVar "xs")) (EVar "omEmpty")))
+(DTypeSig false "dedupByGo" (TyFun (TyFun (TyVar "a") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "dedupByGo" (PWild (PList) PWild) (EListLit))
+(DFunDef false "dedupByGo" ((PVar "key") (PCons (PVar "x") (PVar "xs")) (PVar "seen")) (EMatch (EApp (EApp (EVar "omLookup") (EApp (EVar "key") (EVar "x"))) (EVar "seen")) (arm (PCon "Some" PWild) () (EApp (EApp (EApp (EVar "dedupByGo") (EVar "key")) (EVar "xs")) (EVar "seen"))) (arm (PCon "None") () (EBinOp "::" (EVar "x") (EApp (EApp (EApp (EVar "dedupByGo") (EVar "key")) (EVar "xs")) (EApp (EApp (EApp (EVar "omInsert") (EApp (EVar "key") (EVar "x"))) (ELit LUnit)) (EVar "seen")))))))
 (DTypeSig true "dedup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "dedup" ((PVar "xs")) (EApp (EApp (EVar "dedupGo") (EVar "xs")) (EVar "omEmpty")))
-(DTypeSig false "dedupGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "dedupGo" ((PList) PWild) (EListLit))
-(DFunDef false "dedupGo" ((PCons (PVar "x") (PVar "xs")) (PVar "seen")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "x")) (EVar "seen")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "dedupGo") (EVar "xs")) (EVar "seen"))) (arm (PCon "None") () (EBinOp "::" (EVar "x") (EApp (EApp (EVar "dedupGo") (EVar "xs")) (EApp (EApp (EApp (EVar "omInsert") (EVar "x")) (ELit LUnit)) (EVar "seen")))))))
+(DFunDef false "dedup" ((PVar "xs")) (EApp (EApp (EVar "dedupBy") (EVar "identity")) (EVar "xs")))
 (DTypeSig true "splitLast" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyVar "a")))))
 (DFunDef false "splitLast" ((PList)) (EVar "None"))
 (DFunDef false "splitLast" ((PList (PVar "x"))) (EApp (EVar "Some") (ETuple (EListLit) (EVar "x"))))

@@ -58,6 +58,7 @@ import support.util.{
   startsWith,
   stringTrim,
   lookupAssoc,
+  dedupBy,
 }
 import tools.printer.{declToString, exprToString}
 import support.char.{isAlnum, isLower, isUpper}
@@ -1130,14 +1131,9 @@ inStdlibPair : (String, Option Loc) -> Bool
 inStdlibPair (n, _) = inStdlib n
 
 -- keep the first (name, loc) per distinct name, preserving order
+-- (#242: order-preserving dedup on the name key → shared support.util.dedupBy)
 dedupeNamesLoc : List (String, Option Loc) -> List (String, Option Loc)
-dedupeNamesLoc xs = dedupeNamesLocGo [] xs
-
-dedupeNamesLocGo : List String -> List (String, Option Loc) -> List (String, Option Loc)
-dedupeNamesLocGo _ [] = []
-dedupeNamesLocGo seen ((n, l)::rest)
-  | contains n seen = dedupeNamesLocGo seen rest
-  | otherwise = (n, l) :: dedupeNamesLocGo (n::seen) rest
+dedupeNamesLoc xs = dedupBy fst xs
 
 inStdlib : String -> Bool
 inStdlib n = contains n stdlibNames

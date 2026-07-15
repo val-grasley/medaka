@@ -1,5 +1,5 @@
 # META
-source_lines=3530
+source_lines=3526
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/lint.mdk — the `medaka lint` framework + seed rules.
@@ -62,6 +62,7 @@ import support.util.{
   startsWith,
   stringTrim,
   lookupAssoc,
+  dedupBy,
 }
 import tools.printer.{declToString, exprToString}
 import support.char.{isAlnum, isLower, isUpper}
@@ -1134,14 +1135,9 @@ inStdlibPair : (String, Option Loc) -> Bool
 inStdlibPair (n, _) = inStdlib n
 
 -- keep the first (name, loc) per distinct name, preserving order
+-- (#242: order-preserving dedup on the name key → shared support.util.dedupBy)
 dedupeNamesLoc : List (String, Option Loc) -> List (String, Option Loc)
-dedupeNamesLoc xs = dedupeNamesLocGo [] xs
-
-dedupeNamesLocGo : List String -> List (String, Option Loc) -> List (String, Option Loc)
-dedupeNamesLocGo _ [] = []
-dedupeNamesLocGo seen ((n, l)::rest)
-  | contains n seen = dedupeNamesLocGo seen rest
-  | otherwise = (n, l) :: dedupeNamesLocGo (n::seen) rest
+dedupeNamesLoc xs = dedupBy fst xs
 
 inStdlib : String -> Bool
 inStdlib n = contains n stdlibNames
@@ -3536,7 +3532,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "ImplMethod" true) (mem "DoStmt" true) (mem "Section" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "LetBind" true) (mem "FunClause" true) (mem "Expr" true) (mem "Decl" true))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "Positions" false) (mem "DeclPos" false) (mem "positionsDecls" false) (mem "declPosLine" false) (mem "declPosEndLine" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "Severity" true) (mem "Diag" true) (mem "ppSeverity" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "anyList" false) (mem "allList" false) (mem "filterList" false) (mem "joinNl" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "splitNl" false) (mem "splitOnChar" false) (mem "joinWith" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "lookupAssoc" false))))
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "anyList" false) (mem "allList" false) (mem "filterList" false) (mem "joinNl" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "splitNl" false) (mem "splitOnChar" false) (mem "joinWith" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "lookupAssoc" false) (mem "dedupBy" false))))
 (DUse false (UseGroup ("tools" "printer") ((mem "declToString" false) (mem "exprToString" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isAlnum" false) (mem "isLower" false) (mem "isUpper" false))))
 (DUse false (UseGroup ("ir" "sexp") ((mem "exprSexp" false) (mem "patSexp" false))))
@@ -3861,10 +3857,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "inStdlibPair" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool")))
 (DFunDef false "inStdlibPair" ((PTuple (PVar "n") PWild)) (EApp (EVar "inStdlib") (EVar "n")))
 (DTypeSig false "dedupeNamesLoc" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
-(DFunDef false "dedupeNamesLoc" ((PVar "xs")) (EApp (EApp (EVar "dedupeNamesLocGo") (EListLit)) (EVar "xs")))
-(DTypeSig false "dedupeNamesLocGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))
-(DFunDef false "dedupeNamesLocGo" (PWild (PList)) (EListLit))
-(DFunDef false "dedupeNamesLocGo" ((PVar "seen") (PCons (PTuple (PVar "n") (PVar "l")) (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "seen")) (EApp (EApp (EVar "dedupeNamesLocGo") (EVar "seen")) (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "n") (EVar "l")) (EApp (EApp (EVar "dedupeNamesLocGo") (EBinOp "::" (EVar "n") (EVar "seen"))) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "dedupeNamesLoc" ((PVar "xs")) (EApp (EApp (EVar "dedupBy") (EVar "fst")) (EVar "xs")))
 (DTypeSig false "inStdlib" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "inStdlib" ((PVar "n")) (EApp (EApp (EVar "contains") (EVar "n")) (EVar "stdlibNames")))
 (DTypeSig false "stdlibFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))
@@ -4819,7 +4812,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "ImplMethod" true) (mem "DoStmt" true) (mem "Section" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "LetBind" true) (mem "FunClause" true) (mem "Expr" true) (mem "Decl" true))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "Positions" false) (mem "DeclPos" false) (mem "positionsDecls" false) (mem "declPosLine" false) (mem "declPosEndLine" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "Severity" true) (mem "Diag" true) (mem "ppSeverity" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "anyList" false) (mem "allList" false) (mem "filterList" false) (mem "joinNl" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "splitNl" false) (mem "splitOnChar" false) (mem "joinWith" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "lookupAssoc" false))))
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "anyList" false) (mem "allList" false) (mem "filterList" false) (mem "joinNl" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "splitNl" false) (mem "splitOnChar" false) (mem "joinWith" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "lookupAssoc" false) (mem "dedupBy" false))))
 (DUse false (UseGroup ("tools" "printer") ((mem "declToString" false) (mem "exprToString" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isAlnum" false) (mem "isLower" false) (mem "isUpper" false))))
 (DUse false (UseGroup ("ir" "sexp") ((mem "exprSexp" false) (mem "patSexp" false))))
@@ -5144,10 +5137,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "inStdlibPair" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool")))
 (DFunDef false "inStdlibPair" ((PTuple (PVar "n") PWild)) (EApp (EVar "inStdlib") (EVar "n")))
 (DTypeSig false "dedupeNamesLoc" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
-(DFunDef false "dedupeNamesLoc" ((PVar "xs")) (EApp (EApp (EVar "dedupeNamesLocGo") (EListLit)) (EVar "xs")))
-(DTypeSig false "dedupeNamesLocGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))
-(DFunDef false "dedupeNamesLocGo" (PWild (PList)) (EListLit))
-(DFunDef false "dedupeNamesLocGo" ((PVar "seen") (PCons (PTuple (PVar "n") (PVar "l")) (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "seen")) (EApp (EApp (EVar "dedupeNamesLocGo") (EVar "seen")) (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "n") (EVar "l")) (EApp (EApp (EVar "dedupeNamesLocGo") (EBinOp "::" (EVar "n") (EVar "seen"))) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "dedupeNamesLoc" ((PVar "xs")) (EApp (EApp (EVar "dedupBy") (EVar "fst")) (EVar "xs")))
 (DTypeSig false "inStdlib" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "inStdlib" ((PVar "n")) (EApp (EApp (EVar "contains") (EVar "n")) (EVar "stdlibNames")))
 (DTypeSig false "stdlibFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))

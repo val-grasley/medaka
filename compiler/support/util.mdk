@@ -82,18 +82,26 @@ splitOnCharGo chars sep n start i
 export joinDot : List String -> String
 joinDot xs = joinWith "." xs
 
--- Deduplicate a String list keeping the FIRST occurrence in first-occurrence
--- order (NOT sorted).  Uses the shared support.ordmap weight-balanced tree as a
--- `seen` set for O(log n) membership → O(n·log n) overall, vs the naive O(n²)
--- list-scan copies the stages used to carry.
-export dedup : List String -> List String
-dedup xs = dedupGo xs omEmpty
+-- canonical for #242/#243: order-preserving dedup keeping the FIRST occurrence
+-- (NOT sorted), generalized over a String key projection.  Uses the shared
+-- support.ordmap weight-balanced tree as a `seen` set for O(log n) membership →
+-- O(n·log n) overall, vs the naive O(n²) list-scan copies the stages carry.
+-- This is the shared migration target other stages route their dedup/dedupBy
+-- clones through.  Keep it monomorphic (no prelude Foldable delegation) — `dedup`
+-- runs on HOT paths.
+export dedupBy : (a -> String) -> List a -> List a
+dedupBy key xs = dedupByGo key xs omEmpty
 
-dedupGo : List String -> OrdMap Unit -> List String
-dedupGo [] _ = []
-dedupGo (x::xs) seen = match omLookup x seen
-  Some _ => dedupGo xs seen
-  None => x :: dedupGo xs (omInsert x () seen)
+dedupByGo : (a -> String) -> List a -> OrdMap Unit -> List a
+dedupByGo _ [] _ = []
+dedupByGo key (x::xs) seen = match omLookup (key x) seen
+  Some _ => dedupByGo key xs seen
+  None => x :: dedupByGo key xs (omInsert (key x) () seen)
+
+-- canonical for #242/#243: the String-identity specialization of `dedupBy`.
+-- Kept so existing `dedup` callers are unchanged.
+export dedup : List String -> List String
+dedup xs = dedupBy identity xs
 
 -- Split a list into its leading prefix and final element: Some (init, last),
 -- or None for the empty list.  (Was duplicated byte-identically across ~10
@@ -259,6 +267,11 @@ schemeLineNameGo l i n
   | stringSlice i (i + 3) l == " : " = Some (stringSlice 0 i l)
   | otherwise = schemeLineNameGo l (i + 1) n
 
+-- NOTE (#243): this `isSome` duplicates the prelude's `isSome` (stdlib/core.mdk)
+-- byte-identically and is a deletion candidate — BUT the LOCKED typecheck.mdk
+-- imports it by name (`import support.util.{… isSome …}`, typecheck.mdk:94), so
+-- deleting it here breaks that import.  Blocked on the ws:typecheck arc (#160)
+-- dropping `isSome` from typecheck.mdk's import list first; then delete this.
 export isSome : Option a -> Bool
 isSome (Some _) = True
 isSome None = False

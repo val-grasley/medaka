@@ -1,5 +1,5 @@
 # META
-source_lines=350
+source_lines=330
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted doctest extraction + running — port of lib/doctest.ml.
@@ -27,7 +27,7 @@ import frontend.ast.{Decl, DUse}
 import frontend.parser.{parseResult, parseErrorMessage}
 import frontend.desugar.{desugar}
 import eval.eval.{Value(..), lookupBinding, force, ppValue}
-import support.util.{listLen, reverseL, joinNl, startsWith, stringTrim}
+import support.util.{listLen, reverseL, joinNl, startsWith, stringTrim, splitNl}
 
 -- ── Data ──────────────────────────────────────────────────────────────────
 
@@ -85,27 +85,7 @@ startsWith p s =
 
 -- trim → stringTrim (support/util.mdk, imported above).
 
--- Split a string on '\n' into its lines (no trailing empty unless present).
-splitNl : String -> List String
-splitNl s = splitNlGo (stringToChars s) (arrayLength (stringToChars s)) 0 0
-
-splitNlGo : Array Char -> Int -> Int -> Int -> List String
-splitNlGo cs n start i
-  | i >= n = [substrChars cs start n]
-  | arrayGetUnsafe i cs == '\n' =
-    substrChars cs start i :: splitNlGo cs n (i + 1) (i + 1)
-  | otherwise = splitNlGo cs n start (i + 1)
-
-substrChars : Array Char -> Int -> Int -> String
-substrChars cs a b = stringFromChars (sliceChars cs a b)
-
-sliceChars : Array Char -> Int -> Int -> Array Char
-sliceChars cs a b = arrayFromList (sliceCharsGo cs a b)
-
-sliceCharsGo : Array Char -> Int -> Int -> List Char
-sliceCharsGo cs a b
-  | a >= b = []
-  | otherwise = arrayGetUnsafe a cs :: sliceCharsGo cs (a + 1) b
+-- splitNl → support/util.mdk (imported above; #242 dedup of the splitNl cluster).
 
 -- ── Comment classification (mirrors lib/doctest.ml) ────────────────────────
 -- We work over (line, text) pairs rather than the lexer's `Comment` type:
@@ -358,7 +338,7 @@ isUse _ = False
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseResult" false) (mem "parseErrorMessage" false))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "lookupBinding" false) (mem "force" false) (mem "ppValue" false))))
-(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "reverseL" false) (mem "joinNl" false) (mem "startsWith" false) (mem "stringTrim" false))))
+(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "reverseL" false) (mem "joinNl" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "splitNl" false))))
 (DData Public "Example" () ((variant "Example" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")) (TyCon "Int")))) ())
 (DTypeSig true "exampleInput" (TyFun (TyCon "Example") (TyCon "String")))
 (DFunDef false "exampleInput" ((PCon "Example" (PVar "i") PWild PWild)) (EVar "i"))
@@ -382,16 +362,6 @@ isUse _ = False
 (DFunDef false "substr3" ((PVar "a") (PVar "b") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "a")) (EVar "b")) (EVar "s")))
 (DTypeSig false "startsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "startsWith" ((PVar "p") (PVar "s")) (EBlock (DoLet false false (PVar "lp") (EApp (EVar "slen") (EVar "p"))) (DoExpr (EIf (EBinOp "<" (EApp (EVar "slen") (EVar "s")) (EVar "lp")) (EVar "False") (EBinOp "==" (EApp (EApp (EApp (EVar "substr3") (ELit (LInt 0))) (EVar "lp")) (EVar "s")) (EVar "p"))))))
-(DTypeSig false "splitNl" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "splitNl" ((PVar "s")) (EApp (EApp (EApp (EApp (EVar "splitNlGo") (EApp (EVar "stringToChars") (EVar "s"))) (EApp (EVar "arrayLength") (EApp (EVar "stringToChars") (EVar "s")))) (ELit (LInt 0))) (ELit (LInt 0))))
-(DTypeSig false "splitNlGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "splitNlGo" ((PVar "cs") (PVar "n") (PVar "start") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EApp (EApp (EVar "substrChars") (EVar "cs")) (EVar "start")) (EVar "n"))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "\n"))) (EBinOp "::" (EApp (EApp (EApp (EVar "substrChars") (EVar "cs")) (EVar "start")) (EVar "i")) (EApp (EApp (EApp (EApp (EVar "splitNlGo") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "splitNlGo") (EVar "cs")) (EVar "n")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "substrChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
-(DFunDef false "substrChars" ((PVar "cs") (PVar "a") (PVar "b")) (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "sliceChars") (EVar "cs")) (EVar "a")) (EVar "b"))))
-(DTypeSig false "sliceChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Array") (TyCon "Char"))))))
-(DFunDef false "sliceChars" ((PVar "cs") (PVar "a") (PVar "b")) (EApp (EVar "arrayFromList") (EApp (EApp (EApp (EVar "sliceCharsGo") (EVar "cs")) (EVar "a")) (EVar "b"))))
-(DTypeSig false "sliceCharsGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Char"))))))
-(DFunDef false "sliceCharsGo" ((PVar "cs") (PVar "a") (PVar "b")) (EIf (EBinOp ">=" (EVar "a") (EVar "b")) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "a")) (EVar "cs")) (EApp (EApp (EApp (EVar "sliceCharsGo") (EVar "cs")) (EBinOp "+" (EVar "a") (ELit (LInt 1)))) (EVar "b"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "clText" (TyFun (TyTuple (TyCon "Int") (TyCon "String")) (TyCon "String")))
 (DFunDef false "clText" ((PTuple PWild (PVar "t"))) (EVar "t"))
 (DTypeSig false "clLine" (TyFun (TyTuple (TyCon "Int") (TyCon "String")) (TyCon "Int")))
@@ -491,7 +461,7 @@ isUse _ = False
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseResult" false) (mem "parseErrorMessage" false))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "lookupBinding" false) (mem "force" false) (mem "ppValue" false))))
-(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "reverseL" false) (mem "joinNl" false) (mem "startsWith" false) (mem "stringTrim" false))))
+(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "reverseL" false) (mem "joinNl" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "splitNl" false))))
 (DData Public "Example" () ((variant "Example" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")) (TyCon "Int")))) ())
 (DTypeSig true "exampleInput" (TyFun (TyCon "Example") (TyCon "String")))
 (DFunDef false "exampleInput" ((PCon "Example" (PVar "i") PWild PWild)) (EVar "i"))
@@ -515,16 +485,6 @@ isUse _ = False
 (DFunDef false "substr3" ((PVar "a") (PVar "b") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "a")) (EVar "b")) (EVar "s")))
 (DTypeSig false "startsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "startsWith" ((PVar "p") (PVar "s")) (EBlock (DoLet false false (PVar "lp") (EApp (EVar "slen") (EVar "p"))) (DoExpr (EIf (EBinOp "<" (EApp (EVar "slen") (EVar "s")) (EVar "lp")) (EVar "False") (EBinOp "==" (EApp (EApp (EApp (EVar "substr3") (ELit (LInt 0))) (EVar "lp")) (EVar "s")) (EVar "p"))))))
-(DTypeSig false "splitNl" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "splitNl" ((PVar "s")) (EApp (EApp (EApp (EApp (EVar "splitNlGo") (EApp (EVar "stringToChars") (EVar "s"))) (EApp (EVar "arrayLength") (EApp (EVar "stringToChars") (EVar "s")))) (ELit (LInt 0))) (ELit (LInt 0))))
-(DTypeSig false "splitNlGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "splitNlGo" ((PVar "cs") (PVar "n") (PVar "start") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EApp (EApp (EVar "substrChars") (EVar "cs")) (EVar "start")) (EVar "n"))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "\n"))) (EBinOp "::" (EApp (EApp (EApp (EVar "substrChars") (EVar "cs")) (EVar "start")) (EVar "i")) (EApp (EApp (EApp (EApp (EVar "splitNlGo") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "splitNlGo") (EVar "cs")) (EVar "n")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "substrChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
-(DFunDef false "substrChars" ((PVar "cs") (PVar "a") (PVar "b")) (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "sliceChars") (EVar "cs")) (EVar "a")) (EVar "b"))))
-(DTypeSig false "sliceChars" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Array") (TyCon "Char"))))))
-(DFunDef false "sliceChars" ((PVar "cs") (PVar "a") (PVar "b")) (EApp (EVar "arrayFromList") (EApp (EApp (EApp (EVar "sliceCharsGo") (EVar "cs")) (EVar "a")) (EVar "b"))))
-(DTypeSig false "sliceCharsGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Char"))))))
-(DFunDef false "sliceCharsGo" ((PVar "cs") (PVar "a") (PVar "b")) (EIf (EBinOp ">=" (EVar "a") (EVar "b")) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "a")) (EVar "cs")) (EApp (EApp (EApp (EVar "sliceCharsGo") (EVar "cs")) (EBinOp "+" (EVar "a") (ELit (LInt 1)))) (EVar "b"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "clText" (TyFun (TyTuple (TyCon "Int") (TyCon "String")) (TyCon "String")))
 (DFunDef false "clText" ((PTuple PWild (PVar "t"))) (EVar "t"))
 (DTypeSig false "clLine" (TyFun (TyTuple (TyCon "Int") (TyCon "String")) (TyCon "Int")))

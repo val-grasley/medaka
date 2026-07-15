@@ -23,7 +23,7 @@ import frontend.ast.{Decl, DUse}
 import frontend.parser.{parseResult, parseErrorMessage}
 import frontend.desugar.{desugar}
 import eval.eval.{Value(..), lookupBinding, force, ppValue}
-import support.util.{listLen, reverseL, joinNl, startsWith, stringTrim}
+import support.util.{listLen, reverseL, joinNl, startsWith, stringTrim, splitNl}
 
 -- ── Data ──────────────────────────────────────────────────────────────────
 
@@ -81,27 +81,7 @@ startsWith p s =
 
 -- trim → stringTrim (support/util.mdk, imported above).
 
--- Split a string on '\n' into its lines (no trailing empty unless present).
-splitNl : String -> List String
-splitNl s = splitNlGo (stringToChars s) (arrayLength (stringToChars s)) 0 0
-
-splitNlGo : Array Char -> Int -> Int -> Int -> List String
-splitNlGo cs n start i
-  | i >= n = [substrChars cs start n]
-  | arrayGetUnsafe i cs == '\n' =
-    substrChars cs start i :: splitNlGo cs n (i + 1) (i + 1)
-  | otherwise = splitNlGo cs n start (i + 1)
-
-substrChars : Array Char -> Int -> Int -> String
-substrChars cs a b = stringFromChars (sliceChars cs a b)
-
-sliceChars : Array Char -> Int -> Int -> Array Char
-sliceChars cs a b = arrayFromList (sliceCharsGo cs a b)
-
-sliceCharsGo : Array Char -> Int -> Int -> List Char
-sliceCharsGo cs a b
-  | a >= b = []
-  | otherwise = arrayGetUnsafe a cs :: sliceCharsGo cs (a + 1) b
+-- splitNl → support/util.mdk (imported above; #242 dedup of the splitNl cluster).
 
 -- ── Comment classification (mirrors lib/doctest.ml) ────────────────────────
 -- We work over (line, text) pairs rather than the lexer's `Comment` type:

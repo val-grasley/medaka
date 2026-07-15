@@ -59,7 +59,7 @@ import types.typecheck.{
   decodeSetParam,
 }
 import eval.eval.{Value(..), evalModulesRootEnv, apply, outputRef, ppValue}
-import support.util.{sortUniqS, joinWith, reverseL, escStr}
+import support.util.{sortUniqS, joinWith, reverseL, escStr, lookupAssoc}
 
 -- ── policy-arg parsing ──────────────────────────────────────────────────────
 -- Mirror bin/main.ml's parse_args: --allow / --fn carry a value; the first bare
@@ -292,10 +292,6 @@ memberStr : String -> List String -> Bool
 memberStr _ [] = False
 memberStr x (y::ys) = if x == y then True else memberStr x ys
 
-lookupAssocL : String -> List (String, a) -> Option a
-lookupAssocL _ [] = None
-lookupAssocL k ((n, v)::rest) = if k == n then Some v else lookupAssocL k rest
-
 -- ── 4. effect ATOMS from a scheme (WS-1b: keep the param, not just the label) ─
 -- Walk the normalized mono: at each TFun, collect the row's atoms (effrowLabels
 -- already returns Atoms), recurse into the result; at TApp recurse into both
@@ -366,7 +362,7 @@ fnEffectsTable ((name, sch)::rest) = match schemeEffects sch
 -- Does fn `name` carry an atom whose LABEL is `label`?  (Chain reconstruction
 -- stays label-keyed — the param does not participate in the call-graph trace.)
 fnHasEffect : List (String, List Atom) -> String -> String -> Bool
-fnHasEffect table name label = match lookupAssocL name table
+fnHasEffect table name label = match lookupAssoc name table
   None => False
   Some effs => memberStr label (map atomLabel effs)
 
@@ -380,7 +376,7 @@ findChain callGraph effTable start forbiddenLabel =
 
 traceChain : List (String, List String) -> List (String, List Atom) -> String -> String -> List String -> List String
 traceChain callGraph effTable forbiddenLabel fn visited =
-  let callees = match lookupAssocL fn callGraph
+  let callees = match lookupAssoc fn callGraph
     None => []
     Some s => s
   -- SS.find_first_opt picks the SMALLEST name; sortUniqS the callees, take first
@@ -526,7 +522,7 @@ runCheckPolicy rtSrc coreSrc src allowStr fnName =
   let callGraph = buildCallGraph userD
   let schemes = checkProgramSchemesWithRuntime rtD coreD userD
   let effTable = fnEffectsTable schemes
-  let fnEffects = match lookupAssocL fnName effTable
+  let fnEffects = match lookupAssoc fnName effTable
     None => []
     Some e => e
   let forbidden = forbiddenLabels fnEffects policy
@@ -655,7 +651,7 @@ runManifest rtSrc coreSrc src fnName =
   let coreD = desugar (parse coreSrc)
   let schemes = checkProgramSchemesWithRuntime rtD coreD userD
   let effTable = fnEffectsTable schemes
-  let fnEffects = match lookupAssocL fnName effTable
+  let fnEffects = match lookupAssoc fnName effTable
     None => []
     Some e => e
   manifestToml fnEffects
@@ -701,7 +697,7 @@ runManifestAtoms rtSrc coreSrc src fnName =
   let coreD = desugar (parse coreSrc)
   let schemes = checkProgramSchemesWithRuntime rtD coreD userD
   let effTable = fnEffectsTable schemes
-  let fnEffects = match lookupAssocL fnName effTable
+  let fnEffects = match lookupAssoc fnName effTable
     None => []
     Some e => e
   fnEffects
