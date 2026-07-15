@@ -1376,6 +1376,25 @@ universeKeyBucketsRef = Ref omEmpty
 --     Interface names are globally unique, so last-write-wins omInsert == first-match scan.
 universeIfaceRequiredRef : Ref (OrdMap (List String))
 universeIfaceRequiredRef = Ref omEmpty
+-- #154 PR2 adds two more of the same shape (site #3 — registerMethodIfaceParamsAll's
+-- per-module rebuild over `fullUniverse`).  Same lifecycle: survive `resetState`, cleared
+-- by `resetCrossModuleState`, seeded by the core pass, appended in `appendUniverseAccums`,
+-- and — because they are the two refs registerMethodIfaceParamsAll writes — COPIED into
+-- methodIfaceParamsRef / registeredIfacesRef in the Module arm (which resetState wiped),
+-- exactly as PR1 copies universeKeyBucketsRef into shadowKeyTableRef.  The Flat path still
+-- rebuilds those two refs over its whole `prog`, so it never touches these accumulators.
+--   • interface-method NAME → (iface name, iface typarams, declared method Ty).  Method
+--     names are globally unique (coherence), so last-write-wins omInsert accumulates to the
+--     same map the per-module `fullUniverse` rebuild produced.  EVERY reader is a by-method-
+--     NAME omLookup (singleParamIfaceMethod / ifaceParamMonos / shadowVarHeadMethodScheme /
+--     inferAppExpr / …), never an iteration or an emptiness test, so an extra prior-module
+--     entry that this module never names is never queried — byte-identical output.
+universeMethodIfaceParamsRef : Ref (OrdMap (String, List String, Ty))
+universeMethodIfaceParamsRef = Ref omEmpty
+--   • the SET of interface names with ≥1 method registered.  Read only by ifaceRegistered's
+--     omHasKey existence check (core's Num/Eq/Ord are seeded on both paths, so identical).
+universeRegisteredIfacesRef : Ref (OrdMap Unit)
+universeRegisteredIfacesRef = Ref omEmpty
 
 -- P0-19 (constrained-receiver arm): the `=>`-constraint variables of the top-level
 -- group CURRENTLY being inferred, as (interface name, the constraint's instantiated
@@ -1847,7 +1866,11 @@ resetCrossModuleState _ =
   let _ = setRef universeIfaceMethodsRef omEmpty
   let _ = setRef universeFunNamesRef omEmpty
   let _ = setRef universeKeyBucketsRef omEmpty
-  setRef universeIfaceRequiredRef omEmpty
+  let _ = setRef universeIfaceRequiredRef omEmpty
+  -- #154 PR2 (site #3): the two accumulators that feed methodIfaceParamsRef /
+  -- registeredIfacesRef on the Module path share the same per-run reset boundary.
+  let _ = setRef universeMethodIfaceParamsRef omEmpty
+  setRef universeRegisteredIfacesRef omEmpty
 
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
@@ -8541,6 +8564,23 @@ insertIfaceRequired ((DInterface { name, methods, ... })::rest) m =
   insertIfaceRequired rest (omInsert name (requiredMethodNames methods) m)
 insertIfaceRequired (_::rest) m = insertIfaceRequired rest m
 
+-- #154 PR2 (site #3): fold [prog]'s interface decls into the pair of accumulators that
+-- feed methodIfaceParamsRef / registeredIfacesRef.  A PURE mirror of
+-- registerMethodIfaceParamsAll (DAttrib-unwrap → per-method `omInsert mname (iface,
+-- typarams, mty)` into the params map + `omInsert iface ()` into the registered-iface
+-- set), updating the two passed maps in lockstep instead of the global refs, so the copy
+-- in checkBodyImpl's Module arm lands the identical maps the per-module rebuild produced.
+insertMethodIfaceParams : List Decl -> (OrdMap (String, List String, Ty), OrdMap Unit) -> (OrdMap (String, List String, Ty), OrdMap Unit)
+insertMethodIfaceParams [] acc = acc
+insertMethodIfaceParams ((DAttrib _ d)::rest) acc =
+  insertMethodIfaceParams rest (insertMethodIfaceParams [d] acc)
+insertMethodIfaceParams ((DInterface { name, typarams, methods, ... })::rest) acc = insertMethodIfaceParams rest (insertIfaceMethodsAcc name typarams methods acc)
+insertMethodIfaceParams (_::rest) acc = insertMethodIfaceParams rest acc
+
+insertIfaceMethodsAcc : String -> List String -> List IfaceMethod -> (OrdMap (String, List String, Ty), OrdMap Unit) -> (OrdMap (String, List String, Ty), OrdMap Unit)
+insertIfaceMethodsAcc _ _ [] acc = acc
+insertIfaceMethodsAcc iface typarams ((IfaceMethod mname mty _)::rest) (mp, ifs) = insertIfaceMethodsAcc iface typarams rest (omInsert mname (iface, typarams, mty) mp, omInsert iface () ifs)
+
 missingImplMethodMsg : String -> List Ty -> String -> String
 missingImplMethodMsg iface tys method = "'impl \{iface} \{joinWith " " (map ppTyAtom tys)}' is missing method '\{method}'. Every interface method without a default body must be implemented — define '\{method}' in the impl (or check for a typo in a method name)"
 
@@ -10235,7 +10275,19 @@ checkBodyImpl seed mode prog0 =
         ++ funConstraintIfacesRef.value)
       let _ = setRef currentImportDefinersRef (importDefinersOf prog)
       ()
-  let _ = registerMethodIfaceParamsAll fullUniverse
+  -- #11 soundness: the interface-method→iface-param map (+ the registered-iface set).
+  -- #154 PR2 (site #3): FLAT rebuilds both refs over its whole `fullUniverse` (already
+  -- O(N)); the Module path COPIES the persistent accumulators — grown one module at a
+  -- time by `appendUniverseAccums prog0` above (which ran BEFORE this) and seeded by the
+  -- core pass — into the two refs resetState just wiped, exactly as PR1 copies
+  -- universeKeyBucketsRef into shadowKeyTableRef.  Method/interface names are globally
+  -- unique, so the accumulated maps carry the same entries the per-module rebuild over
+  -- `fullUniverse` (= accData ++ implDecls ++ prog0) did for every name this module names.
+  let _ = match mode
+    Flat _ => registerMethodIfaceParamsAll fullUniverse
+    Module _ _ _ =>
+      let _ = setRef methodIfaceParamsRef universeMethodIfaceParamsRef.value
+      setRef registeredIfacesRef universeRegisteredIfacesRef.value
   let dataEnv = registerAllData initialEnv dataUniverse
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
@@ -12786,9 +12838,14 @@ appendUniverseAccums prog =
   let _ = setRef universeIfaceMethodsRef (namesToSet (allIfaceMethodNames prog) universeIfaceMethodsRef.value)
   let _ = setRef universeFunNamesRef (namesToSet (map fst (funDefs prog)) universeFunNamesRef.value)
   let _ = setRef universeKeyBucketsRef (bucketKeyEntries (flatMap keyEntryOf prog) universeKeyBucketsRef.value)
-  setRef
+  let _ = setRef
     universeIfaceRequiredRef
     (insertIfaceRequired prog universeIfaceRequiredRef.value)
+  -- #154 PR2 (site #3): grow the methodIfaceParams / registeredIfaces accumulators by
+  -- THIS module's interfaces, in lockstep (one decl walk).
+  let acc = insertMethodIfaceParams prog (universeMethodIfaceParamsRef.value, universeRegisteredIfacesRef.value)
+  let _ = setRef universeMethodIfaceParamsRef (fst acc)
+  setRef universeRegisteredIfacesRef (snd acc)
 
 -- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
 -- replaced by the persistent interface-method membership SET.  `direct` still filters
@@ -13435,6 +13492,15 @@ checkModules runtimeDecls coreDecls modules =
 -- exactly THIS module's contribution; matchWarnings is cleared here explicitly
 -- (resetState does NOT clear it).  Returns (own value schemes, errs, warns) so the
 -- driver can thread accV/accData exactly as foldModules does.
+--
+-- ⚠️ PRECONDITION (#154 PR1/PR2): this is per-module, and the Module path now consults
+-- the persistent universe accumulators (universeIfaceMethodsRef / universeKeyBucketsRef /
+-- universeIfaceRequiredRef / universeMethodIfaceParamsRef / …) which SURVIVE the
+-- per-module resetState.  They are grown by `appendUniverseAccums prog0` per module but
+-- must be CLEARED once per run by `resetCrossModuleState` (and seeded by the core pass)
+-- BEFORE the first module.  Every existing caller goes through a driver that does exactly
+-- that (foldModulesDiags / checkModulesDiags via resetCrossModuleState); a future
+-- standalone caller that skips it would leak the previous run's universe into this one.
 export checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModuleFullDiags seedVars accData accAll prog =
   let _ = setRef implInferEnabled False

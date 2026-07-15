@@ -660,7 +660,9 @@ inferredIfacePairs : String -> List Int -> List (String, Int)
 initialEnv : TcEnv
 innerDefaultMethod : String -> String
 insertAxis : (String, Param) -> List (String, Param) -> List (String, Param)
+insertIfaceMethodsAcc : String -> List String -> List IfaceMethod -> (Map String (String, List String, Ty), Map String Unit) -> (Map String (String, List String, Ty), Map String Unit)
 insertIfaceRequired : List Decl -> Map String (List String) -> Map String (List String)
+insertMethodIfaceParams : List Decl -> (Map String (String, List String, Ty), Map String Unit) -> (Map String (String, List String, Ty), Map String Unit)
 instantiate : Scheme -> Mono
 instantiateRecord : RecordInfo -> (Mono, List (String, Mono))
 instantiateSigTracked : Ty -> (Mono, List (String, Mono))
@@ -1277,6 +1279,8 @@ universeFunNamesRef : Ref (Map String Unit)
 universeIfaceMethodsRef : Ref (Map String Unit)
 universeIfaceRequiredRef : Ref (Map String (List String))
 universeKeyBucketsRef : Ref (Map String (List KeyEntry))
+universeMethodIfaceParamsRef : Ref (Map String (String, List String, Ty))
+universeRegisteredIfacesRef : Ref (Map String Unit)
 unknownCtorMsg : String -> String
 unknownFieldFresh : String -> String -> List String -> Mono
 unknownFieldMsg : String -> String -> String
