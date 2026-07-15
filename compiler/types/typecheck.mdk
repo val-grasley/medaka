@@ -7689,17 +7689,16 @@ resolveSites implTable keyTable rpNames ((PendingEntry name tagRef resultMono en
 -- impl, so this gate would mis-route every shadow method.  RLocal is stamped by the
 -- arg-position resolveRLocalSites (keyed on the RECEIVER mono) AFTER resolveSites.
 resolveSite : ImplBuckets -> KeyBuckets -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> Unit
-resolveSite implTable keyTable rpNames name tagRef implRef resultMono fullMono encl = match activeDictVarOfEncl resultMono encl
-  Some dname => setRef tagRef (if contains name rpNames then RDictFwd dname else RDict dname)
-  None => match headTyconMono resultMono
-    Some tag =>
-      let routeKey = fromOption tag (keyForSite keyTable name resultMono)
-      let _ = setRef tagRef (RKey routeKey [])
-      let paramMonos = fromOption [resultMono] (ifaceParamMonos name fullMono)
-      setRef
-        implRef
-        (implDictRoutesForFull implTable encl name tag resultMono paramMonos)
-    None => ()
+-- #156 S3b: a thin adapter over `entail` (EKReturn kind).  `entail` returns
+-- `(primaryRoute, elementRoutes)`; stamp them into (tagRef, implRef).  Byte-identical to
+-- the pre-S3b arm-by-arm body: the assum arm returns `(RDictFwd/RDict, [])`, the inst arm
+-- `(RKey key [], implDictRoutesForFull …)`, and the fallback `(RNone, [])` — and because
+-- these refs start life as `(Ref RNone) (Ref [])`, unconditionally stamping the fallback's
+-- `RNone`/`[]` reproduces the original body's do-nothing None arm exactly.
+resolveSite implTable keyTable rpNames name tagRef implRef resultMono fullMono encl =
+  let (route, routes) = entail implTable name resultMono encl (EKReturn keyTable fullMono (contains name rpNames))
+  let _ = setRef tagRef route
+  setRef implRef routes
 
 -- Recover the FULL list of interface-type-parameter monos for a method occurrence,
 -- ordered by the interface's typaram declaration.  Look up the method's interface
@@ -9131,6 +9130,65 @@ resolveDictApps prog implTable ((routesRef, monos, ifaces)::rest) =
 -- corrupt element-dict routing (the fear the three variants were "kept SEPARATE" for).
 data Undetermined = KeepNone | CountImpls (List Decl) String
 
+-- #156 S3b: the SiteKind-parametrized entailment core.  ONE `assum → inst → fallback`
+-- ladder that both the genuine return-position method resolver (`resolveSite`, EKReturn)
+-- and the nested/top constrained-call router (`routeOfD`, EKNestedTop) route through.
+-- Returns `(primary route, element-dict route list)`.  Genuine sites carry their element
+-- routes in the SEPARATE `implRef` (primary is `RKey key []`), so `snd` is non-empty and
+-- the adapter stamps it into `implRef`; nested/top PACK their `requires` into the primary
+-- RKey (byte-identical to the pre-S3b `routeOfD`) and leave `snd` empty.
+--   * assum: EKNestedTop uses `activeDictVarForEncl`; EKReturn uses the enclDictVarOf-
+--     preferring `activeDictVarOfEncl`.  EKReturn routes RDictFwd when the method is
+--     return-position (name∈rpNames), else RDict; EKNestedTop routes RDict.
+--   * inst: EKReturn upgrades the head tag to the canonical full-type key (`keyForSite`)
+--     and fills element routes via `implDictRoutesForFull`; EKNestedTop keeps the bare
+--     head tag + `argImplRequiresRoutesRecD`-packed requires (with the W2 depth fuse).
+--   * fallback: EKReturn → RNone; EKNestedTop → the caller-supplied `Undetermined` policy.
+-- ⚠️ Arg-position (`resolveArgStamp`) + operator sites are S3c; they are NOT wired here.
+data EntailKind =
+  -- return-position method site: keyTable (for keyForSite), the method's full
+  -- (un-stripped) mono (for ifaceParamMonos), and whether the method is return-position.
+  | EKReturn KeyBuckets Mono Bool
+  -- nested-element / top-level constrained call: iface, undetermined policy, depth fuse.
+  | EKNestedTop String Undetermined Int
+
+entail : ImplBuckets -> String -> Mono -> String -> EntailKind -> (Route, List Route)
+entail implTable name m encl kind = match entailAssumVar m encl kind
+  Some dname => (entailAssumRoute dname kind, [])
+  None => match headTyconMono m
+    Some tag => entailInst implTable name m encl tag kind
+    None => (entailFallback implTable kind, [])
+
+-- assum: which in-scope dict-param (if any) does [m]'s head constraint var read?  The
+-- genuine kind prefers the enclosing method's own slot (activeDictVarOfEncl); the
+-- nested/top kind uses the plain encl-aware lookup (activeDictVarForEncl).
+entailAssumVar : Mono -> String -> EntailKind -> Option String
+entailAssumVar m encl (EKReturn _ _ _) = activeDictVarOfEncl m encl
+entailAssumVar m encl (EKNestedTop _ _ _) = activeDictVarForEncl m encl
+
+entailAssumRoute : String -> EntailKind -> Route
+entailAssumRoute dname (EKReturn _ _ isRp) =
+  if isRp then
+    RDictFwd dname
+  else
+    RDict dname
+entailAssumRoute dname (EKNestedTop _ _ _) = RDict dname
+
+-- inst: a concrete head [tag].  EKReturn → canonical full-type key + split element routes
+-- (implRef-bound); EKNestedTop → bare head tag with requires PACKED into the primary RKey.
+entailInst : ImplBuckets -> String -> Mono -> String -> String -> EntailKind -> (Route, List Route)
+entailInst implTable name m encl tag (EKReturn keyTable fullMono _) =
+  let routeKey = fromOption tag (keyForSite keyTable name m)
+  let paramMonos = fromOption [m] (ifaceParamMonos name fullMono)
+  (RKey routeKey [], implDictRoutesForFull implTable encl name tag m paramMonos)
+entailInst implTable _ m encl tag (EKNestedTop iface _ depth) =
+  (RKey tag (argImplRequiresRoutesRecD implTable iface encl tag m depth), [])
+
+entailFallback : ImplBuckets -> EntailKind -> Route
+entailFallback _ (EKReturn _ _ _) = RNone
+entailFallback implTable (EKNestedTop _ policy _) =
+  undeterminedRoute implTable policy
+
 -- ONE constrained-call-arg route resolver — collapses routeOfMono (encl="",
 -- KeepNone) / routeOfMonoEncl (KeepNone) / routeOfMonoTop (encl="", CountImpls).
 -- [encl] == "" ⇒ global activeDictVarOf (activeDictVarForEncl short-circuits); else
@@ -9146,12 +9204,13 @@ routeOf implTable iface encl policy m = routeOfD implTable iface encl policy m 0
 -- diverging at route-resolution time.  Depth is unchanged here; it increments once per
 -- impl level in argImplRequiresRoutesRecD.
 routeOfD : ImplBuckets -> String -> String -> Undetermined -> Mono -> Int -> Route
-routeOfD implTable iface encl policy m depth = match activeDictVarForEncl m encl
-  Some dname => RDict dname
-  None => match headTyconMono m
-    Some tag =>
-      RKey tag (argImplRequiresRoutesRecD implTable iface encl tag m depth)
-    None => undeterminedRoute implTable policy
+-- #156 S3b: a thin adapter over `entail` (EKNestedTop kind).  The nested/top ladder
+-- packs its `requires` into the primary RKey, so `snd` is empty and only `fst` is read —
+-- byte-identical to the pre-S3b arm-by-arm body.  The requires recursion still lands back
+-- here via argImplRequiresRoutesRecD → argImplReqRoutes → argReqRoute → routeOfD, with
+-- [depth] threaded through the EKNestedTop payload.
+routeOfD implTable iface encl policy m depth =
+  fst (entail implTable "" m encl (EKNestedTop iface policy depth))
 
 undeterminedRoute : ImplBuckets -> Undetermined -> Route
 undeterminedRoute _ KeepNone = RNone
