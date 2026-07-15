@@ -1,6 +1,6 @@
 # META
 source_lines=5
-stages=PARSE,DESUGAR,MARK
+stages=PARSE,PRINTER,DESUGAR,MARK
 # SOURCE
 greet name = "hello, \{name}"
 report n = "got \{n} items"
@@ -13,6 +13,12 @@ nested f x = "result: \{f x}"
 (DFunDef false "math" ((PVar "a") (PVar "b")) (EStringInterp (InterpStr "sum = ") (InterpExpr (EBinOp "+" (EVar "a") (EVar "b"))) (InterpStr "")))
 (DFunDef false "multi" ((PVar "x") (PVar "y")) (EStringInterp (InterpStr "x=") (InterpExpr (EVar "x")) (InterpStr " y=") (InterpExpr (EVar "y")) (InterpStr "!")))
 (DFunDef false "nested" ((PVar "f") (PVar "x")) (EStringInterp (InterpStr "result: ") (InterpExpr (EApp (EVar "f") (EVar "x"))) (InterpStr "")))
+# PRINTER
+greet name = "hello, \{name}"
+report n = "got \{n} items"
+math a b = "sum = \{a + b}"
+multi x y = "x=\{x} y=\{y}!"
+nested f x = "result: \{f x}"
 # DESUGAR
 (DFunDef false "greet" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "hello, ")) (EApp (EVar "display") (EVar "name"))) (ELit (LString ""))))
 (DFunDef false "report" ((PVar "n")) (EBinOp "++" (EBinOp "++" (ELit (LString "got ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString " items"))))

@@ -1,5 +1,0 @@
-greet name = "hello, \{name}"
-report n = "got \{n} items"
-math a b = "sum = \{a + b}"
-multi x y = "x=\{x} y=\{y}!"
-nested f x = "result: \{f x}"

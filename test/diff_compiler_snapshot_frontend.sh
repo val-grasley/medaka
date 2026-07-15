@@ -154,7 +154,7 @@ run_family() {
   printf '%s\n' "$out" | grep -E '^(.*: (FAIL|ERROR))' | sed 's/^/    /'
 }
 
-run_family parse_fixtures      parse,desugar,mark "$ROOT"/test/parse_fixtures/*.mdk
+run_family parse_fixtures      parse,printer,desugar,mark "$ROOT"/test/parse_fixtures/*.mdk
 run_family parse_only_fixtures parse              "$ROOT"/test/parse_only_fixtures/*.mdk
 run_family comment_fixtures    comments           "$ROOT"/test/comment_fixtures/*.mdk
 run_family stdlib              desugar,mark       "$ROOT"/stdlib/*.mdk

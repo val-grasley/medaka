@@ -1,6 +1,6 @@
 # META
 source_lines=26
-stages=PARSE,DESUGAR,MARK
+stages=PARSE,PRINTER,DESUGAR,MARK
 # SOURCE
 -- Declaration/expression forms the self-hosted parser was hardened to accept:
 -- type aliases, newtypes (with/without deriving), top-level mutually-recursive
@@ -41,6 +41,22 @@ nested = Map { "k" => Set { 1, 2 } }
 (DFunDef false "scores" () (EMapLit "Map" ((kv (ELit (LString "a")) (ELit (LInt 1))) (kv (ELit (LString "b")) (ELit (LInt 2))))))
 (DFunDef false "emptyish" () (ESetLit "Set" ((ELit (LInt 1)) (ELit (LInt 2)) (ELit (LInt 3)))))
 (DFunDef false "nested" () (EMapLit "Map" ((kv (ELit (LString "k")) (ESetLit "Set" ((ELit (LInt 1)) (ELit (LInt 2))))))))
+# PRINTER
+type Name = String
+type Wrapper a = Option a
+newtype UserId = UserId Int
+newtype Age = Age Int deriving (Eq, Ord)
+let rec isEven = n => if n == 0 then True else isOdd (n - 1)
+let rec isOdd = n => if n == 0 then False else isEven (n - 1)
+@inline
+double x = x + x
+@deprecated "use double"
+twice x = x + x
+@must_use
+important x = x
+scores = Map { "a" => 1, "b" => 2 }
+emptyish = Set { 1, 2, 3 }
+nested = Map { "k" => Set { 1, 2 } }
 # DESUGAR
 (DTypeAlias false "Name" () (TyCon "String"))
 (DTypeAlias false "Wrapper" ("a") (TyApp (TyCon "Option") (TyVar "a")))

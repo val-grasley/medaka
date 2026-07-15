@@ -1,6 +1,6 @@
 # META
 source_lines=9
-stages=PARSE,DESUGAR,MARK
+stages=PARSE,PRINTER,DESUGAR,MARK
 # SOURCE
 joined = [1] ++ [2] ++ [3]
 trailing = [1] ++
@@ -17,6 +17,12 @@ rest = []
 (DFunDef false "consJoined" () (EBinOp "::" (ELit (LInt 1)) (EBinOp "::" (ELit (LInt 2)) (EVar "rest"))))
 (DFunDef false "consTrailing" () (EBinOp "::" (ELit (LInt 1)) (EBinOp "::" (ELit (LInt 2)) (EVar "rest"))))
 (DFunDef false "rest" () (EListLit))
+# PRINTER
+joined = [1] ++ [2] ++ [3]
+trailing = [1] ++ [2] ++ [3]
+consJoined = 1 :: 2::rest
+consTrailing = 1 :: 2::rest
+rest = []
 # DESUGAR
 (DFunDef false "joined" () (EBinOp "++" (EBinOp "++" (EListLit (ELit (LInt 1))) (EListLit (ELit (LInt 2)))) (EListLit (ELit (LInt 3)))))
 (DFunDef false "trailing" () (EBinOp "++" (EBinOp "++" (EListLit (ELit (LInt 1))) (EListLit (ELit (LInt 2)))) (EListLit (ELit (LInt 3)))))
