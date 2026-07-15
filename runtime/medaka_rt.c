@@ -230,18 +230,95 @@ void mdk_print_int(long long v) { printf("%lld\n", v); }
  * `medaka build` binary can ever emit. */
 void mdk_print_bool(long long v) { printf(v ? "True\n" : "False\n"); }
 
-/* Print a Float.  Renders the canonical Medaka float lexeme (DECIDED 2026-06-15,
- * a deliberate divergence from OCaml string_of_float — the same rule is mirrored
- * into the oracle Eval.pp_value to keep differentials byte-identical):
- * "%.12g" (precision unchanged), then append ".0" when the lexeme would otherwise
- * read as an int (no '.'/'e'/'E') — so 1.0 prints "1.0", not the old "1.".  The
- * 'n'/'i' guard leaves nan/inf untouched ("nan"/"inf", never "nan.0"/"inf.0"). */
+/* Render the canonical Medaka float lexeme into `out` (needs >= 32 bytes).
+ *
+ * DECIDED 2026-06-15 / REVISED 2026-07-15 (issue #57): SHORTEST-ROUND-TRIP.  The
+ * lexeme is the fewest significant digits that `strtod` reads back to the
+ * bit-identical double — so `debug (0.1 + 0.2)` renders "0.30000000000000004",
+ * not the old "%.12g" truncation "0.3".  Digits come from `%.*e` at the smallest
+ * precision whose round-trip is bit-exact (compared as uint64 bit patterns, not
+ * `double ==`, so a NaN can never spuriously match).
+ *
+ * The EXPONENT THRESHOLD is unchanged from the historical "%.12g" rule
+ * (scientific iff decimal exponent < -4 or >= 12), so whole/round values still
+ * print "N.0" (100.0, not "1e+02") and only values that genuinely need >12 sig
+ * digits move.  Scientific form is lowercase 'e' + sign + 2-digit-padded exponent
+ * (e.g. "1e-07", "1e+20"), which the post-#51 lexer reads back.  The ".0" append
+ * rule tags a bare-integer lexeme (no '.'/'e').  inf/nan pass through untouched
+ * ("inf"/"-inf"/"nan"), never the loop.  This helper is the SINGLE source of truth
+ * shared by mdk_print_float (bare-Float auto-print) and mdk_float_to_string (the
+ * floatToString extern) — they MUST stay byte-identical, and both mirror the JS
+ * host copies in test/wasm/run.js and playground/worker.js. */
+static void mdk_float_lexeme(double d, char *out) {
+  if (isnan(d)) { strcpy(out, "nan"); return; }
+  if (isinf(d)) { strcpy(out, d < 0 ? "-inf" : "inf"); return; }
+  if (d == 0.0) { strcpy(out, (1.0 / d < 0) ? "-0.0" : "0.0"); return; }
+
+  /* shortest significant-digit count: %.*e with precision p-1 == p sig digits. */
+  char sci[64];
+  int p;
+  for (p = 1; p <= 17; p++) {
+    snprintf(sci, sizeof sci, "%.*e", p - 1, d);
+    double rt = strtod(sci, NULL);
+    uint64_t a, b;
+    memcpy(&a, &rt, 8);
+    memcpy(&b, &d, 8);
+    if (a == b) break;
+  }
+  if (p > 17) snprintf(sci, sizeof sci, "%.*e", 16, d);
+
+  /* parse sci = [-]d[.ddd]e(+|-)XX into sign, digit string, decimal exponent. */
+  const char *s = sci;
+  int neg = 0;
+  if (*s == '-') { neg = 1; s++; }
+  char digits[40];
+  int nd = 0;
+  digits[nd++] = *s++;                 /* leading significant digit */
+  if (*s == '.') { s++; while (*s != 'e' && *s != 'E') digits[nd++] = *s++; }
+  int exp = atoi(s + 1);               /* s points at 'e' */
+  digits[nd] = '\0';
+  while (nd > 1 && digits[nd - 1] == '0') digits[--nd] = '\0';  /* trim (defensive) */
+
+  char body[80];
+  if (exp < -4 || exp >= 12) {
+    char mant[48];
+    if (nd == 1) { mant[0] = digits[0]; mant[1] = '\0'; }
+    else { mant[0] = digits[0]; mant[1] = '.'; strcpy(mant + 2, digits + 1); }
+    snprintf(body, sizeof body, "%se%c%02d", mant, exp < 0 ? '-' : '+',
+             exp < 0 ? -exp : exp);
+  } else {
+    int pp = exp + 1;                  /* digits before the decimal point */
+    if (pp <= 0) {
+      char z[24];
+      int i;
+      for (i = 0; i < -pp; i++) z[i] = '0';
+      z[i] = '\0';
+      snprintf(body, sizeof body, "0.%s%s", z, digits);
+    } else if (pp >= nd) {
+      char z[24];
+      int i;
+      for (i = 0; i < pp - nd; i++) z[i] = '0';
+      z[i] = '\0';
+      snprintf(body, sizeof body, "%s%s", digits, z);
+    } else {
+      char head[40];
+      memcpy(head, digits, (size_t)pp);
+      head[pp] = '\0';
+      snprintf(body, sizeof body, "%s.%s", head, digits + pp);
+    }
+  }
+
+  char full[96];
+  if (neg) snprintf(full, sizeof full, "-%s", body);
+  else     snprintf(full, sizeof full, "%s", body);
+  if (!strpbrk(full, ".eEni")) strcat(full, ".0");  /* bare-int lexeme -> N.0 */
+  strcpy(out, full);
+}
+
+/* Print a bare Float (the auto-print sink) via the shared canonical lexeme. */
 void mdk_print_float(double d) {
-  char buf[64];
-  snprintf(buf, sizeof buf, "%.12g", d);
-  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E') &&
-      !strchr(buf, 'n') && !strchr(buf, 'i')) /* skip nan/inf */
-    strcat(buf, ".0");
+  char buf[96];
+  mdk_float_lexeme(d, buf);
   printf("%s\n", buf);
 }
 
@@ -340,11 +417,8 @@ long long mdk_int_to_string(long long tagged) {
 }
 
 long long mdk_float_to_string(double d) {
-  char buf[64];
-  snprintf(buf, sizeof buf, "%.12g", d);
-  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E') &&
-      !strchr(buf, 'n') && !strchr(buf, 'i')) /* skip nan/inf */
-    strcat(buf, ".0");
+  char buf[96];
+  mdk_float_lexeme(d, buf);   /* shared canonical lexeme (see mdk_float_lexeme) */
   return mdk_str_lit(buf, (long long)strlen(buf));
 }
 
