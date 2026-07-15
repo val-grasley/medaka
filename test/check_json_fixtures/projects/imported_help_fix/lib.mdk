@@ -1,0 +1,11 @@
+-- An IMPORTED (non-last) module whose body has a help+fix-bearing type error:
+-- a concrete-record field typo → T-UNKNOWN-FIELD did-you-mean.  Regression lock
+-- for #159: the OLD (code,msg,loc)-triple + message-keyed `typeErrorHelpFix`
+-- side-channel dropped the structured help/fix for a non-last module in the
+-- multi-module `check --json` / LSP path (resetState cleared the side-channel
+-- per module and the lookup ran only after the LAST module).  TcDiag carries
+-- help/fix per-diagnostic, so it survives here — the golden asserts it.
+data Box = Box { width : Int, height : Int }
+
+export area : Int
+area = (Box { width = 2, height = 3 }).widht
