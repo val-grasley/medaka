@@ -2100,6 +2100,15 @@ pSleepMs _ = panic "sleepMs: expected Int"
 pAllocBytes : Value e -> <e> Value e
 pAllocBytes _ = VFloat 0.0
 
+-- flushStdout is a genuine no-op under the interpreter's output model: stdout
+-- is buffered into `outputRef` and printed only after `main` returns (see
+-- `stashRunStdout`/`enableRunStdoutFlush` below), so there is nothing to flush
+-- mid-run.  Implemented in the C runtime + LLVM emitter (issue #71); this binds
+-- it here so `medaka run`/`medaka test` don't panic `unbound variable`.
+pFlushStdout : Value e -> <e> Value e
+pFlushStdout VUnit = VUnit
+pFlushStdout _ = panic "flushStdout: expected Unit"
+
 -- B2: a FUNCTION (not a top-level value) so every consumer instantiates a
 -- fresh row `e` — a top-level Value-typed value would fall to the value
 -- restriction (function applications are not generalized) and pin one global
@@ -2115,6 +2124,7 @@ externBindings _ = [
   ("monotonicSec", prim1M pMonotonicSec),
   ("sleepMs", prim1M pSleepMs),
   ("allocBytes", prim1M pAllocBytes),
+  ("flushStdout", prim1M pFlushStdout),
   ("intToString", prim1 pIntToString),
   ("bitAnd", prim2 pBitAnd),
   ("bitOr", prim2 pBitOr),

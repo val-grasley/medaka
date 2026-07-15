@@ -63,7 +63,7 @@
 # in the reason text and in diff_compiler_capability_matrix.sh's header).
 
 # ============================================================================
-# INTERPRETER — 13 rows, ALL category BUG (was 37 + 6 FROZEN-CONSTANT, then 14).
+# INTERPRETER — 12 rows, ALL category BUG (was 37 + 6 FROZEN-CONSTANT, then 14).
 # eval.mdk was written as a value-oracle for differential testing against the
 # (now-deleted) OCaml reference compiler, so effectful/IO externs were "out of
 # scope" by construction. When OCaml was removed (2026-06-26) eval.mdk was
@@ -86,13 +86,16 @@
 # (runtime/medaka_rt.c) now also flushes the run-stdout stash first, so a
 # mid-`main` exit doesn't drop output printed before it — see eval.mdk's pExit.
 #
-# STILL OPEN, deliberately (the 13 below):
+# CLOSED 2026-07-15 (issue #71 re-verification, 1 more row promoted):
+# `flushStdout` is now bound in the SHARED `externBindings` table (pFlushStdout,
+# eval.mdk) as a genuine no-op, not a stopgap — `medaka run`/`test` buffer
+# stdout into `outputRef` and print it only after `main` returns, so there is
+# nothing to flush mid-run. No longer a per-engine asymmetry; row removed.
+#
+# STILL OPEN, deliberately (the 12 below):
 #   runCommand +   — a security-posture call: these are to be gated behind
 #   the 10 net       `--allow-exec` / `--allow-net` before the interpreter binds
 #   externs          them.
-#   flushStdout    — meaningless while `run` buffers stdout in `outputRef` and
-#                    prints it after `main` returns; fix it together with the
-#                    "run drops stdout on panic" bug.
 #   assertSnapshot — unimplemented in ALL THREE engines (see the llvm/wasm TODO
 #                    rows); not an interpreter-specific gap at all.
 #
@@ -118,7 +121,6 @@ netTcpConnect	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 netTcpListen	interp	BUG	implemented by llvm, missing from interp — BUG(T7)
 
 # --- singles ---
-flushStdout	interp	BUG	implemented by llvm (isIoExtern), missing from interp — BUG(T7). No-op-by-construction while `run` buffers stdout into outputRef and prints it after main returns; fix with the "run drops stdout on panic" bug
 runCommand	interp	BUG	implemented by llvm (isFileExtern family), missing from interp — BUG(T7). DEFERRED ON PURPOSE (2026-07-13): --allow-exec security posture first
 
 # --- assertSnapshot (1) — unimplemented in ALL THREE engines, but the task

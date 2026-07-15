@@ -51,14 +51,11 @@
 arg-tag dispatch on impl type that owns no constructors
 no impl groups
 #
-# max/min over a generic Ord receiver — compiler/EMITTER-GAPS.md §"Open emitter
-# CAPABILITY gaps" + TOTAL-row residual (2 events).  In `medaka build` the DCE
-# pass (compiler/dce.mdk) prunes the unreachable core.mdk `maximum`/`minimum`
-# bodies, so this should NOT fire from `medaka build`; the entry is here only so
-# a program that calls `max`/`min` itself (keeping them reachable) is classified
-# rather than mis-reported.  Emitter signature mentions the unresolved compare:
-no impl of method 'max'
-no impl of method 'min'
+# max/min over a generic Ord receiver — CLOSED 2026-06-11, re-confirmed by issue
+# #71 (compiler/EMITTER-GAPS.md:86, "Open emitter CAPABILITY gaps" section).  Both
+# the arg-tag RNone-over-primitives facet and the RDict/value-position facet are
+# fixed; `max 3 7` / `min 3 7` build and run natively == oracle.  (Formerly
+# allowlisted here; entries removed since the panic no longer occurs.)
 #
 # Two-level nested dicts (`Box (List (List Int))`) — SIGSEGV, emitter value-rep
 # limit.  compiler/EMITTER-GAPS.md / PLAN.md Stage 3.  The type-directed generator
