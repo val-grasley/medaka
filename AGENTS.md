@@ -143,7 +143,7 @@ anywhere else, so it is listed here:
 ```sh
 gh issue list --label "S0: silent wrongness"      # always start here — silent wrongness beats everything
 gh issue list --label "ws:soundness" --state open # one workstream (ws:soundness|language|tooling|wasm|
-                                                  #   diagnostics|testing|release|perf|stdlib)
+                                                  #   diagnostics|testing|release|perf|stdlib|typecheck)
 gh issue list --label "needs-repro"               # inherited claims NOBODY has reproduced
 gh issue list --milestone "0.1.0 public preview"  # the release floor
 ```
@@ -438,7 +438,7 @@ record update `{ r | f = v }`; unary `!`.
 
 ⚠️ **Do NOT reach for these — they are REMOVED and are hard parse errors**, each with a
 dedicated removal diagnostic in `compiler/frontend/parser.mdk`: the **`function` keyword**
-(use `x => match x { … }` or a multi-clause definition), **`let mut`** (use a `Ref`:
+(use `x => match x` with indented arms, or a multi-clause definition), **`let mut`** (use a `Ref`:
 `let x = Ref 0`, `x := v`, read `x.value`), **backtick infix** `` `f` `` (use prefix
 application), the **`record` keyword**, **`let-else`**, **named impls**, and **`default
 impl`**. `test/check_removed_constructs.sh` is the tree-wide gate that keeps them out.

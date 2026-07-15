@@ -74,6 +74,7 @@ that duplicates it will drift from it.
 | [TESTING.md](TESTING.md) | gates, goldens, oracles, CI | `test/`, `.github/` |
 | [RELEASE.md](RELEASE.md) 🚢 | the 0.1.0 public preview | `docs/`, packaging, `playground/` |
 | [PERF.md](PERF.md) | quadratics + constant factors | `compiler/frontend/resolve.mdk`, `compiler/tools/check.mdk` |
+| [TYPECHECK.md](TYPECHECK.md) | the typechecker consolidation arc: entailment engine, driver unification, state discipline | `compiler/types/typecheck.mdk` |
 | [STDLIB.md](STDLIB.md) | missing stdlib/support functions | `stdlib/`, `compiler/support/util.mdk` |
 | [HARNESS.md](HARNESS.md) | the **agent harness** — not the repo | — |
 
@@ -88,10 +89,11 @@ The unit of collision is a **file**, not a topic.
 
 - **Safe in parallel:** TESTING (`test/`) × RELEASE (`docs/`, packaging, `playground/`) × HARNESS.
   Disjoint trees, no compiler source between them.
-- **SOUNDNESS × LANGUAGE × DIAGNOSTICS all live in `compiler/frontend/` + `compiler/types/`.** Run
+- **SOUNDNESS × LANGUAGE × DIAGNOSTICS × TYPECHECK all live in `compiler/frontend/` + `compiler/types/`.** Run
   **one at a time** unless the items are provably in different files. `typecheck.mdk` is the hottest
   file in the repo, and it is a **13k-line file with two textually duplicated typecheck bodies**
-  (#80).
+  (#80). TYPECHECK (the consolidation arc) rewrites that file's structure — while one of its PRs is
+  in flight, treat the whole file as locked for every other workstream.
 - **WASM × SOUNDNESS.** A miscompile fix usually needs *both* emitters — that is exactly how #59
   happened (an LLVM fix that never reached wasm; the workaround was reverted on the strength of a
   green script, and only the wasm tandem gate caught it). **If your soundness item touches
