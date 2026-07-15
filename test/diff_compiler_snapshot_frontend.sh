@@ -120,12 +120,13 @@ if [ "${1:-}" = "--bless" ]; then
       "$ROOT"/test/parse_only_fixtures/*) sub=parse_only_fixtures ;;
       "$ROOT"/test/parse_fixtures/*)      sub=parse_fixtures ;;
       "$ROOT"/test/comment_fixtures/*)    sub=comment_fixtures ;;
+      "$ROOT"/test/positions_fixtures/*)  sub=positions_fixtures ;;
       "$ROOT"/test/diff_fixtures/*)       sub=diff_fixtures ;;
       "$ROOT"/stdlib/*|"$ROOT"/stdlib)    sub=stdlib ;;
       "$ROOT"/compiler/*|"$ROOT"/compiler) sub=compiler ;;
       *)
         echo "not part of the snapshot corpus: $p" >&2
-        echo "  (corpus: test/parse_fixtures, test/parse_only_fixtures, test/comment_fixtures, test/diff_fixtures, stdlib, compiler)" >&2
+        echo "  (corpus: test/parse_fixtures, test/parse_only_fixtures, test/comment_fixtures, test/positions_fixtures, test/diff_fixtures, stdlib, compiler)" >&2
         rc=1; continue ;;
     esac
     "$MEDAKA" snapshot --bless --root "$ROOT" --out "$SNAPDIR/$sub" "$p" || rc=1
@@ -156,6 +157,7 @@ run_family() {
 
 run_family parse_fixtures      parse,printer,desugar,mark "$ROOT"/test/parse_fixtures/*.mdk
 run_family parse_only_fixtures parse              "$ROOT"/test/parse_only_fixtures/*.mdk
+run_family positions_fixtures  positions          "$ROOT"/test/positions_fixtures/*.mdk
 run_family comment_fixtures    comments           "$ROOT"/test/comment_fixtures/*.mdk
 run_family stdlib              desugar,mark       "$ROOT"/stdlib/*.mdk
 run_family diff_fixtures       tokens,desugar,mark "$ROOT"/test/diff_fixtures/*.mdk
