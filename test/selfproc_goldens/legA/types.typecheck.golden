@@ -500,7 +500,6 @@ ifaceDfsCycleOneSuper : List Decl -> Ref (List String) -> List String -> String 
 ifaceDfsCycleSupers : List Decl -> Ref (List String) -> List String -> List Super -> List String
 ifaceDictPassDefault : String -> Ty -> List Pat -> Expr -> Int -> IfaceMethod
 ifaceDictPassMethod : IfaceMethod -> IfaceMethod
-ifaceEntryMatches : String -> (String, (String, List String, Ty)) -> Bool
 ifaceForConstraintId : Int -> String
 ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> String
 ifaceForInferredId : String -> Int -> String
@@ -759,7 +758,7 @@ methodConstraintsRef : Ref (List (String, List Int))
 methodDictArityOf : String -> Int
 methodDispatchIdx : String -> Option Int
 methodDispatchIdxRef : Ref (List (String, Int))
-methodIfaceParamsRef : Ref (List (String, (String, List String, Ty)))
+methodIfaceParamsRef : Ref (Map String (String, List String, Ty))
 methodLevelConstraintVarNames : List String -> Ty -> List String
 methodMembersOf : List String -> Loc -> List UseMember
 methodSchemes : List String -> List IfaceMethod -> List (String, Scheme)
@@ -1000,6 +999,7 @@ registerRecordInfoKeyed : String -> String -> List String -> List Field -> Unit
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> Unit
 registerSchemeObligations : List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 registerVariants : TcEnv -> String -> List String -> List Variant -> TcEnv
+registeredIfacesRef : Ref (Map String Unit)
 registersElementDict : String -> List String -> Bool
 rejectCyclicAliases : Unit -> Unit
 removeAllS : List String -> List String -> List String

@@ -1187,8 +1187,22 @@ pendingArithSites = Ref []
 -- matching impl in the program — mirroring lib/typecheck.ml's check_method_usages
 -- (`No impl of … for …`, lib/typecheck.ml:3845).  Skips while a param is still a
 -- polymorphic tyvar (deferred to the caller, exactly like the oracle).
-methodIfaceParamsRef : Ref (List (String, (String, List String, Ty)))
-methodIfaceParamsRef = Ref []
+-- #147: keyed by method NAME (was a program-sized assoc List scanned linearly on
+-- hot per-node paths).  omInsert is last-write-wins and the register site inserts
+-- in the SAME order the old List prepended, so on a method-name collision the
+-- latest-registered entry wins — identical to the old `lookupAssoc` first-match.
+methodIfaceParamsRef : Ref (OrdMap (String, List String, Ty))
+methodIfaceParamsRef = Ref omEmpty
+
+-- #147: cached SET of iface names with ≥1 method registered above, so
+-- `ifaceRegistered` is an O(log n) membership test instead of a full linear scan
+-- of the method table per operator/numeric-literal.  A separate key (iface name,
+-- not method name) and NOT derived from the method map: two interfaces sharing a
+-- method name collapse to one entry in the (name-keyed) map, but BOTH must stay
+-- registered here — matching the old full-List scan.  Maintained in lockstep at
+-- the two mutation sites (registerMethodIfaceParamsMethods and resetState).
+registeredIfacesRef : Ref (OrdMap Unit)
+registeredIfacesRef = Ref omEmpty
 
 -- C5 (TYPECHECK-AUDIT / Phase 112): names that are BOTH an interface method AND a
 -- cross-module-imported standalone top-level function (e.g. box's `toList`/`isEmpty`
@@ -2268,7 +2282,8 @@ resetState _ =
   let _ = setRef pendingBinopSites []
   let _ = setRef pendingUnopSites []
   let _ = setRef pendingArithSites []
-  let _ = setRef methodIfaceParamsRef []
+  let _ = setRef methodIfaceParamsRef omEmpty
+  let _ = setRef registeredIfacesRef omEmpty
   let _ = setRef pendingImplObligations []
   let _ = setRef pendingImplObligationsN 0
   let _ = setRef numlitRefs []  -- PLAN.md #11
@@ -4419,16 +4434,12 @@ recordIfaceObligation iface lt
     pushPendingObl (iface, ["a"], TyVar "a", lt, currentLoc.value)
   | otherwise = ()
 
--- True iff `iface` is registered (its methods are in methodIfaceParamsRef, populated
--- per program from the DInterface decls — present once core.mdk is loaded).  Kept a
--- monomorphic, short-circuiting anyList scan (NOT a prelude Foldable method; the
--- O(1) map-ification of methodIfaceParamsRef is the separate issue #147).
+-- True iff `iface` is registered (has ≥1 method registered from the DInterface
+-- decls — present once core.mdk is loaded).  #147: an O(log n) membership test on
+-- the cached registeredIfacesRef set, replacing the old full linear scan of the
+-- method table per operator/numeric-literal.
 ifaceRegistered : String -> Bool
-ifaceRegistered iface =
-  anyList (ifaceEntryMatches iface) methodIfaceParamsRef.value
-
-ifaceEntryMatches : String -> (String, (String, List String, Ty)) -> Bool
-ifaceEntryMatches iface (_, (e, _, _)) = e == iface
+ifaceRegistered iface = omHasKey iface registeredIfacesRef.value
 
 -- G2: arithmetic `+ - * / %` carry a `Num` obligation on their (unified) operand
 -- type — mirrors the oracle's `No impl of Num for <T>` reject (lib/typecheck.ml).
@@ -4781,7 +4792,7 @@ recordImplObligation x mono
   -- (importer ∪ definer) — so either alone would miss one path's shadows.
   | contains x definerShadowNamesRef.value || contains x standaloneValuesRef.value =
     mono
-  | otherwise = match lookupAssoc x methodIfaceParamsRef.value
+  | otherwise = match omLookup x methodIfaceParamsRef.value
     None => mono
     Some (iface, typarams, mty) =>
       let _ = pushPendingObl (iface, typarams, mty, mono, currentLoc.value)
@@ -5044,7 +5055,7 @@ isShadowStandalone name = contains name standaloneValuesRef.value
 -- True iff [name]'s interface (in methodIfaceParamsRef) takes exactly ONE type
 -- parameter (the receiver-directed single-arg case the oracle scopes the fallback to).
 singleParamIfaceMethod : String -> Bool
-singleParamIfaceMethod name = match lookupAssoc name methodIfaceParamsRef.value
+singleParamIfaceMethod name = match omLookup name methodIfaceParamsRef.value
   Some (_, typarams, _) => listLen typarams == 1
   None => False
 
@@ -5343,7 +5354,7 @@ definerReceiverDispatches name xt
 -- Int` and reject with `Type mismatch: Bool vs Int` at the top of the user's file.
 definerReceiverIsDictVar : String -> Mono -> Bool
 definerReceiverIsDictVar name xt = match normalize xt
-  TVar cell => match lookupAssoc name methodIfaceParamsRef.value
+  TVar cell => match omLookup name methodIfaceParamsRef.value
     Some (mIface, _, _) => dictVarSatisfiesIface mIface (tyvarId cell) groupConstraintMonosRef.value
     None => False
   _ => False
@@ -5538,7 +5549,7 @@ inferDefinerShadowVarApp env name f x =
 -- Falls back to `infer env f` (flagged as an app head so maybeStandaloneValueMono does
 -- not pin it) when the method type is unavailable.
 shadowVarHeadMethodScheme : TcEnv -> String -> Expr -> Mono
-shadowVarHeadMethodScheme env name f = match lookupAssoc name methodIfaceParamsRef.value
+shadowVarHeadMethodScheme env name f = match omLookup name methodIfaceParamsRef.value
   Some (_, _, ty) => instantiate (sigToScheme ty)
   None =>
     let _ = setRef shadowHeadCtxRef True
@@ -7657,7 +7668,7 @@ resolveSite implTable keyTable rpNames name tagRef implRef resultMono fullMono e
 -- when the method has no registered interface (a plain `=>`-constrained fn) or the
 -- declared/occurrence shapes do not match — resolveSite falls back to [resultMono].
 ifaceParamMonos : String -> Mono -> Option (List Mono)
-ifaceParamMonos name fullMono = match lookupAssoc name methodIfaceParamsRef.value
+ifaceParamMonos name fullMono = match omLookup name methodIfaceParamsRef.value
   None => None
   Some (_, typarams, mty) =>
     map (subst => map (paramMonoOf subst) typarams) (matchTyMono mty fullMono)
@@ -10897,7 +10908,8 @@ registerMethodIfaceParamsDecl _ = ()
 registerMethodIfaceParamsMethods : String -> List String -> List IfaceMethod -> Unit
 registerMethodIfaceParamsMethods _ _ [] = ()
 registerMethodIfaceParamsMethods iface typarams ((IfaceMethod mname mty _)::rest) =
-  let _ = setRef methodIfaceParamsRef ((mname, (iface, typarams, mty))::methodIfaceParamsRef.value)
+  let _ = setRef methodIfaceParamsRef (omInsert mname (iface, typarams, mty) methodIfaceParamsRef.value)
+  let _ = setRef registeredIfacesRef (omInsert iface () registeredIfacesRef.value)
   registerMethodIfaceParamsMethods iface typarams rest
 
 -- build each method's scheme AND register its method-level constraints (foldMap's
