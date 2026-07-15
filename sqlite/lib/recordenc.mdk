@@ -52,6 +52,7 @@
 --   - Else:                         header_len = len(serial_bytes)+2 (2-byte varint)
 
 import byteparser.{runByteParser}
+import bytebuilder.{newBuilder, emitBeSint, buildArray}
 import lib.varint.{sqVarintBytes, sqVarintSize}
 import lib.recordfmt.{
   Cell,
@@ -68,33 +69,16 @@ import list.{reverse}
 import array
 
 -- ---------------------------------------------------------------------------
--- Big-endian signed integer encoder (pure List — no Mut effect)
+-- Big-endian signed integer encoder
 -- ---------------------------------------------------------------------------
---
--- `bytebuilder.emitBeSint` is the canonical BE-signed encoder but requires
--- a mutable `Builder` (`<Mut>`).  There is no `runMut` scoping combinator,
--- so using it here would propagate `<Mut>` through `encodeRecord` and all
--- callers.  This pure-list mirror stays local to avoid that effect
--- propagation.
 
--- WORKAROUND(MUT): this duplicates stdlib `bytebuilder.emitBeSint` purely to avoid
--- <Mut> propagating through encodeRecord and all callers. Delete and use bytebuilder
--- when MUT closes. See MUT-SCOPING-DESIGN.md.
 -- | Encode an nbytes-wide big-endian two's-complement signed integer as a
---   forward `List Int`.
+--   forward `List Int`, via the canonical stdlib `bytebuilder.emitBeSint`.
 beSintBytes : Int -> Int -> List Int
 beSintBytes nbytes v =
-  let unsigned = if v >= 0 then v else v + shiftLeft 1 (8 * nbytes)
-  beUnsignedNBytes nbytes unsigned
-
--- Emit exactly n big-endian bytes of a non-negative integer.
--- Builds in REVERSE (prepend low byte, recurse), then reverses.
-beUnsignedNBytes : Int -> Int -> List Int
-beUnsignedNBytes nbytes v = reverse (beUnsignedNGo nbytes v)
-
-beUnsignedNGo : Int -> Int -> List Int
-beUnsignedNGo 0 _ = []
-beUnsignedNGo n v = bitAnd v 255 :: beUnsignedNGo (n - 1) (v / 256)
+  let buf = newBuilder ()
+  emitBeSint nbytes v buf
+  toList (buildArray buf)
 
 -- ---------------------------------------------------------------------------
 -- Serial-type selection

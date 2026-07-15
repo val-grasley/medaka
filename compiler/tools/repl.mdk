@@ -35,6 +35,7 @@ import types.typecheck.{
   checkProgramSchemes,
   ppScheme,
   Scheme(..),
+  tcMsg,
 }
 import eval.eval.{
   Value(..),
@@ -216,7 +217,7 @@ runPipeline combined =
     [] =>
       let (tcErrs, _) = checkProgramDiags runtimeDecls preludeDecls combined
       match tcErrs
-        e::_ => (map ((_, m, _) => m) tcErrs, [], [])
+        e::_ => (map tcMsg tcErrs, [], [])
         [] =>
           let allSchemes = checkProgramSchemes preludeDecls combined
           let bindings = evalOneRootEnvWith (testCapableExterns ()) preludeDecls ("__repl__", combined)

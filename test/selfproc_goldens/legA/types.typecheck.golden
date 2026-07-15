@@ -90,7 +90,7 @@ atomsNorm : List Atom -> List Atom
 atomsNormGo : List Atom -> List Atom -> List Atom
 atomsOfWritten : List (String, Option String) -> List Atom
 atomsUnion : List Atom -> List Atom -> List Atom
-attachEntryDiag : (String, String, Option Loc) -> List (String, (List (String, String, Option Loc), List (String, Option Loc))) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
+attachEntryDiag : TcDiag -> List (String, (List TcDiag, List TcDiag)) -> List (String, (List TcDiag, List TcDiag))
 attributeMethodModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeModuleArities : String -> List Decl -> List (String, List Int) -> List ((String, String), List Int)
 attributeModuleArrIfaces : String -> List Decl -> List (String, List String) -> List ((String, String), List String)
@@ -151,12 +151,12 @@ checkMatchRedundant : Mono -> List Arm -> Unit
 checkMatchToLines : List Decl -> List Decl -> String
 checkMissingFields : String -> List (String, Mono) -> List FieldAssign -> Unit
 checkModuleFull : List (String, Scheme) -> List Decl -> List Decl -> List (String, Scheme)
-checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> List (String, Scheme)
 checkModules : List Decl -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
 checkModulesAllLines : List Decl -> List Decl -> List (String, List Decl) -> String
-checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
-checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List TcDiag, List TcDiag))
+checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) -> Bool
 checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> String
 checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> String
@@ -170,7 +170,7 @@ checkOneImplObligation : List (String, List Ty, List Require) -> List (String, L
 checkPhantomMethods : List Decl -> Unit
 checkProductAxes : String -> Param -> Unit
 checkProductAxesGo : String -> List (String, Param) -> Unit
-checkProgramDiags : List Decl -> List Decl -> List Decl -> (List (String, String, Option Loc), List (String, Option Loc))
+checkProgramDiags : List Decl -> List Decl -> List Decl -> (List TcDiag, List TcDiag)
 checkProgramSchemes : List Decl -> List Decl -> List (String, Scheme)
 checkProgramSchemesWithRuntime : List Decl -> List Decl -> List Decl -> List (String, Scheme)
 checkProgramSeeded : List (String, Scheme) -> List Decl -> List (String, Scheme)
@@ -194,9 +194,9 @@ clausesAreValue : List FunClause -> Bool
 clausesAt : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
 clausesOf : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
 cmCheckWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List (String, Scheme))
-cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, String, Option Loc), List (String, Option Loc)))
-cmEntryCollect : Bool -> String -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
-cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)))
+cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List TcDiag, List TcDiag))
+cmEntryCollect : Bool -> String -> (List (String, Scheme), List TcDiag, List TcDiag) -> (List (String, Scheme), List TcDiag, List TcDiag) -> (List (String, Scheme), List TcDiag, List TcDiag)
+cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List TcDiag, List TcDiag))
 cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option String
 cohBind : Ref (List (Int, Mono)) -> Int -> Mono -> Bool
 cohCollectImpls : List Decl -> List CohImpl
@@ -425,10 +425,8 @@ filterImplTysFor : List Decl -> String -> String -> List (List Ty)
 filterMaybeIds : List (Option Int) -> List Int
 filterNonSelf : String -> List String -> List String
 findAtom : String -> List Atom -> Option Atom
-findHelpFixEntry : String -> List (String, String, Option (Loc, String)) -> Option (String, Option (Loc, String))
 findImplEntry : Map String (List ImplEntry) -> String -> String -> Mono -> Option ImplEntry
 findImplEntryGo : List ImplEntry -> String -> String -> Mono -> Option ImplEntry
-findMatchWarningHelpEntry : String -> List (String, String) -> Option String
 findMatchingImplReqs : List (String, List Ty, List Require) -> String -> List Mono -> Option (List (String, Mono), List Require)
 findMostSpecificEntry : List KeyEntry -> List KeyEntry -> Option KeyEntry
 findSigTvMap : String -> List (String, Ty, List (String, Mono)) -> Option (List (String, Mono))
@@ -718,13 +716,11 @@ lookupCtor : TcEnv -> String -> Option Scheme
 lookupCtxKind : Loc -> List (Loc, String) -> Option String
 lookupDomain : String -> List (String, Param) -> Param
 lookupIfaceById : Int -> List (String, Int) -> Option String
-lookupMatchWarningHelp : String -> Option String
 lookupQualArity : String -> String -> List ((String, String), List Int) -> Option (List Int)
 lookupQualIfaces : String -> String -> List ((String, String), List String) -> Option (List String)
 lookupRecordByMangledHead : String -> String -> Option (String, RecordInfo)
 lookupRecordByName : String -> Option RecordInfo
 lookupSchemeIface : String -> Int -> List (String, List (String, Int)) -> Option String
-lookupTypeErrorHelpFix : String -> Option (String, Option (Loc, String))
 lookupVar : TcEnv -> String -> Option Scheme
 lowerRowLevels : Int -> EffRow -> Unit
 lowerToCurrent : Mono -> Unit
@@ -743,9 +739,7 @@ matchOneSided : (a -> b -> MStep c a b) -> (c -> c -> Bool) -> (b -> b -> Bool) 
 matchOracle : Ref Oracle
 matchStep : Ty -> Mono -> MStep String Ty Mono
 matchTyMono : Ty -> Mono -> Option (List (String, Mono))
-matchWarningHelp : Ref (List (String, String))
-matchWarningLocs : Ref (List (Option Loc))
-matchWarnings : Ref (List String)
+matchWarnings : Ref (List TcDiag)
 matchedEntry : Map String (List KeyEntry) -> String -> Mono -> Option KeyEntry
 matchingEntries : Map String (List KeyEntry) -> String -> Mono -> List KeyEntry
 matchingEntriesGo : List KeyEntry -> String -> Mono -> List KeyEntry
@@ -816,7 +810,7 @@ noImplFoundMsg : String -> List Mono -> String
 noImplFoundMsgHinted : String -> List Mono -> (String, Option String)
 noImplHint : String -> List Mono -> Option String
 nonExhaustiveMatchWarning : String
-nonExhaustiveMsg : Mono -> List (List Pat) -> String
+nonExhaustiveMsg : Mono -> List (List Pat) -> (String, Option String)
 nonGuardedRows : List Arm -> List (List Pat)
 normHole : Param -> Param
 normalize : Mono -> Mono
@@ -1197,7 +1191,12 @@ takeUntilInclusiveS : String -> List String -> List String
 tarjanAll : List String -> Map String (List String) -> Unit
 tarjanSCCs : List String -> Map String (List String) -> List (List String)
 tcClauseDef : String -> FunClause -> (String, (List Pat, Expr))
-teErrMsg : (String, String, Option Loc) -> String
+tcCode : TcDiag -> String
+tcFix : TcDiag -> Option (Loc, String)
+tcHelp : TcDiag -> Option String
+tcLoc : TcDiag -> Option Loc
+tcMsg : TcDiag -> String
+tcSeverity : TcDiag -> Int
 tjCounter : Ref Int
 tjIndex : Ref (Map String Int)
 tjLow : Ref (Map String Int)
@@ -1240,9 +1239,8 @@ tySubsumes : Ty -> Ty -> Bool
 tyVarArgNames : List Ty -> List String
 tyVarNames : Ty -> List String
 tyVarNamesWithConstraints : Ty -> List String
-typeErrorHelpFix : Ref (List (String, String, Option (Loc, String)))
 typeErrorLines : List String -> List String
-typeErrors : Ref (List (String, String, Option Loc))
+typeErrors : Ref (List TcDiag)
 typeErrorsSticky : Ref Bool
 typeMismatch : Mono -> Mono -> Unit
 typeMismatchInDo : Mono -> Mono -> Loc -> Unit

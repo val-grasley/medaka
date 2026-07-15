@@ -37,7 +37,7 @@
 -- in key order: left-child of cell[0], left-child of cell[1], ...,
 -- left-child of cell[n-1], rightmost-child.
 
-import array.{slice, concat}
+import array.{make, blit}
 import byteparser.{BOk, BErr, BResult, runBP}
 import lib.varint.{sqVarint}
 import lib.overflow.{localPayloadSize, overflowCapacity}
@@ -216,18 +216,21 @@ gatherPayload : Array Int -> Int -> Int -> Int -> Int -> Int -> Result String (A
 gatherPayload bytes pageSize usable payloadLen local pos = do
   _ <- requireBytes bytes (pos + local + 4) "leaf cell local payload"
   firstPage <- beU32 bytes (pos + local)
-  chunks <- followChain bytes pageSize usable firstPage (payloadLen - local) []
-  -- WORKAROUND(MUT): pure slice+concat instead of the natural arrayMake+blit gather,
-  -- because <Mut> has no scoping combinator and would infect the whole READ path.
-  -- Costs O(chunks x bytes) instead of O(bytes). See MUT-SCOPING-DESIGN.md.
-  Ok (concat (arrayFromList (slice pos (pos + local) bytes :: chunks)))
+  -- Allocate the payload buffer once and blit each source region into place:
+  -- the leaf-local prefix, then each overflow-page chunk in chain order. Every
+  -- payload byte is copied exactly once, so the gather is O(bytes).
+  let out = make payloadLen 0
+  let _ = blit bytes pos out 0 local
+  _ <- gatherChain bytes pageSize usable firstPage out local (payloadLen - local)
+  Ok out
 
--- Walk the overflow chain, collecting `remaining` more payload bytes.  Each
--- page contributes at most `overflowCapacity usable` bytes after its 4-byte
--- next-page pointer; a next-page of 0 must coincide with remaining == 0.
-followChain : Array Int -> Int -> Int -> Int -> Int -> List (Array Int) -> Result String (List (Array Int))
-followChain bytes pageSize usable page remaining acc
-  | remaining <= 0 = Ok (reverse acc)
+-- Walk the overflow chain, blitting `remaining` more payload bytes into `out`
+-- starting at `writeOff`.  Each page contributes at most `overflowCapacity
+-- usable` bytes after its 4-byte next-page pointer; a next-page of 0 must
+-- coincide with remaining == 0.
+gatherChain : Array Int -> Int -> Int -> Int -> Array Int -> Int -> Int -> Result String Unit
+gatherChain bytes pageSize usable page out writeOff remaining
+  | remaining <= 0 = Ok ()
   | page < 1 = Err "overflow chain ended early: \{intToString remaining} payload bytes unaccounted for"
   | otherwise =
     let base = (page - 1) * pageSize
@@ -235,13 +238,15 @@ followChain bytes pageSize usable page remaining acc
     do
       _ <- requireBytes bytes (base + 4 + chunkLen) "overflow page \{intToString page}"
       next <- beU32 bytes base
-      followChain
+      let _ = blit bytes (base + 4) out writeOff chunkLen
+      gatherChain
         bytes
         pageSize
         usable
         next
+        out
+        (writeOff + chunkLen)
         (remaining - chunkLen)
-        (slice (base + 4) (base + 4 + chunkLen) bytes :: acc)
 
 -- Fail (rather than silently truncate, which is what `array.slice` would do)
 -- if the file image is too short to contain the bytes we are about to read.

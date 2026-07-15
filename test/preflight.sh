@@ -579,27 +579,43 @@ fi
 #
 # Two things this block must get right, both learned the hard way:
 #
-# 1. The TOTAL must be derived from the same universe `run_gates.sh` uses for
-#    its bare-invocation default (`test/diff_compiler_*.sh`), not a hardcoded
-#    literal. The gate count has drifted across docs (72/82/83/84 — see
-#    AGENTS.md) and WILL drift again; a baked-in number is guaranteed to go
-#    stale, and when it does the arithmetic below UNDERFLOWS to a negative
-#    "the other -N of 82 gates" the moment ran_count exceeds it (reproduced:
-#    a `diff_compiler_*` wildcard match currently pulls in all 83 gates,
-#    against a hardcoded 82 → "the other -1 of 82 gates").
+# 1. The TOTAL must be derived from the SAME universe `$gates` is actually drawn
+#    from — not a narrower glob that happens to be convenient. `$gates` is
+#    populated from three sources: the static change→gate pattern table
+#    (`diff_compiler_*`, `sqlite/test/*oracle`, `native_fixtures/run`,
+#    `build_cmd`, …), the "you edited a gate script" self-run arm, and
+#    `_gates_for_fixture_dir`'s corpus-consumer scan — and that last one can name
+#    ANY gate in the repo, not just a `diff_compiler_*` one (`bootstrap_*`,
+#    `selfcompile_*`, the 22 `sqlite/test/*oracle` gates, `wasm/*`,
+#    `cross_project_*`, …). A total that counts only `test/diff_compiler_*.sh`
+#    undercounts that universe, and the moment enough non-`diff_compiler_*`
+#    gates get pulled in, `ran_count` exceeds it (issue #113: 118 ran vs 87
+#    counted, on a change whose fixture dir had non-`diff_compiler_*` consumers).
+#    `_gate_candidates()` (defined above, ~line 144) is already the
+#    authoritative "what is a gate" universe — it is the SAME function
+#    `_gates_for_fixture_dir` walks to find corpus consumers, and every pattern
+#    the static table adds names a gate that is a member of it (verified: none
+#    of `diff_compiler_*`, `sqlite/test/*oracle`, `native_fixtures/run`, or
+#    `build_cmd` appear in test/CI-COVERAGE-TOOLS.txt, the exclude-list
+#    `_gate_candidates()` subtracts). So it is the correct denominator: every
+#    gate `$gates` can ever contain is, by construction, counted here too — no
+#    more baked-in literal to drift (72/82/83/84/87 — see AGENTS.md).
 # 2. `diff_compiler_engines` is called out here as a standing skip, but a
 #    wildcard `add 'diff_compiler_*'` (support/corpus changes) pulls it INTO
 #    $gates and it runs above like everything else — printing it here
 #    unconditionally then contradicts its own PASS/FAIL line a few lines up.
 #    Check whether it actually ran before naming it a skip.
-total_gates=$(ls "$ROOT"/test/diff_compiler_*.sh 2>/dev/null | wc -l | tr -d ' ')
+total_gates=$(_gate_candidates | wc -l | tr -d ' ')
 ran_count=$(printf '%s\n' $gates | grep -vc '^$')
 remaining=$(( total_gates - ran_count ))
 if [ "$remaining" -lt 0 ]; then
-  # Every gate $gates can contain comes from matching test/diff_compiler_*.sh
-  # (the same glob total_gates counts), so ran_count > total_gates should be
-  # impossible. Surface it loudly rather than silently clamping and hiding a
-  # real bookkeeping bug.
+  # $gates only ever gains a member by resolving a pattern to a real .sh file
+  # (~line 480), and every pattern this script emits — the static table, the
+  # gate-self-run arm, and _gates_for_fixture_dir's corpus-consumer scan — names
+  # a file drawn from the same _gate_candidates() universe total_gates counts,
+  # so ran_count > total_gates should be impossible. Surface it loudly rather
+  # than silently clamping and hiding a real bookkeeping bug (this guard is
+  # what caught #113 in the first place — keep it as a backstop).
   echo "preflight: INTERNAL INCONSISTENCY — ran_count ($ran_count) exceeds total_gates ($total_gates); the skip-count math below is WRONG. Report this, don't trust the number."
   remaining=0
 fi

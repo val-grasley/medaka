@@ -18,7 +18,8 @@
 > Snapshot **re-derived 2026-07-14 on `e34e2b46` by running the script: 7 open, 4 fixed.**
 > (Was "10 open, 1 fixed". **B2, B3 and B4 had all been fixed and nobody had noticed** — including
 > BOTH of the "silent build miscompile" P0s that `PLAN.md` was still advertising as open. This is the
-> reason the header above exists. The still-open rows are **B1w, B5, B6, B7, B8, B10, MUT**.)
+> reason the header above exists. The still-open rows are **B1w, B5, B6, B7, B8, B10**. The two
+**MUT** workaround rows were reverted 2026-07-15 (#140 btree gather, #141 recordenc encoder).)
 >
 > **The backlog now lives in GitHub Issues** (`gh issue list --label "S0: silent wrongness"`), because
 > an issue self-drains and a markdown row does not. This file stays as the *repro corpus* and the
@@ -57,8 +58,8 @@ no longer exists, which is how workarounds quietly become permanent architecture
 | **B1w** | `sqlite/lib/sqlparse.mdk` (×2) | ⚠️ **STILL NEEDED — for WasmGC only.** `main`'s `ced6342d` fixed this in the LLVM emitter; the **WasmGC emitter still fails to emit** a partially-applied constructor. Revert the eta-expansions only when B1 is fixed in **both** backends. |
 | **B2** | `sqlite/lib/aggregate.mdk` | ⭐ **B2 IS NOW CLOSED — this revert is OWED.** `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. |
 | **B5** | `sqlite/lib/select.mdk`, `sqlite/lib/recordfmt.mdk` | `Eq` is hand-written for `Literal` and `Cell` because `deriving (Eq)` over their `Array` field can't be built. Replace with `deriving (Eq)` — and drop the `-- lint-disable-next-line rule-hand-rolled-derivable` that silences the linter's (currently wrong) advice. |
-| **MUT** | `sqlite/lib/btree.mdk` | The overflow gather uses pure `slice`+`concat` instead of `arrayMake`+`blit`, costing **O(chunks × bytes)** instead of O(bytes). ✅ **UNBLOCKED — `<Mut>` removed 2026-07-14** (labels are host capabilities now; no purity contagion). The mutable gather no longer needs a `mut` block (that block was rejected) — restore `arrayMake`+`blit` directly. |
-| **MUT** | `sqlite/lib/recordenc.mdk` | `beSintBytes` duplicated stdlib `bytebuilder.emitBeSint` purely to keep `<Mut>` out of `encodeRecord`'s signature. ✅ **RESOLVED — `<Mut>` removed 2026-07-14**; the signature concern is gone. Delete `beSintBytes` and call `bytebuilder`. |
+| ~~**MUT**~~ | `sqlite/lib/btree.mdk` | ✅ **REVERTED (#140).** The overflow gather now allocates the payload buffer once (`array.make`) and blits each region into place (`array.blit`) — O(bytes), one copy per payload byte. The pure `slice`+`concat` O(chunks × bytes) dodge is gone; no `<Mut>` (removed 2026-07-14) and no `--allow-internal` (uses the safe `array` wrappers, not the raw externs). |
+| ~~**MUT**~~ | `sqlite/lib/recordenc.mdk` | ✅ **REVERTED (#141).** `beSintBytes` now delegates to stdlib `bytebuilder.emitBeSint` (`newBuilder`/`emitBeSint`/`buildArray`); the hand-rolled two's-complement duplicate and its `beUnsignedNBytes`/`beUnsignedNGo` helpers are deleted. `<Mut>` removal (2026-07-14) mooted the signature concern. |
 
 ## The theme worth reading first
 
@@ -312,7 +313,8 @@ a **pure-typed function observably returned two different answers across a mutat
 tracked as an effect. The `mut` masking block proposed in `MUT-SCOPING-DESIGN.md` was **rejected** in
 favor of removal. The reproductions `repro_mut_closure_launder.mdk` and `repro_mut_not_purity.mdk`
 were **deleted** (their bug class no longer exists), and issue **#61 was closed as mooted**. The two
-**MUT** workaround rows above are now unblocked reverts, not open blockers.
+**MUT** workaround rows above were **reverted 2026-07-15** (#140 restored the O(bytes) blit gather in
+`btree.mdk`; #141 deleted the duplicate encoder in `recordenc.mdk`).
 
 ---
 
