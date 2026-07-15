@@ -1,0 +1,20 @@
+# META
+source_lines=14
+stages=EVAL
+# SOURCE
+data Box a = Box a deriving (Debug)
+impl Mappable Box where
+  map f (Box x) = Box (f x)
+impl Applicative Box where
+  pure x = Box x
+  ap (Box f) (Box x) = Box (f x)
+impl Thenable Box where
+  andThen (Box x) k = k x
+addBoxes : Box Int -> Box Int -> Box Int
+addBoxes a b = do
+  x <- a
+  y <- b
+  pure (x + y)
+main = println (debug (addBoxes (Box 3) (Box 4)))
+# EVAL
+Box 7

@@ -1,0 +1,19 @@
+# META
+source_lines=13
+stages=EVAL
+# SOURCE
+-- INFERRED constraint PROPAGATING through a call chain — neither function is
+-- signatured.  `doubleEmpty` picks up an inferred Monoid constraint from its
+-- in-body `empty`; `quad` uses no method directly but CALLS `doubleEmpty` at its
+-- own tyvar, so it inherits the same constraint.  The propagation needs a second
+-- discovery pass: pass 1 promotes `doubleEmpty` (now marked EDictAt); pass 2 sees
+-- `quad`'s call to it as a constrained-fn application and promotes `quad` too.
+-- `quad` must then forward its OWN dict into the `doubleEmpty` calls (RDict),
+-- while `main`'s call to `quad` supplies the concrete String dict (RKey).
+doubleEmpty x = append (append x empty) empty
+
+quad x = doubleEmpty (doubleEmpty x)
+
+main = putStrLn (quad "Q")
+# EVAL
+Q

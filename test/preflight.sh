@@ -311,9 +311,11 @@ for f in $changed; do
       add 'diff_compiler_diagnostics'; add 'diff_compiler_eval_typed*' ;;
 
     # ── eval: also the in-language suite and the capability matrix ──
+    # diff_compiler_snapshot* covers diff_compiler_snapshot_eval, whose `# EVAL`
+    # section is produced by the eval pipeline — an eval.mdk change moves it.
     compiler/eval/*|compiler/ir/core_ir_eval.mdk)
-      add 'diff_compiler_eval*'; add 'diff_compiler_core_ir*'; add 'diff_compiler_ported'
-      add 'diff_compiler_test'; add 'diff_compiler_capability_matrix' ;;
+      add 'diff_compiler_eval*'; add 'diff_compiler_snapshot*'; add 'diff_compiler_core_ir*'
+      add 'diff_compiler_ported'; add 'diff_compiler_test'; add 'diff_compiler_capability_matrix' ;;
 
     compiler/ir/*)
       add 'diff_compiler_core_ir*'; add 'diff_compiler_llvm*' ;;

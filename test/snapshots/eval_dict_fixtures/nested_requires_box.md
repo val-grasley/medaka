@@ -1,0 +1,30 @@
+# META
+source_lines=24
+stages=EVAL
+# SOURCE
+-- Cause B (audit L2 / H-b2) regression: a nested-`requires` impl whose body
+-- dispatches a method on the element type.  `impl Eq (Box a) requires Eq a`
+-- threads the element `Eq` dict ($dict_eq_0) into the impl body's inner `eq xs ys`
+-- (on `List a`).  The self-hosted dict elaboration (routeOfMono / implDictRoutesFor
+-- now carry the nested requires route via implRequiresRoutesRec; collectDictSites
+-- scans the EMethodAt impl-/method-route lists so the param is prepended) must
+-- match the reference, which dict-passes the whole program.
+interface Eq2 a where
+  eq2 : a -> a -> Bool
+
+impl Eq2 Int where
+  eq2 x y = x == y
+
+impl Eq2 (List a) requires Eq2 a where
+  eq2 [] [] = True
+  eq2 (x :: xs) (y :: ys) = if eq2 x y then eq2 xs ys else False
+  eq2 _ _ = False
+
+data Box a = Box (List a)
+
+impl Eq2 (Box a) requires Eq2 a where
+  eq2 (Box xs) (Box ys) = eq2 xs ys
+
+main = println (debug (eq2 (Box [1, 2]) (Box [1, 2])))
+# EVAL
+True

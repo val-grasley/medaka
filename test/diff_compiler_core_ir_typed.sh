@@ -1,13 +1,13 @@
 #!/bin/sh
-# TYPED Core IR equivalence gate (STAGE2-DESIGN §2.1) — the Core-IR analog of
-# diff_compiler_eval_typed.sh.  Drives the Core-IR evaluator's CMethod arm:
+# TYPED Core IR equivalence gate (STAGE2-DESIGN §2.1) — the Core-IR analog of the
+# self-hosted typed tree-walker.  Drives the Core-IR evaluator's CMethod arm:
 # return-position dispatch (RKey).  These programs use a USER monad (Box) whose
 # `pure` / do-blocks dispatch by the RETURN type, which the untyped arg-tag fallback
 # gets wrong.
 #
 # Reference: the committed test/eval_typed_fixtures/<name>.eval.golden (captured
 # from the reference TYPED path `main.exe run <file>`, the SAME oracle
-# diff_compiler_eval_typed.sh uses).
+# diff_compiler_eval_typed_batch.sh and the snapshot # EVAL section use).
 #
 # OCaml-free (REROOT-PLAN.md Phase 2): the self-hosted typed Core-IR eval runs as
 # the pre-compiled native binary test/bin/core_ir_typed_main (build_oracles.sh).
