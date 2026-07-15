@@ -1,6 +1,6 @@
 # META
 source_lines=17
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- Phase 146 gap 2: user-declared effect labels.  `effect KV`/`effect Log`
 -- register labels usable in rows; a <KV> body subsumes under a <KV, Log> bound.
@@ -19,6 +19,70 @@ handler k = get k
 
 main : <IO> Unit
 main = println "effect labels ok"
+# TOKENS
+NEWLINE
+EFFECT
+UPPER "KV"
+NEWLINE
+EFFECT
+UPPER "Log"
+NEWLINE
+EXTERN
+IDENT "kvGet"
+COLON
+UPPER "String"
+ARROW
+LT
+UPPER "KV"
+GT
+UPPER "String"
+NEWLINE
+IDENT "get"
+COLON
+UPPER "String"
+ARROW
+LT
+UPPER "KV"
+GT
+UPPER "String"
+NEWLINE
+IDENT "get"
+IDENT "k"
+EQUAL
+IDENT "kvGet"
+IDENT "k"
+NEWLINE
+IDENT "handler"
+COLON
+UPPER "String"
+ARROW
+LT
+UPPER "KV"
+COMMA
+UPPER "Log"
+GT
+UPPER "String"
+NEWLINE
+IDENT "handler"
+IDENT "k"
+EQUAL
+IDENT "get"
+IDENT "k"
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+IDENT "println"
+STRING "effect labels ok"
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DEffect false "KV" None)
 (DEffect false "Log" None)

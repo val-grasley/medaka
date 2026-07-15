@@ -1,6 +1,6 @@
 # META
 source_lines=20
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 data Inv = { shared : Int }
 
@@ -22,6 +22,118 @@ main =
   println (invShared i)
   println (watShared w)
   println (charAt "abc")
+# TOKENS
+DATA
+UPPER "Inv"
+EQUAL
+LBRACE
+IDENT "shared"
+COLON
+UPPER "Int"
+RBRACE
+NEWLINE
+DATA
+UPPER "Wat"
+EQUAL
+LBRACE
+IDENT "shared"
+COLON
+UPPER "String"
+RBRACE
+NEWLINE
+IDENT "invShared"
+COLON
+UPPER "Inv"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "invShared"
+IDENT "a"
+EQUAL
+IDENT "a"
+DOT
+IDENT "shared"
+NEWLINE
+IDENT "watShared"
+COLON
+UPPER "Wat"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "watShared"
+IDENT "b"
+EQUAL
+IDENT "b"
+DOT
+IDENT "shared"
+NEWLINE
+IDENT "charAt"
+COLON
+UPPER "String"
+ARROW
+UPPER "Char"
+NEWLINE
+IDENT "charAt"
+IDENT "s"
+EQUAL
+IDENT "s"
+DOT
+LBRACKET
+INT 0
+RBRACKET
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+LET
+IDENT "i"
+EQUAL
+UPPER "Inv"
+LBRACE
+IDENT "shared"
+EQUAL
+INT 7
+RBRACE
+NEWLINE
+LET
+IDENT "w"
+EQUAL
+UPPER "Wat"
+LBRACE
+IDENT "shared"
+EQUAL
+STRING "hi"
+RBRACE
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "invShared"
+IDENT "i"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "watShared"
+IDENT "w"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "charAt"
+STRING "abc"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DData Private "Inv" () ((variant "Inv" (ConNamed (field "shared" (TyCon "Int"))))) ())
 (DData Private "Wat" () ((variant "Wat" (ConNamed (field "shared" (TyCon "String"))))) ())

@@ -1,6 +1,6 @@
 # META
 source_lines=15
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 pair a b = (a, b)
 
@@ -17,6 +17,97 @@ main =
   let r = applyBoth double inc 5
   println (fst r)
   println (snd r)
+# TOKENS
+IDENT "pair"
+IDENT "a"
+IDENT "b"
+EQUAL
+LPAREN
+IDENT "a"
+COMMA
+IDENT "b"
+RPAREN
+NEWLINE
+IDENT "applyBoth"
+IDENT "f"
+IDENT "g"
+IDENT "x"
+EQUAL
+LPAREN
+IDENT "f"
+IDENT "x"
+COMMA
+IDENT "g"
+IDENT "x"
+RPAREN
+NEWLINE
+IDENT "double"
+IDENT "x"
+EQUAL
+IDENT "x"
+STAR
+INT 2
+NEWLINE
+IDENT "inc"
+IDENT "x"
+EQUAL
+IDENT "x"
+PLUS
+INT 1
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+LET
+IDENT "t"
+EQUAL
+IDENT "pair"
+INT 1
+STRING "one"
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "fst"
+IDENT "t"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "snd"
+IDENT "t"
+RPAREN
+NEWLINE
+LET
+IDENT "r"
+EQUAL
+IDENT "applyBoth"
+IDENT "double"
+IDENT "inc"
+INT 5
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "fst"
+IDENT "r"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "snd"
+IDENT "r"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DFunDef false "pair" ((PVar "a") (PVar "b")) (ETuple (EVar "a") (EVar "b")))
 (DFunDef false "applyBoth" ((PVar "f") (PVar "g") (PVar "x")) (ETuple (EApp (EVar "f") (EVar "x")) (EApp (EVar "g") (EVar "x"))))

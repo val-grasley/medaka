@@ -20,9 +20,9 @@
 # that trailing "()" from the native output (strip_unit) before the diff — the
 # golden is the raw reference token stream.
 #
-# This gate is now nearly redundant with diff_compiler_lexer.sh (native lex stage
-# == golden over the same diff_fixtures corpus, via the TOKENS golden section);
-# kept distinct per REROOT-PLAN §2e (could fold later).
+# This gate is now nearly redundant with the # TOKENS section of
+# diff_compiler_snapshot_frontend.sh (native lex stage == snapshot over the same
+# diff_fixtures corpus); kept distinct per REROOT-PLAN §2e (could fold later).
 #
 # Usage:  sh test/bootstrap_lex.sh
 # Exit:   0 if every fixture's native token stream matches the golden;

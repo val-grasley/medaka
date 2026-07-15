@@ -1,6 +1,6 @@
 # META
 source_lines=13
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 data Point = { x : Int, y : Int }
 
@@ -15,6 +15,105 @@ main =
   let q = moveRight p
   println q.x
   println (distSq q)
+# TOKENS
+DATA
+UPPER "Point"
+EQUAL
+LBRACE
+IDENT "x"
+COLON
+UPPER "Int"
+COMMA
+IDENT "y"
+COLON
+UPPER "Int"
+RBRACE
+NEWLINE
+IDENT "distSq"
+IDENT "p"
+EQUAL
+IDENT "p"
+DOT
+IDENT "x"
+STAR
+IDENT "p"
+DOT
+IDENT "x"
+PLUS
+IDENT "p"
+DOT
+IDENT "y"
+STAR
+IDENT "p"
+DOT
+IDENT "y"
+NEWLINE
+IDENT "moveRight"
+IDENT "p"
+EQUAL
+LBRACE
+IDENT "p"
+PIPE
+IDENT "x"
+EQUAL
+IDENT "p"
+DOT
+IDENT "x"
+PLUS
+INT 1
+RBRACE
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+LET
+IDENT "p"
+EQUAL
+UPPER "Point"
+LBRACE
+IDENT "x"
+EQUAL
+INT 3
+COMMA
+IDENT "y"
+EQUAL
+INT 4
+RBRACE
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "distSq"
+IDENT "p"
+RPAREN
+NEWLINE
+LET
+IDENT "q"
+EQUAL
+IDENT "moveRight"
+IDENT "p"
+NEWLINE
+IDENT "println"
+IDENT "q"
+DOT
+IDENT "x"
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "distSq"
+IDENT "q"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DData Private "Point" () ((variant "Point" (ConNamed (field "x" (TyCon "Int")) (field "y" (TyCon "Int"))))) ())
 (DFunDef false "distSq" ((PVar "p")) (EBinOp "+" (EBinOp "*" (EFieldAccess (EVar "p") "x") (EFieldAccess (EVar "p") "x")) (EBinOp "*" (EFieldAccess (EVar "p") "y") (EFieldAccess (EVar "p") "y"))))

@@ -1,6 +1,6 @@
 # META
 source_lines=8
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 data Color = Red | Green | Blue
 
@@ -10,6 +10,48 @@ colorName c = match c
   Green => "green"
 
 main = println (colorName Red)
+# TOKENS
+DATA
+UPPER "Color"
+EQUAL
+UPPER "Red"
+PIPE
+UPPER "Green"
+PIPE
+UPPER "Blue"
+NEWLINE
+IDENT "colorName"
+COLON
+UPPER "Color"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "colorName"
+IDENT "c"
+EQUAL
+MATCH
+IDENT "c"
+INDENT
+UPPER "Red"
+FAT_ARROW
+STRING "red"
+NEWLINE
+UPPER "Green"
+FAT_ARROW
+STRING "green"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "main"
+EQUAL
+IDENT "println"
+LPAREN
+IDENT "colorName"
+UPPER "Red"
+RPAREN
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DData Private "Color" () ((variant "Red" (ConPos)) (variant "Green" (ConPos)) (variant "Blue" (ConPos))) ())
 (DTypeSig false "colorName" (TyFun (TyCon "Color") (TyCon "String")))

@@ -88,7 +88,10 @@ fi
 #                           driver/main_autoprint's value-main wrap, so eval honours the
 #                           same auto-print contract `medaka build` and wasm_emit do)
 #   ── Phase 2 §2b front-end gates, goldens captured from dev probes ──
-#   lex_main              — diff_compiler_lexer.sh / diff_compiler_lex_files.sh
+#   lex_main              — diff_compiler_lex_files.sh / bootstrap_lex.sh / selfcompile_lex.sh
+#                           (diff_compiler_lexer.sh MIGRATED to the # TOKENS section of
+#                           test/diff_compiler_snapshot_frontend.sh, #81 R4; lex_main
+#                           survives because those three still drive it)
 #   parse_main            — diff_compiler_parse_errors.sh
 #   parse_result_main     — diff_compiler_parse_result.sh
 #   (parse/desugar/mark:  MIGRATED to test/diff_compiler_snapshot_frontend.sh — the

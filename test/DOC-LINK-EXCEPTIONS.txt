@@ -168,3 +168,4 @@ REF	test/diff_compiler_eval_bytecode.sh	TODO(docs-cleanup): gate for the retired
 REF	test/diff_compiler_eval_bytecode_modules.sh	TODO(docs-cleanup): gate for the retired bytecode pipeline stage; no successor script exists
 REF	compiler/entries/argstamp_parity_probe.mdk	deleted with #157 (single-mode elaboration) — the Phase-0 temp parity probe entry; ARGSTAMP-UNIFY-PLAN.md retains historical citations of it
 REF	test/argstamp_parity_probe.sh	deleted with #157 (single-mode elaboration) — the Phase-0 temp parity probe harness; ARGSTAMP-UNIFY-PLAN.md retains historical citations of it
+REF	test/diff_compiler_lexer.sh	migrated into the snapshot # TOKENS section in #280; archive/design/BROWSER-STACK-DIAGNOSIS.md records the gate as it existed when the layout stack was diagnosed — legitimate history

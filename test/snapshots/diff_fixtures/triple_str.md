@@ -1,6 +1,6 @@
 # META
 source_lines=22
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- Triple-quoted strings: `"""…"""` keeps single/double quotes literal and
 -- dedents (strip_indent) when the content opens with a raw newline; `\{…}`
@@ -24,6 +24,49 @@ main =
   println inline
   println block
   println (interp "Medaka")
+# TOKENS
+NEWLINE
+IDENT "inline"
+EQUAL
+STRING "one \"quoted\" line"
+NEWLINE
+IDENT "block"
+EQUAL
+STRING "first\n  indented\nlast\n"
+NEWLINE
+IDENT "interp"
+IDENT "name"
+EQUAL
+INTERP_OPEN "\n  Hello, "
+IDENT "name"
+INTERP_END "!\n  Bye.\n  "
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+IDENT "println"
+IDENT "inline"
+NEWLINE
+IDENT "println"
+IDENT "block"
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "interp"
+STRING "Medaka"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DFunDef false "inline" () (ELit (LString "one \"quoted\" line")))
 (DFunDef false "block" () (ELit (LString "first\n  indented\nlast\n")))

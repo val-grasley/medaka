@@ -1,6 +1,6 @@
 # META
 source_lines=11
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- T2: inline `let … in` recursive function binding.  The RHS references `go`
 -- itself, so the typechecker must pre-bind `go` (placeholder) before inferring
@@ -13,6 +13,64 @@ main : <IO> Unit
 main =
   println (countdown 5)
   println (countdown 0)
+# TOKENS
+NEWLINE
+IDENT "countdown"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "countdown"
+IDENT "start"
+EQUAL
+LET
+IDENT "go"
+IDENT "n"
+EQUAL
+IF
+IDENT "n"
+EQ_EQ
+INT 0
+THEN
+INT 0
+ELSE
+IDENT "go"
+LPAREN
+IDENT "n"
+MINUS
+INT 1
+RPAREN
+IN
+IDENT "go"
+IDENT "start"
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+IDENT "println"
+LPAREN
+IDENT "countdown"
+INT 5
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "countdown"
+INT 0
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DTypeSig false "countdown" (TyFun (TyCon "Int") (TyCon "Int")))
 (DFunDef false "countdown" ((PVar "start")) (ELet false (PVar "go") (ELam ((PVar "n")) (EIf (EBinOp "==" (EVar "n") (ELit (LInt 0))) (ELit (LInt 0)) (EApp (EVar "go") (EBinOp "-" (EVar "n") (ELit (LInt 1)))))) (EApp (EVar "go") (EVar "start"))))

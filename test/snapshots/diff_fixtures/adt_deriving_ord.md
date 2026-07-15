@@ -1,6 +1,6 @@
 # META
 source_lines=12
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 data Color = Red | Green | Blue deriving (Eq, Ord)
 
@@ -14,6 +14,114 @@ main =
   println (compare (A 5) (B 1))
   println (compare (A 1) (A 2))
   println (compare (A 2) (A 1))
+# TOKENS
+DATA
+UPPER "Color"
+EQUAL
+UPPER "Red"
+PIPE
+UPPER "Green"
+PIPE
+UPPER "Blue"
+DERIVING
+LPAREN
+UPPER "Eq"
+COMMA
+UPPER "Ord"
+RPAREN
+NEWLINE
+DATA
+UPPER "T"
+EQUAL
+UPPER "A"
+UPPER "Int"
+PIPE
+UPPER "B"
+UPPER "Int"
+PIPE
+UPPER "C"
+UPPER "Int"
+DERIVING
+LPAREN
+UPPER "Eq"
+COMMA
+UPPER "Ord"
+RPAREN
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+IDENT "println"
+LPAREN
+IDENT "compare"
+UPPER "Red"
+UPPER "Blue"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "compare"
+UPPER "Blue"
+UPPER "Red"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "compare"
+UPPER "Green"
+UPPER "Green"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "compare"
+LPAREN
+UPPER "A"
+INT 5
+RPAREN
+LPAREN
+UPPER "B"
+INT 1
+RPAREN
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "compare"
+LPAREN
+UPPER "A"
+INT 1
+RPAREN
+LPAREN
+UPPER "A"
+INT 2
+RPAREN
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "compare"
+LPAREN
+UPPER "A"
+INT 2
+RPAREN
+LPAREN
+UPPER "A"
+INT 1
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DData Private "Color" () ((variant "Red" (ConPos)) (variant "Green" (ConPos)) (variant "Blue" (ConPos))) ())
 (DImpl true "Eq" ((TyCon "Color")) () ((im "eq" ((PVar "__x") (PVar "__y")) (EMatch (ETuple (EVar "__x") (EVar "__y")) (arm (PTuple (PCon "Red") (PCon "Red")) () (EVar "True")) (arm (PTuple (PCon "Green") (PCon "Green")) () (EVar "True")) (arm (PTuple (PCon "Blue") (PCon "Blue")) () (EVar "True")) (arm (PTuple PWild PWild) () (EVar "False"))))))

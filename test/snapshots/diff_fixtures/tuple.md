@@ -1,6 +1,6 @@
 # META
 source_lines=12
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 swap (a, b) = (b, a)
 
@@ -14,6 +14,84 @@ main =
   println (addPair t)
   let u = swap t
   println (fst u)
+# TOKENS
+IDENT "swap"
+LPAREN
+IDENT "a"
+COMMA
+IDENT "b"
+RPAREN
+EQUAL
+LPAREN
+IDENT "b"
+COMMA
+IDENT "a"
+RPAREN
+NEWLINE
+IDENT "addPair"
+LPAREN
+IDENT "a"
+COMMA
+IDENT "b"
+RPAREN
+EQUAL
+IDENT "a"
+PLUS
+IDENT "b"
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+LET
+IDENT "t"
+EQUAL
+LPAREN
+INT 3
+COMMA
+INT 7
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "fst"
+IDENT "t"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "snd"
+IDENT "t"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "addPair"
+IDENT "t"
+RPAREN
+NEWLINE
+LET
+IDENT "u"
+EQUAL
+IDENT "swap"
+IDENT "t"
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "fst"
+IDENT "u"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DFunDef false "swap" ((PTuple (PVar "a") (PVar "b"))) (ETuple (EVar "b") (EVar "a")))
 (DFunDef false "addPair" ((PTuple (PVar "a") (PVar "b"))) (EBinOp "+" (EVar "a") (EVar "b")))

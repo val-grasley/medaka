@@ -1,6 +1,6 @@
 # META
 source_lines=11
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- PLAN.md #11 soundness (e7031e6 mirror): a polymorphic-`Num` accumulator literal.
 -- `total : Num a => List a -> a` folds `(+)` from the literal `0`, which stays a
@@ -13,6 +13,52 @@ main : <IO> Unit
 main =
   println (total [1.0, 2.0])
   println (total [1, 2])
+# TOKENS
+NEWLINE
+IDENT "total"
+IDENT "xs"
+EQUAL
+IDENT "fold"
+LPAREN
+PLUS
+RPAREN
+INT 0
+IDENT "xs"
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+IDENT "println"
+LPAREN
+IDENT "total"
+LBRACKET
+FLOAT 1.0
+COMMA
+FLOAT 2.0
+RBRACKET
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "total"
+LBRACKET
+INT 1
+COMMA
+INT 2
+RBRACKET
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DFunDef false "total" ((PVar "xs")) (EApp (EApp (EApp (EVar "fold") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "+" (EVar "_a") (EVar "_b")))) (ELit (LInt 0))) (EVar "xs")))
 (DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))

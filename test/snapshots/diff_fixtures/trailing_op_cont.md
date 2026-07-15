@@ -1,6 +1,6 @@
 # META
 source_lines=49
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 addN : Int -> Int -> Int
 addN x y = x + y
@@ -51,6 +51,223 @@ composeL : Int -> Int
 composeL x = (addN 1 << addN 2) x
 
 main = println (arith 3 4)
+# TOKENS
+IDENT "addN"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "addN"
+IDENT "x"
+IDENT "y"
+EQUAL
+IDENT "x"
+PLUS
+IDENT "y"
+NEWLINE
+IDENT "arith"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "arith"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "a"
+PLUS
+IDENT "b"
+STAR
+INT 2
+NEWLINE
+IDENT "sub"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "sub"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "a"
+MINUS
+IDENT "b"
+NEWLINE
+IDENT "divmod"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "divmod"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "a"
+SLASH
+IDENT "b"
+MOD
+INT 3
+NEWLINE
+IDENT "cmp"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "cmp"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "a"
+EQ_EQ
+IDENT "b"
+NEWLINE
+IDENT "cmp2"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "cmp2"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "a"
+LT
+IDENT "b"
+NEWLINE
+IDENT "logic"
+COLON
+UPPER "Bool"
+ARROW
+UPPER "Bool"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "logic"
+IDENT "p"
+IDENT "q"
+EQUAL
+IDENT "p"
+AND
+IDENT "q"
+OR
+UPPER "False"
+NEWLINE
+IDENT "listcat"
+COLON
+UPPER "List"
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Int"
+NEWLINE
+IDENT "listcat"
+IDENT "xs"
+IDENT "ys"
+EQUAL
+IDENT "xs"
+PLUSPLUS
+IDENT "ys"
+NEWLINE
+IDENT "cons"
+COLON
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Int"
+NEWLINE
+IDENT "cons"
+IDENT "h"
+IDENT "t"
+EQUAL
+IDENT "h"
+CONS
+IDENT "t"
+NEWLINE
+IDENT "pipeline"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "pipeline"
+IDENT "x"
+EQUAL
+IDENT "x"
+PIPE_RIGHT
+IDENT "addN"
+INT 1
+NEWLINE
+IDENT "composeR"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "composeR"
+IDENT "x"
+EQUAL
+LPAREN
+IDENT "addN"
+INT 1
+RCOMPOSE
+IDENT "addN"
+INT 2
+RPAREN
+IDENT "x"
+NEWLINE
+IDENT "composeL"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "composeL"
+IDENT "x"
+EQUAL
+LPAREN
+IDENT "addN"
+INT 1
+LCOMPOSE
+IDENT "addN"
+INT 2
+RPAREN
+IDENT "x"
+NEWLINE
+IDENT "main"
+EQUAL
+IDENT "println"
+LPAREN
+IDENT "arith"
+INT 3
+INT 4
+RPAREN
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DTypeSig false "addN" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
 (DFunDef false "addN" ((PVar "x") (PVar "y")) (EBinOp "+" (EVar "x") (EVar "y")))

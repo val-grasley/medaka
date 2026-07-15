@@ -1,6 +1,6 @@
 # META
 source_lines=44
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- Capability-effects v2 Stage 2a: PARAMETERIZED effect surface syntax.
 -- This fixture is the CLI-level guard that the unit-test bypass (raw
@@ -46,6 +46,217 @@ seqIO (Suspend t) k = Suspend (u => seqIO (t u) k)
 
 main : <IO> Unit
 main = runAsync (seqIO yld (_ => liftIO (u => println "effect param ok")))
+# TOKENS
+NEWLINE
+EFFECT
+UPPER "Net"
+UPPER "Prefix"
+NEWLINE
+EFFECT
+UPPER "Stdout"
+NEWLINE
+EXTERN
+IDENT "netGet"
+COLON
+UPPER "String"
+ARROW
+LT
+UPPER "Net"
+STRING "a.com/foo"
+GT
+UPPER "String"
+NEWLINE
+IDENT "fetch"
+COLON
+UPPER "String"
+ARROW
+LT
+UPPER "Net"
+STRING "a.com/foo"
+GT
+UPPER "String"
+NEWLINE
+IDENT "fetch"
+IDENT "path"
+EQUAL
+IDENT "netGet"
+IDENT "path"
+NEWLINE
+DATA
+UPPER "Async"
+IDENT "e"
+IDENT "a"
+EQUAL
+UPPER "Done"
+IDENT "a"
+PIPE
+UPPER "Suspend"
+LPAREN
+UPPER "Unit"
+ARROW
+LT
+IDENT "e"
+GT
+UPPER "Async"
+IDENT "e"
+IDENT "a"
+RPAREN
+NEWLINE
+IDENT "runAsync"
+COLON
+UPPER "Async"
+IDENT "e"
+IDENT "a"
+ARROW
+LT
+IDENT "e"
+GT
+IDENT "a"
+NEWLINE
+IDENT "runAsync"
+IDENT "m"
+EQUAL
+MATCH
+IDENT "m"
+INDENT
+UPPER "Done"
+IDENT "a"
+FAT_ARROW
+IDENT "a"
+NEWLINE
+UPPER "Suspend"
+IDENT "t"
+FAT_ARROW
+IDENT "runAsync"
+LPAREN
+IDENT "t"
+LPAREN
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "liftIO"
+COLON
+LPAREN
+UPPER "Unit"
+ARROW
+LT
+IDENT "e"
+GT
+IDENT "a"
+RPAREN
+ARROW
+UPPER "Async"
+IDENT "e"
+IDENT "a"
+NEWLINE
+IDENT "liftIO"
+IDENT "act"
+EQUAL
+UPPER "Suspend"
+LPAREN
+IDENT "u"
+FAT_ARROW
+UPPER "Done"
+LPAREN
+IDENT "act"
+IDENT "u"
+RPAREN
+RPAREN
+NEWLINE
+IDENT "yld"
+COLON
+UPPER "Async"
+IDENT "e"
+UPPER "Unit"
+NEWLINE
+IDENT "yld"
+EQUAL
+UPPER "Suspend"
+LPAREN
+UNDERSCORE
+FAT_ARROW
+UPPER "Done"
+LPAREN
+RPAREN
+RPAREN
+NEWLINE
+IDENT "seqIO"
+COLON
+UPPER "Async"
+IDENT "e"
+IDENT "a"
+ARROW
+LPAREN
+IDENT "a"
+ARROW
+UPPER "Async"
+IDENT "e"
+IDENT "b"
+RPAREN
+ARROW
+UPPER "Async"
+IDENT "e"
+IDENT "b"
+NEWLINE
+IDENT "seqIO"
+LPAREN
+UPPER "Done"
+IDENT "a"
+RPAREN
+IDENT "k"
+EQUAL
+IDENT "k"
+IDENT "a"
+NEWLINE
+IDENT "seqIO"
+LPAREN
+UPPER "Suspend"
+IDENT "t"
+RPAREN
+IDENT "k"
+EQUAL
+UPPER "Suspend"
+LPAREN
+IDENT "u"
+FAT_ARROW
+IDENT "seqIO"
+LPAREN
+IDENT "t"
+IDENT "u"
+RPAREN
+IDENT "k"
+RPAREN
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+IDENT "runAsync"
+LPAREN
+IDENT "seqIO"
+IDENT "yld"
+LPAREN
+UNDERSCORE
+FAT_ARROW
+IDENT "liftIO"
+LPAREN
+IDENT "u"
+FAT_ARROW
+IDENT "println"
+STRING "effect param ok"
+RPAREN
+RPAREN
+RPAREN
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DEffect false "Net" (Some "Prefix"))
 (DEffect false "Stdout" None)

@@ -1,6 +1,6 @@
 # META
 source_lines=24
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- Capability-effects v2 Stage 2b: INFERRED-HOLE surface form + known-prefix
 -- abstract analysis α.  Companion to effect_param.mdk (Stage 2a's concrete
@@ -26,6 +26,53 @@ fetch _ = netGet "a.com/foo"
 
 main : <IO> Unit
 main = println "effect hole ok"
+# TOKENS
+NEWLINE
+EFFECT
+UPPER "Net"
+UPPER "Prefix"
+NEWLINE
+EXTERN
+IDENT "netGet"
+COLON
+UPPER "String"
+ARROW
+LT
+UPPER "Net"
+UNDERSCORE
+GT
+UPPER "String"
+NEWLINE
+IDENT "fetch"
+COLON
+UPPER "Unit"
+ARROW
+LT
+UPPER "Net"
+STRING "a.com/*"
+GT
+UPPER "String"
+NEWLINE
+IDENT "fetch"
+UNDERSCORE
+EQUAL
+IDENT "netGet"
+STRING "a.com/foo"
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+IDENT "println"
+STRING "effect hole ok"
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DEffect false "Net" (Some "Prefix"))
 (DExtern false "netGet" (TyFun (TyCon "String") (TyEffect ((hole "Net")) None (TyCon "String"))))

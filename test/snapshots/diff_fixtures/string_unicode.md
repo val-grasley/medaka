@@ -1,6 +1,6 @@
 # META
 source_lines=11
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- `\u{…}` unicode escapes inside string literals (Stage 1 lexer hardening).
 -- ASCII-range codepoints only, so the `%S`/`debugStringLit` debug rendering of
@@ -13,6 +13,33 @@ shout : String
 shout = "\{greeting}\u{21}"
 
 main = println shout
+# TOKENS
+NEWLINE
+IDENT "greeting"
+COLON
+UPPER "String"
+NEWLINE
+IDENT "greeting"
+EQUAL
+STRING "Hi"
+NEWLINE
+IDENT "shout"
+COLON
+UPPER "String"
+NEWLINE
+IDENT "shout"
+EQUAL
+INTERP_OPEN ""
+IDENT "greeting"
+INTERP_END "!"
+NEWLINE
+IDENT "main"
+EQUAL
+IDENT "println"
+IDENT "shout"
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DTypeSig false "greeting" (TyCon "String"))
 (DFunDef false "greeting" () (ELit (LString "Hi")))

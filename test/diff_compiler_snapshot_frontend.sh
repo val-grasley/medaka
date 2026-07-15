@@ -33,7 +33,13 @@
 #                                              constructs the parser accepts but the
 #                                              downstream stages do not handle yet)
 #   stdlib               desugar,mark         (no .parse.golden ever existed for these)
-#   diff_fixtures        desugar,mark
+#   diff_fixtures        tokens,desugar,mark  (TOKENS absorbs diff_compiler_lexer.sh — the
+#                                              # TOKENS render is byte-identical to the
+#                                              lex_main probe, proven 57/57 over this
+#                                              corpus; #81 R4.  It pins the native token
+#                                              stream MORE tightly than the old gate,
+#                                              which norm'd FLOAT away to bridge a stale
+#                                              OCaml golden — the snapshot keeps FLOAT 1.0.)
 #   compiler             desugar,mark         — the compiler's own 50 sources
 #
 # Nothing is added and nothing is dropped.  Snapshotting the compiler's sources with the
@@ -150,7 +156,7 @@ run_family() {
 run_family parse_fixtures      parse,desugar,mark "$ROOT"/test/parse_fixtures/*.mdk
 run_family parse_only_fixtures parse              "$ROOT"/test/parse_only_fixtures/*.mdk
 run_family stdlib              desugar,mark       "$ROOT"/stdlib/*.mdk
-run_family diff_fixtures       desugar,mark       "$ROOT"/test/diff_fixtures/*.mdk
+run_family diff_fixtures       tokens,desugar,mark "$ROOT"/test/diff_fixtures/*.mdk
 run_family compiler            desugar,mark \
   "$ROOT"/compiler/frontend/*.mdk "$ROOT"/compiler/types/*.mdk \
   "$ROOT"/compiler/ir/*.mdk "$ROOT"/compiler/backend/*.mdk \

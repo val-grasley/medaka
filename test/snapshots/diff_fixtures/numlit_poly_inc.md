@@ -1,6 +1,6 @@
 # META
 source_lines=11
-stages=DESUGAR,MARK
+stages=TOKENS,DESUGAR,MARK
 # SOURCE
 -- PLAN.md #11 soundness (e7031e6 mirror): a polymorphic-`Num` integer literal in a
 -- generic function body must route through `fromInt` at runtime, not stamp a static
@@ -13,6 +13,41 @@ main : <IO> Unit
 main =
   println (inc 2.5)
   println (inc 5)
+# TOKENS
+NEWLINE
+IDENT "inc"
+IDENT "x"
+EQUAL
+IDENT "x"
+PLUS
+INT 1
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+IDENT "println"
+LPAREN
+IDENT "inc"
+FLOAT 2.5
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "inc"
+INT 5
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 # DESUGAR
 (DFunDef false "inc" ((PVar "x")) (EBinOp "+" (EVar "x") (ELit (LInt 1))))
 (DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
