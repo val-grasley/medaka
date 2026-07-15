@@ -39,10 +39,10 @@ documents, in gate-verified steps.
 | Orchestration bodies | `checkProgramSeededSplit` ∥ `checkModuleFullImpl` (#80) |
 | Final-check tails ×5 | `checkToLines` / `checkToLinesWithRuntime` / `checkErrorsWithRuntime` / `checkProgramDiags` / `checkModuleFullDiags` (#152) |
 | Module fold loops ×4 | `checkModulesGo` / `checkModulesDiagsGo` / `checkModulesEntryFullGo` / `elabModulesGo` (#151) |
-| Impl resolution ×6 | `resolveSite`, `resolveBinopSite`/`resolveUnopSite`, `routeOfMono`/`routeOfMonoTop`/`routeOfMonoEncl`, `findImplEntry`, arg-position mirrors (#156) |
+| Impl resolution ×6 | `resolveSite`, `resolveOpSite` (the #145-unified binop/unop resolver), `routeOfMono`/`routeOfMonoTop`/`routeOfMonoEncl`, `findImplEntry`, arg-position mirrors (#156) |
 | Structural matchers ×4 | `cohOverlap`'s unifier, `cohSubsumes`, `tySubsumes`, `matchTyMono` (#156 stage 1) |
 | Operator seams ×4 | `recordNumObligation`/`recordEqObligation`/`recordOrdObligation`/`recordSemigroupObligation` + guards + predicates (#146) |
-| Binop/unop twins ×4 pairs | `resolveBinopSites`/`resolveUnopSites` etc. (#145) |
+| Binop/unop twins ×4 pairs | ✅ LANDED (#145): collapsed into one `isBinop`-flagged set — `resolveOpSites`/`resolveOpSite`/`opDictVarOf`/`stampOpRoute` |
 
 ---
 
