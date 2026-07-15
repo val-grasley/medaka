@@ -1,0 +1,10 @@
+# explicitsig
+
+## `indexed`
+
+```
+indexed : List a -> List (Int, a)
+```
+
+Maps with an index.
+

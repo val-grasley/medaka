@@ -1,0 +1,26 @@
+# prelude_collision
+
+## `greet`
+
+```
+greet : String -> String
+```
+
+| A greeting function (non-colliding name).
+
+## `add`
+
+```
+add : Int -> Int -> Int
+```
+
+| Add two numbers — name collides with the Num interface method `add`.
+
+## `map`
+
+```
+map : (a -> b) -> List a -> List b
+```
+
+| Map a function over a list — name collides with Foldable/Mappable `map`.
+

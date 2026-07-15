@@ -1,0 +1,26 @@
+# impl
+
+## `Box`
+
+```
+interface Box a
+  unbox : a -> Int
+```
+
+A container interface.
+
+## `Box (Pair a)`
+
+```
+impl Box (Pair a) requires Box a
+```
+
+Boxing for pairs requires Box on the element.
+
+## `Pair`
+
+```
+data Pair a
+  = Pair a a
+```
+
