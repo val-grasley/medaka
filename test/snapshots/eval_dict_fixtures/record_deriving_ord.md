@@ -1,0 +1,22 @@
+# META
+source_lines=12
+stages=EVAL
+# SOURCE
+data Point = { x : Int, y : Int } deriving (Eq, Ord)
+
+main : <IO> Unit
+main =
+  let p1 = Point { x = 1, y = 2 }
+  let p2 = Point { x = 1, y = 9 }
+  let p3 = Point { x = 2, y = 0 }
+  println (p1 < p2)
+  println (p2 < p1)
+  println (compare p1 p3)
+  println (compare p2 p2)
+  println (p1 == p1)
+# EVAL
+True
+False
+Lt
+Eq
+True

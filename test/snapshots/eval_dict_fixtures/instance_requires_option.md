@@ -1,0 +1,21 @@
+# META
+source_lines=15
+stages=EVAL
+# SOURCE
+-- Instance-`requires` over a non-list parametric impl: `impl Default (Option a)
+-- requires Default a` resolves `def : Option Int` to `Some 0`.  The impl body
+-- `def = Some def` wraps the inner return-position `def`, which reads the element
+-- `Default Int` dict threaded in as `$dict_def_0` — same single-level mechanism as
+-- the List case, different head tycon.
+interface Default a where
+  def : a
+
+impl Default Int where
+  def = 0
+
+impl Default (Option a) requires Default a where
+  def = Some def
+
+main = println (def : Option Int)
+# EVAL
+Some 0

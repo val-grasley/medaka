@@ -1,0 +1,18 @@
+# META
+source_lines=12
+stages=EVAL
+# SOURCE
+-- A SELF-RECURSIVE `Monoid a =>` function: the base case returns the
+-- return-position method `empty` (no discriminating argument → needs the dict),
+-- and the recursive call `repeatAppend (n - 1) x` must FORWARD the very Monoid
+-- dictionary `repeatAppend` itself received — not rebuild one (the type is still
+-- the constraint variable `a`, with no concrete head to key an RKey off).  The
+-- callee's own constraints aren't registered until its group finishes inferring,
+-- so the call site is deferred and routed to `$dict_repeatAppend_0` (RDict).
+-- Called at two concrete types to confirm the forwarding isn't type-pinned.
+repeatAppend : Monoid a => Int -> a -> a
+repeatAppend n x = if n <= 0 then empty else append x (repeatAppend (n - 1) x)
+
+main = putStrLn (repeatAppend 3 "ab" ++ " / " ++ debug (repeatAppend 2 (append [1] [2])))
+# EVAL
+ababab / [1, 2, 1, 2]
