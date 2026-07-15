@@ -4955,23 +4955,27 @@ emitLeafExternRef prog env d "randomChar" [u] = emitRefExpr prog env d u
   ++ ["drop", "call $mdk_random_char", "ref.i31"]
 emitLeafExternRef prog env d "randomChar" _ =
   gapL "wasm W8: randomChar takes exactly one (Unit) argument"
+-- #199: the seed is a general Int; unbox the full width through $mdk_unbox_int (→ i64)
+-- so `setSeed 4503599627370497` no longer traps the i31 cast.
 emitLeafExternRef prog env d "setSeed" [n] = emitRefExpr prog env d n
-  ++ [
-    "ref.cast (ref i31)",
-    "i31.get_s",
-    "i64.extend_i32_s",
-    "global.set $mdk_rng_state",
-    "i32.const 0",
-    "ref.i31",
-  ]
+  ++ ["call $mdk_unbox_int", "global.set $mdk_rng_state", "i32.const 0", "ref.i31"]
 emitLeafExternRef prog env d "setSeed" _ =
   gapL "wasm W8: setSeed takes exactly one argument"
+-- #199: hashInt unboxes the FULL-WIDTH Int (via $mdk_unbox_int → i64) so an Int key
+-- outside ±2^30 (e.g. a HashMap Int) hashes correctly instead of trapping the i31 cast;
+-- $mdk_hash_int now takes i64.  hashChar's codepoint fits i32 → sign-extend to i64.
 emitLeafExternRef prog env d "hashInt" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_hash_int", "ref.i31"]
+  ++ ["call $mdk_unbox_int", "call $mdk_hash_int", "ref.i31"]
 emitLeafExternRef prog env d "hashInt" _ =
   gapL "wasm W8: hashInt takes exactly one argument"
 emitLeafExternRef prog env d "hashChar" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_hash_int", "ref.i31"]
+  ++ [
+    "ref.cast (ref i31)",
+    "i31.get_u",
+    "i64.extend_i32_s",
+    "call $mdk_hash_int",
+    "ref.i31",
+  ]
 emitLeafExternRef prog env d "hashChar" _ =
   gapL "wasm W8: hashChar takes exactly one argument"
 emitLeafExternRef prog env d "hashBool" [a] = emitRefExpr prog env d a
@@ -5023,15 +5027,16 @@ emitLeafExternRef prog env d "charToLower" [a] = emitRefExpr prog env d a
   ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_char_to_lower", "ref.i31"]
 emitLeafExternRef prog env d "charToLower" _ =
   gapL "wasm W11b: charToLower takes exactly one argument"
--- W8b Float leaf externs.  intToFloat : i31 Int → $mdk_int_to_float → boxed $float.
--- floatToInt : $float → $mdk_float_to_int → i31 Int.  hashFloat : $float → masked i32 →
--- i31.  randomFloat : Unit arg dropped → $mdk_random_float → boxed $float.
+-- W8b Float leaf externs.  #199: intToFloat unboxes its Int arg through the $mdk_unbox_int
+-- (→ i64) seam, and floatToInt reboxes its i64 truncation via $mdk_box_int — the SAME seam
+-- randomInt/bitAnd use — so full-width Ints outside ±2^30 no longer trap the i31 cast.
+-- hashFloat : $float → masked i32 → i31.  randomFloat : Unit arg dropped → $mdk_random_float.
 emitLeafExternRef prog env d "intToFloat" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_int_to_float"]
+  ++ ["call $mdk_unbox_int", "call $mdk_int_to_float"]
 emitLeafExternRef prog env d "intToFloat" _ =
   gapL "wasm W8b: intToFloat takes exactly one argument"
 emitLeafExternRef prog env d "floatToInt" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref $float)", "call $mdk_float_to_int", "ref.i31"]
+  ++ ["ref.cast (ref $float)", "call $mdk_float_to_int", "call $mdk_box_int"]
 emitLeafExternRef prog env d "floatToInt" _ =
   gapL "wasm W8b: floatToInt takes exactly one argument"
 emitLeafExternRef prog env d "hashFloat" [a] = emitRefExpr prog env d a

@@ -1,5 +1,5 @@
 # META
-source_lines=8080
+source_lines=8085
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -4959,23 +4959,27 @@ emitLeafExternRef prog env d "randomChar" [u] = emitRefExpr prog env d u
   ++ ["drop", "call $mdk_random_char", "ref.i31"]
 emitLeafExternRef prog env d "randomChar" _ =
   gapL "wasm W8: randomChar takes exactly one (Unit) argument"
+-- #199: the seed is a general Int; unbox the full width through $mdk_unbox_int (→ i64)
+-- so `setSeed 4503599627370497` no longer traps the i31 cast.
 emitLeafExternRef prog env d "setSeed" [n] = emitRefExpr prog env d n
-  ++ [
-    "ref.cast (ref i31)",
-    "i31.get_s",
-    "i64.extend_i32_s",
-    "global.set $mdk_rng_state",
-    "i32.const 0",
-    "ref.i31",
-  ]
+  ++ ["call $mdk_unbox_int", "global.set $mdk_rng_state", "i32.const 0", "ref.i31"]
 emitLeafExternRef prog env d "setSeed" _ =
   gapL "wasm W8: setSeed takes exactly one argument"
+-- #199: hashInt unboxes the FULL-WIDTH Int (via $mdk_unbox_int → i64) so an Int key
+-- outside ±2^30 (e.g. a HashMap Int) hashes correctly instead of trapping the i31 cast;
+-- $mdk_hash_int now takes i64.  hashChar's codepoint fits i32 → sign-extend to i64.
 emitLeafExternRef prog env d "hashInt" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_hash_int", "ref.i31"]
+  ++ ["call $mdk_unbox_int", "call $mdk_hash_int", "ref.i31"]
 emitLeafExternRef prog env d "hashInt" _ =
   gapL "wasm W8: hashInt takes exactly one argument"
 emitLeafExternRef prog env d "hashChar" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_hash_int", "ref.i31"]
+  ++ [
+    "ref.cast (ref i31)",
+    "i31.get_u",
+    "i64.extend_i32_s",
+    "call $mdk_hash_int",
+    "ref.i31",
+  ]
 emitLeafExternRef prog env d "hashChar" _ =
   gapL "wasm W8: hashChar takes exactly one argument"
 emitLeafExternRef prog env d "hashBool" [a] = emitRefExpr prog env d a
@@ -5027,15 +5031,16 @@ emitLeafExternRef prog env d "charToLower" [a] = emitRefExpr prog env d a
   ++ ["ref.cast (ref i31)", "i31.get_u", "call $mdk_char_to_lower", "ref.i31"]
 emitLeafExternRef prog env d "charToLower" _ =
   gapL "wasm W11b: charToLower takes exactly one argument"
--- W8b Float leaf externs.  intToFloat : i31 Int → $mdk_int_to_float → boxed $float.
--- floatToInt : $float → $mdk_float_to_int → i31 Int.  hashFloat : $float → masked i32 →
--- i31.  randomFloat : Unit arg dropped → $mdk_random_float → boxed $float.
+-- W8b Float leaf externs.  #199: intToFloat unboxes its Int arg through the $mdk_unbox_int
+-- (→ i64) seam, and floatToInt reboxes its i64 truncation via $mdk_box_int — the SAME seam
+-- randomInt/bitAnd use — so full-width Ints outside ±2^30 no longer trap the i31 cast.
+-- hashFloat : $float → masked i32 → i31.  randomFloat : Unit arg dropped → $mdk_random_float.
 emitLeafExternRef prog env d "intToFloat" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref i31)", "i31.get_s", "call $mdk_int_to_float"]
+  ++ ["call $mdk_unbox_int", "call $mdk_int_to_float"]
 emitLeafExternRef prog env d "intToFloat" _ =
   gapL "wasm W8b: intToFloat takes exactly one argument"
 emitLeafExternRef prog env d "floatToInt" [a] = emitRefExpr prog env d a
-  ++ ["ref.cast (ref $float)", "call $mdk_float_to_int", "ref.i31"]
+  ++ ["ref.cast (ref $float)", "call $mdk_float_to_int", "call $mdk_box_int"]
 emitLeafExternRef prog env d "floatToInt" _ =
   gapL "wasm W8b: floatToInt takes exactly one argument"
 emitLeafExternRef prog env d "hashFloat" [a] = emitRefExpr prog env d a
@@ -9307,11 +9312,11 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "randomBool")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: randomBool takes exactly one (Unit) argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "randomChar")) (PList (PVar "u"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "u")) (EListLit (ELit (LString "drop")) (ELit (LString "call $mdk_random_char")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "randomChar")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: randomChar takes exactly one (Unit) argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "setSeed")) (PList (PVar "n"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "n")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (ELit (LString "i64.extend_i32_s")) (ELit (LString "global.set $mdk_rng_state")) (ELit (LString "i32.const 0")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "setSeed")) (PList (PVar "n"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "n")) (EListLit (ELit (LString "call $mdk_unbox_int")) (ELit (LString "global.set $mdk_rng_state")) (ELit (LString "i32.const 0")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "setSeed")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: setSeed takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "call $mdk_unbox_int")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashInt")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: hashInt takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashChar")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashChar")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i64.extend_i32_s")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashChar")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: hashChar takes exactly one argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashBool")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "call $mdk_hash_bool")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashBool")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: hashBool takes exactly one argument"))))
@@ -9331,9 +9336,9 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "charToUpper")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W11b: charToUpper takes exactly one argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "charToLower")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "call $mdk_char_to_lower")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "charToLower")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W11b: charToLower takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "intToFloat")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (ELit (LString "call $mdk_int_to_float")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "intToFloat")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "call $mdk_unbox_int")) (ELit (LString "call $mdk_int_to_float")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "intToFloat")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8b: intToFloat takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "floatToInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "call $mdk_float_to_int")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "floatToInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "call $mdk_float_to_int")) (ELit (LString "call $mdk_box_int")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "floatToInt")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8b: floatToInt takes exactly one argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashFloat")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "call $mdk_hash_float")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashFloat")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8b: hashFloat takes exactly one argument"))))
@@ -11358,11 +11363,11 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "randomBool")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: randomBool takes exactly one (Unit) argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "randomChar")) (PList (PVar "u"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "u")) (EListLit (ELit (LString "drop")) (ELit (LString "call $mdk_random_char")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "randomChar")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: randomChar takes exactly one (Unit) argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "setSeed")) (PList (PVar "n"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "n")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (ELit (LString "i64.extend_i32_s")) (ELit (LString "global.set $mdk_rng_state")) (ELit (LString "i32.const 0")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "setSeed")) (PList (PVar "n"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "n")) (EListLit (ELit (LString "call $mdk_unbox_int")) (ELit (LString "global.set $mdk_rng_state")) (ELit (LString "i32.const 0")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "setSeed")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: setSeed takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "call $mdk_unbox_int")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashInt")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: hashInt takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashChar")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashChar")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i64.extend_i32_s")) (ELit (LString "call $mdk_hash_int")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashChar")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: hashChar takes exactly one argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashBool")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "call $mdk_hash_bool")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashBool")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8: hashBool takes exactly one argument"))))
@@ -11382,9 +11387,9 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "charToUpper")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W11b: charToUpper takes exactly one argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "charToLower")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "call $mdk_char_to_lower")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "charToLower")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W11b: charToLower takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "intToFloat")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_s")) (ELit (LString "call $mdk_int_to_float")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "intToFloat")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "call $mdk_unbox_int")) (ELit (LString "call $mdk_int_to_float")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "intToFloat")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8b: intToFloat takes exactly one argument"))))
-(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "floatToInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "call $mdk_float_to_int")) (ELit (LString "ref.i31")))))
+(DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "floatToInt")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "call $mdk_float_to_int")) (ELit (LString "call $mdk_box_int")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "floatToInt")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8b: floatToInt takes exactly one argument"))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashFloat")) (PList (PVar "a"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "a")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "call $mdk_hash_float")) (ELit (LString "ref.i31")))))
 (DFunDef false "emitLeafExternRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "hashFloat")) PWild) (EApp (EVar "gapL") (ELit (LString "wasm W8b: hashFloat takes exactly one argument"))))

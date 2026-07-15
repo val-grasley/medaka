@@ -1,0 +1,3 @@
+-- #199: floatToInt whose truncation exceeds 2^30 must rebox via i64 (not i32/ref.i31).
+-- 1000000 * 1000000 = 1e12 float -> 1000000000000 Int.
+main = floatToInt (intToFloat 1000000 * intToFloat 1000000)
