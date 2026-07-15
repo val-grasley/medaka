@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"x = 1\nmain = println x\n"}],"isError":false}}
+{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"clean\":false}"}],"isError":false}}
+{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"clean\":true}"}],"isError":false}}
+{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"medaka_fmt: source does not parse (line 1, col 0): expected atom"}],"isError":true}}
+{"jsonrpc":"2.0","id":6,"result":{}}

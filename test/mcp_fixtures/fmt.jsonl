@@ -1,0 +1,7 @@
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+{"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "medaka_fmt", "arguments": {"source": "x=1\nmain=println x\n"}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_fmt", "arguments": {"source": "x=1\nmain=println x\n", "check": true}}}
+{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "medaka_fmt", "arguments": {"source": "x = 1\nmain = println x\n", "check": true}}}
+{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "medaka_fmt", "arguments": {"source": "x = ("}}}
+{"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": {}}
