@@ -63,11 +63,12 @@ argDispatchOfMethod : List String -> IfaceMethod -> List (String, Int)
 argImplDictRoutesFor : Map String (List ImplEntry) -> String -> String -> Mono -> List Route
 argImplDictRoutesForEncl : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Route
 argImplDictRoutesForGo : Map String (List ImplEntry) -> List ImplEntry -> String -> String -> String -> Mono -> List Route
-argImplReqRoutes : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Require -> List Route
+argImplReqRoutes : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Require -> Int -> List Route
 argImplRequiresRoutesRec : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Route
+argImplRequiresRoutesRecD : Map String (List ImplEntry) -> String -> String -> String -> Mono -> Int -> List Route
 argLitFits : Expr -> Mono -> Bool
 argMentions : List String -> Ty -> Bool
-argReqRoute : Map String (List ImplEntry) -> String -> String -> List (String, Mono) -> List Ty -> Route
+argReqRoute : Map String (List ImplEntry) -> String -> String -> List (String, Mono) -> List Ty -> Int -> Route
 argStampMono : (String, Ref Route, Ref (List Route), Mono, String) -> Mono
 armDictSites : Arm -> List (Ref (List Route))
 armEVars : Arm -> List String
@@ -528,8 +529,8 @@ implDefinesMethodAt : Map String (List ImplEntry) -> String -> String -> Bool
 implDefinesMethodAtGo : List ImplEntry -> String -> String -> Bool
 implDictNames : String -> Int -> List String
 implDictPassMethods : Int -> List ImplMethod -> List ImplMethod
-implDictRoutesForFull : Map String (List ImplEntry) -> String -> String -> Mono -> List Mono -> List Route
-implDictRoutesIn : Map String (List ImplEntry) -> List ImplEntry -> String -> String -> Mono -> List Mono -> List Route
+implDictRoutesForFull : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Mono -> List Route
+implDictRoutesIn : Map String (List ImplEntry) -> List ImplEntry -> String -> String -> String -> Mono -> List Mono -> List Route
 implEntryFromTys : String -> List Ty -> List Require -> List ImplMethod -> List ImplEntry
 implEntryOf : Decl -> List ImplEntry
 implExistsForHead : Map String (List KeyEntry) -> String -> String -> Bool
@@ -549,10 +550,6 @@ implMatchesReceiver : List (String, List Ty) -> String -> Mono -> Bool
 implMatchesSuper : String -> List Ty -> Decl -> Bool
 implMethodName : ImplMethod -> String
 implMethodNameTc : ImplMethod -> String
-implReqRoutes : Map String (List ImplEntry) -> List (String, Mono) -> List Require -> List Route
-implReqRoutesD : Map String (List ImplEntry) -> List (String, Mono) -> List Require -> Int -> List Route
-implRequiresRoutesRec : Map String (List ImplEntry) -> String -> String -> Mono -> List Route
-implRequiresRoutesRecD : Map String (List ImplEntry) -> String -> String -> Mono -> Int -> List Route
 implTysIfMatch : String -> String -> Decl -> List (List Ty)
 importDefinersOf : List Decl -> List (String, String)
 importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, Scheme)
@@ -1035,8 +1032,6 @@ reportAmbiguousImpl : String -> Route
 reportNumOrNoImpl : String -> List Mono -> Option Loc -> Unit
 reportUncovered : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, Int) -> Unit
 reqObligationsFor : List (String, List Ty, List Require) -> String -> List Mono -> List (String, List Mono)
-reqRoute : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Ty -> Route
-reqRouteD : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Ty -> Int -> Route
 reqToObligation : List (String, Mono) -> Require -> (String, List Mono)
 reqTyToMono : List (String, Mono) -> Ty -> Mono
 requiredMethodNames : List IfaceMethod -> List String
@@ -1082,6 +1077,7 @@ rootIdOf : Mono -> Int
 rootVarId : Mono -> Int
 routeLocalSym : Route -> String
 routeOf : Map String (List ImplEntry) -> String -> String -> Undetermined -> Mono -> Route
+routeOfD : Map String (List ImplEntry) -> String -> String -> Undetermined -> Mono -> Int -> Route
 routeRDictName : Route -> List String
 routeUndeterminedTop : List Decl -> Map String (List ImplEntry) -> String -> Route
 routesOfMonos : Map String (List ImplEntry) -> List Mono -> List Route
