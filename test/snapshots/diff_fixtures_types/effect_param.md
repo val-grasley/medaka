@@ -47,6 +47,7 @@ seqIO (Suspend t) k = Suspend (u => seqIO (t u) k)
 main : <IO> Unit
 main = runAsync (seqIO yld (_ => liftIO (u => println "effect param ok")))
 # TYPES_USER
+netGet : String -> <Net "a.com/foo"> String
 fetch : String -> <Net "a.com/foo"> String
 runAsync : Async a b -> b
 liftIO : (Unit -> a) -> Async b a

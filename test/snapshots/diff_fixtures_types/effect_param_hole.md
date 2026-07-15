@@ -27,5 +27,6 @@ fetch _ = netGet "a.com/foo"
 main : <IO> Unit
 main = println "effect hole ok"
 # TYPES_USER
+netGet : String -> <Net> String
 fetch : Unit -> <Net "a.com/*"> String
 main : Unit

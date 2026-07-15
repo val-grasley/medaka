@@ -136,7 +136,7 @@
 -- render (a diagnostic that just *disappeared*) is equally unblessable.  That direction
 -- matters — it is the one where a stage silently stops reporting an error.
 
-import frontend.ast.{Decl}
+import frontend.ast.{Decl, DExtern}
 import frontend.lexer.{
   tokenize,
   tokenToString,
@@ -527,17 +527,21 @@ typesOf runtimeDecls d =
 -- WHY name-filter, not `full − prelude_baseline` (measured): a prelude function whose
 -- inferred scheme is context-sensitive (`abs : a -> a` under ambiguous-Num defaulting
 -- resolves differently per fixture) does NOT cancel against a fixed prelude baseline and
--- LEAKS in as a false user line.  Keying on the NAME is exact: keep a scheme line iff
--- its binding name is in `funNamesOf d` (the DESUGARED user decls, so deriving-generated
--- functions are covered).  User data CONSTRUCTORS never appear in the scheme dump (it is
--- top-level function bindings only), so `funNamesOf` alone is the complete user-name set.
--- A user binding that SHADOWS a prelude name is in `funNamesOf d`, so its (user) scheme
--- is kept.  See [[project_81_prelude_aware_types_design]] — the filter lives here because
+-- LEAKS in as a false user line.  Keying on the NAME is exact: keep a scheme line iff its
+-- binding name is a user binding — `funNamesOf d` (the DESUGARED user decls, so
+-- deriving-generated functions are covered) PLUS user `extern` names (`externNamesOf`): an
+-- extern is a top-level user binding that DOES appear in the scheme dump (`kvGet : String
+-- -> <KV> String`), so `funNamesOf` alone is NOT the complete user set.  User data
+-- CONSTRUCTORS, by contrast, never appear in the scheme dump (it is top-level value
+-- bindings — functions + externs — only).  A user binding that SHADOWS a prelude name is
+-- in the user set, so its (user) scheme is kept.  See
+-- [[project_81_prelude_aware_types_design]] — the filter lives here because
 -- compiler/types/typecheck.mdk is LOCKED by ws:typecheck.
 --
--- The ERROR/warning path is NOT filtered: on a type error `checkToLinesWithRuntime`
--- returns `TYPE ERROR:` lines instead of a scheme dump, and match warnings are appended
--- as `Warning:` prose — neither is a `name : scheme` line, and both must survive so the
+-- Diagnostic prose is NEVER filtered: on a type error `checkToLinesWithRuntime` returns
+-- `TYPE ERROR:` lines instead of a scheme dump (whole run bypasses the filter); and match
+-- warnings are appended to the scheme dump as `Warning:` prose, kept by `isDiagProse`
+-- regardless of any ` : ` a future message might contain.  Both must survive so the
 -- section still reports the diagnostic (and stays unblessable).
 typesUserOf : List Decl -> List Decl -> List Decl -> (String, Bool)
 typesUserOf runtimeDecls coreDecls d =
@@ -545,19 +549,35 @@ typesUserOf runtimeDecls coreDecls d =
   let _ = resetTypeErrorsSticky ()
   let full = checkToLinesWithRuntime runtimeDecls coreDecls d
   let diag = hadTypeErrors () || hadMatchWarnings ()
+  let userNames = funNamesOf d ++ externNamesOf d
   -- Filter the SUCCESS path (scheme dump) only; a diagnostic run has no schemes to trim.
   let text = if hadTypeErrors () then full
-             else blockOf (filterList (userSchemeLine (funNamesOf d)) (contentLines full))
+             else blockOf (filterList (userSchemeLine userNames) (contentLines full))
   (text, diag)
 
--- Keep a `# TYPES_USER` line iff it is NOT a scheme line (a `Warning:` / blank line has
--- no ` : ` separator ⇒ ≤1 split part ⇒ kept) OR its binding name is a user binding.
--- Type syntax uses `->`/`=>`, never ` : `, so the first ` : ` is always the name/scheme
--- boundary; a nested record ` : ` only adds parts AFTER the name, so `nm` stays correct.
+-- Top-level user `extern` names — DExtern is NOT collected by funNamesOf (funDefs only
+-- sees DFunDef/DLetGroup), yet an extern's declared signature IS in the scheme dump.
+externNamesOf : List Decl -> List String
+externNamesOf decls = flatMap externName decls
+
+externName : Decl -> List String
+externName (DExtern _ nm _) = [nm]
+externName _ = []
+
+-- Keep a `# TYPES_USER` line iff it is diagnostic prose (a `Warning:` / `TYPE ERROR:` line,
+-- kept verbatim), or NOT a scheme line (a blank line has no ` : ` ⇒ ≤1 split part ⇒ kept),
+-- or its binding name is a user binding.  Type syntax uses `->`/`=>`, never ` : `, so the
+-- first ` : ` is always the name/scheme boundary; a nested record ` : ` only adds parts
+-- AFTER the name, so `nm` stays correct.
 userSchemeLine : List String -> String -> Bool
-userSchemeLine userNames line = match split " : " line
-  nm::_::_ => anyList (== nm) userNames
-  _ => True
+userSchemeLine userNames line =
+  if isDiagProse line then True
+  else match split " : " line
+    nm::_::_ => anyList (== nm) userNames
+    _ => True
+
+isDiagProse : String -> Bool
+isDiagProse line = take 8 line == "Warning:" || take 11 line == "TYPE ERROR:"
 
 -- PRELUDE-FREE, exactly as entries/core_ir_dump_main.mdk (which is what the existing
 -- core_ir_sexp goldens are captured from): lower the USER program only.  Elaborating

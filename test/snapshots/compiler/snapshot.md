@@ -1,5 +1,5 @@
 # META
-source_lines=1281
+source_lines=1301
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/snapshot.mdk — `medaka snapshot`, the in-process snapshot runner
@@ -140,7 +140,7 @@ stages=DESUGAR,MARK
 -- render (a diagnostic that just *disappeared*) is equally unblessable.  That direction
 -- matters — it is the one where a stage silently stops reporting an error.
 
-import frontend.ast.{Decl}
+import frontend.ast.{Decl, DExtern}
 import frontend.lexer.{
   tokenize,
   tokenToString,
@@ -531,17 +531,21 @@ typesOf runtimeDecls d =
 -- WHY name-filter, not `full − prelude_baseline` (measured): a prelude function whose
 -- inferred scheme is context-sensitive (`abs : a -> a` under ambiguous-Num defaulting
 -- resolves differently per fixture) does NOT cancel against a fixed prelude baseline and
--- LEAKS in as a false user line.  Keying on the NAME is exact: keep a scheme line iff
--- its binding name is in `funNamesOf d` (the DESUGARED user decls, so deriving-generated
--- functions are covered).  User data CONSTRUCTORS never appear in the scheme dump (it is
--- top-level function bindings only), so `funNamesOf` alone is the complete user-name set.
--- A user binding that SHADOWS a prelude name is in `funNamesOf d`, so its (user) scheme
--- is kept.  See [[project_81_prelude_aware_types_design]] — the filter lives here because
+-- LEAKS in as a false user line.  Keying on the NAME is exact: keep a scheme line iff its
+-- binding name is a user binding — `funNamesOf d` (the DESUGARED user decls, so
+-- deriving-generated functions are covered) PLUS user `extern` names (`externNamesOf`): an
+-- extern is a top-level user binding that DOES appear in the scheme dump (`kvGet : String
+-- -> <KV> String`), so `funNamesOf` alone is NOT the complete user set.  User data
+-- CONSTRUCTORS, by contrast, never appear in the scheme dump (it is top-level value
+-- bindings — functions + externs — only).  A user binding that SHADOWS a prelude name is
+-- in the user set, so its (user) scheme is kept.  See
+-- [[project_81_prelude_aware_types_design]] — the filter lives here because
 -- compiler/types/typecheck.mdk is LOCKED by ws:typecheck.
 --
--- The ERROR/warning path is NOT filtered: on a type error `checkToLinesWithRuntime`
--- returns `TYPE ERROR:` lines instead of a scheme dump, and match warnings are appended
--- as `Warning:` prose — neither is a `name : scheme` line, and both must survive so the
+-- Diagnostic prose is NEVER filtered: on a type error `checkToLinesWithRuntime` returns
+-- `TYPE ERROR:` lines instead of a scheme dump (whole run bypasses the filter); and match
+-- warnings are appended to the scheme dump as `Warning:` prose, kept by `isDiagProse`
+-- regardless of any ` : ` a future message might contain.  Both must survive so the
 -- section still reports the diagnostic (and stays unblessable).
 typesUserOf : List Decl -> List Decl -> List Decl -> (String, Bool)
 typesUserOf runtimeDecls coreDecls d =
@@ -549,19 +553,35 @@ typesUserOf runtimeDecls coreDecls d =
   let _ = resetTypeErrorsSticky ()
   let full = checkToLinesWithRuntime runtimeDecls coreDecls d
   let diag = hadTypeErrors () || hadMatchWarnings ()
+  let userNames = funNamesOf d ++ externNamesOf d
   -- Filter the SUCCESS path (scheme dump) only; a diagnostic run has no schemes to trim.
   let text = if hadTypeErrors () then full
-             else blockOf (filterList (userSchemeLine (funNamesOf d)) (contentLines full))
+             else blockOf (filterList (userSchemeLine userNames) (contentLines full))
   (text, diag)
 
--- Keep a `# TYPES_USER` line iff it is NOT a scheme line (a `Warning:` / blank line has
--- no ` : ` separator ⇒ ≤1 split part ⇒ kept) OR its binding name is a user binding.
--- Type syntax uses `->`/`=>`, never ` : `, so the first ` : ` is always the name/scheme
--- boundary; a nested record ` : ` only adds parts AFTER the name, so `nm` stays correct.
+-- Top-level user `extern` names — DExtern is NOT collected by funNamesOf (funDefs only
+-- sees DFunDef/DLetGroup), yet an extern's declared signature IS in the scheme dump.
+externNamesOf : List Decl -> List String
+externNamesOf decls = flatMap externName decls
+
+externName : Decl -> List String
+externName (DExtern _ nm _) = [nm]
+externName _ = []
+
+-- Keep a `# TYPES_USER` line iff it is diagnostic prose (a `Warning:` / `TYPE ERROR:` line,
+-- kept verbatim), or NOT a scheme line (a blank line has no ` : ` ⇒ ≤1 split part ⇒ kept),
+-- or its binding name is a user binding.  Type syntax uses `->`/`=>`, never ` : `, so the
+-- first ` : ` is always the name/scheme boundary; a nested record ` : ` only adds parts
+-- AFTER the name, so `nm` stays correct.
 userSchemeLine : List String -> String -> Bool
-userSchemeLine userNames line = match split " : " line
-  nm::_::_ => anyList (== nm) userNames
-  _ => True
+userSchemeLine userNames line =
+  if isDiagProse line then True
+  else match split " : " line
+    nm::_::_ => anyList (== nm) userNames
+    _ => True
+
+isDiagProse : String -> Bool
+isDiagProse line = take 8 line == "Warning:" || take 11 line == "TYPE ERROR:"
 
 -- PRELUDE-FREE, exactly as entries/core_ir_dump_main.mdk (which is what the existing
 -- core_ir_sexp goldens are captured from): lower the USER program only.  Elaborating
@@ -1284,7 +1304,7 @@ mapUnit f (x::rest) =
   let _ = f x
   mapUnit f rest
 # DESUGAR
-(DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "DExtern" false))))
 (DUse false (UseGroup ("frontend" "lexer") ((mem "tokenize" false) (mem "tokenToString" false) (mem "collectComments" false) (mem "Comment" false) (mem "commentLine" false) (mem "commentCol" false) (mem "commentText" false))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseResult" false) (mem "parseErrorLine" false) (mem "parseErrorCol" false) (mem "parseErrorMessage" false) (mem "parseWithPositions" false) (mem "Positions" false) (mem "DeclPos" false) (mem "positionsDecls" false) (mem "positionsVariantLines" false) (mem "positionsLastContentLine" false) (mem "declPosLine" false) (mem "declPosEndLine" false))))
 (DUse false (UseGroup ("tools" "printer") ((mem "programToString" false))))
@@ -1384,9 +1404,16 @@ mapUnit f (x::rest) =
 (DTypeSig false "typesOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "String") (TyCon "Bool")))))
 (DFunDef false "typesOf" ((PVar "runtimeDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "text") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EListLit)) (EVar "d"))) (DoExpr (ETuple (EVar "text") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))))))
 (DTypeSig false "typesUserOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "String") (TyCon "Bool"))))))
-(DFunDef false "typesUserOf" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "full") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "d"))) (DoLet false false (PVar "diag") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))) (DoLet false false (PVar "text") (EIf (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EVar "full") (EApp (EVar "blockOf") (EApp (EApp (EVar "filterList") (EApp (EVar "userSchemeLine") (EApp (EVar "funNamesOf") (EVar "d")))) (EApp (EVar "contentLines") (EVar "full")))))) (DoExpr (ETuple (EVar "text") (EVar "diag")))))
+(DFunDef false "typesUserOf" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "full") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "d"))) (DoLet false false (PVar "diag") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))) (DoLet false false (PVar "userNames") (EBinOp "++" (EApp (EVar "funNamesOf") (EVar "d")) (EApp (EVar "externNamesOf") (EVar "d")))) (DoLet false false (PVar "text") (EIf (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EVar "full") (EApp (EVar "blockOf") (EApp (EApp (EVar "filterList") (EApp (EVar "userSchemeLine") (EVar "userNames"))) (EApp (EVar "contentLines") (EVar "full")))))) (DoExpr (ETuple (EVar "text") (EVar "diag")))))
+(DTypeSig false "externNamesOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "externNamesOf" ((PVar "decls")) (EApp (EApp (EVar "flatMap") (EVar "externName")) (EVar "decls")))
+(DTypeSig false "externName" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "externName" ((PCon "DExtern" PWild (PVar "nm") PWild)) (EListLit (EVar "nm")))
+(DFunDef false "externName" (PWild) (EListLit))
 (DTypeSig false "userSchemeLine" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Bool"))))
-(DFunDef false "userSchemeLine" ((PVar "userNames") (PVar "line")) (EMatch (EApp (EApp (EVar "split") (ELit (LString " : "))) (EVar "line")) (arm (PCons (PVar "nm") (PCons PWild PWild)) () (EApp (EApp (EVar "anyList") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "nm")))) (EVar "userNames"))) (arm PWild () (EVar "True"))))
+(DFunDef false "userSchemeLine" ((PVar "userNames") (PVar "line")) (EIf (EApp (EVar "isDiagProse") (EVar "line")) (EVar "True") (EMatch (EApp (EApp (EVar "split") (ELit (LString " : "))) (EVar "line")) (arm (PCons (PVar "nm") (PCons PWild PWild)) () (EApp (EApp (EVar "anyList") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "nm")))) (EVar "userNames"))) (arm PWild () (EVar "True")))))
+(DTypeSig false "isDiagProse" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "isDiagProse" ((PVar "line")) (EBinOp "||" (EBinOp "==" (EApp (EApp (EVar "take") (ELit (LInt 8))) (EVar "line")) (ELit (LString "Warning:"))) (EBinOp "==" (EApp (EApp (EVar "take") (ELit (LInt 11))) (EVar "line")) (ELit (LString "TYPE ERROR:")))))
 (DTypeSig false "coreIrOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String")))
 (DFunDef false "coreIrOf" ((PVar "d")) (EApp (EVar "cprogramToSexp") (EApp (EVar "lowerProgram") (EApp (EVar "annotateProgram") (EVar "d")))))
 (DTypeSig false "evalOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String")))))
@@ -1589,7 +1616,7 @@ mapUnit f (x::rest) =
 (DFunDef false "mapUnit" (PWild (PList)) (ELit LUnit))
 (DFunDef false "mapUnit" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "f") (EVar "x"))) (DoExpr (EApp (EApp (EVar "mapUnit") (EVar "f")) (EVar "rest")))))
 # MARK
-(DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "DExtern" false))))
 (DUse false (UseGroup ("frontend" "lexer") ((mem "tokenize" false) (mem "tokenToString" false) (mem "collectComments" false) (mem "Comment" false) (mem "commentLine" false) (mem "commentCol" false) (mem "commentText" false))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseResult" false) (mem "parseErrorLine" false) (mem "parseErrorCol" false) (mem "parseErrorMessage" false) (mem "parseWithPositions" false) (mem "Positions" false) (mem "DeclPos" false) (mem "positionsDecls" false) (mem "positionsVariantLines" false) (mem "positionsLastContentLine" false) (mem "declPosLine" false) (mem "declPosEndLine" false))))
 (DUse false (UseGroup ("tools" "printer") ((mem "programToString" false))))
@@ -1689,9 +1716,16 @@ mapUnit f (x::rest) =
 (DTypeSig false "typesOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "String") (TyCon "Bool")))))
 (DFunDef false "typesOf" ((PVar "runtimeDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "text") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EListLit)) (EVar "d"))) (DoExpr (ETuple (EVar "text") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))))))
 (DTypeSig false "typesUserOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "String") (TyCon "Bool"))))))
-(DFunDef false "typesUserOf" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "full") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "d"))) (DoLet false false (PVar "diag") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))) (DoLet false false (PVar "text") (EIf (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EVar "full") (EApp (EVar "blockOf") (EApp (EApp (EVar "filterList") (EApp (EVar "userSchemeLine") (EApp (EVar "funNamesOf") (EVar "d")))) (EApp (EVar "contentLines") (EVar "full")))))) (DoExpr (ETuple (EVar "text") (EVar "diag")))))
+(DFunDef false "typesUserOf" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "d")) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "d"))) (DoLet false false PWild (EApp (EVar "resetTypeErrorsSticky") (ELit LUnit))) (DoLet false false (PVar "full") (EApp (EApp (EApp (EVar "checkToLinesWithRuntime") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "d"))) (DoLet false false (PVar "diag") (EBinOp "||" (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EApp (EVar "hadMatchWarnings") (ELit LUnit)))) (DoLet false false (PVar "userNames") (EBinOp "++" (EApp (EVar "funNamesOf") (EVar "d")) (EApp (EVar "externNamesOf") (EVar "d")))) (DoLet false false (PVar "text") (EIf (EApp (EVar "hadTypeErrors") (ELit LUnit)) (EVar "full") (EApp (EVar "blockOf") (EApp (EApp (EVar "filterList") (EApp (EVar "userSchemeLine") (EVar "userNames"))) (EApp (EVar "contentLines") (EVar "full")))))) (DoExpr (ETuple (EVar "text") (EVar "diag")))))
+(DTypeSig false "externNamesOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "externNamesOf" ((PVar "decls")) (EApp (EApp (EDictApp "flatMap") (EVar "externName")) (EVar "decls")))
+(DTypeSig false "externName" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "externName" ((PCon "DExtern" PWild (PVar "nm") PWild)) (EListLit (EVar "nm")))
+(DFunDef false "externName" (PWild) (EListLit))
 (DTypeSig false "userSchemeLine" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Bool"))))
-(DFunDef false "userSchemeLine" ((PVar "userNames") (PVar "line")) (EMatch (EApp (EApp (EVar "split") (ELit (LString " : "))) (EVar "line")) (arm (PCons (PVar "nm") (PCons PWild PWild)) () (EApp (EApp (EVar "anyList") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "nm")))) (EVar "userNames"))) (arm PWild () (EVar "True"))))
+(DFunDef false "userSchemeLine" ((PVar "userNames") (PVar "line")) (EIf (EApp (EVar "isDiagProse") (EVar "line")) (EVar "True") (EMatch (EApp (EApp (EVar "split") (ELit (LString " : "))) (EVar "line")) (arm (PCons (PVar "nm") (PCons PWild PWild)) () (EApp (EApp (EVar "anyList") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "nm")))) (EVar "userNames"))) (arm PWild () (EVar "True")))))
+(DTypeSig false "isDiagProse" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "isDiagProse" ((PVar "line")) (EBinOp "||" (EBinOp "==" (EApp (EApp (EVar "take") (ELit (LInt 8))) (EVar "line")) (ELit (LString "Warning:"))) (EBinOp "==" (EApp (EApp (EVar "take") (ELit (LInt 11))) (EVar "line")) (ELit (LString "TYPE ERROR:")))))
 (DTypeSig false "coreIrOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String")))
 (DFunDef false "coreIrOf" ((PVar "d")) (EApp (EVar "cprogramToSexp") (EApp (EVar "lowerProgram") (EApp (EVar "annotateProgram") (EVar "d")))))
 (DTypeSig false "evalOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String")))))

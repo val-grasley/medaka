@@ -20,6 +20,7 @@ handler k = get k
 main : <IO> Unit
 main = println "effect labels ok"
 # TYPES_USER
+kvGet : String -> <KV> String
 get : String -> <KV> String
 handler : String -> <KV, Log> String
 main : Unit
