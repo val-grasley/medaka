@@ -9,10 +9,11 @@
 # legs are committed goldens (per-fixture <dir>/oracle.tcmod, captured by
 # test/capture_goldens.sh) — no live tc_module_probe / main.exe.
 #
-# NOTE: the $MODULES per-library-module leg below targets compiler/<m>.mdk paths
-# that no longer exist (the modules moved into compiler/frontend/ etc.), so it has
-# been DORMANT (skips every module) since before this re-root — preserved verbatim
-# so the gate's live legs (the fixtures + the cycle check) are unchanged.
+# NOTE: this gate used to also run a per-library-module leg over a flat
+# MODULES="ast lexer parser ..." list rooted at compiler/<m>.mdk. Those modules
+# moved into compiler/frontend/ etc. long ago, so that leg silently skipped every
+# module (its guard never matched) and was excised (#192) — it is not coming
+# back; the fixture leg below plus selfproc LEG A already cover that ground.
 #
 # Usage:  sh test/diff_compiler_check_modules.sh
 set -u
@@ -27,20 +28,8 @@ STDLIB="$ROOT/stdlib"
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
-MODULES="ast lexer parser sexp desugar marker annotate resolve exhaust loader typecheck eval check"
 FIXDIR="$ROOT/test/check_module_fixtures"
 pass=0; fail=0
-
-# ── 1. compiler library modules (each as the entry) — DORMANT (see header) ──
-for m in $MODULES; do
-  [ -f "$SHDIR/$m.mdk" ] || continue
-  golden="$SHDIR/$m.tcmod.golden"
-  [ -f "$golden" ] || { fail=$((fail+1)); printf 'FAIL %s (no .tcmod.golden)\n' "$m"; continue; }
-  ref="$(LC_ALL=C sort < "$golden")"
-  self="$("$SELF" "$RUNTIME" "$CORE" "$SHDIR/$m.mdk" "$SHDIR" "$STDLIB" 2>/dev/null | strip_unit | LC_ALL=C sort)"
-  if [ "$ref" = "$self" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$m"
-  else fail=$((fail+1)); printf 'FAIL %s\n' "$m"; fi
-done
 
 # ── 2. multi-module fixtures (TYPECHECK-AUDIT C8) ───────────────────────────
 # Each test/check_module_fixtures/<name>/ holds a small set of .mdk modules, an
@@ -48,9 +37,11 @@ done
 # the entry's sorted schemes (captured from dev/tc_module_probe.exe).  The C8(a)
 # fixture (iface_method_export) regresses to `unbound variable: show2` without the
 # publicValNames interface-method export fix.
+fixture_count=0
 if [ -d "$FIXDIR" ]; then
   for d in "$FIXDIR"/*/; do
     [ -d "$d" ] || continue
+    fixture_count=$((fixture_count+1))
     name="$(basename "$d")"
     root="${d%/}"
     [ -f "$d/entry" ]        || { echo "FAIL fixture/$name (no entry file)"; fail=$((fail+1)); continue; }
@@ -61,6 +52,11 @@ if [ -d "$FIXDIR" ]; then
     if [ "$self" = "$golden" ]; then pass=$((pass+1)); printf 'ok   fixture/%s\n' "$name"
     else fail=$((fail+1)); printf 'FAIL fixture/%s (compiler differs from golden)\n' "$name"; fi
   done
+fi
+# Floor: a gate that iterated zero fixtures checked nothing and must FAIL, not
+# silently pass — this is the exact "0-modules-checked" no-op leg 1 used to hide.
+if [ "$fixture_count" -eq 0 ]; then
+  fail=$((fail+1)); printf 'FAIL fixture-leg (0 fixtures found under %s — gate checked nothing)\n' "$FIXDIR"
 fi
 
 # ── 3. R2: cycle-chain error format (loader.mdk) ────────────────────────────
