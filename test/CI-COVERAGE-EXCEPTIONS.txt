@@ -23,58 +23,27 @@
 #
 # Format:  <repo-relative-path-without-.sh>  <reason>
 
-# ── wasm backend (5 gates) ────────────────────────────────────────────────────
-# The WasmGC backend — one of Medaka's two production backends — had ZERO CI
-# coverage until 2026-07-13. Not one job touched test/wasm/. That is precisely why
-# 4 real codegen failures sat unnoticed in it:
+# ── wasm backend (5 gates) — NOW IN CI (T25, 2026-07-15) ──────────────────────
+# The five WasmGC gates — test/wasm/diff_wasm, diff_wasm_typed, diff_wasm_modules,
+# diff_sqlite, and test/build_wasm_cmd — previously ran in NO CI job: a stock
+# ubuntu-latest runner has neither wasm-tools nor a WasmGC-capable node>=22, and the
+# gates SKIP when the toolchain is absent. That blind spot is how two silent wasm
+# miscompiles (a `round` divergence, intToFloat #199) reached main.
 #
-#     w7_array_index / w7_array_slice / w7_array_oob / w7_range_array
-#         E-PANIC: unbound variable 'index' (not a local, global value, constructor, or
-#         known function) [in ...]
-#     disp_hof_shadows_method  (typed gate)
+# T25 stood up the `wasm` job in .github/workflows/ci.yml. It installs node 24 +
+# wasm-tools, builds ./medaka + the wasm emitter oracle, and runs all five gates NAMED
+# by their literal repo-relative path — which is what makes
+# diff_compiler_ci_shard_coverage.sh classify them as covered (the same mechanism the
+# soundness job uses for the fixpoint/typecheck gates). So they need NO row here.
 #
-# `.[i]` sugar desugars to the Index interface's `index` method, and wasm_emit's
-# ref-mode path cannot resolve interface methods. The LLVM backend compiles the
-# same fixtures correctly, so this is wasm-only.
-#
-# ⚠️ T-22 (2026-07-14): the quoted panic text above is UPDATED wording, not the original
-# capture — `wasm_emit.mdk` used to prefix this "wasm_emit gap — ", asserting a category
-# (backend coverage gap) the emitter cannot actually verify; that word is gone now (see
-# compiler/ERROR-QUALITY.md's "report what you observed" principle). Separately, and NOT
-# resolved by T-22: `test/engine_divergence.txt`'s history note records that FOUR OTHER
-# rows quoting this exact same wording (also w7_array_*, coincidentally) turned out to be
-# a probe artifact, not a real backend gap — `diff_compiler_engines.sh` was shelling the
-# prelude-free `wasm_emit_main` probe (no typecheck, no prelude) instead of the shipping
-# `medaka build --target wasm` CLI. `test/wasm/diff_wasm.sh` (THIS gate) still shells that
-# same prelude-free probe today and has NOT been moved onto the shipping CLI the way
-# `diff_compiler_engines.sh` was on 2026-07-14 — so whether these four are genuine T25
-# codegen gaps or the identical probe artifact is still open. Do not take "4 real codegen
-# failures" above as re-verified until T25 checks it against the shipping CLI.
-#
-# These are EXCLUDED ONLY UNTIL THAT FIX LANDS (task T25). They are excluded
-# because they are RED, and a red gate wired into CI would just get ignored — the
-# worst outcome. The moment T25 lands, DELETE these lines and add the wasm job
-# to .github/workflows/ci.yml. The gate below will then police them forever.
-#
-# Note the wasm backend is NOT entirely unwatched in the meantime:
-# diff_compiler_engines (tier 2: native == wasm) IS in CI and does cover a slice of it.
-test/wasm/diff_wasm          RED: 4 ref-mode failures — T25. Delete this line when T25 lands.
-test/wasm/diff_wasm_typed    RED: disp_hof_shadows_method — T25. Delete this line when T25 lands.
-test/wasm/diff_wasm_modules  gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
-test/wasm/diff_sqlite        gated behind the wasm oracle + node>=24; lands with the T25 wasm job.
-#
-# build_wasm_cmd is the ONLY one of the five that is GREEN (verified 2026-07-13: 4 ok,
-# 0 failing). It is here for a TOOLING reason, not a correctness one — and it is here at
-# all only because T8 found it MISFILED IN CI-COVERAGE-TOOLS.TXT as a "wasm build helper",
-# which is a claim that running it proves nothing about the compiler. That was false: it
-# is the end-to-end gate for the shipping `medaka build --target wasm` CLI flag, it diffs
-# each fixture's wasm stdout against the native build's, and it ends in `[ "$fail" -eq 0 ]`.
-# It needs `wasm-tools` on PATH and node>=22 — neither is on a stock ubuntu-latest runner —
-# plus a compiled wasm emitter oracle. No CI job installs that toolchain today; the T25
-# wasm job is what will. It goes in that job, NOT into an existing shard, because adding a
-# wasm-tools install to all six gate shards would tax every one of them for a gate only one
-# needs. Delete this line when the T25 wasm job lands.
-test/build_wasm_cmd  GREEN (4/4) but needs wasm-tools + node>=22 — no CI job has that toolchain. Lands with the T25 wasm job.
+# All five verified GREEN on the shipping CLI when T25 landed (149/0, 9/0, 36/0, 11/0,
+# 4/0) — INCLUDING the two rows this ledger had recorded as RED, which were STALE, the
+# #71 probe-artifact pattern:
+#   * diff_wasm's "4 ref-mode failures" — actually 149/0, every IR-shape assert green.
+#   * diff_wasm_typed's disp_hof_shadows_method — a REGRESSION FIXTURE for an
+#     already-fixed miscompile; `medaka build --target wasm` gives native == wasm == 9.
+# If a wasm gate ever goes red, pin it known-bad IN the wasm job (an XFAIL ledger, like
+# test/native_fixtures/run), NOT by re-excluding it here — a red gate belongs in CI.
 
 # ── playground browser e2e ────────────────────────────────────────────────────
 # A real gate (Playwright drives a real browser against the built CM6 playground and
