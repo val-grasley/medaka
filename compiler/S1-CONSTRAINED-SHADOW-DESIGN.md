@@ -522,7 +522,7 @@ this class of bug is visible at all. **Both directions are owed:**
 - **Self-compile fixpoint C3a/C3b** — stage 2 touches `Route`, which the compiler's own 5
   definer shadows flow through. They are all unconstrained, so the `dicts == []` fast path must
   make them **byte-identical**. If the fixpoint moves, the guard is wrong.
-- **`test/diff_compiler_core_ir_sexp.sh`** — `routeSexp` goldens must not move for empty dicts.
+- **`test/diff_compiler_snapshot_core_ir.sh`** — `routeSexp` goldens must not move for empty dicts.
 - `test/shadow_fixtures/` gets `d10_definer_constrained.mdk` (matrix **row 26**).
 - **`SHADOW-SEMANTICS.md` matrix row 26 + clause S9 + the §3 eval row correction** — the spec is
   currently *wrong*, and leaving it wrong is how this bug comes back.

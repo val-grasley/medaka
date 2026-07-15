@@ -430,7 +430,7 @@ reference. The reference is the tree-walker (`eval_modules` / `eval_probe` and t
     carries its `Route`, every `CImplEntry` carries its tag/iface/positions. The
     companion deserializer `core_ir_sexp_parse.mdk` — `parseCProgram : String ->
     CProgram` — tokenizes and pattern-matches every tagged form back to typed ADTs.
-    Two new gates: `test/diff_compiler_core_ir_sexp.sh` (snapshot: 18 golden
+    Two new gates: `test/diff_compiler_snapshot_core_ir.sh` (snapshot: 18 golden
     `.sexp` files in `test/core_ir_sexp_fixtures/`, regenerable) and
     `test/diff_compiler_core_ir_roundtrip.sh` (the real "frozen IR is faithful"
     gate: lower → `cprogramToSexp` → `parseCProgram` → `cevalMain` → diff vs
