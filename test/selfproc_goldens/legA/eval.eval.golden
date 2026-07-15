@@ -95,10 +95,13 @@ evalModulesOutput : List Decl -> List (String, List Decl) -> String
 evalModulesOutputAsync : List Decl -> List (String, List Decl) -> String
 evalModulesOutputRun : List Decl -> List (String, List Decl) -> <IO> String
 evalModulesRootEnv : List Decl -> List (String, List Decl) -> List (String, Value a)
+evalModulesRootEnvWith : List (String, Value a) -> List Decl -> List (String, List Decl) -> List (String, Value a)
 evalModulesWith : List (String, Value a) -> List Decl -> List (String, List Decl) -> List (String, Value a)
 evalOne : List Decl -> (String, List Decl) -> List (String, Value a)
 evalOneOutput : List Decl -> (String, List Decl) -> String
 evalOneRootEnv : List Decl -> (String, List Decl) -> List (String, Value a)
+evalOneRootEnvWith : List (String, Value a) -> List Decl -> (String, List Decl) -> List (String, Value a)
+evalOneWith : List (String, Value a) -> List Decl -> (String, List Decl) -> List (String, Value a)
 evalOr : EvalEnv (Value a) -> Value a -> Expr -> Value a
 evalOutputWith : List Decl -> List Decl -> String
 evalRange : Value a -> Value a -> Bool -> (List Int -> Value a) -> Value a
@@ -391,6 +394,7 @@ sub64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
 subClampZero : Int -> Int -> Int
 sumInts : List Int -> Int
 takeN : Int -> List a -> List a
+testCapableExterns : Unit -> List (String, Value a)
 topGroupValue : EvalEnv (Value a) -> List (List Pat, Expr) -> Value a
 tupleHeadTag : Int -> String
 tyMentions : Ty -> List String -> Bool
