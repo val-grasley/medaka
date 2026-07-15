@@ -51,6 +51,49 @@ cd "$ROOT" || { echo "FAIL: cannot cd to $ROOT"; exit 1; }
 
 pass=0; fail=0
 
+# #299 regression guard: `medaka mcp --help`/`-h` must print usage and exit 0
+# WITHOUT entering the JSON-RPC read loop, and a bogus arg must be rejected on
+# stderr with a nonzero exit — none of the three may block on stdin.  Feed
+# stdin that stays open for longer than the alarm so a regression to "argv
+# discarded, always read the loop" hangs and gets killed by the alarm (rc
+# ~142) instead of silently passing.  Run BEFORE the fixture loop so the gate
+# still fails fast if `medaka mcp` itself is missing/unbuilt.
+check_mcp_arg () {
+  argdesc="$1"; shift
+  want_marker="$1"; shift
+  tmpout="$(mktemp)"
+  perl -e 'alarm 5; exec @ARGV' "$MEDAKA" mcp "$@" < /dev/zero > "$tmpout" 2>"$tmpout.err"
+  rc=$?
+  out="$(cat "$tmpout")"
+  err="$(cat "$tmpout.err")"
+  rm -f "$tmpout" "$tmpout.err"
+  case "$rc" in
+    142) fail=$((fail+1)); printf 'FAIL mcp-arg(%s): hung (killed by alarm)\n' "$argdesc"; return ;;
+  esac
+  case "$want_marker" in
+    usage)
+      if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "medaka mcp"; then
+        pass=$((pass+1)); printf 'ok   mcp-arg(%s)\n' "$argdesc"
+      else
+        fail=$((fail+1)); printf 'FAIL mcp-arg(%s): rc=%d out=%s\n' "$argdesc" "$rc" "$out"
+      fi
+      ;;
+    reject)
+      if [ "$rc" -ne 0 ] && printf '%s' "$err" | grep -qi "unknown argument"; then
+        pass=$((pass+1)); printf 'ok   mcp-arg(%s)\n' "$argdesc"
+      else
+        fail=$((fail+1)); printf 'FAIL mcp-arg(%s): rc=%d err=%s\n' "$argdesc" "$rc" "$err"
+      fi
+      ;;
+  esac
+}
+
+if [ -x "$MEDAKA" ]; then
+  check_mcp_arg "--help" usage --help
+  check_mcp_arg "-h" usage -h
+  check_mcp_arg "bogusarg" reject bogusarg
+fi
+
 for req in "$FIXDIR"/*.jsonl; do
   [ -f "$req" ] || continue
   name="$(basename "$req" .jsonl)"

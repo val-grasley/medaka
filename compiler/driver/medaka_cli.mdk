@@ -2008,14 +2008,47 @@ runLspCmd _ =
         exit 1
       Ok csrc => runServer rsrc csrc
 
+-- Short usage blurb for `medaka mcp --help` / `-h` — mirrors the one-line
+-- description `usage` (line ~284) gives mcp in the top-level help, plus the
+-- reminder that it's a stdio server (so a reader knows why it blocks).
+mcpUsage : Unit -> <IO> Unit
+mcpUsage _ = putStrLn (stringConcat
+  [
+    "medaka mcp — Run the MCP server over stdio (JSON-RPC for agents)\n",
+    "\n",
+    "Usage:\n",
+    "  medaka mcp     Start the server; it reads JSON-RPC requests from stdin\n",
+    "                 and writes responses to stdout until stdin closes (EOF).\n",
+    "                 This is the normal, correct behavior for an MCP stdio\n",
+    "                 server — it is not supposed to be interactive.\n",
+  ])
+
 -- `medaka mcp`: the MCP (Model Context Protocol) stdio server.  Mirrors
 -- runLspCmd exactly — load MEDAKA_ROOT/stdlib/{runtime,core}.mdk and hand the
 -- prelude sources to the tools.mcp entry point (they're threaded through so the
 -- tools added by later issues can run the compiler pipeline).  Same `<IO>`
 -- effect row as runLspCmd (the `Mut`/`Panic` class the issue cited was cut
 -- 2026-07-14 — effects are capabilities only).
+--
+-- #299: argv used to be discarded (`runMcpCmd _ = ...`), so `--help`/`-h`/any
+-- bogus arg silently fell into the JSON-RPC read loop — which blocks on stdin
+-- forever if stdin is an open terminal. Blocking on stdin with NO args is
+-- correct (that's the actual protocol); only an explicit/unknown arg needs
+-- handling before the server starts.
 runMcpCmd : List String -> <IO> Unit
-runMcpCmd _ =
+runMcpCmd [] = runMcpServerFromEnv ()
+runMcpCmd ("--help"::_) =
+  let _ = mcpUsage ()
+  exit 0
+runMcpCmd ("-h"::_) =
+  let _ = mcpUsage ()
+  exit 0
+runMcpCmd (bad::_) =
+  let _ = ePutStrLn ("medaka mcp: unknown argument '" ++ bad ++ "' (mcp takes no arguments; try 'medaka mcp --help')")
+  exit 1
+
+runMcpServerFromEnv : Unit -> <IO> Unit
+runMcpServerFromEnv _ =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
