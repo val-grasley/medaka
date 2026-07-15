@@ -57,9 +57,14 @@ sees only the unsigned digits (the `-` is a separate token), so it admits
 magnitude `2^62` = `4611686018427387904` for the writable negative minimum
 `-4611686018427387904` and rejects `4611686018427387905` (= `2^62 + 1`) and
 above; a bare *positive* `4611686018427387904` therefore still wraps to the
-negative minimum (the lexer cannot see the sign). **Arithmetic** overflow is
-still silent: `4611686018427387903 + 1` wraps to a negative number with no
-diagnostic. (There is no `minInt`/`maxInt` — use `intMinBound`/`intMaxBound`, or
+negative minimum (the lexer cannot see the sign). **Arithmetic** overflow wraps
+two's-complement-style **by design** — a documented footgun, not a bug (decided
+2026-07-15): `Int` is a fixed-width machine integer (as in C, Go, or Haskell's
+Int), not an arbitrary-precision bignum, so `4611686018427387903 + 1` wraps to a
+negative number with no diagnostic. Code that relies on wraparound (hashing,
+RNG) depends on this; to detect it, bounds-check the operands against
+`intMaxBound`/`intMinBound` yourself. (There is no `minInt`/`maxInt` — use
+`intMinBound`/`intMaxBound`, or
 the polymorphic `minBound`/`maxBound : Bounded a => a` with a type annotation.)
 
 String escapes: `\n \t \\ \" \{` and unicode `\u{48}`.
