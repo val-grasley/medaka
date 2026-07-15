@@ -502,7 +502,7 @@ jobs:
             # for COST, not theme — see the shard-scheduling note above. frontend's own 15
             # gates are 12 CPU-s combined, i.e. this shard was ~130s of oracle build and then
             # nothing. It has the room; `engines` and `backend` do not.
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_comments' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt' 'diff_compiler_fmt_roundtrip' 'native_fixtures/run' 'build_construct_coverage'"
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_positions' 'diff_compiler_printer' 'diff_compiler_fmt' 'diff_compiler_fmt_roundtrip' 'native_fixtures/run' 'build_construct_coverage'"
           - name: types
             # 'diff_compiler_shadow_semantics': the SHADOW-SEMANTICS.md decision matrix
             # (standalone fn ⇄ interface-method shadowing). It lives here rather than in

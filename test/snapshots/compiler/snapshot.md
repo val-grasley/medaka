@@ -1,5 +1,5 @@
 # META
-source_lines=1152
+source_lines=1181
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/snapshot.mdk — `medaka snapshot`, the in-process snapshot runner
@@ -141,7 +141,15 @@ stages=DESUGAR,MARK
 -- matters — it is the one where a stage silently stops reporting an error.
 
 import frontend.ast.{Decl}
-import frontend.lexer.{tokenize, tokenToString}
+import frontend.lexer.{
+  tokenize,
+  tokenToString,
+  collectComments,
+  Comment,
+  commentLine,
+  commentCol,
+  commentText,
+}
 import frontend.parser.{
   parseResult,
   parseErrorLine,
@@ -234,6 +242,7 @@ snapSections = [
   "META",
   "SOURCE",
   "TOKENS",
+  "COMMENTS",
   "PARSE",
   "DESUGAR",
   "MARK",
@@ -438,6 +447,25 @@ isNumeric s = match toInt s
 tokensOf : String -> String
 tokensOf src = blockOf (map tokenToString (tokenize src))
 
+-- # COMMENTS renders the lexer's comment side-channel, one per line as
+-- `<line>:<col>:<text>` (1-based line, 0-based col, full lexeme incl. `--`/`{- -}`
+-- delimiters; embedded newlines escaped to `\n`).  Renders the comment channel the
+-- retired diff_compiler_comments gate checked, in-process (lex -> collectComments).
+commentsOf : String -> String
+commentsOf src = blockOf (map renderComment (collectComments src))
+
+renderComment : Comment -> String
+renderComment c = "\{intToString (commentLine c)}:\{intToString (commentCol c)}:\{escNl (commentText c)}"
+
+escNl : String -> String
+escNl s = stringConcat (escNlFrom (stringToChars s) 0)
+
+escNlFrom : Array Char -> Int -> List String
+escNlFrom cs i
+  | i >= arrayLength cs = []
+  | arrayGetUnsafe i cs == '\n' = "\\n" :: escNlFrom cs (i + 1)
+  | otherwise = charToStr (arrayGetUnsafe i cs) :: escNlFrom cs (i + 1)
+
 parseErrText : Int -> Int -> String -> String
 parseErrText line col msg =
   "parse error at \{intToString line}:\{intToString col}: \{msg}\n"
@@ -628,6 +656,7 @@ workerRender root sel runtimeDecls coreDecls path = match readFile path
     -- SOURCE is emitted RAW — never normalized, never reflowed.
     let _ = emitRaw "SOURCE" src
     let _ = if wants sel "TOKENS" then emitSection root "TOKENS" (tokensOf src) else ()
+    let _ = if wants sel "COMMENTS" then emitSection root "COMMENTS" (commentsOf src) else ()
     match parseResult src
       -- parseResult, not parse: a parse failure is a rendered section, not a panic.
       --
@@ -1156,7 +1185,7 @@ mapUnit f (x::rest) =
   mapUnit f rest
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false))))
-(DUse false (UseGroup ("frontend" "lexer") ((mem "tokenize" false) (mem "tokenToString" false))))
+(DUse false (UseGroup ("frontend" "lexer") ((mem "tokenize" false) (mem "tokenToString" false) (mem "collectComments" false) (mem "Comment" false) (mem "commentLine" false) (mem "commentCol" false) (mem "commentText" false))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseResult" false) (mem "parseErrorLine" false) (mem "parseErrorCol" false) (mem "parseErrorMessage" false))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("frontend" "marker") ((mem "markWithPrelude" false))))
@@ -1173,7 +1202,7 @@ mapUnit f (x::rest) =
 (DUse false (UseGroup ("support" "path") ((mem "chopExt" false) (mem "baseOf" false))))
 (DUse false (UseGroup ("string") ((mem "split" false) (mem "replaceAll" false) (mem "trim" false) (mem "trimRight" false) (mem "take" false) (mem "drop" false) (mem "toInt" false) (mem "toFloat" false) (mem "toUpper" false))))
 (DTypeSig true "snapSections" (TyApp (TyCon "List") (TyCon "String")))
-(DFunDef false "snapSections" () (EListLit (ELit (LString "META")) (ELit (LString "SOURCE")) (ELit (LString "TOKENS")) (ELit (LString "PARSE")) (ELit (LString "DESUGAR")) (ELit (LString "MARK")) (ELit (LString "TYPES")) (ELit (LString "CORE_IR")) (ELit (LString "LLVM")) (ELit (LString "WASM")) (ELit (LString "EVAL")) (ELit (LString "CRASH"))))
+(DFunDef false "snapSections" () (EListLit (ELit (LString "META")) (ELit (LString "SOURCE")) (ELit (LString "TOKENS")) (ELit (LString "COMMENTS")) (ELit (LString "PARSE")) (ELit (LString "DESUGAR")) (ELit (LString "MARK")) (ELit (LString "TYPES")) (ELit (LString "CORE_IR")) (ELit (LString "LLVM")) (ELit (LString "WASM")) (ELit (LString "EVAL")) (ELit (LString "CRASH"))))
 (DTypeSig true "isHeaderLine" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isHeaderLine" ((PVar "l")) (EApp (EApp (EVar "anyList") (ELam ((PVar "n")) (EBinOp "==" (EVar "l") (EBinOp "++" (EBinOp "++" (ELit (LString "# ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString "")))))) (EVar "snapSections")))
 (DTypeSig false "sectionCollides" (TyFun (TyCon "String") (TyCon "Bool")))
@@ -1231,6 +1260,14 @@ mapUnit f (x::rest) =
 (DFunDef false "isNumeric" ((PVar "s")) (EMatch (EApp (EVar "toInt") (EVar "s")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EMatch (EApp (EVar "toFloat") (EVar "s")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))))
 (DTypeSig false "tokensOf" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "tokensOf" ((PVar "src")) (EApp (EVar "blockOf") (EApp (EApp (EVar "map") (EVar "tokenToString")) (EApp (EVar "tokenize") (EVar "src")))))
+(DTypeSig false "commentsOf" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "commentsOf" ((PVar "src")) (EApp (EVar "blockOf") (EApp (EApp (EVar "map") (EVar "renderComment")) (EApp (EVar "collectComments") (EVar "src")))))
+(DTypeSig false "renderComment" (TyFun (TyCon "Comment") (TyCon "String")))
+(DFunDef false "renderComment" ((PVar "c")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EApp (EVar "intToString") (EApp (EVar "commentLine") (EVar "c"))))) (ELit (LString ":"))) (EApp (EVar "display") (EApp (EVar "intToString") (EApp (EVar "commentCol") (EVar "c"))))) (ELit (LString ":"))) (EApp (EVar "display") (EApp (EVar "escNl") (EApp (EVar "commentText") (EVar "c"))))) (ELit (LString ""))))
+(DTypeSig false "escNl" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "escNl" ((PVar "s")) (EApp (EVar "stringConcat") (EApp (EApp (EVar "escNlFrom") (EApp (EVar "stringToChars") (EVar "s"))) (ELit (LInt 0)))))
+(DTypeSig false "escNlFrom" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "escNlFrom" ((PVar "cs") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "cs"))) (EListLit) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "\n"))) (EBinOp "::" (ELit (LString "\\n")) (EApp (EApp (EVar "escNlFrom") (EVar "cs")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EVar "charToStr") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs"))) (EApp (EApp (EVar "escNlFrom") (EVar "cs")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "parseErrText" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String")))))
 (DFunDef false "parseErrText" ((PVar "line") (PVar "col") (PVar "msg")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "parse error at ")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "line")))) (ELit (LString ":"))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "col")))) (ELit (LString ": "))) (EApp (EVar "display") (EVar "msg"))) (ELit (LString "\n"))))
 (DTypeSig false "markOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String"))))
@@ -1274,7 +1311,7 @@ mapUnit f (x::rest) =
 (DTypeSig false "workerOne" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "workerOne" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "path")) (EBlock (DoLet false false PWild (EApp (EVar "putLineFlush") (EBinOp "++" (EBinOp "++" (ELit (LString "BEGIN ")) (EApp (EVar "display") (EVar "path"))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "workerRender") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "path"))) (DoExpr (EApp (EVar "putLineFlush") (EBinOp "++" (EBinOp "++" (ELit (LString "END ")) (EApp (EVar "display") (EVar "path"))) (ELit (LString "")))))))
 (DTypeSig false "workerRender" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))))
-(DFunDef false "workerRender" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "path")) (EMatch (EApp (EVar "readFile") (EVar "path")) (arm (PCon "Err" (PVar "msg")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "CRASH"))) (EBinOp "++" (EBinOp "++" (ELit (LString "cannot read fixture: ")) (EApp (EVar "display") (EVar "msg"))) (ELit (LString "\n"))))) (arm (PCon "Ok" (PVar "src")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emitRaw") (ELit (LString "SOURCE"))) (EVar "src"))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "TOKENS"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "TOKENS"))) (EApp (EVar "tokensOf") (EVar "src"))) (ELit LUnit))) (DoExpr (EMatch (EApp (EVar "parseResult") (EVar "src")) (arm (PCon "Err" (PVar "e")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "PARSE"))) (EApp (EApp (EApp (EVar "parseErrText") (EApp (EVar "parseErrorLine") (EVar "e"))) (EApp (EVar "parseErrorCol") (EVar "e"))) (EApp (EVar "parseErrorMessage") (EVar "e"))))) (arm (PCon "Ok" (PVar "decls")) () (EApp (EApp (EApp (EApp (EApp (EVar "workerStages") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "decls")))))))))
+(DFunDef false "workerRender" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "path")) (EMatch (EApp (EVar "readFile") (EVar "path")) (arm (PCon "Err" (PVar "msg")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "CRASH"))) (EBinOp "++" (EBinOp "++" (ELit (LString "cannot read fixture: ")) (EApp (EVar "display") (EVar "msg"))) (ELit (LString "\n"))))) (arm (PCon "Ok" (PVar "src")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emitRaw") (ELit (LString "SOURCE"))) (EVar "src"))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "TOKENS"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "TOKENS"))) (EApp (EVar "tokensOf") (EVar "src"))) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "COMMENTS"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "COMMENTS"))) (EApp (EVar "commentsOf") (EVar "src"))) (ELit LUnit))) (DoExpr (EMatch (EApp (EVar "parseResult") (EVar "src")) (arm (PCon "Err" (PVar "e")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "PARSE"))) (EApp (EApp (EApp (EVar "parseErrText") (EApp (EVar "parseErrorLine") (EVar "e"))) (EApp (EVar "parseErrorCol") (EVar "e"))) (EApp (EVar "parseErrorMessage") (EVar "e"))))) (arm (PCon "Ok" (PVar "decls")) () (EApp (EApp (EApp (EApp (EApp (EVar "workerStages") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "decls")))))))))
 (DTypeSig false "workerStages" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "workerStages" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "decls")) (EBlock (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "PARSE"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "PARSE"))) (EApp (EVar "programToSexp") (EVar "decls"))) (ELit LUnit))) (DoLet false false (PVar "d") (EApp (EVar "desugar") (EVar "decls"))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "DESUGAR"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "DESUGAR"))) (EApp (EVar "programToSexp") (EVar "d"))) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "MARK"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "MARK"))) (EApp (EApp (EVar "markOf") (EVar "coreDecls")) (EVar "d"))) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "TYPES"))) (EApp (EApp (EApp (EVar "emitTypes") (EVar "root")) (EVar "runtimeDecls")) (EVar "d")) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "CORE_IR"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "CORE_IR"))) (EApp (EVar "coreIrOf") (EVar "d"))) (ELit LUnit))) (DoExpr (EIf (EApp (EVar "hasMain") (EVar "d")) (EBlock (DoLet false false PWild (EIf (EBinOp "||" (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "LLVM"))) (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "WASM")))) (EApp (EApp (EApp (EApp (EVar "emitBoth") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "d")) (ELit LUnit))) (DoExpr (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "EVAL"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "EVAL"))) (EApp (EApp (EApp (EVar "evalOf") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "d"))) (ELit LUnit)))) (ELit LUnit)))))
 (DTypeSig false "emitTypes" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyCon "Unit"))))))
@@ -1438,7 +1475,7 @@ mapUnit f (x::rest) =
 (DFunDef false "mapUnit" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "f") (EVar "x"))) (DoExpr (EApp (EApp (EVar "mapUnit") (EVar "f")) (EVar "rest")))))
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false))))
-(DUse false (UseGroup ("frontend" "lexer") ((mem "tokenize" false) (mem "tokenToString" false))))
+(DUse false (UseGroup ("frontend" "lexer") ((mem "tokenize" false) (mem "tokenToString" false) (mem "collectComments" false) (mem "Comment" false) (mem "commentLine" false) (mem "commentCol" false) (mem "commentText" false))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseResult" false) (mem "parseErrorLine" false) (mem "parseErrorCol" false) (mem "parseErrorMessage" false))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("frontend" "marker") ((mem "markWithPrelude" false))))
@@ -1455,7 +1492,7 @@ mapUnit f (x::rest) =
 (DUse false (UseGroup ("support" "path") ((mem "chopExt" false) (mem "baseOf" false))))
 (DUse false (UseGroup ("string") ((mem "split" false) (mem "replaceAll" false) (mem "trim" false) (mem "trimRight" false) (mem "take" false) (mem "drop" false) (mem "toInt" false) (mem "toFloat" false) (mem "toUpper" false))))
 (DTypeSig true "snapSections" (TyApp (TyCon "List") (TyCon "String")))
-(DFunDef false "snapSections" () (EListLit (ELit (LString "META")) (ELit (LString "SOURCE")) (ELit (LString "TOKENS")) (ELit (LString "PARSE")) (ELit (LString "DESUGAR")) (ELit (LString "MARK")) (ELit (LString "TYPES")) (ELit (LString "CORE_IR")) (ELit (LString "LLVM")) (ELit (LString "WASM")) (ELit (LString "EVAL")) (ELit (LString "CRASH"))))
+(DFunDef false "snapSections" () (EListLit (ELit (LString "META")) (ELit (LString "SOURCE")) (ELit (LString "TOKENS")) (ELit (LString "COMMENTS")) (ELit (LString "PARSE")) (ELit (LString "DESUGAR")) (ELit (LString "MARK")) (ELit (LString "TYPES")) (ELit (LString "CORE_IR")) (ELit (LString "LLVM")) (ELit (LString "WASM")) (ELit (LString "EVAL")) (ELit (LString "CRASH"))))
 (DTypeSig true "isHeaderLine" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isHeaderLine" ((PVar "l")) (EApp (EApp (EVar "anyList") (ELam ((PVar "n")) (EBinOp "==" (EVar "l") (EBinOp "++" (EBinOp "++" (ELit (LString "# ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString "")))))) (EVar "snapSections")))
 (DTypeSig false "sectionCollides" (TyFun (TyCon "String") (TyCon "Bool")))
@@ -1513,6 +1550,14 @@ mapUnit f (x::rest) =
 (DFunDef false "isNumeric" ((PVar "s")) (EMatch (EApp (EVar "toInt") (EVar "s")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EMatch (EApp (EVar "toFloat") (EVar "s")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))))
 (DTypeSig false "tokensOf" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "tokensOf" ((PVar "src")) (EApp (EVar "blockOf") (EApp (EApp (EMethodRef "map") (EVar "tokenToString")) (EApp (EVar "tokenize") (EVar "src")))))
+(DTypeSig false "commentsOf" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "commentsOf" ((PVar "src")) (EApp (EVar "blockOf") (EApp (EApp (EMethodRef "map") (EVar "renderComment")) (EApp (EVar "collectComments") (EVar "src")))))
+(DTypeSig false "renderComment" (TyFun (TyCon "Comment") (TyCon "String")))
+(DFunDef false "renderComment" ((PVar "c")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EApp (EVar "commentLine") (EVar "c"))))) (ELit (LString ":"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EApp (EVar "commentCol") (EVar "c"))))) (ELit (LString ":"))) (EApp (EMethodRef "display") (EApp (EVar "escNl") (EApp (EVar "commentText") (EVar "c"))))) (ELit (LString ""))))
+(DTypeSig false "escNl" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "escNl" ((PVar "s")) (EApp (EVar "stringConcat") (EApp (EApp (EVar "escNlFrom") (EApp (EVar "stringToChars") (EVar "s"))) (ELit (LInt 0)))))
+(DTypeSig false "escNlFrom" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "escNlFrom" ((PVar "cs") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "cs"))) (EListLit) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "\n"))) (EBinOp "::" (ELit (LString "\\n")) (EApp (EApp (EVar "escNlFrom") (EVar "cs")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EVar "charToStr") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs"))) (EApp (EApp (EVar "escNlFrom") (EVar "cs")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "parseErrText" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String")))))
 (DFunDef false "parseErrText" ((PVar "line") (PVar "col") (PVar "msg")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "parse error at ")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "line")))) (ELit (LString ":"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "col")))) (ELit (LString ": "))) (EApp (EMethodRef "display") (EVar "msg"))) (ELit (LString "\n"))))
 (DTypeSig false "markOf" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String"))))
@@ -1556,7 +1601,7 @@ mapUnit f (x::rest) =
 (DTypeSig false "workerOne" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "workerOne" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "path")) (EBlock (DoLet false false PWild (EApp (EVar "putLineFlush") (EBinOp "++" (EBinOp "++" (ELit (LString "BEGIN ")) (EApp (EMethodRef "display") (EVar "path"))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "workerRender") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "path"))) (DoExpr (EApp (EVar "putLineFlush") (EBinOp "++" (EBinOp "++" (ELit (LString "END ")) (EApp (EMethodRef "display") (EVar "path"))) (ELit (LString "")))))))
 (DTypeSig false "workerRender" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))))
-(DFunDef false "workerRender" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "path")) (EMatch (EApp (EVar "readFile") (EVar "path")) (arm (PCon "Err" (PVar "msg")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "CRASH"))) (EBinOp "++" (EBinOp "++" (ELit (LString "cannot read fixture: ")) (EApp (EMethodRef "display") (EVar "msg"))) (ELit (LString "\n"))))) (arm (PCon "Ok" (PVar "src")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emitRaw") (ELit (LString "SOURCE"))) (EVar "src"))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "TOKENS"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "TOKENS"))) (EApp (EVar "tokensOf") (EVar "src"))) (ELit LUnit))) (DoExpr (EMatch (EApp (EVar "parseResult") (EVar "src")) (arm (PCon "Err" (PVar "e")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "PARSE"))) (EApp (EApp (EApp (EVar "parseErrText") (EApp (EVar "parseErrorLine") (EVar "e"))) (EApp (EVar "parseErrorCol") (EVar "e"))) (EApp (EVar "parseErrorMessage") (EVar "e"))))) (arm (PCon "Ok" (PVar "decls")) () (EApp (EApp (EApp (EApp (EApp (EVar "workerStages") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "decls")))))))))
+(DFunDef false "workerRender" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "path")) (EMatch (EApp (EVar "readFile") (EVar "path")) (arm (PCon "Err" (PVar "msg")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "CRASH"))) (EBinOp "++" (EBinOp "++" (ELit (LString "cannot read fixture: ")) (EApp (EMethodRef "display") (EVar "msg"))) (ELit (LString "\n"))))) (arm (PCon "Ok" (PVar "src")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "emitRaw") (ELit (LString "SOURCE"))) (EVar "src"))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "TOKENS"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "TOKENS"))) (EApp (EVar "tokensOf") (EVar "src"))) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "COMMENTS"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "COMMENTS"))) (EApp (EVar "commentsOf") (EVar "src"))) (ELit LUnit))) (DoExpr (EMatch (EApp (EVar "parseResult") (EVar "src")) (arm (PCon "Err" (PVar "e")) () (EApp (EApp (EApp (EVar "emitDiagSection") (EVar "root")) (ELit (LString "PARSE"))) (EApp (EApp (EApp (EVar "parseErrText") (EApp (EVar "parseErrorLine") (EVar "e"))) (EApp (EVar "parseErrorCol") (EVar "e"))) (EApp (EVar "parseErrorMessage") (EVar "e"))))) (arm (PCon "Ok" (PVar "decls")) () (EApp (EApp (EApp (EApp (EApp (EVar "workerStages") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "decls")))))))))
 (DTypeSig false "workerStages" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "workerStages" ((PVar "root") (PVar "sel") (PVar "runtimeDecls") (PVar "coreDecls") (PVar "decls")) (EBlock (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "PARSE"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "PARSE"))) (EApp (EVar "programToSexp") (EVar "decls"))) (ELit LUnit))) (DoLet false false (PVar "d") (EApp (EVar "desugar") (EVar "decls"))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "DESUGAR"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "DESUGAR"))) (EApp (EVar "programToSexp") (EVar "d"))) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "MARK"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "MARK"))) (EApp (EApp (EVar "markOf") (EVar "coreDecls")) (EVar "d"))) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "TYPES"))) (EApp (EApp (EApp (EVar "emitTypes") (EVar "root")) (EVar "runtimeDecls")) (EVar "d")) (ELit LUnit))) (DoLet false false PWild (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "CORE_IR"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "CORE_IR"))) (EApp (EVar "coreIrOf") (EVar "d"))) (ELit LUnit))) (DoExpr (EIf (EApp (EVar "hasMain") (EVar "d")) (EBlock (DoLet false false PWild (EIf (EBinOp "||" (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "LLVM"))) (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "WASM")))) (EApp (EApp (EApp (EApp (EVar "emitBoth") (EVar "root")) (EVar "sel")) (EVar "runtimeDecls")) (EVar "d")) (ELit LUnit))) (DoExpr (EIf (EApp (EApp (EVar "wants") (EVar "sel")) (ELit (LString "EVAL"))) (EApp (EApp (EApp (EVar "emitSection") (EVar "root")) (ELit (LString "EVAL"))) (EApp (EApp (EApp (EVar "evalOf") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "d"))) (ELit LUnit)))) (ELit LUnit)))))
 (DTypeSig false "emitTypes" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyCon "Unit"))))))

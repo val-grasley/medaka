@@ -103,7 +103,6 @@ fi
 #   resolve_modules_main  — diff_compiler_resolve_modules.sh
 #   printer_main          — diff_compiler_printer.sh
 #   positions_main        — diff_compiler_positions.sh
-#   lex_comments_main     — diff_compiler_comments.sh
 #   ── Phase 2 §2b typecheck/check/error gates ──
 #   typecheck_main          — diff_compiler_typecheck.sh / _errors / _panic_errors / _golden
 #   typecheck_golden_batch  — diff_compiler_typecheck_golden_batch.sh
@@ -133,7 +132,7 @@ llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 llvm_bootstrap_lex_main \
 lex_main parse_main parse_result_main \
 resolve_main resolve_batch resolve_modules_main \
-printer_main positions_main lex_comments_main \
+printer_main positions_main \
 typecheck_main typecheck_golden_batch check_main check_batch \
 check_modules_main check_all_main check_match_main exhaust_main lint_main lint_fix_main \
 diagnostics_main diagnostics_project_main \

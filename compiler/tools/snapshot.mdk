@@ -137,7 +137,15 @@
 -- matters — it is the one where a stage silently stops reporting an error.
 
 import frontend.ast.{Decl}
-import frontend.lexer.{tokenize, tokenToString}
+import frontend.lexer.{
+  tokenize,
+  tokenToString,
+  collectComments,
+  Comment,
+  commentLine,
+  commentCol,
+  commentText,
+}
 import frontend.parser.{
   parseResult,
   parseErrorLine,
@@ -230,6 +238,7 @@ snapSections = [
   "META",
   "SOURCE",
   "TOKENS",
+  "COMMENTS",
   "PARSE",
   "DESUGAR",
   "MARK",
@@ -434,6 +443,25 @@ isNumeric s = match toInt s
 tokensOf : String -> String
 tokensOf src = blockOf (map tokenToString (tokenize src))
 
+-- # COMMENTS renders the lexer's comment side-channel, one per line as
+-- `<line>:<col>:<text>` (1-based line, 0-based col, full lexeme incl. `--`/`{- -}`
+-- delimiters; embedded newlines escaped to `\n`).  Renders the comment channel the
+-- retired diff_compiler_comments gate checked, in-process (lex -> collectComments).
+commentsOf : String -> String
+commentsOf src = blockOf (map renderComment (collectComments src))
+
+renderComment : Comment -> String
+renderComment c = "\{intToString (commentLine c)}:\{intToString (commentCol c)}:\{escNl (commentText c)}"
+
+escNl : String -> String
+escNl s = stringConcat (escNlFrom (stringToChars s) 0)
+
+escNlFrom : Array Char -> Int -> List String
+escNlFrom cs i
+  | i >= arrayLength cs = []
+  | arrayGetUnsafe i cs == '\n' = "\\n" :: escNlFrom cs (i + 1)
+  | otherwise = charToStr (arrayGetUnsafe i cs) :: escNlFrom cs (i + 1)
+
 parseErrText : Int -> Int -> String -> String
 parseErrText line col msg =
   "parse error at \{intToString line}:\{intToString col}: \{msg}\n"
@@ -624,6 +652,7 @@ workerRender root sel runtimeDecls coreDecls path = match readFile path
     -- SOURCE is emitted RAW — never normalized, never reflowed.
     let _ = emitRaw "SOURCE" src
     let _ = if wants sel "TOKENS" then emitSection root "TOKENS" (tokensOf src) else ()
+    let _ = if wants sel "COMMENTS" then emitSection root "COMMENTS" (commentsOf src) else ()
     match parseResult src
       -- parseResult, not parse: a parse failure is a rendered section, not a panic.
       --
