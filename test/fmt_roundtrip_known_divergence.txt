@@ -1,0 +1,24 @@
+# test/fmt_roundtrip_known_divergence.txt — the KNOWN-DIVERGENCE LEDGER for
+# test/diff_compiler_fmt_roundtrip.sh.
+#
+# That gate asserts an AST-fidelity invariant: for every corpus .mdk file,
+# parse(f) must be byte-identical to parse(fmt(f)) — i.e. the formatter must not
+# change what a program PARSES TO. A file listed here is a KNOWN, accepted case
+# where fmt DOES change the parse today, with a tracking issue.
+#
+# rustc's tests/crashes model — a SELF-DRAINING ledger, not a skip-list. Every
+# line asserts the CURRENT (divergent) behaviour of a fixture, so:
+#   (a) nothing new regresses — a file that diverges and is NOT listed here FAILS;
+#   (b) AN ACCIDENTAL FIX IS DETECTED — if a listed file now round-trips CLEAN, the
+#       gate FAILS and tells you to promote it by deleting its line and closing the
+#       cited issue. A plain skip-list cannot notice the bug got fixed, and a silent
+#       skip is exactly how a suite like this rots (see test/engine_divergence.txt
+#       and test/CAPABILITY-EXCEPTIONS.txt, the same pattern).
+#
+# Format (one path per line; blank lines and '#' comments ignored):
+#   <repo-relative path to .mdk fixture>    # issue-ref + one-line reason
+#
+# Only a listed file that STILL diverges is tolerated; the gate prints the count
+# and the names on every run so the divergence is never invisible.
+
+test/parse_fixtures/neg_literal_arg.mdk    # #142 — fmt rewrites tight negative-literal arg `f -1` -> `f (-1)`; the paren form reparses as EUnOp "-" rather than Rule-C's bare ELit(LInt -n). Benign for Int (same value); tracked.
