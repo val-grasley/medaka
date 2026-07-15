@@ -102,7 +102,6 @@ bindOutsideDoMsg : String
 bindRecPatFieldsFresh : TcEnv -> List RecPatField -> List (String, Scheme)
 bindVar : Ref Tyvar -> Mono -> Unit
 binopBuiltinHead : String -> String -> Bool
-binopDictVarOf : String -> Mono -> Bool -> String -> Option String
 binopMethod : String -> Option String
 binopMethodApp : String -> Expr -> Expr -> Ref Route -> Expr
 binopPrimitiveHead : String -> Bool
@@ -837,6 +836,7 @@ occursAdjust : Int -> Int -> Mono -> Unit
 occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> Unit
 occursAdjustVar : Int -> Int -> Ref Tyvar -> Unit
 occursCheckFailed : Ref Bool
+opDictVarOf : Bool -> String -> Mono -> Bool -> String -> Option String
 openRow : Unit -> EffRow
 orElseLoc : Option Loc -> Option Loc -> Option Loc
 ordCompareOp : Mono -> Mono -> Mono
@@ -1040,21 +1040,19 @@ resolveArgStamp : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Ref 
 resolveArgStamps : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Ref (List Route), Mono, String) -> Unit
 resolveArithSite : Ref Route -> Mono -> Unit
 resolveArithSites : List (Ref Route, Mono) -> Unit
-resolveBinopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> Unit
-resolveBinopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> Unit
 resolveDictApps : List Decl -> List ImplEntry -> List (Ref (List Route), List Mono, List String) -> Unit
 resolveFieldAmbiguous : Mono -> String -> List String -> Option (String, RecordInfo)
 resolveFieldByOwners : Mono -> String -> Option (String, RecordInfo)
 resolveFieldRecord : Mono -> String -> Option (String, RecordInfo)
 resolveMemberSchemes : (String, String) -> List (String, Scheme) -> List (String, Scheme)
 resolveMethodDicts : List ImplEntry -> List (Ref (List Route), List Mono) -> Unit
+resolveOpSite : Bool -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> Unit
+resolveOpSites : Bool -> List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> Unit
 resolveRLocalSite : List Decl -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> List Mono -> List String -> Unit
 resolveRLocalSites : List Decl -> List ImplEntry -> List KeyEntry -> List RLocalSite -> Unit
 resolveRecMono : String -> Mono -> Route
 resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> Unit
 resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> Unit
-resolveUnopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> Unit
-resolveUnopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> Unit
 restorePendingObls : List (String, List String, Ty, Mono, Option Loc) -> Int -> Unit
 returnPosMethod : List String -> IfaceMethod -> List String
 returnPosMethodNames : List Decl -> List String
@@ -1151,10 +1149,9 @@ splitOnFirstEqGo : String -> Int -> Int -> Option Int
 splitOnFirstEqStr : String -> Option Int
 splitOnSemi : String -> List String
 splitOnSemiGo : String -> Int -> Int -> List String -> List String
-stampBinopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> Unit
+stampOpRoute : Bool -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> Unit
 stampRLocalOrFallback : Bool -> Ref Route -> String -> List Route -> Unit
 stampRoutes : List (Ref Route) -> Unit
-stampUnopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> Unit
 standaloneSchemeFor : TcEnv -> String -> String -> Option Scheme
 standaloneShadowDomain : String -> Option Mono
 standaloneShadowScheme : String -> Option Mono
@@ -1275,7 +1272,6 @@ unknownFieldMsg : String -> String -> String
 unknownRecordFresh : String -> Mono
 unknownRecordMsg : String -> String
 unlocExpr : Expr -> Expr
-unopDictVarOf : String -> Mono -> Bool -> String -> Option String
 unopMethod : String -> Option String
 unopMethodApp : String -> Expr -> Ref Route -> Expr
 unreachableArmWarning : String
