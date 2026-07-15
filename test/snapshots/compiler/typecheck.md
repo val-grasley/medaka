@@ -1,5 +1,5 @@
 # META
-source_lines=14040
+source_lines=14047
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -76,6 +76,7 @@ import support.ordmap.{
   omLookup,
   omHasKey,
   omFromPairs,
+  omMapValues,
 }
 import list.{replicate}
 import support.util.{
@@ -8763,15 +8764,18 @@ bucketOf tag buckets = fromOption [] (omLookup tag buckets)
 -- build the table from the program's impls-with-requires (others need no dicts),
 -- bucketed by head tycon tag with each bucket in forward declaration order.
 buildImplTable : List Decl -> ImplBuckets
-buildImplTable prog = bucketImplEntries (flatMap implEntryOf prog) omEmpty
+buildImplTable prog =
+  omMapValues reverseL (bucketImplEntries (flatMap implEntryOf prog) omEmpty)
 
--- fold the flat, forward-ordered entry list into tag buckets, APPENDING so each
--- bucket preserves declaration order (first-match semantics).
+-- fold the flat, forward-ordered entry list into tag buckets by PREPENDING (O(1)
+-- per entry, vs O(bucket) tail-append → O(k²) for k same-tag entries).  Each
+-- bucket ends up in reverse declaration order; buildImplTable applies one
+-- `reverseL` per bucket to restore declaration order (first-match semantics).
 bucketImplEntries : List ImplEntry -> ImplBuckets -> ImplBuckets
 bucketImplEntries [] acc = acc
 bucketImplEntries ((ImplEntry tag ms hty reqs itys ifn)::rest) acc =
   let e = ImplEntry tag ms hty reqs itys ifn
-  bucketImplEntries rest (omInsert tag (bucketOf tag acc ++ [e]) acc)
+  bucketImplEntries rest (omInsert tag (e :: bucketOf tag acc) acc)
 
 implEntryOf : Decl -> List ImplEntry
 implEntryOf (DAttrib _ d) = implEntryOf d
@@ -8806,14 +8810,17 @@ implMethodNameTc (ImplMethod n _ _) = n
 public export data KeyEntry = KeyEntry (List String) String Ty String
 
 buildKeyTable : List Decl -> KeyBuckets
-buildKeyTable prog = bucketKeyEntries (flatMap keyEntryOf prog) omEmpty
+buildKeyTable prog =
+  omMapValues reverseL (bucketKeyEntries (flatMap keyEntryOf prog) omEmpty)
 
--- fold the flat, forward-ordered entry list into tag buckets (declaration order).
+-- fold the flat, forward-ordered entry list into tag buckets by PREPENDING (O(1)
+-- per entry; buildKeyTable applies one `reverseL` per bucket to restore
+-- declaration order).
 bucketKeyEntries : List KeyEntry -> KeyBuckets -> KeyBuckets
 bucketKeyEntries [] acc = acc
 bucketKeyEntries ((KeyEntry ms tag hty key)::rest) acc =
   let e = KeyEntry ms tag hty key
-  bucketKeyEntries rest (omInsert tag (bucketOf tag acc ++ [e]) acc)
+  bucketKeyEntries rest (omInsert tag (e :: bucketOf tag acc) acc)
 
 keyEntryOf : Decl -> List KeyEntry
 keyEntryOf (DAttrib _ d) = keyEntryOf d
@@ -14049,7 +14056,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DUse false (UseGroup ("frontend" "exhaust") ((mem "Oracle" false) (mem "buildOracle" false) (mem "useful" false) (mem "patUnreachable" false) (mem "patHasRange" false) (mem "usefulWitness" false) (mem "renderWitness" false) (mem "desugarPat" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "mangledName" false))))
-(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omHasKey" false) (mem "omFromPairs" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omHasKey" false) (mem "omFromPairs" false) (mem "omMapValues" false))))
 (DUse false (UseGroup ("list") ((mem "replicate" false))))
 (DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "lookupAssoc" false) (mem "contains" false) (mem "endsWith" false) (mem "reverseL" false) (mem "joinWith" false) (mem "joinNl" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false) (mem "allList" false) (mem "initList" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "minI" false) (mem "isSome" false) (mem "zipL" false) (mem "dedup" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "escStr" false) (mem "editDistance" false))))
 (DData Public "Mono" () ((variant "TVar" (ConPos (TyApp (TyCon "Ref") (TyCon "Tyvar")))) (variant "TCon" (ConPos (TyCon "String"))) (variant "TApp" (ConPos (TyCon "Mono") (TyCon "Mono"))) (variant "TFun" (ConPos (TyCon "Mono") (TyCon "EffRow") (TyCon "Mono"))) (variant "TEff" (ConPos (TyCon "EffRow")))) ())
@@ -16311,10 +16318,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "bucketOf" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyVar "a"))) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "bucketOf" ((PVar "tag") (PVar "buckets")) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "tag")) (EVar "buckets"))))
 (DTypeSig false "buildImplTable" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ImplBuckets")))
-(DFunDef false "buildImplTable" ((PVar "prog")) (EApp (EApp (EVar "bucketImplEntries") (EApp (EApp (EVar "flatMap") (EVar "implEntryOf")) (EVar "prog"))) (EVar "omEmpty")))
+(DFunDef false "buildImplTable" ((PVar "prog")) (EApp (EApp (EVar "omMapValues") (EVar "reverseL")) (EApp (EApp (EVar "bucketImplEntries") (EApp (EApp (EVar "flatMap") (EVar "implEntryOf")) (EVar "prog"))) (EVar "omEmpty"))))
 (DTypeSig false "bucketImplEntries" (TyFun (TyApp (TyCon "List") (TyCon "ImplEntry")) (TyFun (TyCon "ImplBuckets") (TyCon "ImplBuckets"))))
 (DFunDef false "bucketImplEntries" ((PList) (PVar "acc")) (EVar "acc"))
-(DFunDef false "bucketImplEntries" ((PCons (PCon "ImplEntry" (PVar "tag") (PVar "ms") (PVar "hty") (PVar "reqs") (PVar "itys") (PVar "ifn")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "ImplEntry") (EVar "tag")) (EVar "ms")) (EVar "hty")) (EVar "reqs")) (EVar "itys")) (EVar "ifn"))) (DoExpr (EApp (EApp (EVar "bucketImplEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "++" (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")) (EListLit (EVar "e")))) (EVar "acc"))))))
+(DFunDef false "bucketImplEntries" ((PCons (PCon "ImplEntry" (PVar "tag") (PVar "ms") (PVar "hty") (PVar "reqs") (PVar "itys") (PVar "ifn")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "ImplEntry") (EVar "tag")) (EVar "ms")) (EVar "hty")) (EVar "reqs")) (EVar "itys")) (EVar "ifn"))) (DoExpr (EApp (EApp (EVar "bucketImplEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "::" (EVar "e") (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")))) (EVar "acc"))))))
 (DTypeSig false "implEntryOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "ImplEntry"))))
 (DFunDef false "implEntryOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "implEntryOf") (EVar "d")))
 (DFunDef false "implEntryOf" ((PRec "DImpl" ((rf "iface" None) (rf "tys" None) (rf "reqs" None) (rf "methods" None)) true)) (EMatch (EVar "reqs") (arm (PList) () (EListLit)) (arm PWild () (EApp (EApp (EApp (EApp (EVar "implEntryFromTys") (EVar "iface")) (EVar "tys")) (EVar "reqs")) (EVar "methods")))))
@@ -16326,10 +16333,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "implMethodNameTc" ((PCon "ImplMethod" (PVar "n") PWild PWild)) (EVar "n"))
 (DData Public "KeyEntry" () ((variant "KeyEntry" (ConPos (TyApp (TyCon "List") (TyCon "String")) (TyCon "String") (TyCon "Ty") (TyCon "String")))) ())
 (DTypeSig false "buildKeyTable" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "KeyBuckets")))
-(DFunDef false "buildKeyTable" ((PVar "prog")) (EApp (EApp (EVar "bucketKeyEntries") (EApp (EApp (EVar "flatMap") (EVar "keyEntryOf")) (EVar "prog"))) (EVar "omEmpty")))
+(DFunDef false "buildKeyTable" ((PVar "prog")) (EApp (EApp (EVar "omMapValues") (EVar "reverseL")) (EApp (EApp (EVar "bucketKeyEntries") (EApp (EApp (EVar "flatMap") (EVar "keyEntryOf")) (EVar "prog"))) (EVar "omEmpty"))))
 (DTypeSig false "bucketKeyEntries" (TyFun (TyApp (TyCon "List") (TyCon "KeyEntry")) (TyFun (TyCon "KeyBuckets") (TyCon "KeyBuckets"))))
 (DFunDef false "bucketKeyEntries" ((PList) (PVar "acc")) (EVar "acc"))
-(DFunDef false "bucketKeyEntries" ((PCons (PCon "KeyEntry" (PVar "ms") (PVar "tag") (PVar "hty") (PVar "key")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EVar "KeyEntry") (EVar "ms")) (EVar "tag")) (EVar "hty")) (EVar "key"))) (DoExpr (EApp (EApp (EVar "bucketKeyEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "++" (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")) (EListLit (EVar "e")))) (EVar "acc"))))))
+(DFunDef false "bucketKeyEntries" ((PCons (PCon "KeyEntry" (PVar "ms") (PVar "tag") (PVar "hty") (PVar "key")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EVar "KeyEntry") (EVar "ms")) (EVar "tag")) (EVar "hty")) (EVar "key"))) (DoExpr (EApp (EApp (EVar "bucketKeyEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "::" (EVar "e") (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")))) (EVar "acc"))))))
 (DTypeSig false "keyEntryOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "KeyEntry"))))
 (DFunDef false "keyEntryOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "keyEntryOf") (EVar "d")))
 (DFunDef false "keyEntryOf" ((PRec "DImpl" ((rf "iface" None) (rf "tys" None) (rf "methods" None)) true)) (EMatch (EVar "tys") (arm (PCons (PVar "headTy") PWild) () (EMatch (EApp (EVar "headTyconTy") (EVar "headTy")) (arm (PCon "Some" (PVar "tag")) () (EListLit (EApp (EApp (EApp (EApp (EVar "KeyEntry") (EApp (EApp (EVar "map") (EVar "implMethodNameTc")) (EVar "methods"))) (EVar "tag")) (EVar "headTy")) (EApp (EApp (EVar "implKeyTc") (EVar "iface")) (EVar "tys"))))) (arm (PCon "None") () (EListLit)))) (arm (PList) () (EListLit))))
@@ -17665,7 +17672,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DUse false (UseGroup ("frontend" "exhaust") ((mem "Oracle" false) (mem "buildOracle" false) (mem "useful" false) (mem "patUnreachable" false) (mem "patHasRange" false) (mem "usefulWitness" false) (mem "renderWitness" false) (mem "desugarPat" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "mangledName" false))))
-(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omHasKey" false) (mem "omFromPairs" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omHasKey" false) (mem "omFromPairs" false) (mem "omMapValues" false))))
 (DUse false (UseGroup ("list") ((mem "replicate" false))))
 (DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "lookupAssoc" false) (mem "contains" false) (mem "endsWith" false) (mem "reverseL" false) (mem "joinWith" false) (mem "joinNl" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false) (mem "allList" false) (mem "initList" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "minI" false) (mem "isSome" false) (mem "zipL" false) (mem "dedup" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "escStr" false) (mem "editDistance" false))))
 (DData Public "Mono" () ((variant "TVar" (ConPos (TyApp (TyCon "Ref") (TyCon "Tyvar")))) (variant "TCon" (ConPos (TyCon "String"))) (variant "TApp" (ConPos (TyCon "Mono") (TyCon "Mono"))) (variant "TFun" (ConPos (TyCon "Mono") (TyCon "EffRow") (TyCon "Mono"))) (variant "TEff" (ConPos (TyCon "EffRow")))) ())
@@ -19927,10 +19934,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "bucketOf" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyVar "a"))) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "bucketOf" ((PVar "tag") (PVar "buckets")) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "tag")) (EVar "buckets"))))
 (DTypeSig false "buildImplTable" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ImplBuckets")))
-(DFunDef false "buildImplTable" ((PVar "prog")) (EApp (EApp (EVar "bucketImplEntries") (EApp (EApp (EDictApp "flatMap") (EVar "implEntryOf")) (EVar "prog"))) (EVar "omEmpty")))
+(DFunDef false "buildImplTable" ((PVar "prog")) (EApp (EApp (EVar "omMapValues") (EVar "reverseL")) (EApp (EApp (EVar "bucketImplEntries") (EApp (EApp (EDictApp "flatMap") (EVar "implEntryOf")) (EVar "prog"))) (EVar "omEmpty"))))
 (DTypeSig false "bucketImplEntries" (TyFun (TyApp (TyCon "List") (TyCon "ImplEntry")) (TyFun (TyCon "ImplBuckets") (TyCon "ImplBuckets"))))
 (DFunDef false "bucketImplEntries" ((PList) (PVar "acc")) (EVar "acc"))
-(DFunDef false "bucketImplEntries" ((PCons (PCon "ImplEntry" (PVar "tag") (PVar "ms") (PVar "hty") (PVar "reqs") (PVar "itys") (PVar "ifn")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "ImplEntry") (EVar "tag")) (EVar "ms")) (EVar "hty")) (EVar "reqs")) (EVar "itys")) (EVar "ifn"))) (DoExpr (EApp (EApp (EVar "bucketImplEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "++" (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")) (EListLit (EVar "e")))) (EVar "acc"))))))
+(DFunDef false "bucketImplEntries" ((PCons (PCon "ImplEntry" (PVar "tag") (PVar "ms") (PVar "hty") (PVar "reqs") (PVar "itys") (PVar "ifn")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "ImplEntry") (EVar "tag")) (EVar "ms")) (EVar "hty")) (EVar "reqs")) (EVar "itys")) (EVar "ifn"))) (DoExpr (EApp (EApp (EVar "bucketImplEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "::" (EVar "e") (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")))) (EVar "acc"))))))
 (DTypeSig false "implEntryOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "ImplEntry"))))
 (DFunDef false "implEntryOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "implEntryOf") (EVar "d")))
 (DFunDef false "implEntryOf" ((PRec "DImpl" ((rf "iface" None) (rf "tys" None) (rf "reqs" None) (rf "methods" None)) true)) (EMatch (EVar "reqs") (arm (PList) () (EListLit)) (arm PWild () (EApp (EApp (EApp (EApp (EVar "implEntryFromTys") (EVar "iface")) (EVar "tys")) (EVar "reqs")) (EVar "methods")))))
@@ -19942,10 +19949,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "implMethodNameTc" ((PCon "ImplMethod" (PVar "n") PWild PWild)) (EVar "n"))
 (DData Public "KeyEntry" () ((variant "KeyEntry" (ConPos (TyApp (TyCon "List") (TyCon "String")) (TyCon "String") (TyCon "Ty") (TyCon "String")))) ())
 (DTypeSig false "buildKeyTable" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "KeyBuckets")))
-(DFunDef false "buildKeyTable" ((PVar "prog")) (EApp (EApp (EVar "bucketKeyEntries") (EApp (EApp (EDictApp "flatMap") (EVar "keyEntryOf")) (EVar "prog"))) (EVar "omEmpty")))
+(DFunDef false "buildKeyTable" ((PVar "prog")) (EApp (EApp (EVar "omMapValues") (EVar "reverseL")) (EApp (EApp (EVar "bucketKeyEntries") (EApp (EApp (EDictApp "flatMap") (EVar "keyEntryOf")) (EVar "prog"))) (EVar "omEmpty"))))
 (DTypeSig false "bucketKeyEntries" (TyFun (TyApp (TyCon "List") (TyCon "KeyEntry")) (TyFun (TyCon "KeyBuckets") (TyCon "KeyBuckets"))))
 (DFunDef false "bucketKeyEntries" ((PList) (PVar "acc")) (EVar "acc"))
-(DFunDef false "bucketKeyEntries" ((PCons (PCon "KeyEntry" (PVar "ms") (PVar "tag") (PVar "hty") (PVar "key")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EVar "KeyEntry") (EVar "ms")) (EVar "tag")) (EVar "hty")) (EVar "key"))) (DoExpr (EApp (EApp (EVar "bucketKeyEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "++" (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")) (EListLit (EVar "e")))) (EVar "acc"))))))
+(DFunDef false "bucketKeyEntries" ((PCons (PCon "KeyEntry" (PVar "ms") (PVar "tag") (PVar "hty") (PVar "key")) (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EApp (EVar "KeyEntry") (EVar "ms")) (EVar "tag")) (EVar "hty")) (EVar "key"))) (DoExpr (EApp (EApp (EVar "bucketKeyEntries") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "tag")) (EBinOp "::" (EVar "e") (EApp (EApp (EVar "bucketOf") (EVar "tag")) (EVar "acc")))) (EVar "acc"))))))
 (DTypeSig false "keyEntryOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "KeyEntry"))))
 (DFunDef false "keyEntryOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "keyEntryOf") (EVar "d")))
 (DFunDef false "keyEntryOf" ((PRec "DImpl" ((rf "iface" None) (rf "tys" None) (rf "methods" None)) true)) (EMatch (EVar "tys") (arm (PCons (PVar "headTy") PWild) () (EMatch (EApp (EVar "headTyconTy") (EVar "headTy")) (arm (PCon "Some" (PVar "tag")) () (EListLit (EApp (EApp (EApp (EApp (EVar "KeyEntry") (EApp (EApp (EMethodRef "map") (EVar "implMethodNameTc")) (EVar "methods"))) (EVar "tag")) (EVar "headTy")) (EApp (EApp (EVar "implKeyTc") (EVar "iface")) (EVar "tys"))))) (arm (PCon "None") () (EListLit)))) (arm (PList) () (EListLit))))

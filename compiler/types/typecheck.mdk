@@ -72,6 +72,7 @@ import support.ordmap.{
   omLookup,
   omHasKey,
   omFromPairs,
+  omMapValues,
 }
 import list.{replicate}
 import support.util.{
@@ -8759,15 +8760,18 @@ bucketOf tag buckets = fromOption [] (omLookup tag buckets)
 -- build the table from the program's impls-with-requires (others need no dicts),
 -- bucketed by head tycon tag with each bucket in forward declaration order.
 buildImplTable : List Decl -> ImplBuckets
-buildImplTable prog = bucketImplEntries (flatMap implEntryOf prog) omEmpty
+buildImplTable prog =
+  omMapValues reverseL (bucketImplEntries (flatMap implEntryOf prog) omEmpty)
 
--- fold the flat, forward-ordered entry list into tag buckets, APPENDING so each
--- bucket preserves declaration order (first-match semantics).
+-- fold the flat, forward-ordered entry list into tag buckets by PREPENDING (O(1)
+-- per entry, vs O(bucket) tail-append → O(k²) for k same-tag entries).  Each
+-- bucket ends up in reverse declaration order; buildImplTable applies one
+-- `reverseL` per bucket to restore declaration order (first-match semantics).
 bucketImplEntries : List ImplEntry -> ImplBuckets -> ImplBuckets
 bucketImplEntries [] acc = acc
 bucketImplEntries ((ImplEntry tag ms hty reqs itys ifn)::rest) acc =
   let e = ImplEntry tag ms hty reqs itys ifn
-  bucketImplEntries rest (omInsert tag (bucketOf tag acc ++ [e]) acc)
+  bucketImplEntries rest (omInsert tag (e :: bucketOf tag acc) acc)
 
 implEntryOf : Decl -> List ImplEntry
 implEntryOf (DAttrib _ d) = implEntryOf d
@@ -8802,14 +8806,17 @@ implMethodNameTc (ImplMethod n _ _) = n
 public export data KeyEntry = KeyEntry (List String) String Ty String
 
 buildKeyTable : List Decl -> KeyBuckets
-buildKeyTable prog = bucketKeyEntries (flatMap keyEntryOf prog) omEmpty
+buildKeyTable prog =
+  omMapValues reverseL (bucketKeyEntries (flatMap keyEntryOf prog) omEmpty)
 
--- fold the flat, forward-ordered entry list into tag buckets (declaration order).
+-- fold the flat, forward-ordered entry list into tag buckets by PREPENDING (O(1)
+-- per entry; buildKeyTable applies one `reverseL` per bucket to restore
+-- declaration order).
 bucketKeyEntries : List KeyEntry -> KeyBuckets -> KeyBuckets
 bucketKeyEntries [] acc = acc
 bucketKeyEntries ((KeyEntry ms tag hty key)::rest) acc =
   let e = KeyEntry ms tag hty key
-  bucketKeyEntries rest (omInsert tag (bucketOf tag acc ++ [e]) acc)
+  bucketKeyEntries rest (omInsert tag (e :: bucketOf tag acc) acc)
 
 keyEntryOf : Decl -> List KeyEntry
 keyEntryOf (DAttrib _ d) = keyEntryOf d

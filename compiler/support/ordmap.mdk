@@ -5,7 +5,7 @@
 -- The `om*` helpers below are thin String-keyed wrappers kept for the existing
 -- call sites in types/typecheck.mdk, backend/llvm_emit.mdk, and support/util.mdk.
 
-import map.{Map(..), set, get, has, size, delete, keys}
+import map.{Map(..), set, get, has, size, delete, keys, mapWithKey}
 
 export type OrdMap a = Map String a
 
@@ -38,6 +38,12 @@ omKeys m = keys m
 export omFromNames : List String -> OrdMap Unit -> OrdMap Unit
 omFromNames [] m = m
 omFromNames (x::rest) m = omFromNames rest (omInsert x () m)
+
+-- Transform every value in place, preserving the exact tree shape and key set
+-- (structural `mapWithKey`, key ignored).  Used to finalise per-key list buckets
+-- that were built by prepend — one `reverseL` per bucket restores insert order.
+export omMapValues : (a -> b) -> OrdMap a -> OrdMap b
+omMapValues f m = mapWithKey (_ v => f v) m
 
 -- Generic key-value index.  NOTE: when used to memoise an assoc list whose
 -- first-match semantics matter, insert the list REVERSED so the first list
