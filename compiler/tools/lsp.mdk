@@ -442,8 +442,10 @@ implLabel : String -> String
 implLabel iface = stringConcat ["impl ", iface]
 
 -- Zip decls with positions (1:1; defensive truncation to the shorter list) and
--- collect the symbols.
-documentSymbols : String -> List Json
+-- collect the symbols.  Exported for `medaka_symbols` (#255) — parse-only, no
+-- typecheck, so it's a pure function of `src` and safe for the stateless MCP
+-- disk-read harness (mirrors `typeAtPoint`'s export shape).
+export documentSymbols : String -> List Json
 documentSymbols src = match parseWithPositionsOpt src
   None => []
   Some (decls, positions) => symbolsZip decls (positionsDecls positions)
@@ -1436,7 +1438,14 @@ handleDefinition idJson params docs =
       Some src => definitionResult uri src params
   writeMessage (responseMsg idJson result)
 
-definitionResult : String -> String -> Json -> Json
+-- Exported for `medaka_definition` (#255) — intra-file only: `definitionRange`
+-- scans decls in the SAME `src` it's given and never resolves an import, so a
+-- cross-file name simply falls through to `None` → `JNull`, never a wrong
+-- same-file match.  `uri` is echoed VERBATIM into the response's `range`'s
+-- sibling `uri` field — the MCP handler passes the caller's own `file` string
+-- through unmodified (no `uriOfPath` wrapping) so a relative request path stays
+-- relative in the result (path-stable for a golden).
+export definitionResult : String -> String -> Json -> Json
 definitionResult uri src params = match (positionLine params, positionChar params)
   (Some line, Some col) => match identifierAt src line col
     None => JNull
