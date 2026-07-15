@@ -71,6 +71,7 @@ import support.ordmap.{
   omInsert,
   omLookup,
   omHasKey,
+  omKeys,
   omFromPairs,
   omMapValues,
 }
@@ -1349,6 +1350,33 @@ shadowStandaloneSchemesRef = Ref []
 shadowKeyTableRef : Ref KeyBuckets
 shadowKeyTableRef = Ref omEmpty
 
+-- #154 PR1: PERSISTENT per-run universe accumulators for the multi-module path.
+-- checkBodyImpl's Module arm used to REBUILD, from the whole growing `fullUniverse`,
+-- four structures ONCE PER MODULE — the O(N²) the perf `modules` shape charted.  These
+-- four grow the same structures ONE module at a time instead (appended in
+-- checkBodyImpl's Module arm from that module's own decls, consulted right after).
+-- Each is read by MEMBERSHIP / EXISTENCE / by-unique-key LOOKUP only, so appending a
+-- module's contribution to the running table is byte-identical to rebuilding it over
+-- `fullUniverse` (which included prog0), AND idempotent — the accData/accAll overlap
+-- and the two elaborate sweeps re-append the same entries harmlessly.  They SURVIVE the
+-- per-module `resetState` (like the crossModule* accumulators) and are cleared per RUN
+-- by `resetCrossModuleState`; the core pass (also Module mode) seeds them.  The Flat
+-- path never touches them (it rebuilds over its whole `prog` — already O(N)).
+--   • the SET of every in-scope interface-method name (buildDefinerShadows / buildStandaloneShadows)
+universeIfaceMethodsRef : Ref (OrdMap Unit)
+universeIfaceMethodsRef = Ref omEmpty
+--   • the SET of every in-scope top-level funDef name (buildStandaloneShadows' importedFns)
+universeFunNamesRef : Ref (OrdMap Unit)
+universeFunNamesRef = Ref omEmpty
+--   • the impl KEY buckets (implExistsForHead's existence table — order/dup-insensitive,
+--     so NOT reverseL'd: only the two boolean `implExistsForHead` reads consult it)
+universeKeyBucketsRef : Ref KeyBuckets
+universeKeyBucketsRef = Ref omEmpty
+--   • interface name → its REQUIRED-method names (checkImplCompleteness' ifaceRequiredMethods).
+--     Interface names are globally unique, so last-write-wins omInsert == first-match scan.
+universeIfaceRequiredRef : Ref (OrdMap (List String))
+universeIfaceRequiredRef = Ref omEmpty
+
 -- P0-19 (constrained-receiver arm): the `=>`-constraint variables of the top-level
 -- group CURRENTLY being inferred, as (interface name, the constraint's instantiated
 -- mono).  Set by processSCC between preunifySigsEx (which instantiates the sigs) and
@@ -1811,7 +1839,15 @@ resetCrossModuleState _ =
   let _ = setRef crossModuleFunConstraintIfacesRef []
   let _ = setRef crossModuleFunConstraintIfacesQualRef []
   let _ = setRef crossModuleMethodConstraintsRef []
-  setRef crossModuleMethodConstraintsQualRef []
+  let _ = setRef crossModuleMethodConstraintsQualRef []
+  -- #154 PR1: the per-run universe accumulators share this reset boundary (called at
+  -- the top of every multi-module entry).  Clearing them here — NOT in resetState —
+  -- keeps them alive across the per-module resets while preventing run K+1 from
+  -- inheriting run K's universe.
+  let _ = setRef universeIfaceMethodsRef omEmpty
+  let _ = setRef universeFunNamesRef omEmpty
+  let _ = setRef universeKeyBucketsRef omEmpty
+  setRef universeIfaceRequiredRef omEmpty
 
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
@@ -8468,6 +8504,43 @@ requiredMethodNames ((IfaceMethod n _ None)::rest) =
 requiredMethodNames ((IfaceMethod _ _ (Some _))::rest) =
   requiredMethodNames rest
 
+-- #154 PR1: the multi-module analogue of checkImplCompleteness — identical, but the
+-- per-impl `ifaceRequiredMethods fullUniverse iface` O(N) scan is replaced by an O(log N)
+-- lookup in the persistent iface→required-methods map (universeIfaceRequiredRef).  The
+-- map holds one entry per interface in the module universe (core + earlier modules +
+-- this one), so a `None` here means the interface is genuinely out of scope — exactly
+-- as the scan's `None` did.  Interface names are globally unique, so the map's
+-- last-write-wins carries the same required-method list the scan's first-match returned.
+checkImplCompletenessMap : OrdMap (List String) -> List Decl -> Unit
+checkImplCompletenessMap reqMap iterDecls =
+  foreachUnit
+    pushIncompleteImpl
+    (flatMap (implCompletenessMsgsOfMap reqMap) iterDecls)
+
+implCompletenessMsgsOfMap : OrdMap (List String) -> Decl -> List (Option Loc, String)
+implCompletenessMsgsOfMap reqMap (DAttrib _ d) =
+  implCompletenessMsgsOfMap reqMap d
+implCompletenessMsgsOfMap reqMap DImpl { iface, tys, methods, ... } =
+  match omLookup iface reqMap
+    None => []   -- unknown interface (reported elsewhere) → skip
+    Some required =>
+      let defined = map implMethodName methods
+      let loc = firstImplMethodLoc methods
+      map
+        (m => (loc, missingImplMethodMsg iface tys m))
+        (filter (m => not (contains m defined)) required)
+implCompletenessMsgsOfMap _ _ = []
+
+-- #154 PR1: fold each interface in [prog] into the required-methods map.  Mirrors
+-- ifaceRequiredMethods' DAttrib-unwrapping + `requiredMethodNames methods` value.
+insertIfaceRequired : List Decl -> OrdMap (List String) -> OrdMap (List String)
+insertIfaceRequired [] m = m
+insertIfaceRequired ((DAttrib _ d)::rest) m =
+  insertIfaceRequired rest (insertIfaceRequired [d] m)
+insertIfaceRequired ((DInterface { name, methods, ... })::rest) m =
+  insertIfaceRequired rest (omInsert name (requiredMethodNames methods) m)
+insertIfaceRequired (_::rest) m = insertIfaceRequired rest m
+
 missingImplMethodMsg : String -> List Ty -> String -> String
 missingImplMethodMsg iface tys method = "'impl \{iface} \{joinWith " " (map ppTyAtom tys)}' is missing method '\{method}'. Every interface method without a default body must be implemented — define '\{method}' in the impl (or check for a typo in a method name)"
 
@@ -10111,18 +10184,35 @@ checkBodyImpl seed mode prog0 =
     Module _ _ _ => ()
   let _ = checkEffectParams prog
   let _ = checkLetRecDecls prog
+  -- #154 PR1: on the Module path, grow the persistent universe accumulators by THIS
+  -- module's decls BEFORE the shadow/key reads below consult them — so they see the
+  -- same universe `fullUniverse` (which appended prog0) did.  The Flat path leaves them
+  -- untouched and rebuilds over its whole `prog` (already O(N)).
+  let _ = match mode
+    Flat _ => ()
+    Module _ _ _ => appendUniverseAccums prog0
   -- (#4) shadows.  definerShadows uses the SHARED form — buildDefinerShadows over the
   -- full visible universe, scoped to THIS module's decls (prog0).  On Flat, prog0 =
   -- userProg and fullUniverse = prog, so this is exactly the old flat `buildDefinerShadows
-  -- prog userProg`.  importerShadows exist only across a module boundary.
-  let definerShadows = buildDefinerShadows fullUniverse prog0
+  -- prog userProg`.  #154 PR1: the Module path reads the accumulated interface-method
+  -- SET instead (byte-identical membership).  importerShadows exist only across a module
+  -- boundary; the `Module _ _ []` arm (cmCheckWorker / core pass, implDecls = []) keeps
+  -- the old empty result — `funDefs [] = []` gave no imported fns there.
+  let definerShadows = match mode
+    Flat _ => buildDefinerShadows fullUniverse prog0
+    Module _ _ _ => definerShadowsFromSet universeIfaceMethodsRef.value prog0
   let importerShadows = match mode
     Flat _ => []
-    Module _ _ implDecls => buildStandaloneShadows implDecls prog
+    Module _ _ [] => []
+    Module _ _ _ => standaloneShadowsFromSet universeIfaceMethodsRef.value universeFunNamesRef.value prog0
   let sigs = sigsOf prog
   let _ = setRef definerShadowNamesRef definerShadows
   let _ = setRef definerShadowSigsRef sigs
-  let _ = setRef shadowKeyTableRef (buildKeyTable fullUniverse)
+  -- #154 PR1: implExistsForHead's existence table — the accumulated buckets on the
+  -- Module path (existence is order/dup-insensitive), the per-program rebuild on Flat.
+  let _ = match mode
+    Flat _ => setRef shadowKeyTableRef (buildKeyTable fullUniverse)
+    Module _ _ _ => setRef shadowKeyTableRef universeKeyBucketsRef.value
   -- (#4 + #3-restore) mode-specific pre-inference ref setup (all pure/independent of the
   -- register+globalS block below, so order-safe).  Flat arms the per-body shadow-scoping
   -- toggles; Module installs importer-shadow state and restores the cross-module dict
@@ -10214,7 +10304,11 @@ checkBodyImpl seed mode prog0 =
         (attributeMethodModuleArities mid prog methodConstraintsRef.value ++ crossModuleMethodConstraintsQualRef.value)
       ()
   let _ = groundMultiParamObligations groundUniverse pendingImplObligations.value
-  let _ = checkImplCompleteness fullUniverse prog   -- P0-17: impl missing a required method
+  -- P0-17: impl missing a required method.  #154 PR1: the Module path looks the required
+  -- methods up in the accumulated iface→required map instead of rescanning fullUniverse.
+  let _ = match mode
+    Flat _ => checkImplCompleteness fullUniverse prog
+    Module _ _ _ => checkImplCompletenessMap universeIfaceRequiredRef.value prog
   -- (#5 / BREAK #2) obligation gate.  FLAT runs checkImplObligations + setNumlitFloats
   -- UNCONDITIONALLY (flat-emit via elaborateDict needs the Float int-literal stamp — its
   -- resolve chain doesn't redo it).  MODULE runs them iff `not implInferEnabled` (the emit
@@ -12650,32 +12744,6 @@ allIfaceMethodNames ((DInterface { methods, ... })::rest) = ifaceMethodNames met
   ++ allIfaceMethodNames rest
 allIfaceMethodNames (_::rest) = allIfaceMethodNames rest
 
--- C5: the standalone-shadows-method set for THIS module.  A name qualifies when it
--- is (a) a top-level standalone funDef in the FULL graph [implDecls], (b) an interface
--- method name, and (c) NOT defined in the current module [prog] (a same-module def
--- shadows the method through ordinary scoping, taking the non-RLocal EVar path — only
--- the CROSS-module import is the RLocal case).  Mirrors lib/typecheck.ml's
--- standalone_values ∩ method_iface, minus env.locals.
-buildStandaloneShadows : List Decl -> List Decl -> List String
-buildStandaloneShadows implDecls prog =
-  -- P0-18 (importer residual, check path): scan interface methods across BOTH the
-  -- imported universe [implDecls] AND this module [prog] — the shadowed interface may
-  -- be defined LOCALLY in the importing module (e.g. `import prov.{size}` where THIS
-  -- module declares `interface Sizeable a where size : a -> Int`).  With only
-  -- [implDecls] the local interface's `size` was invisible, so the imported standalone
-  -- was not recognised as an importer shadow → recordImplObligation fired a spurious
-  -- `No impl of Sizeable for Int` on a no-impl receiver (`size 3`) that `run`
-  -- correctly resolved to the standalone.  EMIT path is unaffected: there the method
-  -- names are bare but the imported funDefs are mangled (`<mid>__size`), so the
-  -- intersection stays empty (the emit-side importer routing is recovered separately
-  -- via the mark-seeded RLocal route in definerShadowArgHead).
-  let methodNames = allIfaceMethodNames (implDecls ++ prog)
-  let localNames = map fst (funDefs prog)
-  let importedFns = map fst (funDefs implDecls)
-  filter
-    (n => contains n methodNames && contains n importedFns && not (contains n localNames))
-    (dedup importedFns)
-
 -- C5 (DEFINER shadow): the names THIS module declares as a top-level funDef that
 -- ALSO name an interface method visible in [implDecls] (the imported prelude/core).
 -- E.g. map-as-root defines `toList`/`isEmpty`, which shadow Foldable's methods.  The
@@ -12706,6 +12774,54 @@ buildDefinerShadows implDecls prog =
     Some bare => [bare]
     None => []) localNames
   removeAllS (localBoundNames prog) (dedup (direct ++ bares))
+
+-- #154 PR1: fold THIS module's decls into the four persistent universe accumulators
+-- (see their declarations near shadowKeyTableRef).  Called from checkBodyImpl's Module
+-- arm BEFORE the shadow/key/completeness reads, so this module's own decls are visible
+-- there — exactly as `fullUniverse` (which appended prog0) was.  keyEntryOf/bucketKeyEntries
+-- and requiredMethodNames are the SAME builders buildKeyTable / ifaceRequiredMethods use,
+-- so the accumulated tables are entry-for-entry the per-module rebuild.
+appendUniverseAccums : List Decl -> Unit
+appendUniverseAccums prog =
+  let _ = setRef universeIfaceMethodsRef (namesToSet (allIfaceMethodNames prog) universeIfaceMethodsRef.value)
+  let _ = setRef universeFunNamesRef (namesToSet (map fst (funDefs prog)) universeFunNamesRef.value)
+  let _ = setRef universeKeyBucketsRef (bucketKeyEntries (flatMap keyEntryOf prog) universeKeyBucketsRef.value)
+  setRef
+    universeIfaceRequiredRef
+    (insertIfaceRequired prog universeIfaceRequiredRef.value)
+
+-- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
+-- replaced by the persistent interface-method membership SET.  `direct` still filters
+-- THIS module's localNames in declaration order, so `omHasKey n ifaceSet` is a
+-- point-for-point substitute for `contains n methodNames` — same set, same order,
+-- byte-identical output.
+definerShadowsFromSet : OrdMap Unit -> List Decl -> List String
+definerShadowsFromSet ifaceSet prog =
+  let localNames = dedup (map fst (funDefs prog))
+  let direct = filter (n => omHasKey n ifaceSet) localNames
+  let bares = flatMap (n => match lookupAssoc n mangledShadowMapRef.value
+    Some bare => [bare]
+    None => []) localNames
+  removeAllS (localBoundNames prog) (dedup (direct ++ bares))
+
+-- #154 PR1: buildStandaloneShadows with BOTH O(N) universe scans
+-- (`allIfaceMethodNames (implDecls ++ prog)` and `funDefs implDecls`) replaced by the
+-- persistent interface-method and top-level-fn membership sets.  A name qualifies when
+-- it is a universe fn, an interface method, and NOT defined in THIS module — the
+-- `not (contains n localNames)` guard drops both this module's own funDefs (which the
+-- set now includes) exactly as the original excluded them, so the result set is
+-- identical.  It is consumed only by membership (standaloneValuesRef) and by unique-name
+-- first-match lookup (shadowStandaloneSchemesRef), so the sorted `omKeys` iteration order
+-- is immaterial to every downstream reader.  P0-18 (a shadowed interface declared
+-- LOCALLY in the importing module) is preserved: appendUniverseAccums folds prog0's own
+-- interface methods into the set, so a local `interface Sizeable … size` is visible here
+-- exactly as the old `allIfaceMethodNames (implDecls ++ prog)` (which included prog) made it.
+standaloneShadowsFromSet : OrdMap Unit -> OrdMap Unit -> List Decl -> List String
+standaloneShadowsFromSet ifaceSet fnSet prog =
+  let localNames = map fst (funDefs prog)
+  filter
+    (n => omHasKey n ifaceSet && not (contains n localNames))
+    (omKeys fnSet)
 
 -- C5: graph-wide standalone-shadow names — every top-level funDef name in [userDecls]
 -- (the user modules, NOT core) that is also an interface method name anywhere in

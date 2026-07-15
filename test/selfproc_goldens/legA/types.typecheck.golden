@@ -54,6 +54,7 @@ appFallback : List (String, Ref Effvar) -> List (String, Mono) -> String -> List
 appSpineArgCount : Expr -> Int
 appSpineName : Expr -> Option String
 appendOp : Mono -> Mono -> Mono
+appendUniverseAccums : List Decl -> Unit
 applyParams : Mono -> List Mono -> Mono
 argDispatchIdxRef : Ref (List (String, Int))
 argDispatchIndices : List Decl -> List (String, Int)
@@ -121,7 +122,6 @@ buildAliasGraphEntry : List String -> (String, (List String, Ty)) -> (String, Li
 buildDefinerShadows : List Decl -> List Decl -> List String
 buildImplTable : List Decl -> Map String (List ImplEntry)
 buildKeyTable : List Decl -> Map String (List KeyEntry)
-buildStandaloneShadows : List Decl -> List Decl -> List String
 buildStandaloneShadowsGraph : List Decl -> List Decl -> List String
 buildTupleCallHint : String -> List Expr -> Expr -> Expr -> (String, Option (Loc, String))
 censusSuperClose : List Decl -> List (String, Int) -> List (String, Int)
@@ -140,6 +140,7 @@ checkEffectParamsTy : Ty -> Unit
 checkEffectParamsTys : List Ty -> Unit
 checkErrorsWithRuntime : List Decl -> List Decl -> List Decl -> Bool
 checkImplCompleteness : List Decl -> List Decl -> Unit
+checkImplCompletenessMap : Map String (List String) -> List Decl -> Unit
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> Unit
 checkImplObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> Unit
 checkInterfaceCycles : List Decl -> Unit
@@ -312,6 +313,7 @@ definerShadowHeadType : TcEnv -> String -> Expr -> Mono
 definerShadowNamesRef : Ref (List String)
 definerShadowSigsRef : Ref (List (String, Ty))
 definerShadowVarHead : Expr -> Option String
+definerShadowsFromSet : Map String Unit -> List Decl -> List String
 depGraphMap : List String -> Map String (List (List Pat, Expr)) -> Map String (List String)
 depReaches : List String -> String -> String -> List (String, List Decl) -> Bool
 depsOf : String -> Map String Unit -> Map String (List (List Pat, Expr)) -> List String
@@ -524,6 +526,7 @@ ifaceRequiredMethods : List Decl -> String -> Option (List String)
 ifaceSelfAndSupers : String -> List String
 ifaceSupersOf : List Decl -> String -> Option (List String, List Super)
 implCompletenessMsgsOf : List Decl -> Decl -> List (Option Loc, String)
+implCompletenessMsgsOfMap : Map String (List String) -> Decl -> List (Option Loc, String)
 implCountForIface : List (String, List Ty) -> String -> Int
 implDeclWithReqs : Decl -> List (String, List Ty, List Require)
 implDeclsWithReqs : List Decl -> List (String, List Ty, List Require)
@@ -657,6 +660,7 @@ inferredIfacePairs : String -> List Int -> List (String, Int)
 initialEnv : TcEnv
 innerDefaultMethod : String -> String
 insertAxis : (String, Param) -> List (String, Param) -> List (String, Param)
+insertIfaceRequired : List Decl -> Map String (List String) -> Map String (List String)
 instantiate : Scheme -> Mono
 instantiateRecord : RecordInfo -> (Mono, List (String, Mono))
 instantiateSigTracked : Ty -> (Mono, List (String, Mono))
@@ -1154,6 +1158,7 @@ standaloneSchemeFor : TcEnv -> String -> String -> Option Scheme
 standaloneShadowDomain : String -> Option Mono
 standaloneShadowScheme : String -> Option Mono
 standaloneShadowSigTy : String -> String -> Option Ty
+standaloneShadowsFromSet : Map String Unit -> Map String Unit -> List Decl -> List String
 standaloneValuesRef : Ref (List String)
 strHasSlash : String -> Bool
 strHasSlashGo : String -> Int -> Int -> Bool
@@ -1268,6 +1273,10 @@ unifyStandaloneDomain : Mono -> Mono -> Option Loc -> Unit
 unifyVars : Ref Tyvar -> Ref Tyvar -> Unit
 uniqueImplTysFor : List Decl -> String -> String -> Option (List Ty)
 unitMangledShadows : List String -> (String, List Decl) -> List (String, String)
+universeFunNamesRef : Ref (Map String Unit)
+universeIfaceMethodsRef : Ref (Map String Unit)
+universeIfaceRequiredRef : Ref (Map String (List String))
+universeKeyBucketsRef : Ref (Map String (List KeyEntry))
 unknownCtorMsg : String -> String
 unknownFieldFresh : String -> String -> List String -> Mono
 unknownFieldMsg : String -> String -> String
