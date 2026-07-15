@@ -123,7 +123,7 @@ only the non-exhaustive-match warnings.
 sh test/diff_compiler_snapshot_frontend.sh    # lexer (# TOKENS) + parse/desugar/mark snapshots
 sh test/diff_compiler_parse_errors.sh         # parser/lexer rejection path (~0.4s)
 sh test/diff_compiler_check_match.sh          # type-aware non-exhaustive-match warnings vs diagdump --check-match (11 fixtures)
-sh test/diff_compiler_eval_errors.sh          # eval runtime-error messages vs reference (~1s)
+sh test/diff_compiler_snapshot_eval_errors.sh # eval runtime-error messages, in-process # CRASH snapshot (~1s)
 sh test/diff_compiler_typecheck_errors.sh     # typecheck TYPE ERROR accumulation (3 fixtures × 2 drivers, ~1s)
 sh test/diff_compiler_selfproc.sh             # the bootstrap (#3) self-processing gate (4 legs, ~18s)
 sh test/diff_compiler_core_ir.sh              # Stage 2 §2.1 Core IR equivalence gate — engine corpus (19, incl. §2.3 item 3 effect_poly)
@@ -1339,9 +1339,10 @@ gap in fidelity. Concretely, by stage:
   index/slice OOB messages now include the index value / coordinate range;
   `"index: bad operands"` → `"index is not an Int"` / `"index on non-array/list/string"`;
   etc. — 15 sites fixed, 15 sites confirmed already matching. Validated by
-  `test/diff_compiler_eval_errors.sh` (8 runtime-reachable negative fixtures in
-  `test/eval_error_fixtures/`; three-stage check: oracle stability → compiler
-  exits non-zero → compiler message matches golden).
+  `test/diff_compiler_snapshot_eval_errors.sh` (9 negative fixtures in
+  `test/eval_error_fixtures/`; the in-process snapshot pins each fixture's coded
+  runtime diagnostic in its `# CRASH` section — 8 real aborts plus no_main's static
+  E-NO-MAIN — replacing the old probe's oracle/exit/message check).
 
 **Shared-limitation non-gaps (ruled out, recorded so they aren't re-investigated):**
 float exponent notation (`1.0e10`, `1.5e-8`) is *not* a compiler gap — **neither**
