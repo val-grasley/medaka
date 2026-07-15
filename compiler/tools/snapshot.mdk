@@ -189,7 +189,7 @@ import types.typecheck.{
   hadMatchWarnings,
   resetTypeErrorsSticky,
 }
-import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
+import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp, noMainMsg}
 import backend.llvm_emit.{
   emitProgram,
   installReturnsSelf,
@@ -716,10 +716,20 @@ workerStages root sel runtimeDecls coreDecls decls =
   --
   -- Most front-end fixtures (the whole parse/desugar corpus) are decl soup with no
   -- entry point, and both the interpreter (E-NO-MAIN) and the emitter's main-hint
-  -- installers assume one.  Running them anyway would make "no main" indistinguishable
-  -- from a real crash and would fire the crash-resume machinery on the common case.
-  -- A fixture with no main simply has no EVAL/LLVM/WASM to show, so those sections are
-  -- OMITTED — absent, not empty.
+  -- installers assume one.  Actually RUNNING them would fire the crash-resume machinery
+  -- on the common case (a real SIGSEGV mid-chunk, costing a respawn) and — for the
+  -- LLVM/WASM emitters, whose main-hint installers assume a `main` — could misbehave in
+  -- ways that are hard to distinguish from a real crash.  So the runnable stages are
+  -- OMITTED for a no-`main` fixture — with ONE exception:
+  --
+  -- when `# EVAL` is explicitly requested (only the eval-family gates do, never the
+  -- parse/desugar corpus), a no-`main` program's OBSERVABLE behaviour under `medaka run`
+  -- IS the E-NO-MAIN runtime error — that is the whole point of test/eval_error_fixtures/
+  -- no_main.mdk.  We surface it as a STATIC `# CRASH` diagnostic (the exact text
+  -- `runtimePanic "E-NO-MAIN" noMainMsg` prints, envelope inlined from eval.mdk:1754,
+  -- message reused from `noMainMsg` so it cannot drift) rather than by actually letting
+  -- the interpreter abort — a static emit is byte-identical to the real crash's
+  -- normalized `# CRASH` but costs zero respawns and never trips crash-resume.
   if hasMain d then
     -- EMIT first ... then EVAL, dead last.
     --
@@ -734,7 +744,10 @@ workerStages root sel runtimeDecls coreDecls decls =
       ()
     if wants sel "EVAL" then emitSection root "EVAL" (evalOf runtimeDecls coreDecls d) else ()
   else
-    ()
+    if wants sel "EVAL" then
+      emitDiagSection root "CRASH" ":0:0: runtime error [E-NO-MAIN]: \{noMainMsg}\n"
+    else
+      ()
 
 -- `# TYPES` is diagnostic-bearing exactly when the pass it just ran accumulated an error
 -- or a warning — so the tag is decided from `typesOf`'s second component, not from the
