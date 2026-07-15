@@ -51,6 +51,7 @@ for req in "$FIXDIR"/*.jsonl; do
 
   tmpout="$(mktemp)"
   perl -e 'alarm 30; exec @ARGV' "$MEDAKA" mcp < "$req" > "$tmpout" 2>/dev/null
+  rc=$?
   self_out="$(cat "$tmpout")"
   rm -f "$tmpout"
 
@@ -65,7 +66,19 @@ for req in "$FIXDIR"/*.jsonl; do
   fi
   want_out="$(cat "$golden")"
 
-  if [ "$self_out" = "$want_out" ]; then
+  # A fixture passes ONLY when the server exits 0 AND its stdout matches the
+  # golden.  Checking the exit code is not inert once #248 puts real
+  # compiler-pipeline code behind tools/call: a tool that emits its correct
+  # response lines and THEN segfaults/panics before the loop's clean EOF exit
+  # would still match the golden — the "gate passes over a crashed process"
+  # failure mode.  A nonzero rc also catches the SIGALRM timeout kill (hung
+  # server → rc ~142), which truncated-output-≠-golden would not reliably.
+  # A crash is reported DISTINCTLY from a diff mismatch so a later #248
+  # debugger can tell "crashed" from "wrong output" at a glance.
+  if [ "$rc" -ne 0 ]; then
+    fail=$((fail+1)); printf 'FAIL %s: medaka mcp exited %d\n' "$name" "$rc"
+    printf '  self:   %s\n' "$self_out"
+  elif [ "$self_out" = "$want_out" ]; then
     pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else
     fail=$((fail+1)); printf 'FAIL %s\n' "$name"
