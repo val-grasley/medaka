@@ -269,7 +269,7 @@ already exposes for the LSP) **individually**, so a malformed example — blockq
 becomes one located `ERROR <file>:<line>: …` in that file's report instead of an uncatchable panic
 that zeroes every OTHER example in the file. See `compiler/tools/doctest.mdk`
 (`buildSynthResults`/`synthOne`/`oneResult`) and `compiler/tools/test_cmd.mdk`. Regression fixture:
-`test/doctest_fixtures/blockquote_and_valid.mdk` (gate: `test/diff_compiler_doctest.sh`).
+`test/compiler_test_fixtures/blockquote_and_valid.mdk` (gate: `test/diff_compiler_test.sh`).
 
 ### B9 🟡 REPORTED — the tree is not `fmt`-clean under its own compiler
 The `arr.[i]` → `arr[i]` Index migration landed in the compiler but never swept the tree, so
