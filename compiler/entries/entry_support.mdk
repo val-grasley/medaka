@@ -157,7 +157,7 @@ evalTypedString runtimeDecls preludeDecls userDecls =
 -- DICT-PASSING path: routes through the 1-module case of the multi-module path
 -- (elaborateOne owns the dict-set + per-module eval).  Byte-identical to the TYPED
 -- path here — the difference is elaboration-internal.  Shared by eval_dict_main +
--- eval_dict_batch + argstamp_parity_probe.
+-- eval_dict_batch.
 export evalDictString : List Decl -> List Decl -> List Decl -> String
 evalDictString runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls

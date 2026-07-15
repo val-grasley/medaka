@@ -59,7 +59,6 @@ test/error_quality_fixtures/capture   captures the error-quality baseline .out g
 test/bench                     perf harness. Reports numbers; asserts nothing.
 test/profile_compiler          per-stage time/allocation profiler.
 test/tmc_census                emits the TMC census that diff_compiler_tmc_parity CONSUMES.
-test/argstamp_parity_probe     an investigation probe from the argstamp arc.
 test/wasm/w1                   a scratch wasm probe.
 
 # ── sqlite (the GATES are sqlite/test/*_oracle.sh — those are in the `sqlite` shard) ──
