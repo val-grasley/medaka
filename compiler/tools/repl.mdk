@@ -36,7 +36,14 @@ import types.typecheck.{
   ppScheme,
   Scheme(..),
 }
-import eval.eval.{Value(..), evalOneRootEnv, ppValue, lookupBinding, force}
+import eval.eval.{
+  Value(..),
+  evalOneRootEnvWith,
+  testCapableExterns,
+  ppValue,
+  lookupBinding,
+  force,
+}
 import support.util.{contains, startsWith, stringTrim}
 
 -- ── Session state ─────────────────────────────────────────────────────────
@@ -212,7 +219,7 @@ runPipeline combined =
         e::_ => (map ((_, m, _) => m) tcErrs, [], [])
         [] =>
           let allSchemes = checkProgramSchemes preludeDecls combined
-          let bindings = evalOneRootEnv preludeDecls ("__repl__", combined)
+          let bindings = evalOneRootEnvWith (testCapableExterns ()) preludeDecls ("__repl__", combined)
           ([], allSchemes, bindings)
 -- DRIVER-COLLAPSE Phase 3/4: eval via the 1-module wrapper (evalOneRootEnv
 -- = evalModulesRootEnv over [("__repl__", combined)]) instead of the flat

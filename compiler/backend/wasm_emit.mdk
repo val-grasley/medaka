@@ -237,6 +237,7 @@ import backend.wasm_preamble.{
   hashRuntimeLines,
   hashStringRuntimeLines,
   floatFmtImportLines,
+  mathHostImportLines,
   floatRuntimeLines,
   hashFloatRuntimeLines,
   randomFloatRuntimeLines,
@@ -608,6 +609,14 @@ useFloatRef = Ref False
 useFloatHashRef : Ref Bool
 useFloatHashRef = Ref False
 
+-- #101: the program uses a libm math extern that lowers to a JS `Math.*` HOST IMPORT
+-- (a transcendental or pow/atan2/hypot — see isMathHostExternW).  Gates the
+-- mathHostImportLines block (the $mdk_sin/$mdk_pow/… imports the JS harnesses provide).
+-- The IEEE-exact ops (sqrt/floor/ceil/trunc/round) and floatRem need no host import, so
+-- they force useFloatRef only, never this.
+useMathRef : Ref Bool
+useMathRef = Ref False
+
 useFloatRngRef : Ref Bool
 useFloatRngRef = Ref False
 
@@ -793,6 +802,7 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef useFloatRef False
   let _ = setRef useFloatHashRef False
   let _ = setRef useFloatRngRef False
+  let _ = setRef useMathRef False
   let _ = setRef useFloatStrRef False
   let _ = setRef useStrSearchRef False
   let _ = setRef useValueCmpRef False
@@ -862,6 +872,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let _ = setRef useFloatRef False
   let _ = setRef useFloatHashRef False
   let _ = setRef useFloatRngRef False
+  let _ = setRef useMathRef False
   let _ = setRef useFloatStrRef False
   let _ = setRef useStrSearchRef False
   let _ = setRef useValueCmpRef False
@@ -1012,7 +1023,56 @@ isLeafExternW name = contains name [
   "indexError",
   -- stage-A: bitwise / shift externs (Int -> Int -> Int).  Pure i64 ops over the
   -- box/unbox seam; no $str/$arr/$float dependencies.
-  "bitAnd", "shiftLeft", "shiftRight"]
+  "bitAnd", "shiftLeft", "shiftRight",
+  -- #101: bitwise completion — bitOr/bitXor (i64.or/i64.xor) + bitNot (i64.xor -1);
+  -- intBitsToFloat (f64.reinterpret_i64 → boxed $float).  Mirror llvm isBitExtern +
+  -- the intBitsToFloat num-extern.  bitOr/bitXor/bitNot are exact i64 two's-complement
+  -- (== native mdk_bit_*); intBitsToFloat reinterprets the unboxed i64 bit pattern.
+  "bitOr", "bitXor", "bitNot", "intBitsToFloat",
+  -- #101: libm math externs.  IEEE-exact ops lower to native f64 opcodes
+  -- (sqrt/floor/ceil/trunc → f64.sqrt/floor/ceil/trunc; round → $mdk_round, C-round
+  -- half-away-from-zero); transcendentals lower to JS `Math.*` HOST IMPORTS ($mdk_<name>,
+  -- gated on useMathRef).  floatRem lowers to $mdk_float_rem (already in floatRuntime).
+  -- All mirror llvm's isMathUnary/isMathBinary/floatRem NAME SET (see llvm_emit.mdk).
+  "sqrt", "floor", "ceil", "trunc", "round",
+  "cbrt", "exp", "log", "log2", "log10",
+  "sin", "cos", "tan", "asin", "acos", "atan",
+  "sinh", "cosh", "tanh",
+  "pow", "atan2", "hypot", "floatRem"]
+
+-- #101: the libm math externs whose wasm lowering is a JS `Math.*` HOST IMPORT
+-- (transcendentals + the two-arg pow/atan2/hypot).  These force useMathRef so the
+-- mathHostImportLines block is declared (and the JS harnesses provide $mdk_<name>).
+-- The IEEE-exact ops (sqrt/floor/ceil/trunc/round) are NOT here — they lower to native
+-- f64 opcodes / $mdk_round, needing no host import.  floatRem uses $mdk_float_rem (WAT).
+isMathHostExternW : String -> Bool
+isMathHostExternW name = contains
+  name
+  [
+    "cbrt",
+    "exp",
+    "log",
+    "log2",
+    "log10",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "sinh",
+    "cosh",
+    "tanh",
+    "pow",
+    "atan2",
+    "hypot",
+  ]
+
+-- #101: the libm math externs that produce/consume a boxed $float (all of them except
+-- the pure-int bitwise ops).  Force useFloatRef so ref-mode + floatRuntimeLines are on.
+isFloatMathExternW : String -> Bool
+isFloatMathExternW name = isMathHostExternW name
+  || contains name ["sqrt", "floor", "ceil", "trunc", "round", "floatRem", "intBitsToFloat"]
 
 -- Net externs (NET-DESIGN.md §6): native-only.  Raw BSD sockets have no WasmGC
 -- equivalent, so `medaka build --target wasm` must REJECT a net-importing program
@@ -1068,6 +1128,13 @@ externArityW name =
     "readFile", "fileExists", "getEnv", "exit", "args",
     -- stage-D: readFileBytes : String -> Result String (Array Int) (1-arg).
     "readFileBytes",
+    -- #101: bitNot / intBitsToFloat are 1-arg (Int -> Int / Int -> Float).
+    "bitNot", "intBitsToFloat",
+    -- #101: the 1-arg libm math externs (unary Float -> Float).
+    "sqrt", "floor", "ceil", "trunc", "round",
+    "cbrt", "exp", "log", "log2", "log10",
+    "sin", "cos", "tan", "asin", "acos", "atan",
+    "sinh", "cosh", "tanh",
     -- layer-6: stringToFloat : String -> Option Float (1-arg).
     "stringToFloat"] then 1
   else if contains name ["randomInt", "stringIndexOf", "stringCompare",
@@ -1077,6 +1144,9 @@ externArityW name =
     "bitAnd", "shiftLeft", "shiftRight", "arrayFill",
     -- stage-B: bytesToFloat64 : Array Int -> Int -> Float (2-arg).
     "bytesToFloat64",
+    -- #101: bitOr/bitXor (Int->Int->Int) + the 2-arg libm math (pow/atan2/hypot) +
+    -- floatRem (Float->Float->Float).
+    "bitOr", "bitXor", "pow", "atan2", "hypot", "floatRem",
     -- stage-D: writeFileBytes : String -> Array Int -> Result String Unit (2-arg).
     "writeFileBytes"] then 2
   else if contains name ["stringSlice", "arraySetUnsafe"] then 3
@@ -1284,6 +1354,12 @@ noteW8Extern name =
   -- W8b: Float externs force the Float runtime (+ ref-mode + $str for floatToString).
   let _ = if contains name ["floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat"]
           then setRef useFloatRef True else ()
+  -- #101: libm math externs that produce/consume a boxed $float force the Float runtime
+  -- (ref-mode + floatRuntimeLines, which also carries $mdk_round / $mdk_float_rem).
+  let _ = if isFloatMathExternW name then setRef useFloatRef True else ()
+  -- #101: the transcendental / binary math externs lower to JS Math.* host imports —
+  -- force useMathRef so mathHostImportLines is declared.
+  let _ = if isMathHostExternW name then setRef useMathRef True else ()
   -- floatToString needs the $str rep to build its result string.
   let _ = if name == "floatToString" then setRef useStrRef True else ()
   -- layer-6: stringToFloat : String -> Option Float.  Pushes bytes via the IO path
@@ -2020,6 +2096,8 @@ emitRefProgram prog groups =
   let imports = ioByteImportLines
     -- W8b: floatToString is a host import (the %.12g formatter lives JS-side).
     ++ (if useFloatRef.value then floatFmtImportLines else [])
+    -- #101: the libm transcendentals / pow / atan2 / hypot are JS Math.* host imports.
+    ++ (if useMathRef.value then mathHostImportLines else [])
     -- layer-6: stringToFloat is a host import (mdk_str_to_float uses JS Number()).
     ++ (if useFloatStrRef.value then floatStrImportLines else [])
     -- W12: the IO host surface (readFile/fileExists/args/getEnv/exit) host imports.
@@ -4856,11 +4934,17 @@ emitRefBoxSet prog env d _ = gapL "wasm Ref: setRef takes exactly two arguments"
 -- (masked to 2^30-1, non-negative).  randomFloat / hashFloat are DEFERRED (W8b —
 -- they need Float boxing + the %.12g float formatter; see the gap arms).
 emitLeafExternRef : Prog -> List String -> Int -> String -> List CExpr -> List String
+-- #179: randomInt lo hi — the draw (and lo/hi) can exceed ±2^30, so BOTH args unbox
+-- through the i31/$boxint seam ($mdk_unbox_int → i64) and the i64 result reboxes via
+-- $mdk_box_int.  The old code cast args + result to a bare `ref.i31`, which trapped
+-- `illegal cast` when lo/hi/draw fell outside i31 (e.g. `randomInt 0 1000000000000000`
+-- drew 457532755261734).  $mdk_random_int is now i64→i64 (mirrors native mdk_random_int:
+-- inclusive, unsigned modulus of hi-lo+1).
 emitLeafExternRef prog env d "randomInt" [lo, hi] = emitRefExpr prog env d lo
-  ++ ["ref.cast (ref i31)", "i31.get_s"]
+  ++ ["call $mdk_unbox_int"]
   ++ emitRefExpr prog env d hi
-  ++ ["ref.cast (ref i31)", "i31.get_s"]
-  ++ ["call $mdk_random_int", "ref.i31"]
+  ++ ["call $mdk_unbox_int"]
+  ++ ["call $mdk_random_int", "call $mdk_box_int"]
 emitLeafExternRef prog env d "randomInt" _ =
   gapL "wasm W8: randomInt takes exactly two arguments"
 emitLeafExternRef prog env d "randomBool" [u] = emitRefExpr prog env d u
@@ -5047,8 +5131,86 @@ emitLeafExternRef prog env d "shiftRight" [a, b] = emitRefExpr prog env d a
   ++ ["i64.shr_u", "call $mdk_box_int"]
 emitLeafExternRef prog env d "shiftRight" _ =
   gapL "wasm stage-A: shiftRight takes exactly two arguments"
+-- #101: bitwise completion (mirror llvm mdk_bit_or/xor/not).  bitOr/bitXor are exact
+-- i64 two's-complement ops; bitNot n = n xor -1 (== ~n = -n-1, matches native mdk_bit_not
+-- for all in-range Ints).  intBitsToFloat reinterprets the unboxed i64 bit pattern as f64.
+emitLeafExternRef prog env d "bitOr" [a, b] = emitRefExpr prog env d a
+  ++ ["call $mdk_unbox_int"]
+  ++ emitRefExpr prog env d b
+  ++ ["call $mdk_unbox_int"]
+  ++ ["i64.or", "call $mdk_box_int"]
+emitLeafExternRef prog env d "bitXor" [a, b] = emitRefExpr prog env d a
+  ++ ["call $mdk_unbox_int"]
+  ++ emitRefExpr prog env d b
+  ++ ["call $mdk_unbox_int"]
+  ++ ["i64.xor", "call $mdk_box_int"]
+emitLeafExternRef prog env d "bitNot" [a] = emitRefExpr prog env d a
+  ++ ["call $mdk_unbox_int", "i64.const -1", "i64.xor", "call $mdk_box_int"]
+emitLeafExternRef prog env d "intBitsToFloat" [a] = emitRefExpr prog env d a
+  ++ ["call $mdk_unbox_int", "f64.reinterpret_i64", "struct.new $float"]
+-- #101: libm math externs.  IEEE-exact unary ops → native f64 opcodes (correctly-rounded,
+-- byte-match native libm); round → $mdk_round (C round(): half away from zero);
+-- transcendentals → JS Math.* host imports; binary pow/atan2/hypot → host imports;
+-- floatRem → $mdk_float_rem (WAT fmod, already in floatRuntimeLines).  A $float is
+-- unboxed to f64, the op runs, the f64 result reboxes into a fresh (struct $float).
+emitLeafExternRef prog env d "sqrt" [a] = floatArgW prog env d a
+  ++ ["f64.sqrt", "struct.new $float"]
+emitLeafExternRef prog env d "floor" [a] = floatArgW prog env d a
+  ++ ["f64.floor", "struct.new $float"]
+emitLeafExternRef prog env d "ceil" [a] = floatArgW prog env d a
+  ++ ["f64.ceil", "struct.new $float"]
+emitLeafExternRef prog env d "trunc" [a] = floatArgW prog env d a
+  ++ ["f64.trunc", "struct.new $float"]
+emitLeafExternRef prog env d "round" [a] = floatArgW prog env d a
+  ++ ["call $mdk_round", "struct.new $float"]
+emitLeafExternRef prog env d "cbrt" [a] = floatArgW prog env d a
+  ++ ["call $mdk_cbrt", "struct.new $float"]
+emitLeafExternRef prog env d "exp" [a] = floatArgW prog env d a
+  ++ ["call $mdk_exp", "struct.new $float"]
+emitLeafExternRef prog env d "log" [a] = floatArgW prog env d a
+  ++ ["call $mdk_log", "struct.new $float"]
+emitLeafExternRef prog env d "log2" [a] = floatArgW prog env d a
+  ++ ["call $mdk_log2", "struct.new $float"]
+emitLeafExternRef prog env d "log10" [a] = floatArgW prog env d a
+  ++ ["call $mdk_log10", "struct.new $float"]
+emitLeafExternRef prog env d "sin" [a] = floatArgW prog env d a
+  ++ ["call $mdk_sin", "struct.new $float"]
+emitLeafExternRef prog env d "cos" [a] = floatArgW prog env d a
+  ++ ["call $mdk_cos", "struct.new $float"]
+emitLeafExternRef prog env d "tan" [a] = floatArgW prog env d a
+  ++ ["call $mdk_tan", "struct.new $float"]
+emitLeafExternRef prog env d "asin" [a] = floatArgW prog env d a
+  ++ ["call $mdk_asin", "struct.new $float"]
+emitLeafExternRef prog env d "acos" [a] = floatArgW prog env d a
+  ++ ["call $mdk_acos", "struct.new $float"]
+emitLeafExternRef prog env d "atan" [a] = floatArgW prog env d a
+  ++ ["call $mdk_atan", "struct.new $float"]
+emitLeafExternRef prog env d "sinh" [a] = floatArgW prog env d a
+  ++ ["call $mdk_sinh", "struct.new $float"]
+emitLeafExternRef prog env d "cosh" [a] = floatArgW prog env d a
+  ++ ["call $mdk_cosh", "struct.new $float"]
+emitLeafExternRef prog env d "tanh" [a] = floatArgW prog env d a
+  ++ ["call $mdk_tanh", "struct.new $float"]
+emitLeafExternRef prog env d "pow" [a, b] = floatArgW prog env d a
+  ++ floatArgW prog env d b
+  ++ ["call $mdk_pow", "struct.new $float"]
+emitLeafExternRef prog env d "atan2" [a, b] = floatArgW prog env d a
+  ++ floatArgW prog env d b
+  ++ ["call $mdk_atan2", "struct.new $float"]
+emitLeafExternRef prog env d "hypot" [a, b] = floatArgW prog env d a
+  ++ floatArgW prog env d b
+  ++ ["call $mdk_hypot", "struct.new $float"]
+emitLeafExternRef prog env d "floatRem" [a, b] = floatArgW prog env d a
+  ++ floatArgW prog env d b
+  ++ ["call $mdk_float_rem", "struct.new $float"]
 emitLeafExternRef _ _ _ name _ =
   gapL ("wasm W8: unsupported leaf extern '" ++ name ++ "'")
+
+-- #101: unbox a boxed $float argument to a raw f64 on the WAT stack.  Shared by every
+-- libm math arm above (unary opcode, host-import transcendental, and binary).
+floatArgW : Prog -> List String -> Int -> CExpr -> List String
+floatArgW prog env d a = emitRefExpr prog env d a
+  ++ ["ref.cast (ref $float)", "struct.get $float 0"]
 
 -- ── W10: Array intrinsic externs ─────────────────────────────────────────────
 -- All work over `$arr = (array (mut (ref eq)))`.  Index/size args are i31 Ints

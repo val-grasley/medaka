@@ -330,8 +330,8 @@ source edit there drifts the seed. Bite 1 must run `sh test/refresh_seed.sh`
 - **Tree stays clean after triage:** a gate that runs the full-oracle exhaust
   pass over each source root and asserts the residual set equals a checked-in
   allow-list (the annotated intentional partials). Fits the existing
-  `diff_compiler_check_modules_batch.sh` family. This is what keeps Bite 2 from
-  regressing.
+  `diff_compiler_selfproc.sh` LEG A family (the surviving union-closure gate).
+  This is what keeps Bite 2 from regressing.
 - **Re-mint gate:** `make bootstrap` (strict C3a) must pass after the seed
   refresh.
 

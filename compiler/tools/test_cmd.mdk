@@ -39,9 +39,10 @@ import types.typecheck.{elaborateOne, elaborateModules}
 import frontend.lexer.{collectComments}
 import eval.eval.{
   Value,
-  evalOne,
-  evalModules,
-  evalModulesRootEnv,
+  evalOneWith,
+  evalModulesWith,
+  evalModulesRootEnvWith,
+  testCapableExterns,
   funNamesOf,
   dropShadowedExp,
 }
@@ -144,7 +145,7 @@ runSingle runtimeDecls coreDecls userDecls examples synthDecls synthResults =
   else
     dropShadowedExp userNames coreDecls
   let elaborated = elaborateOne runtimeDecls livePrelude ("__user__", allUser)
-  let env = evalOne [] ("__main__", elaborated)
+  let env = evalOneWith (testCapableExterns ()) [] ("__main__", elaborated)
   buildDetails (Ok env) synthResults examples
 
 -- DRIVER-COLLAPSE Phase 1+3 note on the dict-set: the old `coreDictNames`
@@ -178,7 +179,7 @@ runMulti runtimeDecls coreDecls target _userDecls roots examples synthDecls synt
   Ok mods =>
     let injected = injectIntoRoot target synthDecls (map desugarPair mods)
     let elaborated = elaborateModules runtimeDecls coreDecls injected
-    let env = evalModules (fst elaborated) (snd elaborated)
+    let env = evalModulesWith (testCapableExterns ()) (fst elaborated) (snd elaborated)
     buildDetails (Ok env) synthResults examples
 
 desugarPair : (String, List Decl) -> (String, List Decl)
@@ -261,7 +262,7 @@ runPropsSingle runtimeDecls coreDecls userDecls =
   else
     dropShadowedExp userNames coreDecls
   let elaborated = elaborateModules runtimeDecls livePrelude [("__user__", userDecls)]
-  let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+  let env = evalModulesRootEnvWith (testCapableExterns ()) (fst elaborated) (snd elaborated)
   let rootProps = match lookupModuleDecls "__user__" (snd elaborated)
     Some decls => decls
     None => userDecls
@@ -274,7 +275,7 @@ runPropsMulti runtimeDecls coreDecls target userDecls roots = match loadProgram 
     False
   Ok mods =>
     let elaborated = elaborateModules runtimeDecls coreDecls (map desugarPair mods)
-    let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+    let env = evalModulesRootEnvWith (testCapableExterns ()) (fst elaborated) (snd elaborated)
     let rootProps = elaboratedRootProps target (snd elaborated) userDecls
     runAllProps env rootProps
 -- DRIVER-COLLAPSE Phase 2: the eval-dict layer now promotes the file's own
@@ -338,7 +339,7 @@ runTestDeclsSingle runtimeDecls coreDecls target tsrc userDecls =
   else
     dropShadowedExp userNames coreDecls
   let elaborated = elaborateModules runtimeDecls livePrelude [("__user__", userDecls)]
-  let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+  let env = evalModulesRootEnvWith (testCapableExterns ()) (fst elaborated) (snd elaborated)
   let rootTests = match lookupModuleDecls "__user__" (snd elaborated)
     Some decls => decls
     None => userDecls
@@ -354,7 +355,7 @@ runTestDeclsMulti runtimeDecls coreDecls target tsrc userDecls roots = match loa
     False
   Ok mods =>
     let elaborated = elaborateModules runtimeDecls coreDecls (map desugarPair mods)
-    let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+    let env = evalModulesRootEnvWith (testCapableExterns ()) (fst elaborated) (snd elaborated)
     let rootTests = elaboratedRootProps target (snd elaborated) userDecls
     reportTests
       target

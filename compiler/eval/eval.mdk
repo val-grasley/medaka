@@ -2771,6 +2771,17 @@ rootLocals (_::rest) = rootLocals rest
 -- eval_modules_root_env.
 export evalModulesRootEnv : List Decl -> List (String, List Decl) -> <e> List (String, Value e)
 evalModulesRootEnv preludeDecls modules =
+  evalModulesRootEnvWith [] preludeDecls modules
+
+-- B2 (RUN-EFFECTS), root-env variant: mirror of evalModulesWith for the
+-- rootFullEnv path (prop runner + `test "…"` phase + repl).  Installs
+-- `externBindings () ++ extraExterns` so a per-driver capability policy
+-- (testCapableExterns) can override the frozen clock/GC constants without those
+-- prims reaching the differential-oracle probes.  Kept in LOCKSTEP with
+-- evalModulesWith — the two module drivers are deliberate parallel copies.
+export evalModulesRootEnvWith : List (String, Value e) -> List Decl -> List (String, List Decl) -> <e> List (String, Value e)
+evalModulesRootEnvWith extraExterns preludeDecls modules =
+  let externs = externBindings () ++ extraExterns
   let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = setRef ctorToTypeRef (buildCtorToType allDecls)
@@ -2778,13 +2789,13 @@ evalModulesRootEnv preludeDecls modules =
   let disp = buildIfaceDispatch allDecls
   let ctors = collectCtors allDecls
   let preludeGroups = groupsOf preludeDecls
-  let globalNames = map fst boolSeeds ++ map fst (externBindings ()) ++ map fst ctors ++ implMethodNames allDecls ++ map fst preludeGroups
+  let globalNames = map fst boolSeeds ++ map fst externs ++ map fst ctors ++ implMethodNames allDecls ++ map fst preludeGroups
   let globalCells = map (n => (n, Ref VUnit)) globalNames
   let globalEnv = EvalEnv [globalCells]
   let mods = buildModInfos globalCells [] modules
   let implEntries = flatMap (declImplEntries globalEnv disp) preludeDecls ++ flatMap (modImplEntries disp) mods
   let _ = installConsts globalCells boolSeeds
-  let _ = installConsts globalCells (externBindings ())
+  let _ = installConsts globalCells externs
   let _ = installConsts globalCells ctors
   let _ = installConsts globalCells (coalesceImpls implEntries)
   let _ = installGroups globalEnv globalCells preludeGroups
@@ -3159,6 +3170,24 @@ ioExternBindings _ = [
   ("exit", prim1 pExit),
 ]
 
+-- Capability policy for `medaka test` (all three phases) and `medaka repl`: the
+-- SAFE subset of ioExternBindings.  Real clock/GC reads (wallTimeSec /
+-- monotonicSec / allocBytes) and stderr writes (ePutStr / ePutStrLn) so a
+-- doctest / prop / repl session sees the SAME clock and stderr as `medaka run`
+-- (issue #85: the frozen constants in externBindings made `medaka test` diverge
+-- from `medaka run`).  DELIBERATELY EXCLUDES: sleepMs (blocks the shared batch
+-- process), exit (a single doctest's `exit 0` would terminate the whole
+-- long-lived test process and falsely report SUCCESS — THE hazard), and every
+-- file / env / stdin / net extern (no sandbox / capability flag in test/repl).
+export testCapableExterns : Unit -> List (String, Value e)
+testCapableExterns _ = [
+  ("wallTimeSec", prim1M pWallTimeSecIO),
+  ("monotonicSec", prim1M pMonotonicSecIO),
+  ("allocBytes", prim1M pAllocBytesIO),
+  ("ePutStr", prim1M pEPutStr),
+  ("ePutStrLn", prim1M pEPutStrLn),
+]
+
 -- `medaka run`'s output driver: evalModulesOutput plus the real-I/O externs.
 -- The row is the coarse `IO` alias: ioExternBindings now spans FileRead/FileWrite/
 -- Env/Stdin/Stderr/Clock, and `IO` in a BOUND expands to exactly that join
@@ -3212,6 +3241,13 @@ driveAsyncMain binds = match lookupBinding "main" binds
 export evalOne : List Decl -> (String, List Decl) -> <e> List (String, Value e)
 evalOne preludeDecls (rootId, prog) = evalModules preludeDecls [(rootId, prog)]
 
+-- 1-module wrapper over evalModulesWith: the doctest single-file path passes a
+-- capability list (testCapableExterns) so a prelude-only doctest sees the same
+-- real clock/stderr as `medaka run`.
+export evalOneWith : List (String, Value e) -> List Decl -> (String, List Decl) -> <e> List (String, Value e)
+evalOneWith extraExterns preludeDecls (rootId, prog) =
+  evalModulesWith extraExterns preludeDecls [(rootId, prog)]
+
 -- run a single program for OUTPUT (mirror evalOutput): the 1-module evalModules
 -- already forces the root module's `main` for effects and returns captured stdout.
 export evalOneOutput : List Decl -> (String, List Decl) -> String
@@ -3223,3 +3259,9 @@ evalOneOutput preludeDecls (rootId, prog) =
 export evalOneRootEnv : List Decl -> (String, List Decl) -> <e> List (String, Value e)
 evalOneRootEnv preludeDecls (rootId, prog) =
   evalModulesRootEnv preludeDecls [(rootId, prog)]
+
+-- 1-module wrapper over evalModulesRootEnvWith: repl installs a capability list
+-- (testCapableExterns) so an interactive session sees the real clock/stderr.
+export evalOneRootEnvWith : List (String, Value e) -> List Decl -> (String, List Decl) -> <e> List (String, Value e)
+evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
+  evalModulesRootEnvWith extraExterns preludeDecls [(rootId, prog)]

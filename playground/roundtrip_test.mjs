@@ -33,6 +33,10 @@ function runWat(wat) {
     mdk_write_byte: (b) => acc.push(b & 0xff),
     mdk_write_err_byte: () => {},
     mdk_float_fmt: () => 0, mdk_float_fmt_byte: () => 0,
+    // #101 libm math host seam (JS Math.*) — see run.js.  Harmless if unused.
+    mdk_cbrt: Math.cbrt, mdk_exp: Math.exp, mdk_log: Math.log, mdk_log2: Math.log2, mdk_log10: Math.log10,
+    mdk_sin: Math.sin, mdk_cos: Math.cos, mdk_tan: Math.tan, mdk_asin: Math.asin, mdk_acos: Math.acos, mdk_atan: Math.atan,
+    mdk_sinh: Math.sinh, mdk_cosh: Math.cosh, mdk_tanh: Math.tanh, mdk_pow: Math.pow, mdk_atan2: Math.atan2, mdk_hypot: Math.hypot,
     mdk_str_to_float: () => 0, mdk_path_reset: () => {}, mdk_path_push: () => {},
     mdk_read_file: () => 0, mdk_file_exists: () => 0, mdk_get_env: () => 0,
     mdk_args_count: () => 0, mdk_arg_len: () => 0, mdk_arg_byte: () => 0,

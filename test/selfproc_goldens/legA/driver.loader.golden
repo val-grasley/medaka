@@ -35,6 +35,7 @@ parentDir : String -> String
 parentGo : String -> Int -> String
 parseCacheLimit : Int
 parseCachedLocated : Ref (List (String, List Decl)) -> String -> List Decl
+projectTrustedMods : String -> List String -> String -> List (String, List Decl) -> <IO> List String
 readDeps : String -> <IO> List (String, String)
 readModuleProg : List (String, String) -> List String -> String -> <IO> Result String (String, List Decl)
 readModuleProgF : (String -> List Decl) -> (String -> Option String) -> List (String, String) -> List String -> String -> <IO> Result String (String, String, List Decl)
@@ -48,11 +49,10 @@ slashToDot : String -> String
 splitDot : String -> List String
 splitGo : String -> String -> Int -> Int -> String -> List String
 splitOnChar : String -> String -> List String
-stdlibTrustedMods : String -> List String -> String -> List (String, List Decl) -> <IO> List String
 stripSuffixStr : String -> String -> String
 takeFirst : Int -> List a -> List a
 takeTo : String -> List String -> List String
-trustedModsGo : List (String, String) -> List String -> String -> List String -> <IO> List String
+trustedModsGo : List (String, String) -> List String -> List String -> List String -> <IO> List String
 unknownModuleIdOf : String -> Option String
 unquote : String -> String
 valAfterEq : String -> String

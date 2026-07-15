@@ -995,3 +995,121 @@ jobs:
       - name: Doctests, properties, and test decls
         if: needs.detect.outputs.docs_only != 'true'
         run: make test
+
+  # ── T25: the WasmGC backend gates ─────────────────────────────────────────────
+  #
+  # The WasmGC backend is one of Medaka's TWO production backends and the engine the
+  # PLAYGROUND (the 0.1.0 front door) runs on — yet until this job its five gates ran
+  # in NO CI job at all. A stock ubuntu-latest runner has neither wasm-tools nor a
+  # WasmGC-capable node>=22, and the gates SKIP (exit 2) when the toolchain is absent,
+  # so nothing was watching. That is exactly how two silent wasm miscompiles (a `round`
+  # divergence, intToFloat #199) reached main. See CI-COVERAGE-EXCEPTIONS.txt for the
+  # ledger these five rows lived in until T25.
+  #
+  # ── ONE job, not six more gate shards, ON PURPOSE ────────────────────────────────
+  # Only these five gates need wasm-tools + a WasmGC node. Adding that toolchain to
+  # every `gates` shard would tax all six for a tool one job needs — the reasoning
+  # CI-COVERAGE-EXCEPTIONS.txt already spelled out for build_wasm_cmd.
+  #
+  # ── COVERAGE ─────────────────────────────────────────────────────────────────────
+  # diff_compiler_ci_shard_coverage.sh certifies every tracked *.sh is covered. These
+  # five are NOT sharded (they contribute no matrix `pattern:`) — they are "named"
+  # gates: each is invoked by its LITERAL repo-relative path in the run: step below,
+  # the SAME mechanism the soundness job uses for the fixpoint + typecheck gates. Their
+  # CI-COVERAGE-EXCEPTIONS.txt rows were DELETED when this job landed (that file said to).
+  #
+  # ── GUARDING (same shape as every other heavy job) ──────────────────────────────
+  # The JOB is NEVER guarded, so it always RUNS and always REPORTS. A job skipped by a
+  # job-level `if:` sits at "Expected — waiting for status" forever and would DEADLOCK
+  # the merge queue if this were ever a required check. Only the expensive STEPS are
+  # gated on `docs_only != 'true'`, so a docs-only PR skips the wasm toolchain + gates
+  # and reports success in seconds. It runs on every non-docs event — pull_request,
+  # merge_group (the queue tests the merged tree), and push. NOT narrowed: these five
+  # ARE the whole wasm surface and are cheap enough to run in full as one job.
+  #
+  # ── NOT YET A REQUIRED CHECK ─────────────────────────────────────────────────────
+  # Branch protection lists ten required contexts; this `wasm` context is NOT among
+  # them, so a red wasm job does not BLOCK a merge yet — it is advisory-but-visible.
+  # Promoting it to required is a repo-settings change (Settings > Branches) that code
+  # cannot make. The job is already shaped required-safe (always runs + reports on every
+  # event, incl. merge_group), so promotion needs no change here.
+  wasm:
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # Pinned to the dev box's version (AGENTS.md: reproducible, deterministic bytes),
+      # so CI and local runs parse/validate the emitted WAT with IDENTICAL wasm-tools.
+      WASM_TOOLS_VERSION: 1.219.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        if: needs.detect.outputs.docs_only != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+
+      # node >= 22 is required for the finalized WasmGC 3.0 GC encoding these gates emit
+      # (test/wasm/run.js). ubuntu-latest ships an older node, so pin 24 (the dev box's).
+      - name: Set up Node.js 24
+        if: needs.detect.outputs.docs_only != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # wasm-tools (parse + validate the emitted WAT) is NOT on a stock runner. Download
+      # the pinned prebuilt release — `cargo install` would cost minutes and drift by
+      # version. The URL/version was verified to resolve before landing this job.
+      - name: Install wasm-tools
+        if: needs.detect.outputs.docs_only != 'true'
+        run: |
+          set -eu
+          v="$WASM_TOOLS_VERSION"
+          url="https://github.com/bytecodealliance/wasm-tools/releases/download/v${v}/wasm-tools-${v}-x86_64-linux.tar.gz"
+          curl -sSfL "$url" | tar xz
+          sudo mv "wasm-tools-${v}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          wasm-tools --version
+
+      # Same cache as the gates/inlang jobs — see the top-of-file "Caching" note.
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        if: needs.detect.outputs.docs_only != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+      - name: Build medaka (cold bootstrap from seed)
+        if: needs.detect.outputs.docs_only != 'true' && steps.medaka-cache.outputs.cache-hit != 'true'
+        run: make medaka
+
+      # The three WasmGC emitter oracle binaries (wasm_emit_main / _typed_ / _modules_)
+      # that the five gates drive. Cheap; deliberately NOT cached (they are a pure
+      # function of the whole compiler graph, which the medaka cache above already keys).
+      - name: Build the wasm emitter oracles
+        if: needs.detect.outputs.docs_only != 'true'
+        run: |
+          export MEDAKA_EMITTER="$PWD/medaka_emitter"
+          sh test/wasm/build_wasm_oracle.sh
+
+      # The five gates, each invoked by its LITERAL repo-relative path — that literal is
+      # what makes diff_compiler_ci_shard_coverage.sh classify them "covered" (see the
+      # COVERAGE note above). Run DIRECTLY, not via run_gates.sh: a direct exit 2 (a
+      # toolchain skip) then FAILS the job instead of being reclassified as a skip — and
+      # "a skip is not a pass" is the entire reason this gate coverage hole existed. All
+      # five run (|| rc=1) before the job fails, so one red gate never hides the others.
+      - name: WasmGC backend gates
+        if: needs.detect.outputs.docs_only != 'true'
+        run: |
+          set -u
+          export MEDAKA_EMITTER="$PWD/medaka_emitter"
+          export MEDAKA_WASM_EMITTER="$PWD/test/bin/wasm_emit_modules_main"
+          rc=0
+          bash test/wasm/diff_wasm.sh          || rc=1
+          bash test/wasm/diff_wasm_typed.sh    || rc=1
+          bash test/wasm/diff_wasm_modules.sh  || rc=1
+          bash test/wasm/diff_sqlite.sh        || rc=1
+          bash test/build_wasm_cmd.sh          || rc=1
+          exit $rc

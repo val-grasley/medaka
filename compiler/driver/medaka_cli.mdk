@@ -70,13 +70,14 @@ import frontend.resolve.{
   resolveModulesToHumane,
   resolveModulesToHumaneG,
   resolveModulesToHumaneGF,
+  resolveModulesToHumaneByPath,
 }
 import driver.loader.{
   loadProgram,
   loadProgramFilesLocated,
   findProjectRoot,
   entrySearchRoots,
-  stdlibTrustedMods,
+  projectTrustedMods,
   unknownModuleIdOf,
   findImportLoc,
   availableModulesHint,
@@ -289,13 +290,15 @@ runCheckCmd argv =
               -- which collapses every span to 1:0, so an import-bearing
               -- file's Unbound-variable diagnostic pointed at the import
               -- line instead of the actual use site.
-              Ok _ => match map (map dropModPath) (loadProgramFilesLocated (_ => None) target roots)
+              Ok _ => match loadProgramFilesLocated (_ => None) target roots
                 Err lmsg =>
                   let _ = ePutStrLn (moduleLoadErrText tsrc target stdlibDir lmsg)
                   exit 1
-                Ok mods =>
-                  let trusted = stdlibTrustedMods target roots stdlibDir mods
-                  checkRoute typesMode allowInternal trusted roots rsrc csrc tsrc target mods
+                Ok modsWithPath =>
+                  let mods = map dropModPath modsWithPath
+                  let pathMap = map modIdToPath modsWithPath
+                  let trusted = projectTrustedMods target roots stdlibDir mods
+                  checkRoute typesMode allowInternal trusted pathMap roots rsrc csrc tsrc target mods
     _ =>
       let _ = ePutStrLn "usage: medaka check [--json] [--types] [--allow-internal] <file.mdk>"
       exit 1
@@ -376,10 +379,10 @@ locatedOrGeneric target roots rsrc csrc = match locatedProjectErrors target root
 -- user's OWN top-level bindings (`userSchemeLines`) — filtering happens HERE,
 -- CLI-only, so the probe-driven goldens (check_main.mdk et al., which call
 -- `runCheck`/`runCheckModules` directly) keep dumping unconditionally.
-checkRoute : Bool -> Bool -> List String -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO> Unit
-checkRoute typesMode allowInternal trusted _ rsrc csrc tsrc target [(mid, decls)] =
+checkRoute : Bool -> Bool -> List String -> List (String, String) -> List String -> String -> String -> String -> String -> List (String, List Decl) -> <IO> Unit
+checkRoute typesMode allowInternal trusted _ _ rsrc csrc tsrc target [(mid, decls)] =
   -- BUGFIX (internal-extern noise on stdlib/compiler self-checks): the caller
-  -- already computed `trusted` (stdlibTrustedMods, owning-root based) for
+  -- already computed `trusted` (projectTrustedMods, owning-root based) for
   -- EVERY module count, but this single-module arm used to discard it and
   -- gate purely on the CLI `--allow-internal` flag — so `medaka check` on a
   -- bare stdlib file (e.g. `stdlib/array.mdk`, no non-core imports ⇒ this
@@ -409,7 +412,7 @@ checkRoute typesMode allowInternal trusted _ rsrc csrc tsrc target [(mid, decls)
     _ =>
       let _ = ePutStrLn (joinNl (map (ppDiagCliSrc tsrc target) errs))
       exit 1
-checkRoute typesMode allowInternal trusted roots rsrc csrc tsrc target mods =
+checkRoute typesMode allowInternal trusted pathMap roots rsrc csrc tsrc target mods =
   let rtD = desugar (parse rsrc)
   let coreD = desugar (parse csrc)
   let modsD = map desugarPair mods
@@ -419,7 +422,10 @@ checkRoute typesMode allowInternal trusted roots rsrc csrc tsrc target mods =
   -- unprefixed, so they were invisible to any errors-on-stderr consumer (the
   -- error-quality corpus captured them as empty).  The clean/type-error report
   -- still goes to STDOUT (the check_cli_modules gate expects TYPE ERROR there).
-  let resDiags = resolveModulesToHumaneGF target allowInternal trusted rtD coreD modsD
+  -- #41: attribute each module's resolve errors to its OWN file (via `pathMap`),
+  -- not a single `target` fallback that mislabels every imported-module error as
+  -- the entry file.
+  let resDiags = resolveModulesToHumaneByPath pathMap allowInternal trusted rtD coreD modsD
   match resDiags
     "" =>
       -- BUGFIX (imported-module diagnostics): when there ARE type errors, render
@@ -610,9 +616,9 @@ runCheckJsonCmd allowInternal rsrc csrc target roots stdlibDir =
           [(mid, _)] =>
             -- Single module: analyzeLocated (single-file path, correct for type errors).
             -- Same fix as checkRoute: honour the owning-root trust signal too
-            -- (stdlibTrustedMods), not just `--allow-internal`, so a bare
+            -- (projectTrustedMods), not just `--allow-internal`, so a bare
             -- stdlib/compiler file checked via `--json` isn't noise-flagged.
-            let trusted = stdlibTrustedMods target roots stdlibDir mods
+            let trusted = projectTrustedMods target roots stdlibDir mods
             let diags = analyzeLocatedG (allowInternal || contains mid trusted) rsrc csrc src
             let _ = println (cjAllToJson [(target, src, diags)])
             let hasErr = any isDiagError diags
@@ -1090,7 +1096,7 @@ typecheckGate allowInternal root input =
           Ok _ => match loadProgram input roots
             Err msg => TGErr msg
             Ok mods =>
-              let trusted = stdlibTrustedMods input roots stdlibDir mods
+              let trusted = projectTrustedMods input roots stdlibDir mods
               typecheckGateRoute allowInternal trusted roots rsrc csrc tsrc input mods
 
 -- Route by module count.  A single loaded module (no non-core imports) runs the
@@ -1278,7 +1284,7 @@ runRunCmd argv =
                 let rtD = desugar (parse rsrc)
                 let coreD = desugar (parse csrc)
                 let modsD = map desugarPair mods
-                let trusted = stdlibTrustedMods target roots stdlibDir mods
+                let trusted = projectTrustedMods target roots stdlibDir mods
                 -- Route by module count, mirroring `checkRoute` EXACTLY, so that
                 -- `run` accepts/rejects the SAME set of programs `medaka check`
                 -- does (beta P0-1 / P1-8).  The old gate was resolve-errors +
@@ -1354,6 +1360,12 @@ desugarPair (mid, p) = (mid, desugar p)
 -- (modId, decls) pair shape loadProgram returns.
 dropModPath : (String, String, List Decl) -> (String, List Decl)
 dropModPath (mid, _, prog) = (mid, prog)
+
+-- (modId, path, decls) → (modId, path): the per-module file map threaded into the
+-- multi-module resolve renderer so an imported module's diagnostics report ITS
+-- own path, not the entry's (#41).
+modIdToPath : (String, String, List Decl) -> (String, String)
+modIdToPath (mid, path, _) = (mid, path)
 
 -- ASYNC-DESIGN Stage 2 (D5): route a `main : Async _` through the program's
 -- `runAsync` (perform its stored row) instead of forcing it to an inert Async

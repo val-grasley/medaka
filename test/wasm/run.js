@@ -83,6 +83,17 @@ const imports = { env: {
   // the module then reads each byte via mdk_float_fmt_byte to rebuild a $str.
   mdk_float_fmt: (d) => { floatFmtBuf = Array.from(Buffer.from(fmt12g(d), 'utf8')); return floatFmtBuf.length; },
   mdk_float_fmt_byte: (i) => floatFmtBuf[i] & 0xff,
+  // #101 libm math host seam: the transcendentals (+ pow/atan2/hypot) have no WasmGC
+  // opcode, so they route to JS Math.* here (byte-identical to C libm on the values the
+  // fixtures exercise; the IEEE-exact sqrt/floor/ceil/trunc/round + floatRem lower to
+  // wasm opcodes / WAT helpers and never reach a host import).  Providing these
+  // unconditionally is harmless — a module only imports the names it declares.
+  mdk_cbrt: Math.cbrt, mdk_exp: Math.exp, mdk_log: Math.log,
+  mdk_log2: Math.log2, mdk_log10: Math.log10,
+  mdk_sin: Math.sin, mdk_cos: Math.cos, mdk_tan: Math.tan,
+  mdk_asin: Math.asin, mdk_acos: Math.acos, mdk_atan: Math.atan,
+  mdk_sinh: Math.sinh, mdk_cosh: Math.cosh, mdk_tanh: Math.tanh,
+  mdk_pow: Math.pow, mdk_atan2: Math.atan2, mdk_hypot: Math.hypot,
   // layer-6 stringToFloat: read the bytes pushed into pathBuf, parse as a float via
   // Number() (byte-identical to C strtod on the valid-decimal subset medaka uses).
   // The guest calls mdk_path_reset+mdk_path_push to populate pathBuf, then this.

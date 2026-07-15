@@ -1,5 +1,5 @@
 # META
-source_lines=2418
+source_lines=2445
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
@@ -2408,6 +2408,33 @@ resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods
 export resolveModulesToHumaneGF : String -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
 resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map (ppResErrorLocatedF fallbackFile) (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
 
+-- Like resolveModulesToHumaneGF but attributing each module's located resolve
+-- errors to that module's OWN file, looked up in `modPaths` (a modId → real file
+-- path assoc the loader carries).  Fixes the multi-module misattribution where an
+-- IMPORTED module's error printed the ENTRY file's path (#41): the multi-module
+-- `parseLocated` Locs carry `file == ""`, so a single shared `fallbackFile` sent
+-- EVERY module's errors to the entry.  Threading the per-module path fixes the
+-- attribution at the render boundary — resolve is re-run per module here anyway
+-- (to thread exports), so it is the natural place to pair each error with its
+-- module's path.  A modId absent from `modPaths` degrades to "" (`<unknown
+-- location>`), never to another module's file.
+export resolveModulesToHumaneByPath : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumaneByPath modPaths allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (resolveModulesErrorsByPathGo modPaths allowInternal trustedMods runtimeDecls preludeDecls [] mods)
+
+resolveModulesErrorsByPathGo : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List String
+resolveModulesErrorsByPathGo _ _ _ _ _ _ [] = []
+resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre known ((mid, prog)::rest) =
+  let guard = if allowInternal || contains mid trustedMods then
+    []
+  else
+    internalExterns
+  let (exp, errs) = resolveModuleG guard rt pre known mid prog
+  let file = match lookupAssoc mid modPaths
+    Some p => p
+    None => ""
+  map (ppResErrorLocatedF file) errs
+    ++ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre (exp::known) rest
+
 -- A single located humane line for a resolve error.
 export ppResErrorLocated : ResError -> String
 ppResErrorLocated e = ppResErrorLocatedF "" e
@@ -3284,6 +3311,11 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "resolveModulesToHumaneG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneGF" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
 (DFunDef false "resolveModulesToHumaneGF" ((PVar "fallbackFile") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EApp (EVar "ppResErrorLocatedF") (EVar "fallbackFile"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DTypeSig true "resolveModulesToHumaneByPath" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
+(DFunDef false "resolveModulesToHumaneByPath" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods"))))
+(DTypeSig false "resolveModulesErrorsByPathGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "resolveModulesErrorsByPathGo" (PWild PWild PWild PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "resolveModulesErrorsByPathGo" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EVar "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoLet false false (PVar "file") (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mid")) (EVar "modPaths")) (arm (PCon "Some" (PVar "p")) () (EVar "p")) (arm (PCon "None") () (ELit (LString ""))))) (DoExpr (EBinOp "++" (EApp (EApp (EVar "map") (EApp (EVar "ppResErrorLocatedF") (EVar "file"))) (EVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EBinOp "::" (EVar "exp") (EVar "known"))) (EVar "rest"))))))
 (DTypeSig true "ppResErrorLocated" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "ppResErrorLocated" ((PVar "e")) (EApp (EApp (EVar "ppResErrorLocatedF") (ELit (LString ""))) (EVar "e")))
 (DTypeSig true "ppResErrorLocatedF" (TyFun (TyCon "String") (TyFun (TyCon "ResError") (TyCon "String"))))
@@ -4152,6 +4184,11 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "resolveModulesToHumaneG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneGF" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
 (DFunDef false "resolveModulesToHumaneGF" ((PVar "fallbackFile") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EApp (EVar "ppResErrorLocatedF") (EVar "fallbackFile"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DTypeSig true "resolveModulesToHumaneByPath" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
+(DFunDef false "resolveModulesToHumaneByPath" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods"))))
+(DTypeSig false "resolveModulesErrorsByPathGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "resolveModulesErrorsByPathGo" (PWild PWild PWild PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "resolveModulesErrorsByPathGo" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EDictApp "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoLet false false (PVar "file") (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mid")) (EVar "modPaths")) (arm (PCon "Some" (PVar "p")) () (EVar "p")) (arm (PCon "None") () (ELit (LString ""))))) (DoExpr (EBinOp "++" (EApp (EApp (EMethodRef "map") (EApp (EVar "ppResErrorLocatedF") (EVar "file"))) (EVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EBinOp "::" (EVar "exp") (EVar "known"))) (EVar "rest"))))))
 (DTypeSig true "ppResErrorLocated" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "ppResErrorLocated" ((PVar "e")) (EApp (EApp (EVar "ppResErrorLocatedF") (ELit (LString ""))) (EVar "e")))
 (DTypeSig true "ppResErrorLocatedF" (TyFun (TyCon "String") (TyFun (TyCon "ResError") (TyCon "String"))))

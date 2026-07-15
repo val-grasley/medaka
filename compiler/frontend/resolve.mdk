@@ -2404,6 +2404,33 @@ resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods
 export resolveModulesToHumaneGF : String -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
 resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map (ppResErrorLocatedF fallbackFile) (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
 
+-- Like resolveModulesToHumaneGF but attributing each module's located resolve
+-- errors to that module's OWN file, looked up in `modPaths` (a modId → real file
+-- path assoc the loader carries).  Fixes the multi-module misattribution where an
+-- IMPORTED module's error printed the ENTRY file's path (#41): the multi-module
+-- `parseLocated` Locs carry `file == ""`, so a single shared `fallbackFile` sent
+-- EVERY module's errors to the entry.  Threading the per-module path fixes the
+-- attribution at the render boundary — resolve is re-run per module here anyway
+-- (to thread exports), so it is the natural place to pair each error with its
+-- module's path.  A modId absent from `modPaths` degrades to "" (`<unknown
+-- location>`), never to another module's file.
+export resolveModulesToHumaneByPath : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
+resolveModulesToHumaneByPath modPaths allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (resolveModulesErrorsByPathGo modPaths allowInternal trustedMods runtimeDecls preludeDecls [] mods)
+
+resolveModulesErrorsByPathGo : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List String
+resolveModulesErrorsByPathGo _ _ _ _ _ _ [] = []
+resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre known ((mid, prog)::rest) =
+  let guard = if allowInternal || contains mid trustedMods then
+    []
+  else
+    internalExterns
+  let (exp, errs) = resolveModuleG guard rt pre known mid prog
+  let file = match lookupAssoc mid modPaths
+    Some p => p
+    None => ""
+  map (ppResErrorLocatedF file) errs
+    ++ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre (exp::known) rest
+
 -- A single located humane line for a resolve error.
 export ppResErrorLocated : ResError -> String
 ppResErrorLocated e = ppResErrorLocatedF "" e

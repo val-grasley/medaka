@@ -1,5 +1,5 @@
 # META
-source_lines=423
+source_lines=430
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka REPL (Stage 4, Phase B.9)
@@ -40,7 +40,14 @@ import types.typecheck.{
   ppScheme,
   Scheme(..),
 }
-import eval.eval.{Value(..), evalOneRootEnv, ppValue, lookupBinding, force}
+import eval.eval.{
+  Value(..),
+  evalOneRootEnvWith,
+  testCapableExterns,
+  ppValue,
+  lookupBinding,
+  force,
+}
 import support.util.{contains, startsWith, stringTrim}
 
 -- ── Session state ─────────────────────────────────────────────────────────
@@ -216,7 +223,7 @@ runPipeline combined =
         e::_ => (map ((_, m, _) => m) tcErrs, [], [])
         [] =>
           let allSchemes = checkProgramSchemes preludeDecls combined
-          let bindings = evalOneRootEnv preludeDecls ("__repl__", combined)
+          let bindings = evalOneRootEnvWith (testCapableExterns ()) preludeDecls ("__repl__", combined)
           ([], allSchemes, bindings)
 -- DRIVER-COLLAPSE Phase 3/4: eval via the 1-module wrapper (evalOneRootEnv
 -- = evalModulesRootEnv over [("__repl__", combined)]) instead of the flat
@@ -432,7 +439,7 @@ stringSplitOn sep s start cur len
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("frontend" "resolve") ((mem "resolveProgram" false) (mem "ppResError" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "checkProgramDiags" false) (mem "checkProgramSchemes" false) (mem "ppScheme" false) (mem "Scheme" true))))
-(DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "evalOneRootEnv" false) (mem "ppValue" false) (mem "lookupBinding" false) (mem "force" false))))
+(DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "evalOneRootEnvWith" false) (mem "testCapableExterns" false) (mem "ppValue" false) (mem "lookupBinding" false) (mem "force" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "startsWith" false) (mem "stringTrim" false))))
 (DTypeSig false "accumulatedRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "accumulatedRef" () (EApp (EVar "Ref") (EListLit)))
@@ -515,7 +522,7 @@ stringSplitOn sep s start cur len
 (DFunDef false "lookupScheme" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupScheme" ((PVar "name") (PCons (PTuple (PVar "n") (PVar "s")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "name") (EVar "n")) (EApp (EVar "Some") (EVar "s")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupScheme") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "runPipeline" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect () (Some "e") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
-(DFunDef false "runPipeline" ((PVar "combined")) (EBlock (DoLet false false (PVar "runtimeDecls") (EFieldAccess (EVar "runtimeDeclsRef") "value")) (DoLet false false (PVar "preludeDecls") (EFieldAccess (EVar "preludeDeclsRef") "value")) (DoLet false false (PVar "resErrs") (EApp (EApp (EApp (EVar "resolveProgram") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "resErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EVar "map") (EVar "ppResError")) (EVar "resErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "tcErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EVar "map") (ELam ((PTuple PWild (PVar "m") PWild)) (EVar "m"))) (EVar "tcErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PVar "allSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EVar "preludeDecls")) (EVar "combined"))) (DoLet false false (PVar "bindings") (EApp (EApp (EVar "evalOneRootEnv") (EVar "preludeDecls")) (ETuple (ELit (LString "__repl__")) (EVar "combined")))) (DoExpr (ETuple (EListLit) (EVar "allSchemes") (EVar "bindings")))))))))))))
+(DFunDef false "runPipeline" ((PVar "combined")) (EBlock (DoLet false false (PVar "runtimeDecls") (EFieldAccess (EVar "runtimeDeclsRef") "value")) (DoLet false false (PVar "preludeDecls") (EFieldAccess (EVar "preludeDeclsRef") "value")) (DoLet false false (PVar "resErrs") (EApp (EApp (EApp (EVar "resolveProgram") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "resErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EVar "map") (EVar "ppResError")) (EVar "resErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "tcErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EVar "map") (ELam ((PTuple PWild (PVar "m") PWild)) (EVar "m"))) (EVar "tcErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PVar "allSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EVar "preludeDecls")) (EVar "combined"))) (DoLet false false (PVar "bindings") (EApp (EApp (EApp (EVar "evalOneRootEnvWith") (EApp (EVar "testCapableExterns") (ELit LUnit))) (EVar "preludeDecls")) (ETuple (ELit (LString "__repl__")) (EVar "combined")))) (DoExpr (ETuple (EListLit) (EVar "allSchemes") (EVar "bindings")))))))))))))
 (DTypeSig false "combinedDecls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "combinedDecls" ((PVar "newDecls")) (EBinOp "++" (EFieldAccess (EVar "accumulatedRef") "value") (EVar "newDecls")))
 (DTypeSig false "printErr" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
@@ -575,7 +582,7 @@ stringSplitOn sep s start cur len
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("frontend" "resolve") ((mem "resolveProgram" false) (mem "ppResError" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "checkProgramDiags" false) (mem "checkProgramSchemes" false) (mem "ppScheme" false) (mem "Scheme" true))))
-(DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "evalOneRootEnv" false) (mem "ppValue" false) (mem "lookupBinding" false) (mem "force" false))))
+(DUse false (UseGroup ("eval" "eval") ((mem "Value" true) (mem "evalOneRootEnvWith" false) (mem "testCapableExterns" false) (mem "ppValue" false) (mem "lookupBinding" false) (mem "force" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "startsWith" false) (mem "stringTrim" false))))
 (DTypeSig false "accumulatedRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "accumulatedRef" () (EApp (EVar "Ref") (EListLit)))
@@ -658,7 +665,7 @@ stringSplitOn sep s start cur len
 (DFunDef false "lookupScheme" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupScheme" ((PVar "name") (PCons (PTuple (PVar "n") (PVar "s")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "name") (EVar "n")) (EApp (EVar "Some") (EVar "s")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupScheme") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "runPipeline" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect () (Some "e") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
-(DFunDef false "runPipeline" ((PVar "combined")) (EBlock (DoLet false false (PVar "runtimeDecls") (EFieldAccess (EVar "runtimeDeclsRef") "value")) (DoLet false false (PVar "preludeDecls") (EFieldAccess (EVar "preludeDeclsRef") "value")) (DoLet false false (PVar "resErrs") (EApp (EApp (EApp (EVar "resolveProgram") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "resErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EMethodRef "map") (EVar "ppResError")) (EVar "resErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "tcErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EMethodRef "map") (ELam ((PTuple PWild (PVar "m") PWild)) (EVar "m"))) (EVar "tcErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PVar "allSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EVar "preludeDecls")) (EVar "combined"))) (DoLet false false (PVar "bindings") (EApp (EApp (EVar "evalOneRootEnv") (EVar "preludeDecls")) (ETuple (ELit (LString "__repl__")) (EVar "combined")))) (DoExpr (ETuple (EListLit) (EVar "allSchemes") (EVar "bindings")))))))))))))
+(DFunDef false "runPipeline" ((PVar "combined")) (EBlock (DoLet false false (PVar "runtimeDecls") (EFieldAccess (EVar "runtimeDeclsRef") "value")) (DoLet false false (PVar "preludeDecls") (EFieldAccess (EVar "preludeDeclsRef") "value")) (DoLet false false (PVar "resErrs") (EApp (EApp (EApp (EVar "resolveProgram") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "resErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EMethodRef "map") (EVar "ppResError")) (EVar "resErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "combined"))) (DoExpr (EMatch (EVar "tcErrs") (arm (PCons (PVar "e") PWild) () (ETuple (EApp (EApp (EMethodRef "map") (ELam ((PTuple PWild (PVar "m") PWild)) (EVar "m"))) (EVar "tcErrs")) (EListLit) (EListLit))) (arm (PList) () (EBlock (DoLet false false (PVar "allSchemes") (EApp (EApp (EVar "checkProgramSchemes") (EVar "preludeDecls")) (EVar "combined"))) (DoLet false false (PVar "bindings") (EApp (EApp (EApp (EVar "evalOneRootEnvWith") (EApp (EVar "testCapableExterns") (ELit LUnit))) (EVar "preludeDecls")) (ETuple (ELit (LString "__repl__")) (EVar "combined")))) (DoExpr (ETuple (EListLit) (EVar "allSchemes") (EVar "bindings")))))))))))))
 (DTypeSig false "combinedDecls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "combinedDecls" ((PVar "newDecls")) (EBinOp "++" (EFieldAccess (EVar "accumulatedRef") "value") (EVar "newDecls")))
 (DTypeSig false "printErr" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))

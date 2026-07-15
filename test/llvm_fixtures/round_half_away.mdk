@@ -1,0 +1,19 @@
+-- #101 round: locks C round() (half AWAY from zero) on wasm against the double-rounding
+-- bug in a naive `floor(abs(x)+0.5)`.  Regression for the $mdk_round fix.
+--
+-- Case B (the big one, ~2^52 inputs): an odd-integer double in [2^52, 2^53) is already
+-- integral, so round must return it unchanged — but `x+0.5` is an EXACT tie that IEEE
+-- half-to-even rounds UP, so the naive form returned x+1.  Here xB = 2^52+1; a correct
+-- round gives `round xB - xB == 0.0`, the buggy one gives 1.0.
+-- Case A: xA = 0.5 - 2^-54 = 0.49999999999999994; round -> 0.0 (naive -> 1.0, because
+-- xA+0.5 rounds to exactly 1.0 before the floor).
+--
+-- Values are built with pow/intToFloat, NOT float literals: a literal >= 1e15 is itself
+-- miscompiled by the native %.12g path (#57), and the off-by-1 is HIDDEN by
+-- floatToString's 12-sig-fig truncation — so Case B is AMPLIFIED as `round xB - xB`.
+-- eval == native == wasm.  Output: 0.0 0.0 3.0 -3.0
+two = intToFloat 2
+xB = pow two (intToFloat 52) + intToFloat 1
+xA = intToFloat 1 / two - pow two (intToFloat 0 - intToFloat 54)
+sep = " "
+main = putStrLn (floatToString (round xB - xB) ++ sep ++ floatToString (round xA) ++ sep ++ floatToString (round 2.5) ++ sep ++ floatToString (round (intToFloat 0 - 2.5)))
