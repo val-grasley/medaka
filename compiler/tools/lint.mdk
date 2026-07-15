@@ -39,8 +39,9 @@ import frontend.parser.{
   positionsDecls,
   declPosLine,
   declPosEndLine,
+  parseWithPositions,
 }
-import driver.diagnostics.{Severity(..), Diag(..), ppSeverity}
+import driver.diagnostics.{Severity(..), Diag(..), ppSeverity, readFileSafe}
 import support.util.{
   contains,
   listLen,
@@ -543,11 +544,115 @@ dropN n xs
 dropN _ [] = []
 dropN n (_::xs) = dropN (n - 1) xs
 
+-- ── CLI-flag-style finding filters ────────────────────────────────────────────
+-- `--disable`/`--only`/`--deny` (and the `medaka_lint` MCP tool's `disable`/
+-- `only`/`deny` args) all filter a `List Finding` by rule name, entirely in
+-- terms of `Finding.rule` — no `Rule`-record field access, so these are safe
+-- to run from any caller.  Shared by `medaka_cli.mdk` (the `medaka lint` CLI,
+-- both human and `--json` modes) and `mcp.mdk` (`medaka_lint`) so the two
+-- surfaces can never apply the flags differently.
+
+-- Parse --prefix=v1,v2,... from argv; returns [] if not present.
+export parseLintFlagList : String -> List String -> List String
+parseLintFlagList prefix [] = []
+parseLintFlagList prefix (x::rest)
+  | startsWith prefix x =
+    splitLintNames (stringSlice (stringLength prefix) (stringLength x) x)
+  | otherwise = parseLintFlagList prefix rest
+
+-- Split a comma-separated string.  Uses literal ',' to avoid Char-param issues.
+-- Exported so a caller with an already-split comma-separated value in hand
+-- (rather than a raw `--flag=v1,v2` argv token) — e.g. the `medaka_lint` MCP
+-- tool's `deny`/`only`/`disable` args — can reuse the exact same splitter
+-- `parseLintFlagList` uses, instead of re-deriving comma-splitting.  NOTE:
+-- `splitLintNames ""` returns `[""]`, not `[]` — callers with an optional,
+-- possibly-absent value should special-case the empty string themselves
+-- (see mcp.mdk's `lintNameListArg`).
+export splitLintNames : String -> List String
+splitLintNames s = splitLintNamesGo (stringToChars s) s 0 0 (stringLength s)
+
+splitLintNamesGo : Array Char -> String -> Int -> Int -> Int -> List String
+splitLintNamesGo chars s start i n
+  | i >= n = [stringSlice start n s]
+  | arrayGetUnsafe i chars == ',' =
+    stringSlice start i s :: splitLintNamesGo chars s (i + 1) (i + 1) n
+  | otherwise = splitLintNamesGo chars s start (i + 1) n
+
+-- Apply finding-level filters.  Operates on Finding.rule (a String) so no
+-- Rule-record field access is needed by the caller.
+export applyFindingFilters : List String -> List String -> List String -> List Finding -> List Finding
+applyFindingFilters disable only deny findings =
+  let after1 = applyFindingOnly only findings
+  let after2 = applyFindingDisable disable after1
+  applyFindingDeny deny after2
+
+-- --only: keep findings whose rule is in the list (no-op when empty).
+applyFindingOnly : List String -> List Finding -> List Finding
+applyFindingOnly [] findings = findings
+applyFindingOnly names findings = lintFindingOnlyGo names findings
+
+lintFindingOnlyGo : List String -> List Finding -> List Finding
+lintFindingOnlyGo _ [] = []
+lintFindingOnlyGo names (f::rest)
+  | contains f.rule names = f :: lintFindingOnlyGo names rest
+  | otherwise = lintFindingOnlyGo names rest
+
+-- --disable: remove findings whose rule is in the list (no-op when empty).
+applyFindingDisable : List String -> List Finding -> List Finding
+applyFindingDisable [] findings = findings
+applyFindingDisable names findings = lintFindingDisableGo names findings
+
+lintFindingDisableGo : List String -> List Finding -> List Finding
+lintFindingDisableGo _ [] = []
+lintFindingDisableGo names (f::rest)
+  | contains f.rule names = lintFindingDisableGo names rest
+  | otherwise = f :: lintFindingDisableGo names rest
+
+-- --deny: promote findings to SevError when their rule is in the list.
+export applyFindingDeny : List String -> List Finding -> List Finding
+applyFindingDeny [] findings = findings
+applyFindingDeny names findings = lintFindingDenyGo names findings
+
+lintFindingDenyGo : List String -> List Finding -> List Finding
+lintFindingDenyGo _ [] = []
+lintFindingDenyGo names (f::rest)
+  | contains f.rule names = Finding {
+    rule = f.rule,
+    message = f.message,
+    severity = SevError,
+    loc = f.loc,
+  } :: lintFindingDenyGo names rest
+  | otherwise = f :: lintFindingDenyGo names rest
+
+export isFindingError : Finding -> Bool
+isFindingError f = match f.severity
+  SevError => True
+  SevWarning => False
+
 -- ── rendering ─────────────────────────────────────────────────────────────────
 
 export findingToDiag : Finding -> Diag
 findingToDiag f =
   Diag f.severity f.rule "[\{f.rule}] \{f.message}" f.loc None None
+
+-- Run the full lint pipeline (all rules, inline `-- lint-disable-*` suppression,
+-- then the `--disable`/`--only`/`--deny` CLI-flag-style filters) over ONE file
+-- and return `(path, src, List Diag)` — exactly the per-file triple
+-- `driver.diagnostics.cjAllToJson` expects.  Shared by `medaka lint --json`
+-- (medaka_cli.mdk) and the `medaka_lint` MCP tool (mcp.mdk) so both surfaces
+-- serialize through the SAME envelope `check --json` uses, with the lint rule
+-- name landing in each diagnostic's `code` (via `findingToDiag`).  Uses
+-- `readFileSafe` (the same "" -on-read-error helper `checkJsonFile` uses), so
+-- an unreadable path parses as empty source and yields `(path, "", [])` —
+-- total, no crash, and consistent with `check --json`'s own file-variant
+-- behaviour on a missing target.
+export lintFileDiagTriple : List String -> List String -> List String -> String -> <IO> (String, String, List Diag)
+lintFileDiagTriple disable only deny path =
+  let src = readFileSafe path
+  let (decls, pos) = parseWithPositions src
+  let allFindings = applySuppressions src (lintProgram allRules path src pos decls)
+  let findings = applyFindingFilters disable only deny allFindings
+  (path, src, map findingToDiag findings)
 
 -- One finding per line: `<severity>: [<rule>] <message>` (location-stripped, the
 -- golden harness sorts).  Mirror of exhaust.mdk's `exhaustToLines`.  `src` is the

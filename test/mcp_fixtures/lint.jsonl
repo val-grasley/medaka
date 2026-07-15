@@ -1,0 +1,5 @@
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+{"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "medaka_lint", "arguments": {"paths": ["test/mcp_fixtures/lint_violation.mdk"]}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_lint", "arguments": {"paths": ["test/mcp_fixtures/lint_violation.mdk"], "deny": "rule-not-eq"}}}
+{"jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": {}}

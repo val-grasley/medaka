@@ -1,0 +1,14 @@
+-- Deliberately lint-violating fixture for the `medaka_lint` MCP tool golden
+-- gate (#249). test/ fixtures are excluded from the pre-commit lint hook
+-- (they violate style on purpose), so this file is safe to commit as-is.
+--
+-- `isDifferent` triggers exactly ONE finding: rule-not-eq (`not (a == b)`
+-- should be rewritten `a != b`). `main` calls it so `isDifferent` is
+-- reachable (no rule-dead-code finding), and both bindings carry a type
+-- signature (no rule-missing-signature finding) — keeping this fixture's
+-- expected output to a single, stable finding.
+isDifferent : Int -> Int -> Bool
+isDifferent a b = not (a == b)
+
+main : Bool
+main = isDifferent 1 2

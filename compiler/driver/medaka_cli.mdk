@@ -108,6 +108,7 @@ import driver.diagnostics.{
   mkDiag,
   checkJsonFile,
   readFileSafe,
+  diagIsError,
 }
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{
@@ -138,6 +139,11 @@ import tools.lint.{
   Finding,
   applyFixes,
   runCrossFileRules,
+  parseLintFlagList,
+  applyFindingFilters,
+  applyFindingDeny,
+  isFindingError,
+  lintFileDiagTriple,
 }
 import tools.codemod.{
   findCodemod,
@@ -1559,6 +1565,10 @@ runManifestCmd argv = match parseManifestArgs argv
 -- Parse target file(s) and run lint rules over the raw pre-desugar AST.
 -- Flags:
 --   --fix                rewrite fixable findings in-place
+--   --json               emit the {"files":[...]} structured-diagnostics
+--                        envelope (same schema as `check --json`) instead of
+--                        human text; --fix is ignored in this mode (#249,
+--                        report-only — autofix is out of scope)
 --   --disable=r1,r2,...  suppress findings from the named rules
 --   --only=r1,...        keep only findings from the named rules
 --   --deny=r1,...        promote findings from the named rules to SevError
@@ -1574,18 +1584,48 @@ runLintCmd argv =
   let onlyNames = parseLintFlagList "--only=" argv
   let denyNames = parseLintFlagList "--deny=" argv
   let fixMode = hasFlag "--fix" argv
+  let jsonMode = hasFlag "--json" argv
   let fileArgs = lintTargets argv
   let files = resolveLintTargets fileArgs
-  let multiFile = match files
-    (_::_::_) => True
-    _ => False
-  let perFileErr = lintFilesGo fixMode multiFile disableNames onlyNames denyNames files False
-  -- Cross-file rules only run in the multi-file REPORT path; a single target or
-  -- --fix produces nothing (need ≥2 files), keeping single-file output identical.
-  let crossErr =
-    if multiFile && not fixMode then runCrossFileReport disableNames onlyNames denyNames files
-    else False
-  if perFileErr || crossErr then exit 1 else ()
+  if jsonMode then runLintJsonCmd disableNames onlyNames denyNames files
+  else
+    let multiFile = match files
+      (_::_::_) => True
+      _ => False
+    let perFileErr = lintFilesGo fixMode multiFile disableNames onlyNames denyNames files False
+    -- Cross-file rules only run in the multi-file REPORT path; a single target or
+    -- --fix produces nothing (need ≥2 files), keeping single-file output identical.
+    let crossErr =
+      if multiFile && not fixMode then runCrossFileReport disableNames onlyNames denyNames files
+      else False
+    if perFileErr || crossErr then exit 1 else ()
+
+-- `medaka lint --json`: run the lint pipeline over every resolved target file
+-- and emit the SAME `{"files":[{"file":...,"diagnostics":[...]}]}` envelope
+-- `medaka check --json` emits (via `cjAllToJson`) — one schema for both
+-- surfaces (#249).  Each `Finding` becomes a `Diag` via `findingToDiag`
+-- (inside `lintFileDiagTriple`), which stamps the lint RULE NAME into the
+-- diagnostic's `code` field.  Cross-file rules do not participate (JSON mode
+-- is per-file, mirroring `check --json`'s own per-file shape); `--fix` is
+-- ignored here.  Exit 1 iff any diagnostic is a hard error (severity 1) —
+-- matches `runCheckJsonCmd`'s convention.
+runLintJsonCmd : List String -> List String -> List String -> List String -> <IO> Unit
+runLintJsonCmd disableNames onlyNames denyNames files =
+  let triples = lintFilesToDiagTriples disableNames onlyNames denyNames files
+  let _ = putStr (cjAllToJson triples)
+  if anyList cjLintTripleHasErr triples then exit 1 else ()
+
+-- Sequence `lintFileDiagTriple` over every target file, in order.  Mirrors
+-- `parseLintFiles`'s explicit recursion — this codebase sequences an `<IO>`
+-- list traversal by hand, not via `map` over an effectful function.
+lintFilesToDiagTriples : List String -> List String -> List String -> List String -> <IO> List (String, String, List Diag)
+lintFilesToDiagTriples _ _ _ [] = []
+lintFilesToDiagTriples disable only deny (f::rest) =
+  lintFileDiagTriple disable only deny f ::
+    lintFilesToDiagTriples disable only deny rest
+
+cjLintTripleHasErr : (String, String, List Diag) -> Bool
+cjLintTripleHasErr (_, _, diags) = anyList diagIsError diags
 
 -- Parse every target file once, then run the cross-file rule tier over the whole
 -- set.  Findings render AFTER the per-file output under a `cross-file:` header.
@@ -1911,76 +1951,6 @@ snapFlagValue name (a::v::rest) =
     Some v
   else
     snapFlagValue name (v::rest)
-
--- Parse --prefix=v1,v2,... from argv; returns [] if not present.
-parseLintFlagList : String -> List String -> List String
-parseLintFlagList prefix [] = []
-parseLintFlagList prefix (x::rest)
-  | startsWith prefix x =
-    splitLintNames (stringSlice (stringLength prefix) (stringLength x) x)
-  | otherwise = parseLintFlagList prefix rest
-
--- Split a comma-separated string.  Uses literal ',' to avoid Char-param issues.
-splitLintNames : String -> List String
-splitLintNames s = splitLintNamesGo (stringToChars s) s 0 0 (stringLength s)
-
-splitLintNamesGo : Array Char -> String -> Int -> Int -> Int -> List String
-splitLintNamesGo chars s start i n
-  | i >= n = [stringSlice start n s]
-  | arrayGetUnsafe i chars == ',' =
-    stringSlice start i s :: splitLintNamesGo chars s (i + 1) (i + 1) n
-  | otherwise = splitLintNamesGo chars s start (i + 1) n
-
--- Apply finding-level filters.  Operates on Finding.rule (a String) so no
--- Rule-record field access is needed in medaka_cli.mdk.
-applyFindingFilters : List String -> List String -> List String -> List Finding -> List Finding
-applyFindingFilters disable only deny findings =
-  let after1 = applyFindingOnly only findings
-  let after2 = applyFindingDisable disable after1
-  applyFindingDeny deny after2
-
--- --only: keep findings whose rule is in the list (no-op when empty).
-applyFindingOnly : List String -> List Finding -> List Finding
-applyFindingOnly [] findings = findings
-applyFindingOnly names findings = lintFindingOnlyGo names findings
-
-lintFindingOnlyGo : List String -> List Finding -> List Finding
-lintFindingOnlyGo _ [] = []
-lintFindingOnlyGo names (f::rest)
-  | contains f.rule names = f :: lintFindingOnlyGo names rest
-  | otherwise = lintFindingOnlyGo names rest
-
--- --disable: remove findings whose rule is in the list (no-op when empty).
-applyFindingDisable : List String -> List Finding -> List Finding
-applyFindingDisable [] findings = findings
-applyFindingDisable names findings = lintFindingDisableGo names findings
-
-lintFindingDisableGo : List String -> List Finding -> List Finding
-lintFindingDisableGo _ [] = []
-lintFindingDisableGo names (f::rest)
-  | contains f.rule names = lintFindingDisableGo names rest
-  | otherwise = f :: lintFindingDisableGo names rest
-
--- --deny: promote findings to SevError when their rule is in the list.
-applyFindingDeny : List String -> List Finding -> List Finding
-applyFindingDeny [] findings = findings
-applyFindingDeny names findings = lintFindingDenyGo names findings
-
-lintFindingDenyGo : List String -> List Finding -> List Finding
-lintFindingDenyGo _ [] = []
-lintFindingDenyGo names (f::rest)
-  | contains f.rule names = Finding {
-    rule = f.rule,
-    message = f.message,
-    severity = SevError,
-    loc = f.loc,
-  } :: lintFindingDenyGo names rest
-  | otherwise = f :: lintFindingDenyGo names rest
-
-isFindingError : Finding -> Bool
-isFindingError f = match f.severity
-  SevError => True
-  SevWarning => False
 
 -- dirname on a POSIX path (mirrors build_cmd.dirOf, kept local to avoid an extra
 -- import of a non-exported helper).

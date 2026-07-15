@@ -37,9 +37,16 @@ import json.{
   lookup,
   asString,
   asInt,
+  asArray,
 }
 import io.{stripCR}
-import driver.diagnostics.{checkJsonSingle, checkJsonFile}
+import driver.diagnostics.{
+  checkJsonSingle,
+  checkJsonFile,
+  cjAllToJson,
+  diagIsError,
+  Diag,
+}
 import tools.lsp.{typeAtPoint, documentSymbols, definitionResult}
 import frontend.parser.{
   parseResult,
@@ -48,6 +55,7 @@ import frontend.parser.{
   parseErrorMessage,
 }
 import tools.fmt.{formatSource}
+import tools.lint.{lintFileDiagTriple, splitLintNames}
 
 -- ── protocol / server identity ──────────────────────────────────────────────
 
@@ -163,6 +171,7 @@ mcpTools = [
   McpTool "medaka_symbols" "List a file's top-level declarations (functions, data types, interfaces, impls, …) with their source ranges — the LSP document-symbol outline, driven statelessly. Give a `file` path; parse-only (no typecheck), so it works even on a file with type errors. A file that fails to PARSE also returns an empty list — pair with medaka_check to tell an empty file from a broken one." medakaSymbolsSchema runSymbolsTool,
   McpTool "medaka_definition" "Find the declaration that defines the identifier at a position — the LSP go-to-definition, driven statelessly. Give a `file` path plus a 0-based `line` and `col` (LSP-style). INTRA-FILE ONLY: it scans declarations in this same file, so a use of a name defined in ANOTHER file returns an empty result rather than a wrong location. A position off any identifier also returns an empty result." medakaDefinitionSchema runDefinitionTool,
   McpTool "medaka_fmt" "Format Medaka source with the compiler's canonical formatter (`medaka fmt`), driven statelessly. Provide exactly one of `file` or `source`. NEVER writes to disk — a `file` argument is only READ, never opened for writing; apply the returned text yourself if you want it saved. Default: returns the formatted source text. Pass `check: true` to instead get a clean/dirty verdict (`{\"clean\": true|false}`) without the full text. Input that fails to PARSE returns an isError result carrying the parse diagnostic, never a crash." medakaFmtSchema runFmtTool,
+  McpTool "medaka_lint" "Run the compiler's style linter (`medaka lint`) over one or more files and return structured diagnostics — the same JSON envelope `medaka_check`/`medaka lint --json` emit (stable `range`/`severity`/`source`, with the lint RULE NAME in `code`). Give `paths` (array of file paths); optionally narrow with comma-separated `deny`/`only`/`disable` rule-name lists (mirror the CLI's --deny/--only/--disable). Report-only — no autofix; apply a fix yourself if you want one." medakaLintSchema runLintTool,
 ]
 
 -- The `tools/list` descriptor for one tool: { name, description, inputSchema }.
@@ -513,6 +522,139 @@ runFmtTool _runtimeSrc _coreSrc _stdlibDir args =
       Err e => toolArgError (stringConcat ["medaka_fmt: cannot read file '", path, "': ", e])
       Ok src => fmtResult check src
     (None, Some src) => fmtResult check src
+
+-- ── medaka_lint tool ──────────────────────────────────────────────────────────
+
+-- inputSchema: `paths` (array of file path strings, required) plus the
+-- lint CLI's rule-name-list flags as comma-separated strings — `deny`/`only`/
+-- `disable` (mirrors --deny/--only/--disable). Report-only (#249): no `--fix`
+-- equivalent — a suggesting rule must prove its fix compiles (TOOLING.md /
+-- #56) and report-only sidesteps that for v1.
+medakaLintSchema : Json
+medakaLintSchema = jObject
+  [
+    ("type", JString "object"),
+    (
+      "properties",
+      jObject [
+        (
+          "paths",
+          jObject [
+            ("type", JString "array"),
+            ("items", jObject [("type", JString "string")]),
+            ("description", JString "Paths to .mdk files to lint."),
+          ],
+        ),
+        (
+          "deny",
+          jObject [
+            ("type", JString "string"),
+            (
+              "description",
+              JString "Comma-separated rule names to promote to error severity (mirrors --deny).",
+            ),
+          ],
+        ),
+        (
+          "only",
+          jObject [
+            ("type", JString "string"),
+            (
+              "description",
+              JString "Comma-separated rule names to keep, dropping findings from every other rule (mirrors --only).",
+            ),
+          ],
+        ),
+        (
+          "disable",
+          jObject [
+            ("type", JString "string"),
+            (
+              "description",
+              JString "Comma-separated rule names to suppress (mirrors --disable).",
+            ),
+          ],
+        ),
+      ],
+    ),
+    ("required", jArray [JString "paths"]),
+  ]
+
+-- Convert a JArray's backing Array into a List. arrayLength/arrayGetUnsafe are
+-- core builtins (no stdlib import needed) — mirrors eval.mdk's arrayToListG,
+-- duplicated here rather than pulling in the `array` stdlib module (a new
+-- import surface) for this one conversion.
+jsonArrToList : Array Json -> List Json
+jsonArrToList arr = jsonArrToListGo arr 0 (arrayLength arr)
+
+jsonArrToListGo : Array Json -> Int -> Int -> List Json
+jsonArrToListGo arr i n
+  | i >= n = []
+  | otherwise = arrayGetUnsafe i arr :: jsonArrToListGo arr (i + 1) n
+
+-- `paths` -> `List String`, or `None` if missing, not a JSON array, or
+-- containing any non-string element — a malformed `paths` is reported as an
+-- argument error, never silently dropped/skipped element-by-element.
+pathsArg : Json -> Option (List String)
+pathsArg args = match lookup "paths" args
+  None => None
+  Some v => match asArray v
+    None => None
+    Some arr => allJsonStrings (jsonArrToList arr)
+
+allJsonStrings : List Json -> Option (List String)
+allJsonStrings [] = Some []
+allJsonStrings (j::rest) = match (asString j, allJsonStrings rest)
+  (Some s, Some ss) => Some (s::ss)
+  _ => None
+
+-- Optional comma-separated rule-name-list argument -> `List String`. Absent or
+-- empty-string -> `[]` (no filtering); reuses `tools.lint.splitLintNames` (the
+-- exact splitter `parseLintFlagList` uses for the CLI's `--deny=`/`--only=`/
+-- `--disable=` flags) so the CLI and MCP surfaces can never parse "a,b,c"
+-- differently.
+lintNameListArg : String -> Json -> List String
+lintNameListArg key args = match fieldStr key args
+  None => []
+  Some "" => []
+  Some s => splitLintNames s
+
+-- Sequence `lintFileDiagTriple` over every target path, in order (same
+-- explicit-recursion idiom `medaka_cli.mdk`'s `lintFilesToDiagTriples` uses —
+-- `map` over an effectful function is not how this codebase sequences an
+-- `<IO>` list traversal).
+lintPathsToDiagTriples : List String -> List String -> List String -> List String -> <IO> List (String, String, List Diag)
+lintPathsToDiagTriples _ _ _ [] = []
+lintPathsToDiagTriples disable only deny (p::rest) =
+  lintFileDiagTriple disable only deny p ::
+    lintPathsToDiagTriples disable only deny rest
+
+anyTripleHasErr : List (String, String, List Diag) -> Bool
+anyTripleHasErr [] = False
+anyTripleHasErr ((_, _, diags)::rest) = anyDiagErr diags || anyTripleHasErr rest
+
+anyDiagErr : List Diag -> Bool
+anyDiagErr [] = False
+anyDiagErr (d::rest) = diagIsError d || anyDiagErr rest
+
+-- medaka_lint handler: run the lint pipeline (all rules, inline
+-- `-- lint-disable-*` suppression, then the `disable`/`only`/`deny` filters)
+-- over every path in `paths` and return the SAME `{"files":[...]}` envelope
+-- `medaka_check`/`medaka lint --json` emit (via `cjAllToJson`) — one schema
+-- across all three surfaces. Each `Finding` becomes a `Diag` via
+-- `findingToDiag` (inside `lintFileDiagTriple`), which stamps the lint RULE
+-- NAME into the diagnostic's `code`. `isError` is true iff any diagnostic is a
+-- hard error (severity 1) — only reachable via `deny` promotion, since every
+-- seed rule defaults to SevWarning.
+runLintTool : String -> String -> String -> Json -> <IO> Json
+runLintTool _runtimeSrc _coreSrc _stdlibDir args = match pathsArg args
+  None => toolArgError "medaka_lint: missing or invalid argument — require 'paths' (array of strings)"
+  Some paths =>
+    let disable = lintNameListArg "disable" args
+    let only = lintNameListArg "only" args
+    let deny = lintNameListArg "deny" args
+    let triples = lintPathsToDiagTriples disable only deny paths
+    toolTextResult (cjAllToJson triples) (anyTripleHasErr triples)
 
 -- ── tools/call handler ───────────────────────────────────────────────────────
 

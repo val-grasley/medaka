@@ -1,5 +1,5 @@
 # META
-source_lines=2061
+source_lines=2031
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/medaka_cli.mdk — the native `medaka` CLI dispatcher (Phase C
@@ -112,6 +112,7 @@ import driver.diagnostics.{
   mkDiag,
   checkJsonFile,
   readFileSafe,
+  diagIsError,
 }
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{
@@ -142,6 +143,11 @@ import tools.lint.{
   Finding,
   applyFixes,
   runCrossFileRules,
+  parseLintFlagList,
+  applyFindingFilters,
+  applyFindingDeny,
+  isFindingError,
+  lintFileDiagTriple,
 }
 import tools.codemod.{
   findCodemod,
@@ -1563,6 +1569,10 @@ runManifestCmd argv = match parseManifestArgs argv
 -- Parse target file(s) and run lint rules over the raw pre-desugar AST.
 -- Flags:
 --   --fix                rewrite fixable findings in-place
+--   --json               emit the {"files":[...]} structured-diagnostics
+--                        envelope (same schema as `check --json`) instead of
+--                        human text; --fix is ignored in this mode (#249,
+--                        report-only — autofix is out of scope)
 --   --disable=r1,r2,...  suppress findings from the named rules
 --   --only=r1,...        keep only findings from the named rules
 --   --deny=r1,...        promote findings from the named rules to SevError
@@ -1578,18 +1588,48 @@ runLintCmd argv =
   let onlyNames = parseLintFlagList "--only=" argv
   let denyNames = parseLintFlagList "--deny=" argv
   let fixMode = hasFlag "--fix" argv
+  let jsonMode = hasFlag "--json" argv
   let fileArgs = lintTargets argv
   let files = resolveLintTargets fileArgs
-  let multiFile = match files
-    (_::_::_) => True
-    _ => False
-  let perFileErr = lintFilesGo fixMode multiFile disableNames onlyNames denyNames files False
-  -- Cross-file rules only run in the multi-file REPORT path; a single target or
-  -- --fix produces nothing (need ≥2 files), keeping single-file output identical.
-  let crossErr =
-    if multiFile && not fixMode then runCrossFileReport disableNames onlyNames denyNames files
-    else False
-  if perFileErr || crossErr then exit 1 else ()
+  if jsonMode then runLintJsonCmd disableNames onlyNames denyNames files
+  else
+    let multiFile = match files
+      (_::_::_) => True
+      _ => False
+    let perFileErr = lintFilesGo fixMode multiFile disableNames onlyNames denyNames files False
+    -- Cross-file rules only run in the multi-file REPORT path; a single target or
+    -- --fix produces nothing (need ≥2 files), keeping single-file output identical.
+    let crossErr =
+      if multiFile && not fixMode then runCrossFileReport disableNames onlyNames denyNames files
+      else False
+    if perFileErr || crossErr then exit 1 else ()
+
+-- `medaka lint --json`: run the lint pipeline over every resolved target file
+-- and emit the SAME `{"files":[{"file":...,"diagnostics":[...]}]}` envelope
+-- `medaka check --json` emits (via `cjAllToJson`) — one schema for both
+-- surfaces (#249).  Each `Finding` becomes a `Diag` via `findingToDiag`
+-- (inside `lintFileDiagTriple`), which stamps the lint RULE NAME into the
+-- diagnostic's `code` field.  Cross-file rules do not participate (JSON mode
+-- is per-file, mirroring `check --json`'s own per-file shape); `--fix` is
+-- ignored here.  Exit 1 iff any diagnostic is a hard error (severity 1) —
+-- matches `runCheckJsonCmd`'s convention.
+runLintJsonCmd : List String -> List String -> List String -> List String -> <IO> Unit
+runLintJsonCmd disableNames onlyNames denyNames files =
+  let triples = lintFilesToDiagTriples disableNames onlyNames denyNames files
+  let _ = putStr (cjAllToJson triples)
+  if anyList cjLintTripleHasErr triples then exit 1 else ()
+
+-- Sequence `lintFileDiagTriple` over every target file, in order.  Mirrors
+-- `parseLintFiles`'s explicit recursion — this codebase sequences an `<IO>`
+-- list traversal by hand, not via `map` over an effectful function.
+lintFilesToDiagTriples : List String -> List String -> List String -> List String -> <IO> List (String, String, List Diag)
+lintFilesToDiagTriples _ _ _ [] = []
+lintFilesToDiagTriples disable only deny (f::rest) =
+  lintFileDiagTriple disable only deny f ::
+    lintFilesToDiagTriples disable only deny rest
+
+cjLintTripleHasErr : (String, String, List Diag) -> Bool
+cjLintTripleHasErr (_, _, diags) = anyList diagIsError diags
 
 -- Parse every target file once, then run the cross-file rule tier over the whole
 -- set.  Findings render AFTER the per-file output under a `cross-file:` header.
@@ -1916,76 +1956,6 @@ snapFlagValue name (a::v::rest) =
   else
     snapFlagValue name (v::rest)
 
--- Parse --prefix=v1,v2,... from argv; returns [] if not present.
-parseLintFlagList : String -> List String -> List String
-parseLintFlagList prefix [] = []
-parseLintFlagList prefix (x::rest)
-  | startsWith prefix x =
-    splitLintNames (stringSlice (stringLength prefix) (stringLength x) x)
-  | otherwise = parseLintFlagList prefix rest
-
--- Split a comma-separated string.  Uses literal ',' to avoid Char-param issues.
-splitLintNames : String -> List String
-splitLintNames s = splitLintNamesGo (stringToChars s) s 0 0 (stringLength s)
-
-splitLintNamesGo : Array Char -> String -> Int -> Int -> Int -> List String
-splitLintNamesGo chars s start i n
-  | i >= n = [stringSlice start n s]
-  | arrayGetUnsafe i chars == ',' =
-    stringSlice start i s :: splitLintNamesGo chars s (i + 1) (i + 1) n
-  | otherwise = splitLintNamesGo chars s start (i + 1) n
-
--- Apply finding-level filters.  Operates on Finding.rule (a String) so no
--- Rule-record field access is needed in medaka_cli.mdk.
-applyFindingFilters : List String -> List String -> List String -> List Finding -> List Finding
-applyFindingFilters disable only deny findings =
-  let after1 = applyFindingOnly only findings
-  let after2 = applyFindingDisable disable after1
-  applyFindingDeny deny after2
-
--- --only: keep findings whose rule is in the list (no-op when empty).
-applyFindingOnly : List String -> List Finding -> List Finding
-applyFindingOnly [] findings = findings
-applyFindingOnly names findings = lintFindingOnlyGo names findings
-
-lintFindingOnlyGo : List String -> List Finding -> List Finding
-lintFindingOnlyGo _ [] = []
-lintFindingOnlyGo names (f::rest)
-  | contains f.rule names = f :: lintFindingOnlyGo names rest
-  | otherwise = lintFindingOnlyGo names rest
-
--- --disable: remove findings whose rule is in the list (no-op when empty).
-applyFindingDisable : List String -> List Finding -> List Finding
-applyFindingDisable [] findings = findings
-applyFindingDisable names findings = lintFindingDisableGo names findings
-
-lintFindingDisableGo : List String -> List Finding -> List Finding
-lintFindingDisableGo _ [] = []
-lintFindingDisableGo names (f::rest)
-  | contains f.rule names = lintFindingDisableGo names rest
-  | otherwise = f :: lintFindingDisableGo names rest
-
--- --deny: promote findings to SevError when their rule is in the list.
-applyFindingDeny : List String -> List Finding -> List Finding
-applyFindingDeny [] findings = findings
-applyFindingDeny names findings = lintFindingDenyGo names findings
-
-lintFindingDenyGo : List String -> List Finding -> List Finding
-lintFindingDenyGo _ [] = []
-lintFindingDenyGo names (f::rest)
-  | contains f.rule names = Finding {
-    rule = f.rule,
-    message = f.message,
-    severity = SevError,
-    loc = f.loc,
-  } :: lintFindingDenyGo names rest
-  | otherwise = f :: lintFindingDenyGo names rest
-
-isFindingError : Finding -> Bool
-isFindingError f = match f.severity
-  SevError => True
-  SevWarning => False
-
 -- dirname on a POSIX path (mirrors build_cmd.dirOf, kept local to avoid an extra
 -- import of a non-exported helper).
 dirOf2 : String -> String
@@ -2077,7 +2047,7 @@ runMcpCmd _ =
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("frontend" "resolve") ((mem "resolveModulesToHumane" false) (mem "resolveModulesToHumaneG" false) (mem "resolveModulesToHumaneGF" false) (mem "resolveModulesToHumaneByPath" false))))
 (DUse false (UseGroup ("driver" "loader") ((mem "loadProgram" false) (mem "loadProgramFilesLocated" false) (mem "findProjectRoot" false) (mem "entrySearchRoots" false) (mem "projectTrustedMods" false) (mem "unknownModuleIdOf" false) (mem "findImportLoc" false) (mem "availableModulesHint" false) (mem "availableModulesText" false))))
-(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "analyzeLocatedG" false) (mem "ppDiagCli" false) (mem "ppDiagCliSrc" false) (mem "Diag" true) (mem "Severity" true) (mem "SevError" false) (mem "cjPosition" false) (mem "cjRange" false) (mem "cjRangeOfLoc" false) (mem "cjDiagnostic" false) (mem "cjFileEntry" false) (mem "cjAllToJson" false) (mem "readDiagSrc" false) (mem "parseErrCode" false) (mem "parseErrHelpFix" false) (mem "codeKind" false) (mem "optField" false) (mem "cjFixJson" false) (mem "mkDiag" false) (mem "checkJsonFile" false) (mem "readFileSafe" false))))
+(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "analyzeLocatedG" false) (mem "ppDiagCli" false) (mem "ppDiagCliSrc" false) (mem "Diag" true) (mem "Severity" true) (mem "SevError" false) (mem "cjPosition" false) (mem "cjRange" false) (mem "cjRangeOfLoc" false) (mem "cjDiagnostic" false) (mem "cjFileEntry" false) (mem "cjAllToJson" false) (mem "readDiagSrc" false) (mem "parseErrCode" false) (mem "parseErrHelpFix" false) (mem "codeKind" false) (mem "optField" false) (mem "cjFixJson" false) (mem "mkDiag" false) (mem "checkJsonFile" false) (mem "readFileSafe" false) (mem "diagIsError" false))))
 (DUse false (UseGroup ("json") ((mem "Json" false) (mem "JInt" false) (mem "JString" false) (mem "JArray" false) (mem "JObject" false) (mem "jObject" false) (mem "jArray" false) (mem "stringify" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "elaborateModules" false) (mem "resetTypeErrorsSticky" false) (mem "hadTypeErrors" false) (mem "mainTypeIsAsync" false) (mem "mainTypeIsUnit" false))))
 (DUse false (UseGroup ("eval" "eval") ((mem "evalModulesOutputRun" false) (mem "evalModulesOutputAsync" false) (mem "currentEvalFile" false) (mem "runJsonMode" false) (mem "progArgsRef" false))))
@@ -2086,7 +2056,7 @@ runMcpCmd _ =
 (DUse false (UseGroup ("tools" "lsp") ((mem "runServer" false))))
 (DUse false (UseGroup ("tools" "mcp") ((mem "runMcpServer" false))))
 (DUse false (UseGroup ("tools" "doc") ((mem "runDoc" false))))
-(DUse false (UseGroup ("tools" "lint") ((mem "allRules" false) (mem "lintProgram" false) (mem "applySuppressions" false) (mem "applySuppressionsMulti" false) (mem "findingToDiag" false) (mem "Finding" false) (mem "applyFixes" false) (mem "runCrossFileRules" false))))
+(DUse false (UseGroup ("tools" "lint") ((mem "allRules" false) (mem "lintProgram" false) (mem "applySuppressions" false) (mem "applySuppressionsMulti" false) (mem "findingToDiag" false) (mem "Finding" false) (mem "applyFixes" false) (mem "runCrossFileRules" false) (mem "parseLintFlagList" false) (mem "applyFindingFilters" false) (mem "applyFindingDeny" false) (mem "isFindingError" false) (mem "lintFileDiagTriple" false))))
 (DUse false (UseGroup ("tools" "codemod") ((mem "findCodemod" false) (mem "codemodMk" false) (mem "codemodWarnDecls" false) (mem "codemodListing" false) (mem "codemodSource" false))))
 (DUse false (UseGroup ("tools" "check_policy") ((mem "runCheckPolicy" false) (mem "runAcceptedPlugin" false) (mem "PolicyArgs" true) (mem "parsePolicyArgs" false) (mem "PolicyOutcome" true) (mem "runManifest" false) (mem "parseManifestArgs" false) (mem "ManifestArgs" true))))
 (DTypeSig false "medakaVersion" (TyCon "String"))
@@ -2285,7 +2255,14 @@ runMcpCmd _ =
 (DTypeSig false "runManifestCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "runManifestCmd" ((PVar "argv")) (EMatch (EApp (EVar "parseManifestArgs") (EVar "argv")) (arm (PCon "ManifestArgs" (PCon "None") PWild) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (ELit (LString "usage: medaka manifest <file.mdk> [--fn name]")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "ManifestArgs" (PCon "Some" (PVar "target")) (PVar "fn")) () (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "rtPath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/runtime.mdk")))) (DoLet false false (PVar "corePath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/core.mdk")))) (DoExpr (EMatch (EApp (EVar "readPreludeFile") (EVar "rtPath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "corePath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "csrc")) () (EMatch (EApp (EVar "readFile") (EVar "target")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "tsrc")) () (EApp (EVar "putStr") (EApp (EApp (EApp (EApp (EVar "runManifest") (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "fn"))))))))))))))
 (DTypeSig false "runLintCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
-(DFunDef false "runLintCmd" ((PVar "argv")) (EBlock (DoLet false false (PVar "disableNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--disable="))) (EVar "argv"))) (DoLet false false (PVar "onlyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--only="))) (EVar "argv"))) (DoLet false false (PVar "denyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--deny="))) (EVar "argv"))) (DoLet false false (PVar "fixMode") (EApp (EApp (EVar "hasFlag") (ELit (LString "--fix"))) (EVar "argv"))) (DoLet false false (PVar "fileArgs") (EApp (EVar "lintTargets") (EVar "argv"))) (DoLet false false (PVar "files") (EApp (EVar "resolveLintTargets") (EVar "fileArgs"))) (DoLet false false (PVar "multiFile") (EMatch (EVar "files") (arm (PCons PWild (PCons PWild PWild)) () (EVar "True")) (arm PWild () (EVar "False")))) (DoLet false false (PVar "perFileErr") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "lintFilesGo") (EVar "fixMode")) (EVar "multiFile")) (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoLet false false (PVar "crossErr") (EIf (EBinOp "&&" (EVar "multiFile") (EApp (EVar "not") (EVar "fixMode"))) (EApp (EApp (EApp (EApp (EVar "runCrossFileReport") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoExpr (EIf (EBinOp "||" (EVar "perFileErr") (EVar "crossErr")) (EApp (EVar "exit") (ELit (LInt 1))) (ELit LUnit)))))
+(DFunDef false "runLintCmd" ((PVar "argv")) (EBlock (DoLet false false (PVar "disableNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--disable="))) (EVar "argv"))) (DoLet false false (PVar "onlyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--only="))) (EVar "argv"))) (DoLet false false (PVar "denyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--deny="))) (EVar "argv"))) (DoLet false false (PVar "fixMode") (EApp (EApp (EVar "hasFlag") (ELit (LString "--fix"))) (EVar "argv"))) (DoLet false false (PVar "jsonMode") (EApp (EApp (EVar "hasFlag") (ELit (LString "--json"))) (EVar "argv"))) (DoLet false false (PVar "fileArgs") (EApp (EVar "lintTargets") (EVar "argv"))) (DoLet false false (PVar "files") (EApp (EVar "resolveLintTargets") (EVar "fileArgs"))) (DoExpr (EIf (EVar "jsonMode") (EApp (EApp (EApp (EApp (EVar "runLintJsonCmd") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EBlock (DoLet false false (PVar "multiFile") (EMatch (EVar "files") (arm (PCons PWild (PCons PWild PWild)) () (EVar "True")) (arm PWild () (EVar "False")))) (DoLet false false (PVar "perFileErr") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "lintFilesGo") (EVar "fixMode")) (EVar "multiFile")) (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoLet false false (PVar "crossErr") (EIf (EBinOp "&&" (EVar "multiFile") (EApp (EVar "not") (EVar "fixMode"))) (EApp (EApp (EApp (EApp (EVar "runCrossFileReport") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoExpr (EIf (EBinOp "||" (EVar "perFileErr") (EVar "crossErr")) (EApp (EVar "exit") (ELit (LInt 1))) (ELit LUnit))))))))
+(DTypeSig false "runLintJsonCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit")))))))
+(DFunDef false "runLintJsonCmd" ((PVar "disableNames") (PVar "onlyNames") (PVar "denyNames") (PVar "files")) (EBlock (DoLet false false (PVar "triples") (EApp (EApp (EApp (EApp (EVar "lintFilesToDiagTriples") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files"))) (DoLet false false PWild (EApp (EVar "putStr") (EApp (EVar "cjAllToJson") (EVar "triples")))) (DoExpr (EIf (EApp (EApp (EVar "anyList") (EVar "cjLintTripleHasErr")) (EVar "triples")) (EApp (EVar "exit") (ELit (LInt 1))) (ELit LUnit)))))
+(DTypeSig false "lintFilesToDiagTriples" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Diag"))))))))))
+(DFunDef false "lintFilesToDiagTriples" (PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "lintFilesToDiagTriples" ((PVar "disable") (PVar "only") (PVar "deny") (PCons (PVar "f") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "lintFileDiagTriple") (EVar "disable")) (EVar "only")) (EVar "deny")) (EVar "f")) (EApp (EApp (EApp (EApp (EVar "lintFilesToDiagTriples") (EVar "disable")) (EVar "only")) (EVar "deny")) (EVar "rest"))))
+(DTypeSig false "cjLintTripleHasErr" (TyFun (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Diag"))) (TyCon "Bool")))
+(DFunDef false "cjLintTripleHasErr" ((PTuple PWild PWild (PVar "diags"))) (EApp (EApp (EVar "anyList") (EVar "diagIsError")) (EVar "diags")))
 (DTypeSig false "runCrossFileReport" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Bool")))))))
 (DFunDef false "runCrossFileReport" ((PVar "disableNames") (PVar "onlyNames") (PVar "denyNames") (PVar "files")) (EBlock (DoLet false false (PVar "triples") (EApp (EVar "parseLintFiles") (EVar "files"))) (DoLet false false (PVar "raw") (EApp (EApp (EApp (EVar "runCrossFileRules") (EVar "onlyNames")) (EVar "disableNames")) (EVar "triples"))) (DoLet false false (PVar "suppressed") (EApp (EApp (EVar "applySuppressionsMulti") (EApp (EVar "readLintSrcs") (EVar "files"))) (EVar "raw"))) (DoLet false false (PVar "findings") (EApp (EApp (EVar "applyFindingDeny") (EVar "denyNames")) (EVar "suppressed"))) (DoExpr (EMatch (EVar "findings") (arm (PList) () (EVar "False")) (arm PWild () (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "")))) (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "cross-file:")))) (DoLet false false PWild (EApp (EVar "putStrLn") (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "renderCrossFinding")) (EVar "findings"))))) (DoExpr (EApp (EApp (EVar "anyList") (EVar "isFindingError")) (EVar "findings")))))))))
 (DTypeSig false "renderCrossFinding" (TyFun (TyCon "Finding") (TyCon "String")))
@@ -2348,35 +2325,6 @@ runMcpCmd _ =
 (DFunDef false "snapFlagValue" (PWild (PList)) (EVar "None"))
 (DFunDef false "snapFlagValue" (PWild (PList PWild)) (EVar "None"))
 (DFunDef false "snapFlagValue" ((PVar "name") (PCons (PVar "a") (PCons (PVar "v") (PVar "rest")))) (EIf (EBinOp "==" (EVar "a") (EVar "name")) (EApp (EVar "Some") (EVar "v")) (EApp (EApp (EVar "snapFlagValue") (EVar "name")) (EBinOp "::" (EVar "v") (EVar "rest")))))
-(DTypeSig false "parseLintFlagList" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "parseLintFlagList" ((PVar "prefix") (PList)) (EListLit))
-(DFunDef false "parseLintFlagList" ((PVar "prefix") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EApp (EVar "startsWith") (EVar "prefix")) (EVar "x")) (EApp (EVar "splitLintNames") (EApp (EApp (EApp (EVar "stringSlice") (EApp (EVar "stringLength") (EVar "prefix"))) (EApp (EVar "stringLength") (EVar "x"))) (EVar "x"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "parseLintFlagList") (EVar "prefix")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "splitLintNames" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "splitLintNames" ((PVar "s")) (EApp (EApp (EApp (EApp (EApp (EVar "splitLintNamesGo") (EApp (EVar "stringToChars") (EVar "s"))) (EVar "s")) (ELit (LInt 0))) (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "s"))))
-(DTypeSig false "splitLintNamesGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "splitLintNamesGo" ((PVar "chars") (PVar "s") (PVar "start") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EApp (EApp (EVar "stringSlice") (EVar "start")) (EVar "n")) (EVar "s"))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "chars")) (ELit (LChar ","))) (EBinOp "::" (EApp (EApp (EApp (EVar "stringSlice") (EVar "start")) (EVar "i")) (EVar "s")) (EApp (EApp (EApp (EApp (EApp (EVar "splitLintNamesGo") (EVar "chars")) (EVar "s")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "splitLintNamesGo") (EVar "chars")) (EVar "s")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "applyFindingFilters" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))))
-(DFunDef false "applyFindingFilters" ((PVar "disable") (PVar "only") (PVar "deny") (PVar "findings")) (EBlock (DoLet false false (PVar "after1") (EApp (EApp (EVar "applyFindingOnly") (EVar "only")) (EVar "findings"))) (DoLet false false (PVar "after2") (EApp (EApp (EVar "applyFindingDisable") (EVar "disable")) (EVar "after1"))) (DoExpr (EApp (EApp (EVar "applyFindingDeny") (EVar "deny")) (EVar "after2")))))
-(DTypeSig false "applyFindingOnly" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applyFindingOnly" ((PList) (PVar "findings")) (EVar "findings"))
-(DFunDef false "applyFindingOnly" ((PVar "names") (PVar "findings")) (EApp (EApp (EVar "lintFindingOnlyGo") (EVar "names")) (EVar "findings")))
-(DTypeSig false "lintFindingOnlyGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "lintFindingOnlyGo" (PWild (PList)) (EListLit))
-(DFunDef false "lintFindingOnlyGo" ((PVar "names") (PCons (PVar "f") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EFieldAccess (EVar "f") "rule")) (EVar "names")) (EBinOp "::" (EVar "f") (EApp (EApp (EVar "lintFindingOnlyGo") (EVar "names")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "lintFindingOnlyGo") (EVar "names")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "applyFindingDisable" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applyFindingDisable" ((PList) (PVar "findings")) (EVar "findings"))
-(DFunDef false "applyFindingDisable" ((PVar "names") (PVar "findings")) (EApp (EApp (EVar "lintFindingDisableGo") (EVar "names")) (EVar "findings")))
-(DTypeSig false "lintFindingDisableGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "lintFindingDisableGo" (PWild (PList)) (EListLit))
-(DFunDef false "lintFindingDisableGo" ((PVar "names") (PCons (PVar "f") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EFieldAccess (EVar "f") "rule")) (EVar "names")) (EApp (EApp (EVar "lintFindingDisableGo") (EVar "names")) (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "f") (EApp (EApp (EVar "lintFindingDisableGo") (EVar "names")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "applyFindingDeny" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applyFindingDeny" ((PList) (PVar "findings")) (EVar "findings"))
-(DFunDef false "applyFindingDeny" ((PVar "names") (PVar "findings")) (EApp (EApp (EVar "lintFindingDenyGo") (EVar "names")) (EVar "findings")))
-(DTypeSig false "lintFindingDenyGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "lintFindingDenyGo" (PWild (PList)) (EListLit))
-(DFunDef false "lintFindingDenyGo" ((PVar "names") (PCons (PVar "f") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EFieldAccess (EVar "f") "rule")) (EVar "names")) (EBinOp "::" (ERecordCreate "Finding" ((fa "rule" (EFieldAccess (EVar "f") "rule")) (fa "message" (EFieldAccess (EVar "f") "message")) (fa "severity" (EVar "SevError")) (fa "loc" (EFieldAccess (EVar "f") "loc")))) (EApp (EApp (EVar "lintFindingDenyGo") (EVar "names")) (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (EVar "f") (EApp (EApp (EVar "lintFindingDenyGo") (EVar "names")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "isFindingError" (TyFun (TyCon "Finding") (TyCon "Bool")))
-(DFunDef false "isFindingError" ((PVar "f")) (EMatch (EFieldAccess (EVar "f") "severity") (arm (PCon "SevError") () (EVar "True")) (arm (PCon "SevWarning") () (EVar "False"))))
 (DTypeSig false "dirOf2" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "dirOf2" ((PVar "path")) (EApp (EApp (EVar "dirGo2") (EVar "path")) (EApp (EVar "stringLength") (EVar "path"))))
 (DTypeSig false "dirGo2" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyCon "String"))))
@@ -2402,7 +2350,7 @@ runMcpCmd _ =
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("frontend" "resolve") ((mem "resolveModulesToHumane" false) (mem "resolveModulesToHumaneG" false) (mem "resolveModulesToHumaneGF" false) (mem "resolveModulesToHumaneByPath" false))))
 (DUse false (UseGroup ("driver" "loader") ((mem "loadProgram" false) (mem "loadProgramFilesLocated" false) (mem "findProjectRoot" false) (mem "entrySearchRoots" false) (mem "projectTrustedMods" false) (mem "unknownModuleIdOf" false) (mem "findImportLoc" false) (mem "availableModulesHint" false) (mem "availableModulesText" false))))
-(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "analyzeLocatedG" false) (mem "ppDiagCli" false) (mem "ppDiagCliSrc" false) (mem "Diag" true) (mem "Severity" true) (mem "SevError" false) (mem "cjPosition" false) (mem "cjRange" false) (mem "cjRangeOfLoc" false) (mem "cjDiagnostic" false) (mem "cjFileEntry" false) (mem "cjAllToJson" false) (mem "readDiagSrc" false) (mem "parseErrCode" false) (mem "parseErrHelpFix" false) (mem "codeKind" false) (mem "optField" false) (mem "cjFixJson" false) (mem "mkDiag" false) (mem "checkJsonFile" false) (mem "readFileSafe" false))))
+(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "analyzeLocatedG" false) (mem "ppDiagCli" false) (mem "ppDiagCliSrc" false) (mem "Diag" true) (mem "Severity" true) (mem "SevError" false) (mem "cjPosition" false) (mem "cjRange" false) (mem "cjRangeOfLoc" false) (mem "cjDiagnostic" false) (mem "cjFileEntry" false) (mem "cjAllToJson" false) (mem "readDiagSrc" false) (mem "parseErrCode" false) (mem "parseErrHelpFix" false) (mem "codeKind" false) (mem "optField" false) (mem "cjFixJson" false) (mem "mkDiag" false) (mem "checkJsonFile" false) (mem "readFileSafe" false) (mem "diagIsError" false))))
 (DUse false (UseGroup ("json") ((mem "Json" false) (mem "JInt" false) (mem "JString" false) (mem "JArray" false) (mem "JObject" false) (mem "jObject" false) (mem "jArray" false) (mem "stringify" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "elaborateModules" false) (mem "resetTypeErrorsSticky" false) (mem "hadTypeErrors" false) (mem "mainTypeIsAsync" false) (mem "mainTypeIsUnit" false))))
 (DUse false (UseGroup ("eval" "eval") ((mem "evalModulesOutputRun" false) (mem "evalModulesOutputAsync" false) (mem "currentEvalFile" false) (mem "runJsonMode" false) (mem "progArgsRef" false))))
@@ -2411,7 +2359,7 @@ runMcpCmd _ =
 (DUse false (UseGroup ("tools" "lsp") ((mem "runServer" false))))
 (DUse false (UseGroup ("tools" "mcp") ((mem "runMcpServer" false))))
 (DUse false (UseGroup ("tools" "doc") ((mem "runDoc" false))))
-(DUse false (UseGroup ("tools" "lint") ((mem "allRules" false) (mem "lintProgram" false) (mem "applySuppressions" false) (mem "applySuppressionsMulti" false) (mem "findingToDiag" false) (mem "Finding" false) (mem "applyFixes" false) (mem "runCrossFileRules" false))))
+(DUse false (UseGroup ("tools" "lint") ((mem "allRules" false) (mem "lintProgram" false) (mem "applySuppressions" false) (mem "applySuppressionsMulti" false) (mem "findingToDiag" false) (mem "Finding" false) (mem "applyFixes" false) (mem "runCrossFileRules" false) (mem "parseLintFlagList" false) (mem "applyFindingFilters" false) (mem "applyFindingDeny" false) (mem "isFindingError" false) (mem "lintFileDiagTriple" false))))
 (DUse false (UseGroup ("tools" "codemod") ((mem "findCodemod" false) (mem "codemodMk" false) (mem "codemodWarnDecls" false) (mem "codemodListing" false) (mem "codemodSource" false))))
 (DUse false (UseGroup ("tools" "check_policy") ((mem "runCheckPolicy" false) (mem "runAcceptedPlugin" false) (mem "PolicyArgs" true) (mem "parsePolicyArgs" false) (mem "PolicyOutcome" true) (mem "runManifest" false) (mem "parseManifestArgs" false) (mem "ManifestArgs" true))))
 (DTypeSig false "medakaVersion" (TyCon "String"))
@@ -2610,7 +2558,14 @@ runMcpCmd _ =
 (DTypeSig false "runManifestCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "runManifestCmd" ((PVar "argv")) (EMatch (EApp (EVar "parseManifestArgs") (EVar "argv")) (arm (PCon "ManifestArgs" (PCon "None") PWild) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (ELit (LString "usage: medaka manifest <file.mdk> [--fn name]")))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "ManifestArgs" (PCon "Some" (PVar "target")) (PVar "fn")) () (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "rtPath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/runtime.mdk")))) (DoLet false false (PVar "corePath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/core.mdk")))) (DoExpr (EMatch (EApp (EVar "readPreludeFile") (EVar "rtPath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "corePath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "csrc")) () (EMatch (EApp (EVar "readFile") (EVar "target")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "tsrc")) () (EApp (EVar "putStr") (EApp (EApp (EApp (EApp (EVar "runManifest") (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "fn"))))))))))))))
 (DTypeSig false "runLintCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
-(DFunDef false "runLintCmd" ((PVar "argv")) (EBlock (DoLet false false (PVar "disableNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--disable="))) (EVar "argv"))) (DoLet false false (PVar "onlyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--only="))) (EVar "argv"))) (DoLet false false (PVar "denyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--deny="))) (EVar "argv"))) (DoLet false false (PVar "fixMode") (EApp (EApp (EVar "hasFlag") (ELit (LString "--fix"))) (EVar "argv"))) (DoLet false false (PVar "fileArgs") (EApp (EVar "lintTargets") (EVar "argv"))) (DoLet false false (PVar "files") (EApp (EVar "resolveLintTargets") (EVar "fileArgs"))) (DoLet false false (PVar "multiFile") (EMatch (EVar "files") (arm (PCons PWild (PCons PWild PWild)) () (EVar "True")) (arm PWild () (EVar "False")))) (DoLet false false (PVar "perFileErr") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "lintFilesGo") (EVar "fixMode")) (EVar "multiFile")) (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoLet false false (PVar "crossErr") (EIf (EBinOp "&&" (EVar "multiFile") (EApp (EVar "not") (EVar "fixMode"))) (EApp (EApp (EApp (EApp (EVar "runCrossFileReport") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoExpr (EIf (EBinOp "||" (EVar "perFileErr") (EVar "crossErr")) (EApp (EVar "exit") (ELit (LInt 1))) (ELit LUnit)))))
+(DFunDef false "runLintCmd" ((PVar "argv")) (EBlock (DoLet false false (PVar "disableNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--disable="))) (EVar "argv"))) (DoLet false false (PVar "onlyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--only="))) (EVar "argv"))) (DoLet false false (PVar "denyNames") (EApp (EApp (EVar "parseLintFlagList") (ELit (LString "--deny="))) (EVar "argv"))) (DoLet false false (PVar "fixMode") (EApp (EApp (EVar "hasFlag") (ELit (LString "--fix"))) (EVar "argv"))) (DoLet false false (PVar "jsonMode") (EApp (EApp (EVar "hasFlag") (ELit (LString "--json"))) (EVar "argv"))) (DoLet false false (PVar "fileArgs") (EApp (EVar "lintTargets") (EVar "argv"))) (DoLet false false (PVar "files") (EApp (EVar "resolveLintTargets") (EVar "fileArgs"))) (DoExpr (EIf (EVar "jsonMode") (EApp (EApp (EApp (EApp (EVar "runLintJsonCmd") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EBlock (DoLet false false (PVar "multiFile") (EMatch (EVar "files") (arm (PCons PWild (PCons PWild PWild)) () (EVar "True")) (arm PWild () (EVar "False")))) (DoLet false false (PVar "perFileErr") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "lintFilesGo") (EVar "fixMode")) (EVar "multiFile")) (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoLet false false (PVar "crossErr") (EIf (EBinOp "&&" (EVar "multiFile") (EApp (EVar "not") (EVar "fixMode"))) (EApp (EApp (EApp (EApp (EVar "runCrossFileReport") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files")) (EVar "False"))) (DoExpr (EIf (EBinOp "||" (EVar "perFileErr") (EVar "crossErr")) (EApp (EVar "exit") (ELit (LInt 1))) (ELit LUnit))))))))
+(DTypeSig false "runLintJsonCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit")))))))
+(DFunDef false "runLintJsonCmd" ((PVar "disableNames") (PVar "onlyNames") (PVar "denyNames") (PVar "files")) (EBlock (DoLet false false (PVar "triples") (EApp (EApp (EApp (EApp (EVar "lintFilesToDiagTriples") (EVar "disableNames")) (EVar "onlyNames")) (EVar "denyNames")) (EVar "files"))) (DoLet false false PWild (EApp (EVar "putStr") (EApp (EVar "cjAllToJson") (EVar "triples")))) (DoExpr (EIf (EApp (EApp (EVar "anyList") (EVar "cjLintTripleHasErr")) (EVar "triples")) (EApp (EVar "exit") (ELit (LInt 1))) (ELit LUnit)))))
+(DTypeSig false "lintFilesToDiagTriples" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Diag"))))))))))
+(DFunDef false "lintFilesToDiagTriples" (PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "lintFilesToDiagTriples" ((PVar "disable") (PVar "only") (PVar "deny") (PCons (PVar "f") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "lintFileDiagTriple") (EVar "disable")) (EVar "only")) (EVar "deny")) (EVar "f")) (EApp (EApp (EApp (EApp (EVar "lintFilesToDiagTriples") (EVar "disable")) (EVar "only")) (EVar "deny")) (EVar "rest"))))
+(DTypeSig false "cjLintTripleHasErr" (TyFun (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Diag"))) (TyCon "Bool")))
+(DFunDef false "cjLintTripleHasErr" ((PTuple PWild PWild (PVar "diags"))) (EApp (EApp (EVar "anyList") (EVar "diagIsError")) (EVar "diags")))
 (DTypeSig false "runCrossFileReport" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Bool")))))))
 (DFunDef false "runCrossFileReport" ((PVar "disableNames") (PVar "onlyNames") (PVar "denyNames") (PVar "files")) (EBlock (DoLet false false (PVar "triples") (EApp (EVar "parseLintFiles") (EVar "files"))) (DoLet false false (PVar "raw") (EApp (EApp (EApp (EVar "runCrossFileRules") (EVar "onlyNames")) (EVar "disableNames")) (EVar "triples"))) (DoLet false false (PVar "suppressed") (EApp (EApp (EVar "applySuppressionsMulti") (EApp (EVar "readLintSrcs") (EVar "files"))) (EVar "raw"))) (DoLet false false (PVar "findings") (EApp (EApp (EVar "applyFindingDeny") (EVar "denyNames")) (EVar "suppressed"))) (DoExpr (EMatch (EVar "findings") (arm (PList) () (EVar "False")) (arm PWild () (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "")))) (DoLet false false PWild (EApp (EVar "putStrLn") (ELit (LString "cross-file:")))) (DoLet false false PWild (EApp (EVar "putStrLn") (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "renderCrossFinding")) (EVar "findings"))))) (DoExpr (EApp (EApp (EVar "anyList") (EVar "isFindingError")) (EVar "findings")))))))))
 (DTypeSig false "renderCrossFinding" (TyFun (TyCon "Finding") (TyCon "String")))
@@ -2673,35 +2628,6 @@ runMcpCmd _ =
 (DFunDef false "snapFlagValue" (PWild (PList)) (EVar "None"))
 (DFunDef false "snapFlagValue" (PWild (PList PWild)) (EVar "None"))
 (DFunDef false "snapFlagValue" ((PVar "name") (PCons (PVar "a") (PCons (PVar "v") (PVar "rest")))) (EIf (EBinOp "==" (EVar "a") (EVar "name")) (EApp (EVar "Some") (EVar "v")) (EApp (EApp (EVar "snapFlagValue") (EVar "name")) (EBinOp "::" (EVar "v") (EVar "rest")))))
-(DTypeSig false "parseLintFlagList" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "parseLintFlagList" ((PVar "prefix") (PList)) (EListLit))
-(DFunDef false "parseLintFlagList" ((PVar "prefix") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EApp (EVar "startsWith") (EVar "prefix")) (EVar "x")) (EApp (EVar "splitLintNames") (EApp (EApp (EApp (EVar "stringSlice") (EApp (EVar "stringLength") (EVar "prefix"))) (EApp (EVar "stringLength") (EVar "x"))) (EVar "x"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "parseLintFlagList") (EVar "prefix")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "splitLintNames" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "splitLintNames" ((PVar "s")) (EApp (EApp (EApp (EApp (EApp (EVar "splitLintNamesGo") (EApp (EVar "stringToChars") (EVar "s"))) (EVar "s")) (ELit (LInt 0))) (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "s"))))
-(DTypeSig false "splitLintNamesGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "splitLintNamesGo" ((PVar "chars") (PVar "s") (PVar "start") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit (EApp (EApp (EApp (EVar "stringSlice") (EVar "start")) (EVar "n")) (EVar "s"))) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "chars")) (ELit (LChar ","))) (EBinOp "::" (EApp (EApp (EApp (EVar "stringSlice") (EVar "start")) (EVar "i")) (EVar "s")) (EApp (EApp (EApp (EApp (EApp (EVar "splitLintNamesGo") (EVar "chars")) (EVar "s")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "splitLintNamesGo") (EVar "chars")) (EVar "s")) (EVar "start")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "applyFindingFilters" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))))
-(DFunDef false "applyFindingFilters" ((PVar "disable") (PVar "only") (PVar "deny") (PVar "findings")) (EBlock (DoLet false false (PVar "after1") (EApp (EApp (EVar "applyFindingOnly") (EVar "only")) (EVar "findings"))) (DoLet false false (PVar "after2") (EApp (EApp (EVar "applyFindingDisable") (EVar "disable")) (EVar "after1"))) (DoExpr (EApp (EApp (EVar "applyFindingDeny") (EVar "deny")) (EVar "after2")))))
-(DTypeSig false "applyFindingOnly" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applyFindingOnly" ((PList) (PVar "findings")) (EVar "findings"))
-(DFunDef false "applyFindingOnly" ((PVar "names") (PVar "findings")) (EApp (EApp (EVar "lintFindingOnlyGo") (EVar "names")) (EVar "findings")))
-(DTypeSig false "lintFindingOnlyGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "lintFindingOnlyGo" (PWild (PList)) (EListLit))
-(DFunDef false "lintFindingOnlyGo" ((PVar "names") (PCons (PVar "f") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EFieldAccess (EVar "f") "rule")) (EVar "names")) (EBinOp "::" (EVar "f") (EApp (EApp (EVar "lintFindingOnlyGo") (EVar "names")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "lintFindingOnlyGo") (EVar "names")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "applyFindingDisable" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applyFindingDisable" ((PList) (PVar "findings")) (EVar "findings"))
-(DFunDef false "applyFindingDisable" ((PVar "names") (PVar "findings")) (EApp (EApp (EVar "lintFindingDisableGo") (EVar "names")) (EVar "findings")))
-(DTypeSig false "lintFindingDisableGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "lintFindingDisableGo" (PWild (PList)) (EListLit))
-(DFunDef false "lintFindingDisableGo" ((PVar "names") (PCons (PVar "f") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EFieldAccess (EVar "f") "rule")) (EVar "names")) (EApp (EApp (EVar "lintFindingDisableGo") (EVar "names")) (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "f") (EApp (EApp (EVar "lintFindingDisableGo") (EVar "names")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "applyFindingDeny" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applyFindingDeny" ((PList) (PVar "findings")) (EVar "findings"))
-(DFunDef false "applyFindingDeny" ((PVar "names") (PVar "findings")) (EApp (EApp (EVar "lintFindingDenyGo") (EVar "names")) (EVar "findings")))
-(DTypeSig false "lintFindingDenyGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "lintFindingDenyGo" (PWild (PList)) (EListLit))
-(DFunDef false "lintFindingDenyGo" ((PVar "names") (PCons (PVar "f") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EFieldAccess (EVar "f") "rule")) (EVar "names")) (EBinOp "::" (ERecordCreate "Finding" ((fa "rule" (EFieldAccess (EVar "f") "rule")) (fa "message" (EFieldAccess (EVar "f") "message")) (fa "severity" (EVar "SevError")) (fa "loc" (EFieldAccess (EVar "f") "loc")))) (EApp (EApp (EVar "lintFindingDenyGo") (EVar "names")) (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (EVar "f") (EApp (EApp (EVar "lintFindingDenyGo") (EVar "names")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "isFindingError" (TyFun (TyCon "Finding") (TyCon "Bool")))
-(DFunDef false "isFindingError" ((PVar "f")) (EMatch (EFieldAccess (EVar "f") "severity") (arm (PCon "SevError") () (EVar "True")) (arm (PCon "SevWarning") () (EVar "False"))))
 (DTypeSig false "dirOf2" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "dirOf2" ((PVar "path")) (EApp (EApp (EVar "dirGo2") (EVar "path")) (EApp (EVar "stringLength") (EVar "path"))))
 (DTypeSig false "dirGo2" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyCon "String"))))
