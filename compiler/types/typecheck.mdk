@@ -1475,7 +1475,7 @@ numlitUntainted : Ref (List (Mono, Loc))
 numlitUntainted = Ref []
 
 -- Chunk D: locs of literals whose var was ALSO an operand of an arithmetic op
--- (recordNumObligation).  Such a literal keeps the Num message — the operator is the
+-- (recordIfaceObligation).  Such a literal keeps the Num message — the operator is the
 -- real culprit — so the reframe skips it (it reframes `litLocs \ opLocs`).
 numlitOpLocs : Ref (List Loc)
 numlitOpLocs = Ref []
@@ -3325,7 +3325,7 @@ infer _ (ELit l) = litType l
 -- [a], and stash (a, fref, n, dref) in numlitRefs so the post-HM setNumlitFloats can
 -- decide concrete-Float / concrete-Int / still-poly.  Recording the obligation here
 -- AND (when under `+`) in numArithOp is harmless: both unify the same var, both
--- demand `Num`.  Without the prelude (bare-HM oracle, `numIfaceRegistered` False)
+-- demand `Num`.  Without the prelude (bare-HM oracle, `ifaceRegistered` False)
 -- `fromInt` is unbound: fall back to a plain fresh var, dref stays RNone (⇒ Int).
 infer env (ENumLit n fref dref) = inferNumLit env n fref dref
 infer env (EVar x) = inferVar env x
@@ -4382,7 +4382,7 @@ inferBinop "<<" lt rt = composeOp lt rt True
 inferBinop op _ _ = panic ("typecheck: unsupported operator " ++ op)
 
 -- Roadmap #18a: `++` (append) carries a `Semigroup` obligation on its (unified)
--- operand type — a verbatim mirror of `eqCompareOp`/`recordEqObligation` for `==`,
+-- operand type — a verbatim mirror of `eqCompareOp`/`recordIfaceObligation` for `==`,
 -- and the reason `"x" ++ Box 1` is now a located `No impl of Semigroup for Box`
 -- reject at CHECK time rather than an eval-time `E-PANIC`.  Reuses the same
 -- pendingImplObligations / checkImplObligations path: a synthetic Semigroup
@@ -4392,27 +4392,43 @@ inferBinop op _ _ = panic ("typecheck: unsupported operator " ++ op)
 -- is what keeps core.mdk's `foldMap f = fold (acc x => acc ++ f x) empty` typing).
 -- A still-polymorphic operand defers to the caller, exactly like Num/Eq/Ord.
 --
--- Gated on the `Semigroup` interface being REGISTERED (prelude loaded), mirroring
--- numIfaceRegistered/eqIfaceRegistered: the bare-HM no-prelude oracle (tc_probe /
+-- Gated on the `Semigroup` interface being REGISTERED (prelude loaded), via
+-- ifaceRegistered: the bare-HM no-prelude oracle (tc_probe /
 -- typecheck_main.mdk) has no `Semigroup` class, so recording the obligation only
 -- when it exists keeps those drivers byte-identical while `medaka check` rejects.
 appendOp : Mono -> Mono -> Mono
 appendOp lt rt =
   let _ = unify lt rt
-  let _ = recordSemigroupObligation lt
+  let _ = recordIfaceObligation "Semigroup" lt
   lt
 
-recordSemigroupObligation : Mono -> Unit
-recordSemigroupObligation lt
-  | semigroupIfaceRegistered () =
-    pushPendingObl ("Semigroup", ["a"], TyVar "a", lt, currentLoc.value)
+-- #146: unified operator-obligation recorder.  The arithmetic (`+ - * / %`, unary
+-- `-`), comparison (`== != < > <= >=`) and append (`++`) operators each carry an
+-- interface obligation on their (unified) operand type via pushPendingObl — a
+-- synthetic obligation with a bare iface-param declared type (`TyVar "a"`, typaram
+-- ["a"]) so dispatchMonosOf recovers exactly the operand mono.  Gated on that
+-- interface being REGISTERED (prelude loaded): the bare-HM no-prelude oracle
+-- (tc_probe / typecheck_main.mdk) registers none of Num/Eq/Ord/Semigroup, so
+-- recording only when the interface exists keeps those drivers byte-identical while
+-- full check_main (prelude) rejects, matching `medaka check`.  Callers:
+-- numArithOp/negateOp ("Num"), eqCompareOp ("Eq"), ordCompareOp ("Ord"), appendOp
+-- ("Semigroup").
+recordIfaceObligation : String -> Mono -> Unit
+recordIfaceObligation iface lt
+  | ifaceRegistered iface =
+    pushPendingObl (iface, ["a"], TyVar "a", lt, currentLoc.value)
   | otherwise = ()
 
-semigroupIfaceRegistered : Unit -> Bool
-semigroupIfaceRegistered _ = anyList semigroupEntry methodIfaceParamsRef.value
+-- True iff `iface` is registered (its methods are in methodIfaceParamsRef, populated
+-- per program from the DInterface decls — present once core.mdk is loaded).  Kept a
+-- monomorphic, short-circuiting anyList scan (NOT a prelude Foldable method; the
+-- O(1) map-ification of methodIfaceParamsRef is the separate issue #147).
+ifaceRegistered : String -> Bool
+ifaceRegistered iface =
+  anyList (ifaceEntryMatches iface) methodIfaceParamsRef.value
 
-semigroupEntry : (String, (String, List String, Ty)) -> Bool
-semigroupEntry (_, (iface, _, _)) = iface == "Semigroup"
+ifaceEntryMatches : String -> (String, (String, List String, Ty)) -> Bool
+ifaceEntryMatches iface (_, (e, _, _)) = e == iface
 
 -- G2: arithmetic `+ - * / %` carry a `Num` obligation on their (unified) operand
 -- type — mirrors the oracle's `No impl of Num for <T>` reject (lib/typecheck.ml).
@@ -4439,25 +4455,8 @@ numArithOp lt rt =
   let _ = markNumlitOpTaint lt
   let _ = markNumlitOpTaint rt
   let _ = unify lt rt
-  let _ = recordNumObligation lt
+  let _ = recordIfaceObligation "Num" lt
   lt
-
--- Record a `Num` obligation on the operand, but ONLY when a `Num` interface is
--- registered (prelude loaded).  The bare-HM no-prelude oracle imposes no class
--- constraint on `+`, so gating here keeps the no-prelude drivers byte-identical.
-recordNumObligation : Mono -> Unit
-recordNumObligation lt
-  | numIfaceRegistered () =
-    pushPendingObl ("Num", ["a"], TyVar "a", lt, currentLoc.value)
-  | otherwise = ()
-
--- True iff a `Num` interface is registered (its methods are in methodIfaceParamsRef,
--- populated per program from the DInterface decls — present once core.mdk is loaded).
-numIfaceRegistered : Unit -> Bool
-numIfaceRegistered _ = anyList numEntry methodIfaceParamsRef.value
-
-numEntry : (String, (String, List String, Ty)) -> Bool
-numEntry (_, (iface, _, _)) = iface == "Num"
 
 -- PLAN.md #11 soundness arm: model an integer literal as a `fromInt n` method
 -- occurrence so its route cell [dref] gets stamped (RKey ground / RDictFwd poly) by
@@ -4467,7 +4466,7 @@ numEntry (_, (iface, _, _)) = iface == "Num"
 -- Num-obligated var, leaving [dref] RNone (⇒ a static Int literal at rewrite time).
 inferNumLit : TcEnv -> Int -> Ref (Option Float) -> Ref Route -> Mono
 inferNumLit env n fref dref
-  | numIfaceRegistered () = match lookupVar env "fromInt"
+  | ifaceRegistered "Num" = match lookupVar env "fromInt"
     None => inferNumLitBare n fref
     Some _ =>
       -- inferMethodAt records the Num impl obligation + a pendingSite on [dref].
@@ -4484,11 +4483,11 @@ inferNumLit env n fref dref
 -- so it carries a `Num` obligation on its var unconditionally — exactly the OCaml
 -- oracle, whose ENumLit infer arm `infer env (EVar "fromInt")` records the Num
 -- usage even no-prelude (`initial_env` seeds `fromInt`/`Num`).  Recording it here
--- (vs. the prelude-gated `recordNumObligation`) lets value-level defaulting ground
+-- (vs. the prelude-gated `recordIfaceObligation`) lets value-level defaulting ground
 -- an AMBIGUOUS literal var to Int (`nums = [1,2,3] : List Int`) so the no-prelude
 -- `typecheck_main` matches the prelude-aware oracle golden.  The matching reject is
 -- SUPPRESSED no-prelude in checkOneImplObligation (no-prelude imposes no Num impl
--- constraint — see its `numIfaceRegistered` guard), so a literal still types Int
+-- constraint — see its `ifaceRegistered` guard), so a literal still types Int
 -- without a spurious `No impl of Num for Int`.
 inferNumLitBare : Int -> Ref (Option Float) -> Mono
 inferNumLitBare n fref =
@@ -4508,7 +4507,7 @@ recordNumlitLoc a = match currentLoc.value
     setRef numlitUntainted ((a, l)::numlitUntainted.value)
   None => ()
 
--- Called from recordNumObligation (arithmetic `+`/`-`/`*`/`/`/`%`): any recorded
+-- Called from recordIfaceObligation (arithmetic `+`/`-`/`*`/`/`/`%`): any recorded
 -- literal whose var shares a union-find root with [m] was an operand of an op, so
 -- mark its loc — the reframe then keeps `No impl of Num for T` for it.  Runs during
 -- inference (vars still unbound), so `normalize` reveals the shared root regardless
@@ -4600,7 +4599,7 @@ tagLitLocsWithRoot id kind ((mv, l)::rest) =
 
 -- Stage-1 Eq dispatch (EQ-DISPATCH-DESIGN.md §2.1): `==`/`!=` carry an `Eq`
 -- obligation on their (unified) operand type — a verbatim mirror of
--- `recordNumObligation` for `+`.  We reuse the existing pendingImplObligations /
+-- `recordIfaceObligation` for `+`.  We reuse the existing pendingImplObligations /
 -- checkImplObligations path: a synthetic Eq obligation with a bare iface-param
 -- declared type (`TyVar "a"`, typaram ["a"]) so dispatchMonosOf recovers exactly
 -- the operand mono.  When it grounds to a concrete non-Eq head (a function, an
@@ -4611,26 +4610,14 @@ tagLitLocsWithRoot id kind ((mv, l)::rest) =
 -- `not (eq …)` at the dict layer (binopMethodApp), so it does not double-report.
 --
 -- Gated on the `Eq` interface being REGISTERED (prelude loaded), mirroring
--- `numIfaceRegistered`: the bare-HM no-prelude oracle (tc_probe / typecheck_main)
+-- `ifaceRegistered`: the bare-HM no-prelude oracle (tc_probe / typecheck_main)
 -- has no `Eq` class, so recording the obligation only when Eq exists keeps those
 -- drivers byte-identical while full check_main (prelude) rejects.
 eqCompareOp : Mono -> Mono -> Mono
 eqCompareOp lt rt =
   let _ = unify lt rt
-  let _ = recordEqObligation lt
+  let _ = recordIfaceObligation "Eq" lt
   TCon "Bool"
-
-recordEqObligation : Mono -> Unit
-recordEqObligation lt
-  | eqIfaceRegistered () =
-    pushPendingObl ("Eq", ["a"], TyVar "a", lt, currentLoc.value)
-  | otherwise = ()
-
-eqIfaceRegistered : Unit -> Bool
-eqIfaceRegistered _ = anyList eqEntry methodIfaceParamsRef.value
-
-eqEntry : (String, (String, List String, Ty)) -> Bool
-eqEntry (_, (iface, _, _)) = iface == "Eq"
 
 -- Stage-1 Ord dispatch (EQ-DISPATCH-DESIGN.md §"sibling Ord follow-up"): the four
 -- ordering comparisons `<`/`>`/`<=`/`>=` carry an `Ord` obligation on their
@@ -4646,24 +4633,12 @@ eqEntry (_, (iface, _, _)) = iface == "Eq"
 -- to `EMethodAt "lt"` at the dict layer, so runtime/emit dispatch is unchanged.
 --
 -- Gated on the `Ord` interface being REGISTERED (prelude loaded), mirroring
--- `eqIfaceRegistered`.
+-- `ifaceRegistered`.
 ordCompareOp : Mono -> Mono -> Mono
 ordCompareOp lt rt =
   let _ = unify lt rt
-  let _ = recordOrdObligation lt
+  let _ = recordIfaceObligation "Ord" lt
   TCon "Bool"
-
-recordOrdObligation : Mono -> Unit
-recordOrdObligation lt
-  | ordIfaceRegistered () =
-    pushPendingObl ("Ord", ["a"], TyVar "a", lt, currentLoc.value)
-  | otherwise = ()
-
-ordIfaceRegistered : Unit -> Bool
-ordIfaceRegistered _ = anyList ordEntry methodIfaceParamsRef.value
-
-ordEntry : (String, (String, List String, Ty)) -> Bool
-ordEntry (_, (iface, _, _)) = iface == "Ord"
 
 boolOp : Mono -> Mono -> Mono
 boolOp lt rt =
@@ -4712,7 +4687,7 @@ inferUnop "!" t =
 inferUnop op _ = panic ("typecheck: unsupported unary op " ++ op)
 
 -- Roadmap #18c: unary minus `-x` carries a `Num` obligation on its operand type —
--- a verbatim mirror of `numArithOp`/`recordNumObligation` for binary `+`/`-`/…,
+-- a verbatim mirror of `numArithOp`/`recordIfaceObligation` for binary `+`/`-`/…,
 -- and the reason `-"x"` is now a located `No impl of Num for String` reject at
 -- CHECK time rather than an eval-time `panic "unary minus on non-number"`.
 -- markNumlitOpTaint keeps the same Chunk-D literal-provenance error framing as
@@ -4721,7 +4696,7 @@ inferUnop op _ = panic ("typecheck: unsupported unary op " ++ op)
 negateOp : Mono -> Mono
 negateOp t =
   let _ = markNumlitOpTaint t
-  let _ = recordNumObligation t
+  let _ = recordIfaceObligation "Num" t
   t
 
 -- backtick infix `x `f` y` is just f applied to x then y
@@ -6757,7 +6732,7 @@ monoArgUnboundIds t = match normalize t
   _ => []
 
 -- the unbound var ids that any pending `Num` obligation in [obls] constrains (the
--- operand monos recorded by recordNumObligation / the literal infer arm)
+-- operand monos recorded by recordIfaceObligation / the literal infer arm)
 numConstrainedIds : List (String, List String, Ty, Mono, Option Loc) -> List Int
 numConstrainedIds obls = flatMap numObligIds obls
 
@@ -10284,7 +10259,7 @@ checkOneImplObligation ireqs heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyListM numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyListM eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyListM ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if anyListM monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs ireqs heads iface args loc else reportNumOrNoImpl iface args loc
+  if iface == "Num" && anyListM numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyListM eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyListM ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (ifaceRegistered "Num") then () else if isEmptyL args then () else if anyListM monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs ireqs heads iface args loc else reportNumOrNoImpl iface args loc
 
 -- A function-typed dispatch mono is fully GROUND — its head is `->`, structurally
 -- un-implementable for an ordinary interface (no `impl Display (a -> b)` exists).
@@ -12234,7 +12209,7 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   -- implDecls=[] (checkModuleFull), so registering only [implDecls] left
   -- methodIfaceParamsRef EMPTY → `Num`/`fromInt` unregistered → a numeric literal's
   -- Num obligation (recordImplObligation) was silently dropped and the reject
-  -- suppressed (numIfaceRegistered False) → cross-module `g [1,2] 5` over-accepted.
+  -- suppressed (ifaceRegistered False) → cross-module `g [1,2] 5` over-accepted.
   let _ = registerMethodIfaceParamsAll (accData ++ implDecls ++ prog)
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let _ = rejectCyclicAliases ()

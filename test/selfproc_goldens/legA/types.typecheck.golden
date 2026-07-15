@@ -385,8 +385,6 @@ entryCoversAllOthers : KeyEntry -> List KeyEntry -> Bool
 entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
 envAlphaLets : TcEnv -> List (String, Expr)
 eqCompareOp : Mono -> Mono -> Mono
-eqEntry : (String, (String, List String, Ty)) -> Bool
-eqIfaceRegistered : Unit -> Bool
 eqUnimplementableHead : Mono -> Bool
 exitLevel : Unit -> Unit
 expandIoInBound : List Atom -> List Atom
@@ -502,6 +500,7 @@ ifaceDfsCycleOneSuper : List Decl -> Ref (List String) -> List String -> String 
 ifaceDfsCycleSupers : List Decl -> Ref (List String) -> List String -> List Super -> List String
 ifaceDictPassDefault : String -> Ty -> List Pat -> Expr -> Int -> IfaceMethod
 ifaceDictPassMethod : IfaceMethod -> IfaceMethod
+ifaceEntryMatches : String -> (String, (String, List String, Ty)) -> Bool
 ifaceForConstraintId : Int -> String
 ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> String
 ifaceForInferredId : String -> Int -> String
@@ -510,6 +509,7 @@ ifaceMethodNames : List IfaceMethod -> List String
 ifaceMethodSchemes : List Decl -> List (String, Scheme)
 ifaceMethodTy : List Decl -> String -> String -> Option (List String, Ty)
 ifaceParamMonos : String -> Mono -> Option (List Mono)
+ifaceRegistered : String -> Bool
 ifaceRequiredMethods : List Decl -> String -> Option (List String)
 ifaceSelfAndSupers : String -> List String
 ifaceSupersOf : List Decl -> String -> Option (List String, List Super)
@@ -818,8 +818,6 @@ numArithOp : Mono -> Mono -> Mono
 numCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
 numConstrainedIds : List (String, List String, Ty, Mono, Option Loc) -> List Int
 numDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
-numEntry : (String, (String, List String, Ty)) -> Bool
-numIfaceRegistered : Unit -> Bool
 numObligIds : (String, List String, Ty, Mono, Option Loc) -> List Int
 numUnimplementableHead : Mono -> Bool
 numlitCtxKind : Option Loc -> Option String
@@ -840,8 +838,6 @@ opDictVarOf : Bool -> String -> Mono -> Bool -> String -> Option String
 openRow : Unit -> EffRow
 orElseLoc : Option Loc -> Option Loc -> Option Loc
 ordCompareOp : Mono -> Mono -> Mono
-ordEntry : (String, (String, List String, Ty)) -> Bool
-ordIfaceRegistered : Unit -> Bool
 ordUnimplementableHead : Mono -> Bool
 overAppliedMsg : String -> Int -> Int -> String
 pairIface : String -> Int -> List (String, Int)
@@ -957,18 +953,15 @@ recordArithSite : String -> Ref Route -> Mono -> Unit
 recordBinopSite : String -> Ref Route -> Mono -> Unit
 recordCallObligations : List String -> List Mono -> Unit
 recordDoMonadError : Loc -> Unit
-recordEqObligation : Mono -> Unit
 recordHasField : String -> RecordInfo -> Bool
+recordIfaceObligation : String -> Mono -> Unit
 recordImplObligation : String -> Mono -> Mono
 recordImporterShadowDicts : TcEnv -> String -> List (Ref Route) -> Mono -> Unit
 recordLocalBind : String -> Mono -> Unit
 recordMethodDicts : String -> Ref (List Route) -> List (Int, Mono) -> Unit
-recordNumObligation : Mono -> Unit
 recordNumlitLoc : Mono -> Unit
-recordOrdObligation : Mono -> Unit
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> Unit
 recordSchemeCallObligations : List (String, Int) -> List (Int, Mono) -> Unit
-recordSemigroupObligation : Mono -> Unit
 recordSigConstraintArgs : String -> List Ty -> List (String, Mono) -> List (Int, Mono) -> Unit
 recordSigConstraintObls : List Constraint -> List (String, Mono) -> List (Int, Mono) -> Unit
 recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> Mono
@@ -1106,8 +1099,6 @@ seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
 seedEffectDomains : Unit -> Unit
 seedSchemesOut : Ref (List (String, Scheme))
 selfBinding : String -> (String, String)
-semigroupEntry : (String, (String, List String, Ty)) -> Bool
-semigroupIfaceRegistered : Unit -> Bool
 setCardCap : Int
 setCoherenceUserDecls : List Decl -> Unit
 setEmitArgStampPasses : Bool -> Unit

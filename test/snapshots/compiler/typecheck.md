@@ -1,5 +1,5 @@
 # META
-source_lines=13723
+source_lines=13698
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -1479,7 +1479,7 @@ numlitUntainted : Ref (List (Mono, Loc))
 numlitUntainted = Ref []
 
 -- Chunk D: locs of literals whose var was ALSO an operand of an arithmetic op
--- (recordNumObligation).  Such a literal keeps the Num message — the operator is the
+-- (recordIfaceObligation).  Such a literal keeps the Num message — the operator is the
 -- real culprit — so the reframe skips it (it reframes `litLocs \ opLocs`).
 numlitOpLocs : Ref (List Loc)
 numlitOpLocs = Ref []
@@ -3329,7 +3329,7 @@ infer _ (ELit l) = litType l
 -- [a], and stash (a, fref, n, dref) in numlitRefs so the post-HM setNumlitFloats can
 -- decide concrete-Float / concrete-Int / still-poly.  Recording the obligation here
 -- AND (when under `+`) in numArithOp is harmless: both unify the same var, both
--- demand `Num`.  Without the prelude (bare-HM oracle, `numIfaceRegistered` False)
+-- demand `Num`.  Without the prelude (bare-HM oracle, `ifaceRegistered` False)
 -- `fromInt` is unbound: fall back to a plain fresh var, dref stays RNone (⇒ Int).
 infer env (ENumLit n fref dref) = inferNumLit env n fref dref
 infer env (EVar x) = inferVar env x
@@ -4386,7 +4386,7 @@ inferBinop "<<" lt rt = composeOp lt rt True
 inferBinop op _ _ = panic ("typecheck: unsupported operator " ++ op)
 
 -- Roadmap #18a: `++` (append) carries a `Semigroup` obligation on its (unified)
--- operand type — a verbatim mirror of `eqCompareOp`/`recordEqObligation` for `==`,
+-- operand type — a verbatim mirror of `eqCompareOp`/`recordIfaceObligation` for `==`,
 -- and the reason `"x" ++ Box 1` is now a located `No impl of Semigroup for Box`
 -- reject at CHECK time rather than an eval-time `E-PANIC`.  Reuses the same
 -- pendingImplObligations / checkImplObligations path: a synthetic Semigroup
@@ -4396,27 +4396,43 @@ inferBinop op _ _ = panic ("typecheck: unsupported operator " ++ op)
 -- is what keeps core.mdk's `foldMap f = fold (acc x => acc ++ f x) empty` typing).
 -- A still-polymorphic operand defers to the caller, exactly like Num/Eq/Ord.
 --
--- Gated on the `Semigroup` interface being REGISTERED (prelude loaded), mirroring
--- numIfaceRegistered/eqIfaceRegistered: the bare-HM no-prelude oracle (tc_probe /
+-- Gated on the `Semigroup` interface being REGISTERED (prelude loaded), via
+-- ifaceRegistered: the bare-HM no-prelude oracle (tc_probe /
 -- typecheck_main.mdk) has no `Semigroup` class, so recording the obligation only
 -- when it exists keeps those drivers byte-identical while `medaka check` rejects.
 appendOp : Mono -> Mono -> Mono
 appendOp lt rt =
   let _ = unify lt rt
-  let _ = recordSemigroupObligation lt
+  let _ = recordIfaceObligation "Semigroup" lt
   lt
 
-recordSemigroupObligation : Mono -> Unit
-recordSemigroupObligation lt
-  | semigroupIfaceRegistered () =
-    pushPendingObl ("Semigroup", ["a"], TyVar "a", lt, currentLoc.value)
+-- #146: unified operator-obligation recorder.  The arithmetic (`+ - * / %`, unary
+-- `-`), comparison (`== != < > <= >=`) and append (`++`) operators each carry an
+-- interface obligation on their (unified) operand type via pushPendingObl — a
+-- synthetic obligation with a bare iface-param declared type (`TyVar "a"`, typaram
+-- ["a"]) so dispatchMonosOf recovers exactly the operand mono.  Gated on that
+-- interface being REGISTERED (prelude loaded): the bare-HM no-prelude oracle
+-- (tc_probe / typecheck_main.mdk) registers none of Num/Eq/Ord/Semigroup, so
+-- recording only when the interface exists keeps those drivers byte-identical while
+-- full check_main (prelude) rejects, matching `medaka check`.  Callers:
+-- numArithOp/negateOp ("Num"), eqCompareOp ("Eq"), ordCompareOp ("Ord"), appendOp
+-- ("Semigroup").
+recordIfaceObligation : String -> Mono -> Unit
+recordIfaceObligation iface lt
+  | ifaceRegistered iface =
+    pushPendingObl (iface, ["a"], TyVar "a", lt, currentLoc.value)
   | otherwise = ()
 
-semigroupIfaceRegistered : Unit -> Bool
-semigroupIfaceRegistered _ = anyList semigroupEntry methodIfaceParamsRef.value
+-- True iff `iface` is registered (its methods are in methodIfaceParamsRef, populated
+-- per program from the DInterface decls — present once core.mdk is loaded).  Kept a
+-- monomorphic, short-circuiting anyList scan (NOT a prelude Foldable method; the
+-- O(1) map-ification of methodIfaceParamsRef is the separate issue #147).
+ifaceRegistered : String -> Bool
+ifaceRegistered iface =
+  anyList (ifaceEntryMatches iface) methodIfaceParamsRef.value
 
-semigroupEntry : (String, (String, List String, Ty)) -> Bool
-semigroupEntry (_, (iface, _, _)) = iface == "Semigroup"
+ifaceEntryMatches : String -> (String, (String, List String, Ty)) -> Bool
+ifaceEntryMatches iface (_, (e, _, _)) = e == iface
 
 -- G2: arithmetic `+ - * / %` carry a `Num` obligation on their (unified) operand
 -- type — mirrors the oracle's `No impl of Num for <T>` reject (lib/typecheck.ml).
@@ -4443,25 +4459,8 @@ numArithOp lt rt =
   let _ = markNumlitOpTaint lt
   let _ = markNumlitOpTaint rt
   let _ = unify lt rt
-  let _ = recordNumObligation lt
+  let _ = recordIfaceObligation "Num" lt
   lt
-
--- Record a `Num` obligation on the operand, but ONLY when a `Num` interface is
--- registered (prelude loaded).  The bare-HM no-prelude oracle imposes no class
--- constraint on `+`, so gating here keeps the no-prelude drivers byte-identical.
-recordNumObligation : Mono -> Unit
-recordNumObligation lt
-  | numIfaceRegistered () =
-    pushPendingObl ("Num", ["a"], TyVar "a", lt, currentLoc.value)
-  | otherwise = ()
-
--- True iff a `Num` interface is registered (its methods are in methodIfaceParamsRef,
--- populated per program from the DInterface decls — present once core.mdk is loaded).
-numIfaceRegistered : Unit -> Bool
-numIfaceRegistered _ = anyList numEntry methodIfaceParamsRef.value
-
-numEntry : (String, (String, List String, Ty)) -> Bool
-numEntry (_, (iface, _, _)) = iface == "Num"
 
 -- PLAN.md #11 soundness arm: model an integer literal as a `fromInt n` method
 -- occurrence so its route cell [dref] gets stamped (RKey ground / RDictFwd poly) by
@@ -4471,7 +4470,7 @@ numEntry (_, (iface, _, _)) = iface == "Num"
 -- Num-obligated var, leaving [dref] RNone (⇒ a static Int literal at rewrite time).
 inferNumLit : TcEnv -> Int -> Ref (Option Float) -> Ref Route -> Mono
 inferNumLit env n fref dref
-  | numIfaceRegistered () = match lookupVar env "fromInt"
+  | ifaceRegistered "Num" = match lookupVar env "fromInt"
     None => inferNumLitBare n fref
     Some _ =>
       -- inferMethodAt records the Num impl obligation + a pendingSite on [dref].
@@ -4488,11 +4487,11 @@ inferNumLit env n fref dref
 -- so it carries a `Num` obligation on its var unconditionally — exactly the OCaml
 -- oracle, whose ENumLit infer arm `infer env (EVar "fromInt")` records the Num
 -- usage even no-prelude (`initial_env` seeds `fromInt`/`Num`).  Recording it here
--- (vs. the prelude-gated `recordNumObligation`) lets value-level defaulting ground
+-- (vs. the prelude-gated `recordIfaceObligation`) lets value-level defaulting ground
 -- an AMBIGUOUS literal var to Int (`nums = [1,2,3] : List Int`) so the no-prelude
 -- `typecheck_main` matches the prelude-aware oracle golden.  The matching reject is
 -- SUPPRESSED no-prelude in checkOneImplObligation (no-prelude imposes no Num impl
--- constraint — see its `numIfaceRegistered` guard), so a literal still types Int
+-- constraint — see its `ifaceRegistered` guard), so a literal still types Int
 -- without a spurious `No impl of Num for Int`.
 inferNumLitBare : Int -> Ref (Option Float) -> Mono
 inferNumLitBare n fref =
@@ -4512,7 +4511,7 @@ recordNumlitLoc a = match currentLoc.value
     setRef numlitUntainted ((a, l)::numlitUntainted.value)
   None => ()
 
--- Called from recordNumObligation (arithmetic `+`/`-`/`*`/`/`/`%`): any recorded
+-- Called from recordIfaceObligation (arithmetic `+`/`-`/`*`/`/`/`%`): any recorded
 -- literal whose var shares a union-find root with [m] was an operand of an op, so
 -- mark its loc — the reframe then keeps `No impl of Num for T` for it.  Runs during
 -- inference (vars still unbound), so `normalize` reveals the shared root regardless
@@ -4604,7 +4603,7 @@ tagLitLocsWithRoot id kind ((mv, l)::rest) =
 
 -- Stage-1 Eq dispatch (EQ-DISPATCH-DESIGN.md §2.1): `==`/`!=` carry an `Eq`
 -- obligation on their (unified) operand type — a verbatim mirror of
--- `recordNumObligation` for `+`.  We reuse the existing pendingImplObligations /
+-- `recordIfaceObligation` for `+`.  We reuse the existing pendingImplObligations /
 -- checkImplObligations path: a synthetic Eq obligation with a bare iface-param
 -- declared type (`TyVar "a"`, typaram ["a"]) so dispatchMonosOf recovers exactly
 -- the operand mono.  When it grounds to a concrete non-Eq head (a function, an
@@ -4615,26 +4614,14 @@ tagLitLocsWithRoot id kind ((mv, l)::rest) =
 -- `not (eq …)` at the dict layer (binopMethodApp), so it does not double-report.
 --
 -- Gated on the `Eq` interface being REGISTERED (prelude loaded), mirroring
--- `numIfaceRegistered`: the bare-HM no-prelude oracle (tc_probe / typecheck_main)
+-- `ifaceRegistered`: the bare-HM no-prelude oracle (tc_probe / typecheck_main)
 -- has no `Eq` class, so recording the obligation only when Eq exists keeps those
 -- drivers byte-identical while full check_main (prelude) rejects.
 eqCompareOp : Mono -> Mono -> Mono
 eqCompareOp lt rt =
   let _ = unify lt rt
-  let _ = recordEqObligation lt
+  let _ = recordIfaceObligation "Eq" lt
   TCon "Bool"
-
-recordEqObligation : Mono -> Unit
-recordEqObligation lt
-  | eqIfaceRegistered () =
-    pushPendingObl ("Eq", ["a"], TyVar "a", lt, currentLoc.value)
-  | otherwise = ()
-
-eqIfaceRegistered : Unit -> Bool
-eqIfaceRegistered _ = anyList eqEntry methodIfaceParamsRef.value
-
-eqEntry : (String, (String, List String, Ty)) -> Bool
-eqEntry (_, (iface, _, _)) = iface == "Eq"
 
 -- Stage-1 Ord dispatch (EQ-DISPATCH-DESIGN.md §"sibling Ord follow-up"): the four
 -- ordering comparisons `<`/`>`/`<=`/`>=` carry an `Ord` obligation on their
@@ -4650,24 +4637,12 @@ eqEntry (_, (iface, _, _)) = iface == "Eq"
 -- to `EMethodAt "lt"` at the dict layer, so runtime/emit dispatch is unchanged.
 --
 -- Gated on the `Ord` interface being REGISTERED (prelude loaded), mirroring
--- `eqIfaceRegistered`.
+-- `ifaceRegistered`.
 ordCompareOp : Mono -> Mono -> Mono
 ordCompareOp lt rt =
   let _ = unify lt rt
-  let _ = recordOrdObligation lt
+  let _ = recordIfaceObligation "Ord" lt
   TCon "Bool"
-
-recordOrdObligation : Mono -> Unit
-recordOrdObligation lt
-  | ordIfaceRegistered () =
-    pushPendingObl ("Ord", ["a"], TyVar "a", lt, currentLoc.value)
-  | otherwise = ()
-
-ordIfaceRegistered : Unit -> Bool
-ordIfaceRegistered _ = anyList ordEntry methodIfaceParamsRef.value
-
-ordEntry : (String, (String, List String, Ty)) -> Bool
-ordEntry (_, (iface, _, _)) = iface == "Ord"
 
 boolOp : Mono -> Mono -> Mono
 boolOp lt rt =
@@ -4716,7 +4691,7 @@ inferUnop "!" t =
 inferUnop op _ = panic ("typecheck: unsupported unary op " ++ op)
 
 -- Roadmap #18c: unary minus `-x` carries a `Num` obligation on its operand type —
--- a verbatim mirror of `numArithOp`/`recordNumObligation` for binary `+`/`-`/…,
+-- a verbatim mirror of `numArithOp`/`recordIfaceObligation` for binary `+`/`-`/…,
 -- and the reason `-"x"` is now a located `No impl of Num for String` reject at
 -- CHECK time rather than an eval-time `panic "unary minus on non-number"`.
 -- markNumlitOpTaint keeps the same Chunk-D literal-provenance error framing as
@@ -4725,7 +4700,7 @@ inferUnop op _ = panic ("typecheck: unsupported unary op " ++ op)
 negateOp : Mono -> Mono
 negateOp t =
   let _ = markNumlitOpTaint t
-  let _ = recordNumObligation t
+  let _ = recordIfaceObligation "Num" t
   t
 
 -- backtick infix `x `f` y` is just f applied to x then y
@@ -6761,7 +6736,7 @@ monoArgUnboundIds t = match normalize t
   _ => []
 
 -- the unbound var ids that any pending `Num` obligation in [obls] constrains (the
--- operand monos recorded by recordNumObligation / the literal infer arm)
+-- operand monos recorded by recordIfaceObligation / the literal infer arm)
 numConstrainedIds : List (String, List String, Ty, Mono, Option Loc) -> List Int
 numConstrainedIds obls = flatMap numObligIds obls
 
@@ -10288,7 +10263,7 @@ checkOneImplObligation ireqs heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyListM numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyListM eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyListM ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if anyListM monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs ireqs heads iface args loc else reportNumOrNoImpl iface args loc
+  if iface == "Num" && anyListM numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyListM eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyListM ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (ifaceRegistered "Num") then () else if isEmptyL args then () else if anyListM monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs ireqs heads iface args loc else reportNumOrNoImpl iface args loc
 
 -- A function-typed dispatch mono is fully GROUND — its head is `->`, structurally
 -- un-implementable for an ordinary interface (no `impl Display (a -> b)` exists).
@@ -12238,7 +12213,7 @@ checkModuleFullImpl mid seedVars accData implDecls prog =
   -- implDecls=[] (checkModuleFull), so registering only [implDecls] left
   -- methodIfaceParamsRef EMPTY → `Num`/`fromInt` unregistered → a numeric literal's
   -- Num obligation (recordImplObligation) was silently dropped and the reject
-  -- suppressed (numIfaceRegistered False) → cross-module `g [1,2] 5` over-accepted.
+  -- suppressed (ifaceRegistered False) → cross-module `g [1,2] 5` over-accepted.
   let _ = registerMethodIfaceParamsAll (accData ++ implDecls ++ prog)
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let _ = rejectCyclicAliases ()
@@ -14990,23 +14965,17 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferBinop" ((PLit (LString "<<")) (PVar "lt") (PVar "rt")) (EApp (EApp (EApp (EVar "composeOp") (EVar "lt")) (EVar "rt")) (EVar "True")))
 (DFunDef false "inferBinop" ((PVar "op") PWild PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "typecheck: unsupported operator ")) (EVar "op"))))
 (DTypeSig false "appendOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "appendOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordSemigroupObligation") (EVar "lt"))) (DoExpr (EVar "lt"))))
-(DTypeSig false "recordSemigroupObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordSemigroupObligation" ((PVar "lt")) (EIf (EApp (EVar "semigroupIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Semigroup")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "semigroupIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "semigroupIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "semigroupEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "semigroupEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "semigroupEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Semigroup"))))
+(DFunDef false "appendOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Semigroup"))) (EVar "lt"))) (DoExpr (EVar "lt"))))
+(DTypeSig false "recordIfaceObligation" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Unit"))))
+(DFunDef false "recordIfaceObligation" ((PVar "iface") (PVar "lt")) (EIf (EApp (EVar "ifaceRegistered") (EVar "iface")) (EApp (EVar "pushPendingObl") (ETuple (EVar "iface") (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "ifaceRegistered" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "ifaceRegistered" ((PVar "iface")) (EApp (EApp (EVar "anyList") (EApp (EVar "ifaceEntryMatches") (EVar "iface"))) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
+(DTypeSig false "ifaceEntryMatches" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool"))))
+(DFunDef false "ifaceEntryMatches" ((PVar "iface") (PTuple PWild (PTuple (PVar "e") PWild PWild))) (EBinOp "==" (EVar "e") (EVar "iface")))
 (DTypeSig false "numArithOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "numArithOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "lt"))) (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordNumObligation") (EVar "lt"))) (DoExpr (EVar "lt"))))
-(DTypeSig false "recordNumObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordNumObligation" ((PVar "lt")) (EIf (EApp (EVar "numIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Num")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "numIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "numIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "numEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "numEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "numEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Num"))))
+(DFunDef false "numArithOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "lt"))) (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Num"))) (EVar "lt"))) (DoExpr (EVar "lt"))))
 (DTypeSig false "inferNumLit" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "Option") (TyCon "Float"))) (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyCon "Mono"))))))
-(DFunDef false "inferNumLit" ((PVar "env") (PVar "n") (PVar "fref") (PVar "dref")) (EIf (EApp (EVar "numIfaceRegistered") (ELit LUnit)) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (ELit (LString "fromInt"))) (arm (PCon "None") () (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref"))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "fromIntTy") (EApp (EApp (EApp (EApp (EApp (EVar "inferMethodAt") (EVar "env")) (ELit (LString "fromInt"))) (EVar "dref")) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit)))) (DoLet false false (PVar "a") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "fromIntTy")) (EApp (EApp (EApp (EVar "TFun") (EApp (EVar "TCon") (ELit (LString "Int")))) (EApp (EVar "openRow") (ELit LUnit))) (EVar "a")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "numlitRefs")) (EBinOp "::" (ETuple (EVar "a") (EVar "fref") (EVar "n") (EVar "dref")) (EFieldAccess (EVar "numlitRefs") "value")))) (DoLet false false PWild (EApp (EVar "recordNumlitLoc") (EVar "a"))) (DoExpr (EVar "a"))))) (EIf (EVar "otherwise") (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "inferNumLit" ((PVar "env") (PVar "n") (PVar "fref") (PVar "dref")) (EIf (EApp (EVar "ifaceRegistered") (ELit (LString "Num"))) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (ELit (LString "fromInt"))) (arm (PCon "None") () (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref"))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "fromIntTy") (EApp (EApp (EApp (EApp (EApp (EVar "inferMethodAt") (EVar "env")) (ELit (LString "fromInt"))) (EVar "dref")) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit)))) (DoLet false false (PVar "a") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "fromIntTy")) (EApp (EApp (EApp (EVar "TFun") (EApp (EVar "TCon") (ELit (LString "Int")))) (EApp (EVar "openRow") (ELit LUnit))) (EVar "a")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "numlitRefs")) (EBinOp "::" (ETuple (EVar "a") (EVar "fref") (EVar "n") (EVar "dref")) (EFieldAccess (EVar "numlitRefs") "value")))) (DoLet false false PWild (EApp (EVar "recordNumlitLoc") (EVar "a"))) (DoExpr (EVar "a"))))) (EIf (EVar "otherwise") (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "inferNumLitBare" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "Option") (TyCon "Float"))) (TyCon "Mono"))))
 (DFunDef false "inferNumLitBare" ((PVar "n") (PVar "fref")) (EBlock (DoLet false false (PVar "a") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Num")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "a") (EFieldAccess (EVar "currentLoc") "value")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "numlitRefs")) (EBinOp "::" (ETuple (EVar "a") (EVar "fref") (EVar "n") (EApp (EVar "Ref") (EVar "RNone"))) (EFieldAccess (EVar "numlitRefs") "value")))) (DoLet false false PWild (EApp (EVar "recordNumlitLoc") (EVar "a"))) (DoExpr (EVar "a"))))
 (DTypeSig false "recordNumlitLoc" (TyFun (TyCon "Mono") (TyCon "Unit")))
@@ -15037,21 +15006,9 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "tagLitLocsWithRoot" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "tagLitLocsWithRoot" ((PVar "id") (PVar "kind") (PCons (PTuple (PVar "mv") (PVar "l")) (PVar "rest"))) (EBlock (DoLet false false PWild (EIf (EApp (EApp (EVar "sameRootId") (EVar "id")) (EVar "mv")) (EApp (EApp (EVar "setRef") (EVar "numlitCtxTags")) (EBinOp "::" (ETuple (EVar "l") (EVar "kind")) (EFieldAccess (EVar "numlitCtxTags") "value"))) (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EVar "tagLitLocsWithRoot") (EVar "id")) (EVar "kind")) (EVar "rest")))))
 (DTypeSig false "eqCompareOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "eqCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordEqObligation") (EVar "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
-(DTypeSig false "recordEqObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordEqObligation" ((PVar "lt")) (EIf (EApp (EVar "eqIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Eq")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "eqIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "eqIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "eqEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "eqEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "eqEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Eq"))))
+(DFunDef false "eqCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Eq"))) (EVar "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DTypeSig false "ordCompareOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "ordCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordOrdObligation") (EVar "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
-(DTypeSig false "recordOrdObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordOrdObligation" ((PVar "lt")) (EIf (EApp (EVar "ordIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Ord")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "ordIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "ordIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "ordEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "ordEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "ordEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Ord"))))
+(DFunDef false "ordCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Ord"))) (EVar "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DTypeSig false "boolOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
 (DFunDef false "boolOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "lt")) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "rt")) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DTypeSig false "consOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
@@ -15066,7 +15023,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferUnop" ((PLit (LString "!")) (PVar "t")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "t")) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DFunDef false "inferUnop" ((PVar "op") PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "typecheck: unsupported unary op ")) (EVar "op"))))
 (DTypeSig false "negateOp" (TyFun (TyCon "Mono") (TyCon "Mono")))
-(DFunDef false "negateOp" ((PVar "t")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "t"))) (DoLet false false PWild (EApp (EVar "recordNumObligation") (EVar "t"))) (DoExpr (EVar "t"))))
+(DFunDef false "negateOp" ((PVar "t")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "t"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Num"))) (EVar "t"))) (DoExpr (EVar "t"))))
 (DTypeSig false "inferInfix" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
 (DFunDef false "inferInfix" ((PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "ft") (EApp (EApp (EVar "inferVar") (EVar "env")) (EVar "op"))) (DoLet false false (PVar "lt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "r"))) (DoLet false false (PVar "inner") (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "op"))) (EVar "l"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "inner")) (EVar "r"))) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EVar "inner")) (EVar "ft")) (EVar "lt"))) (EVar "rt")))))
 (DTypeSig false "inferVar" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyCon "Mono"))))
@@ -16496,7 +16453,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "checkImplObligationsGo" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "checkImplObligationsGo" ((PVar "ireqs") (PVar "heads") (PCons (PTuple (PVar "iface") (PVar "typarams") (PVar "mty") (PVar "occ") (PVar "loc")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "checkOneImplObligation") (EVar "ireqs")) (EVar "heads")) (EVar "iface")) (EVar "typarams")) (EVar "mty")) (EVar "occ")) (EVar "loc"))) (DoExpr (EApp (EApp (EApp (EVar "checkImplObligationsGo") (EVar "ireqs")) (EVar "heads")) (EVar "rest")))))
 (DTypeSig false "checkOneImplObligation" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyCon "Unit")))))))))
-(DFunDef false "checkOneImplObligation" ((PVar "ireqs") (PVar "heads") (PVar "iface") (PVar "typarams") (PVar "mty") (PVar "occ") (PVar "loc")) (EBlock (DoLet false false (PVar "args") (EApp (EApp (EApp (EVar "dispatchMonosOf") (EVar "typarams")) (EVar "mty")) (EVar "occ"))) (DoExpr (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EApp (EVar "anyListM") (EVar "numUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Eq"))) (EApp (EApp (EVar "anyListM") (EVar "eqUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Ord"))) (EApp (EApp (EVar "anyListM") (EVar "ordUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EVar "not") (EApp (EVar "numIfaceRegistered") (ELit LUnit)))) (ELit LUnit) (EIf (EApp (EVar "isEmptyL") (EVar "args")) (ELit LUnit) (EIf (EBinOp "&&" (EApp (EApp (EVar "anyListM") (EVar "monoIsFunction")) (EVar "args")) (EApp (EVar "not") (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EApp (EVar "not") (EApp (EVar "allConcreteHeads") (EVar "args"))) (ELit LUnit) (EIf (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")) (EApp (EApp (EApp (EApp (EApp (EVar "checkNestedReqs") (EVar "ireqs")) (EVar "heads")) (EVar "iface")) (EVar "args")) (EVar "loc")) (EApp (EApp (EApp (EVar "reportNumOrNoImpl") (EVar "iface")) (EVar "args")) (EVar "loc")))))))))))))
+(DFunDef false "checkOneImplObligation" ((PVar "ireqs") (PVar "heads") (PVar "iface") (PVar "typarams") (PVar "mty") (PVar "occ") (PVar "loc")) (EBlock (DoLet false false (PVar "args") (EApp (EApp (EApp (EVar "dispatchMonosOf") (EVar "typarams")) (EVar "mty")) (EVar "occ"))) (DoExpr (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EApp (EVar "anyListM") (EVar "numUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Eq"))) (EApp (EApp (EVar "anyListM") (EVar "eqUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Ord"))) (EApp (EApp (EVar "anyListM") (EVar "ordUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EVar "not") (EApp (EVar "ifaceRegistered") (ELit (LString "Num"))))) (ELit LUnit) (EIf (EApp (EVar "isEmptyL") (EVar "args")) (ELit LUnit) (EIf (EBinOp "&&" (EApp (EApp (EVar "anyListM") (EVar "monoIsFunction")) (EVar "args")) (EApp (EVar "not") (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EApp (EVar "not") (EApp (EVar "allConcreteHeads") (EVar "args"))) (ELit LUnit) (EIf (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")) (EApp (EApp (EApp (EApp (EApp (EVar "checkNestedReqs") (EVar "ireqs")) (EVar "heads")) (EVar "iface")) (EVar "args")) (EVar "loc")) (EApp (EApp (EApp (EVar "reportNumOrNoImpl") (EVar "iface")) (EVar "args")) (EVar "loc")))))))))))))
 (DTypeSig false "monoIsFunction" (TyFun (TyCon "Mono") (TyCon "Bool")))
 (DFunDef false "monoIsFunction" ((PVar "m")) (EMatch (EApp (EVar "normalize") (EVar "m")) (arm (PCon "TFun" PWild PWild PWild) () (EVar "True")) (arm PWild () (EVar "False"))))
 (DTypeSig false "checkNestedReqs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyCon "Unit")))))))
@@ -18597,23 +18554,17 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferBinop" ((PLit (LString "<<")) (PVar "lt") (PVar "rt")) (EApp (EApp (EApp (EVar "composeOp") (EMethodRef "lt")) (EVar "rt")) (EVar "True")))
 (DFunDef false "inferBinop" ((PVar "op") PWild PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "typecheck: unsupported operator ")) (EVar "op"))))
 (DTypeSig false "appendOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "appendOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordSemigroupObligation") (EMethodRef "lt"))) (DoExpr (EMethodRef "lt"))))
-(DTypeSig false "recordSemigroupObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordSemigroupObligation" ((PVar "lt")) (EIf (EApp (EVar "semigroupIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Semigroup")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EMethodRef "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "semigroupIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "semigroupIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "semigroupEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "semigroupEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "semigroupEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Semigroup"))))
+(DFunDef false "appendOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Semigroup"))) (EMethodRef "lt"))) (DoExpr (EMethodRef "lt"))))
+(DTypeSig false "recordIfaceObligation" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Unit"))))
+(DFunDef false "recordIfaceObligation" ((PVar "iface") (PVar "lt")) (EIf (EApp (EVar "ifaceRegistered") (EVar "iface")) (EApp (EVar "pushPendingObl") (ETuple (EVar "iface") (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EMethodRef "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "ifaceRegistered" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "ifaceRegistered" ((PVar "iface")) (EApp (EApp (EVar "anyList") (EApp (EVar "ifaceEntryMatches") (EVar "iface"))) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
+(DTypeSig false "ifaceEntryMatches" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool"))))
+(DFunDef false "ifaceEntryMatches" ((PVar "iface") (PTuple PWild (PTuple (PVar "e") PWild PWild))) (EBinOp "==" (EVar "e") (EVar "iface")))
 (DTypeSig false "numArithOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "numArithOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EMethodRef "lt"))) (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordNumObligation") (EMethodRef "lt"))) (DoExpr (EMethodRef "lt"))))
-(DTypeSig false "recordNumObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordNumObligation" ((PVar "lt")) (EIf (EApp (EVar "numIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Num")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EMethodRef "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "numIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "numIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "numEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "numEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "numEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Num"))))
+(DFunDef false "numArithOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EMethodRef "lt"))) (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Num"))) (EMethodRef "lt"))) (DoExpr (EMethodRef "lt"))))
 (DTypeSig false "inferNumLit" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "Option") (TyCon "Float"))) (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyCon "Mono"))))))
-(DFunDef false "inferNumLit" ((PVar "env") (PVar "n") (PVar "fref") (PVar "dref")) (EIf (EApp (EVar "numIfaceRegistered") (ELit LUnit)) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (ELit (LString "fromInt"))) (arm (PCon "None") () (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref"))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "fromIntTy") (EApp (EApp (EApp (EApp (EApp (EVar "inferMethodAt") (EVar "env")) (ELit (LString "fromInt"))) (EVar "dref")) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit)))) (DoLet false false (PVar "a") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "fromIntTy")) (EApp (EApp (EApp (EVar "TFun") (EApp (EVar "TCon") (ELit (LString "Int")))) (EApp (EVar "openRow") (ELit LUnit))) (EVar "a")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "numlitRefs")) (EBinOp "::" (ETuple (EVar "a") (EVar "fref") (EVar "n") (EVar "dref")) (EFieldAccess (EVar "numlitRefs") "value")))) (DoLet false false PWild (EApp (EVar "recordNumlitLoc") (EVar "a"))) (DoExpr (EVar "a"))))) (EIf (EVar "otherwise") (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "inferNumLit" ((PVar "env") (PVar "n") (PVar "fref") (PVar "dref")) (EIf (EApp (EVar "ifaceRegistered") (ELit (LString "Num"))) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (ELit (LString "fromInt"))) (arm (PCon "None") () (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref"))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "fromIntTy") (EApp (EApp (EApp (EApp (EApp (EVar "inferMethodAt") (EVar "env")) (ELit (LString "fromInt"))) (EVar "dref")) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit)))) (DoLet false false (PVar "a") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "fromIntTy")) (EApp (EApp (EApp (EVar "TFun") (EApp (EVar "TCon") (ELit (LString "Int")))) (EApp (EVar "openRow") (ELit LUnit))) (EVar "a")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "numlitRefs")) (EBinOp "::" (ETuple (EVar "a") (EVar "fref") (EVar "n") (EVar "dref")) (EFieldAccess (EVar "numlitRefs") "value")))) (DoLet false false PWild (EApp (EVar "recordNumlitLoc") (EVar "a"))) (DoExpr (EVar "a"))))) (EIf (EVar "otherwise") (EApp (EApp (EVar "inferNumLitBare") (EVar "n")) (EVar "fref")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "inferNumLitBare" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "Option") (TyCon "Float"))) (TyCon "Mono"))))
 (DFunDef false "inferNumLitBare" ((PVar "n") (PVar "fref")) (EBlock (DoLet false false (PVar "a") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Num")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "a") (EFieldAccess (EVar "currentLoc") "value")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "numlitRefs")) (EBinOp "::" (ETuple (EVar "a") (EVar "fref") (EVar "n") (EApp (EVar "Ref") (EVar "RNone"))) (EFieldAccess (EVar "numlitRefs") "value")))) (DoLet false false PWild (EApp (EVar "recordNumlitLoc") (EVar "a"))) (DoExpr (EVar "a"))))
 (DTypeSig false "recordNumlitLoc" (TyFun (TyCon "Mono") (TyCon "Unit")))
@@ -18644,21 +18595,9 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "tagLitLocsWithRoot" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "tagLitLocsWithRoot" ((PVar "id") (PVar "kind") (PCons (PTuple (PVar "mv") (PVar "l")) (PVar "rest"))) (EBlock (DoLet false false PWild (EIf (EApp (EApp (EVar "sameRootId") (EVar "id")) (EVar "mv")) (EApp (EApp (EVar "setRef") (EVar "numlitCtxTags")) (EBinOp "::" (ETuple (EVar "l") (EVar "kind")) (EFieldAccess (EVar "numlitCtxTags") "value"))) (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EVar "tagLitLocsWithRoot") (EVar "id")) (EVar "kind")) (EVar "rest")))))
 (DTypeSig false "eqCompareOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "eqCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordEqObligation") (EMethodRef "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
-(DTypeSig false "recordEqObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordEqObligation" ((PVar "lt")) (EIf (EApp (EVar "eqIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Eq")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EMethodRef "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "eqIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "eqIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "eqEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "eqEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "eqEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Eq"))))
+(DFunDef false "eqCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Eq"))) (EMethodRef "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DTypeSig false "ordCompareOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "ordCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EVar "recordOrdObligation") (EMethodRef "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
-(DTypeSig false "recordOrdObligation" (TyFun (TyCon "Mono") (TyCon "Unit")))
-(DFunDef false "recordOrdObligation" ((PVar "lt")) (EIf (EApp (EVar "ordIfaceRegistered") (ELit LUnit)) (EApp (EVar "pushPendingObl") (ETuple (ELit (LString "Ord")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EMethodRef "lt") (EFieldAccess (EVar "currentLoc") "value"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "ordIfaceRegistered" (TyFun (TyCon "Unit") (TyCon "Bool")))
-(DFunDef false "ordIfaceRegistered" (PWild) (EApp (EApp (EVar "anyList") (EVar "ordEntry")) (EFieldAccess (EVar "methodIfaceParamsRef") "value")))
-(DTypeSig false "ordEntry" (TyFun (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))) (TyCon "Bool")))
-(DFunDef false "ordEntry" ((PTuple PWild (PTuple (PVar "iface") PWild PWild))) (EBinOp "==" (EVar "iface") (ELit (LString "Ord"))))
+(DFunDef false "ordCompareOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EVar "rt"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Ord"))) (EMethodRef "lt"))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DTypeSig false "boolOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
 (DFunDef false "boolOp" ((PVar "lt") (PVar "rt")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EMethodRef "lt")) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "rt")) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DTypeSig false "consOp" (TyFun (TyCon "Mono") (TyFun (TyCon "Mono") (TyCon "Mono"))))
@@ -18673,7 +18612,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferUnop" ((PLit (LString "!")) (PVar "t")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "t")) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoExpr (EApp (EVar "TCon") (ELit (LString "Bool"))))))
 (DFunDef false "inferUnop" ((PVar "op") PWild) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "typecheck: unsupported unary op ")) (EVar "op"))))
 (DTypeSig false "negateOp" (TyFun (TyCon "Mono") (TyCon "Mono")))
-(DFunDef false "negateOp" ((PVar "t")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "t"))) (DoLet false false PWild (EApp (EVar "recordNumObligation") (EVar "t"))) (DoExpr (EVar "t"))))
+(DFunDef false "negateOp" ((PVar "t")) (EBlock (DoLet false false PWild (EApp (EVar "markNumlitOpTaint") (EVar "t"))) (DoLet false false PWild (EApp (EApp (EVar "recordIfaceObligation") (ELit (LString "Num"))) (EVar "t"))) (DoExpr (EVar "t"))))
 (DTypeSig false "inferInfix" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
 (DFunDef false "inferInfix" ((PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "ft") (EApp (EApp (EVar "inferVar") (EVar "env")) (EVar "op"))) (DoLet false false (PVar "lt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "r"))) (DoLet false false (PVar "inner") (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "op"))) (EVar "l"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "inner")) (EVar "r"))) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EVar "inner")) (EVar "ft")) (EMethodRef "lt"))) (EVar "rt")))))
 (DTypeSig false "inferVar" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyCon "Mono"))))
@@ -20103,7 +20042,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "checkImplObligationsGo" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "checkImplObligationsGo" ((PVar "ireqs") (PVar "heads") (PCons (PTuple (PVar "iface") (PVar "typarams") (PVar "mty") (PVar "occ") (PVar "loc")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "checkOneImplObligation") (EVar "ireqs")) (EVar "heads")) (EVar "iface")) (EVar "typarams")) (EVar "mty")) (EVar "occ")) (EVar "loc"))) (DoExpr (EApp (EApp (EApp (EVar "checkImplObligationsGo") (EVar "ireqs")) (EVar "heads")) (EVar "rest")))))
 (DTypeSig false "checkOneImplObligation" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyCon "Unit")))))))))
-(DFunDef false "checkOneImplObligation" ((PVar "ireqs") (PVar "heads") (PVar "iface") (PVar "typarams") (PVar "mty") (PVar "occ") (PVar "loc")) (EBlock (DoLet false false (PVar "args") (EApp (EApp (EApp (EVar "dispatchMonosOf") (EVar "typarams")) (EVar "mty")) (EVar "occ"))) (DoExpr (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EApp (EVar "anyListM") (EVar "numUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Eq"))) (EApp (EApp (EVar "anyListM") (EVar "eqUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Ord"))) (EApp (EApp (EVar "anyListM") (EVar "ordUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EVar "not") (EApp (EVar "numIfaceRegistered") (ELit LUnit)))) (ELit LUnit) (EIf (EApp (EVar "isEmptyL") (EVar "args")) (ELit LUnit) (EIf (EBinOp "&&" (EApp (EApp (EVar "anyListM") (EVar "monoIsFunction")) (EVar "args")) (EApp (EVar "not") (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EApp (EVar "not") (EApp (EVar "allConcreteHeads") (EVar "args"))) (ELit LUnit) (EIf (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")) (EApp (EApp (EApp (EApp (EApp (EVar "checkNestedReqs") (EVar "ireqs")) (EVar "heads")) (EVar "iface")) (EVar "args")) (EVar "loc")) (EApp (EApp (EApp (EVar "reportNumOrNoImpl") (EVar "iface")) (EVar "args")) (EVar "loc")))))))))))))
+(DFunDef false "checkOneImplObligation" ((PVar "ireqs") (PVar "heads") (PVar "iface") (PVar "typarams") (PVar "mty") (PVar "occ") (PVar "loc")) (EBlock (DoLet false false (PVar "args") (EApp (EApp (EApp (EVar "dispatchMonosOf") (EVar "typarams")) (EVar "mty")) (EVar "occ"))) (DoExpr (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EApp (EVar "anyListM") (EVar "numUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Eq"))) (EApp (EApp (EVar "anyListM") (EVar "eqUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Ord"))) (EApp (EApp (EVar "anyListM") (EVar "ordUnimplementableHead")) (EVar "args"))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "iface") (ELit (LString "Num"))) (EApp (EVar "not") (EApp (EVar "ifaceRegistered") (ELit (LString "Num"))))) (ELit LUnit) (EIf (EApp (EVar "isEmptyL") (EVar "args")) (ELit LUnit) (EIf (EBinOp "&&" (EApp (EApp (EVar "anyListM") (EVar "monoIsFunction")) (EVar "args")) (EApp (EVar "not") (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")))) (EApp (EApp (EApp (EVar "pushNoImplError") (EVar "iface")) (EVar "loc")) (EVar "args")) (EIf (EApp (EVar "not") (EApp (EVar "allConcreteHeads") (EVar "args"))) (ELit LUnit) (EIf (EApp (EApp (EApp (EVar "implMatches") (EVar "heads")) (EVar "iface")) (EVar "args")) (EApp (EApp (EApp (EApp (EApp (EVar "checkNestedReqs") (EVar "ireqs")) (EVar "heads")) (EVar "iface")) (EVar "args")) (EVar "loc")) (EApp (EApp (EApp (EVar "reportNumOrNoImpl") (EVar "iface")) (EVar "args")) (EVar "loc")))))))))))))
 (DTypeSig false "monoIsFunction" (TyFun (TyCon "Mono") (TyCon "Bool")))
 (DFunDef false "monoIsFunction" ((PVar "m")) (EMatch (EApp (EVar "normalize") (EVar "m")) (arm (PCon "TFun" PWild PWild PWild) () (EVar "True")) (arm PWild () (EVar "False"))))
 (DTypeSig false "checkNestedReqs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyCon "Unit")))))))
