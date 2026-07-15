@@ -2,7 +2,9 @@
 -- SAME `EIndex` node as `a.[i]`. Covers success across containers, chaining
 -- (`a[i][j]`, `a[i].field`, `f(x)[i]`), the tight/spaced disambiguation
 -- (`a[i]` index vs `a [i]` application-to-list), and `a[i] := v` mutation.
--- Run with:  medaka run test/index_fixtures/bare_bracket_index.mdk
+-- Formerly a manual-verification-only file under test/index_fixtures/ with
+-- zero gate consumers (#72); enrolled here so check/run/build agreement AND
+-- the printed value are pinned automatically.
 
 data P = P { x : Int }
 
