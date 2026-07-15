@@ -1,3 +1,0 @@
-mk : a -> (a, a)
-firstOf : (a, a) -> a
-fixed : (Int, Int) -> Int

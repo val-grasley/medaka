@@ -305,9 +305,11 @@ for f in $changed; do
     compiler/frontend/exhaust.mdk)
       add 'diff_compiler_exhaust'; add 'diff_compiler_check_match' ;;
 
-    # ── types ──
+    # ── types ── (also the TYPES snapshot family: typecheck.mdk renders the
+    #    `# TYPES` section of test/snapshots/typecheck{,_panic}_fixtures, #81 R5)
     compiler/types/*)
-      add 'diff_compiler_typecheck*'; add 'diff_compiler_check*'; add 'diff_compiler_exhaust'
+      add 'diff_compiler_typecheck*'; add 'diff_compiler_snapshot*'
+      add 'diff_compiler_check*'; add 'diff_compiler_exhaust'
       add 'diff_compiler_diagnostics'; add 'diff_compiler_eval_typed*' ;;
 
     # ── eval: also the in-language suite and the capability matrix ──

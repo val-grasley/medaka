@@ -104,7 +104,9 @@ fi
 #   printer_main          — diff_compiler_printer.sh
 #   positions_main        — diff_compiler_positions.sh
 #   ── Phase 2 §2b typecheck/check/error gates ──
-#   typecheck_main          — diff_compiler_typecheck.sh / _errors / _panic_errors / _golden
+#   typecheck_main          — diff_compiler_typecheck_errors.sh / _golden
+#                             (was also _typecheck.sh + _panic_errors.sh — migrated to the
+#                              TYPES snapshot family diff_compiler_snapshot_types.sh, #81 R5)
 #   typecheck_golden_batch  — diff_compiler_typecheck_golden_batch.sh
 #   check_main              — diff_compiler_typecheck_errors.sh (driver B) / diff_compiler_check.sh
 #   check_batch             — diff_compiler_check_batch.sh
