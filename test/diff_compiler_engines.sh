@@ -147,6 +147,17 @@ CORE="$ROOT/stdlib/core.mdk"
 STDLIB="$ROOT/stdlib"
 RUNJS="$ROOT/test/wasm/run.js"
 LEDGER="$ROOT/test/engine_divergence.txt"
+# ── Absolute value pins (issue #86) ────────────────────────────────────────────
+# The differential above only proves the three engines AGREE — a bug where all
+# three agree and are all WRONG is invisible to it by construction (SHADOW-
+# SEMANTICS S7 guarantees path agreement, so a unanimous-but-wrong answer can
+# never surface as a cross-engine disagreement; this is exactly how #50 hid for
+# months). test/engine_value_pins/<key>.pin, when present, pins the literal
+# expected stdout for that fixture — an assertion independent of any engine.
+# See test/engine_value_pins/README.md for format, the incremental-corpus
+# rationale, and the deferred ledger-interaction gap (pins are seeded ONLY on
+# fixtures with no row in $LEDGER).
+PINDIR="$ROOT/test/engine_value_pins"
 TIMEOUT="${TIMEOUT:-60}"
 
 run_t() { perl -e 'alarm shift; exec @ARGV' "$@"; }   # portable timeout (no coreutils on mac)
@@ -250,8 +261,26 @@ if [ "${1:-}" = "--one" ]; then
     [ "$en" = eq ] && [ "$nw" = eq ] && [ "$ew" = eq ] || t3=fail
   fi
 
-  printf '%s\t%s:%s:%s:%s:%s:%s\t%s\t%s\t%s\n' \
-    "$key" "$en" "$nw" "$ew" "$eva" "$nat" "$wsm" "$t1" "$t2" "$t3" > "$RESULTDIR/$slug.sig"
+  # -- absolute value pin (issue #86) ------------------------------------------
+  # pin_v = "-"        no test/engine_value_pins/$key.pin for this fixture (the
+  #                    overwhelming common case today — incremental corpus)
+  #         "ok"       a .pin exists and every arm that `ran` matches it exactly
+  #         "WRONG:<arms>"  a .pin exists and at least one arm that `ran`
+  #                    does NOT match it (comma-joined list of the wrong arms)
+  # An arm that did not `ran` is simply not checked — it degrades out, same as
+  # the cross-engine pairs above degrade to `na` when an arm is unavailable.
+  pin_v="-"
+  pinfile="$PINDIR/$key.pin"
+  if [ -f "$pinfile" ]; then
+    pin_v=ok; wrong=""
+    [ "$eva" = ran ] && { cmp -s "$pinfile" "$W/eval.out"   || wrong="${wrong}eval,"; }
+    [ "$nat" = ran ] && { cmp -s "$pinfile" "$W/native.out" || wrong="${wrong}native,"; }
+    [ "$wsm" = ran ] && { cmp -s "$pinfile" "$W/wasm.out"   || wrong="${wrong}wasm,"; }
+    [ -n "$wrong" ] && pin_v="WRONG:${wrong%,}"
+  fi
+
+  printf '%s\t%s:%s:%s:%s:%s:%s\t%s\t%s\t%s\t%s\n' \
+    "$key" "$en" "$nw" "$ew" "$eva" "$nat" "$wsm" "$t1" "$t2" "$t3" "$pin_v" > "$RESULTDIR/$slug.sig"
 
   {
     printf '  eval   [%-3s] %s\n' "$eva" "$(head -c 200 "$W/eval.out"   | tr '\n' '|')"
@@ -262,6 +291,7 @@ if [ "${1:-}" = "--one" ]; then
     # The CLI's wasm failure is a 2-3 line report (`error: <what>` then the tool's own
     # stderr), and the SECOND line is the diagnosis — so print the head, not the tail.
     [ "$wsm" = na ] && printf '  wasm-why:   %s\n' "$(head -3 "$W/wasm.err" | tr '\n' ' ')"
+    [ "$pin_v" != - ] && printf '  pin        [%s] %s\n' "$pin_v" "$(head -c 200 "$pinfile" 2>/dev/null | tr '\n' '|')"
   } > "$RESULTDIR/$slug.detail"
 
   [ -n "${VERBOSE:-}" ] && printf '%-34s %s\n' "$key" "$agree:$eva:$nat:$wsm"
@@ -406,12 +436,12 @@ fi
 
 # ── Compare each fixture's signature against the ledger ───────────────────────
 # expected(key) = the ledger's signature, else "agree:ran:ran:ran" (i.e. clean).
-regress=0; promote=0; clean=0; known=0; unverified=0
+regress=0; promote=0; clean=0; known=0; unverified=0; pinfail=0
 CLEAN="eq:eq:eq:ran:ran:ran"
 [ "$WASM_OK" = 1 ] || CLEAN="eq:-:-:ran:ran:-"
-: >"$WORK/regress.txt"; : >"$WORK/promote.txt"
+: >"$WORK/regress.txt"; : >"$WORK/promote.txt"; : >"$WORK/pinfail.txt"
 
-while IFS=$'\t' read -r key sig t1 t2 t3; do
+while IFS=$'\t' read -r key sig t1 t2 t3 pin_v; do
   exp="$(awk -v k="$key" '$1==k {print $2}' "$LEDGER" 2>/dev/null | head -1)"
   led=1; [ -n "$exp" ] || { exp="eq:eq:eq:ran:ran:ran"; led=0; }
 
@@ -436,6 +466,20 @@ while IFS=$'\t' read -r key sig t1 t2 t3; do
       cat "$RESULTS/${key//\//__}.detail" 2>/dev/null
       echo; } >> "$WORK/regress.txt"
   fi
+
+  # -- absolute value pin (issue #86) ------------------------------------------
+  # Independent of the agree/disagree signature above: a PINFAIL fires even when
+  # sig==exp==eq:eq:eq (all engines agreeing but disagreeing with the pin is
+  # exactly what a pin exists to catch — the whole point per #86).
+  case "$pin_v" in
+    WRONG:*)
+      pinfail=$((pinfail+1))
+      { printf 'PINFAIL  %s\n  pin file: test/engine_value_pins/%s.pin\n  expected: %s\n  wrong on: %s\n' \
+          "$key" "$key" "$(cat "$PINDIR/$key.pin" 2>/dev/null | tr '\n' '|')" "${pin_v#WRONG:}"
+        cat "$RESULTS/${key//\//__}.detail" 2>/dev/null
+        echo; } >> "$WORK/pinfail.txt"
+      ;;
+  esac
 done < "$WORK/all.tsv"
 
 tier() { awk -F'\t' -v c="$1" -v v="$2" '$c==v' "$WORK/all.tsv" | wc -l | tr -d ' '; }
@@ -460,6 +504,7 @@ printf ' clean                  %4d\n' "$clean"
 printf ' known (ledgered)       %4d   test/engine_divergence.txt\n' "$known"
 printf ' REGRESSIONS            %4d\n' "$regress"
 printf ' PROMOTIONS (now pass)  %4d\n' "$promote"
+printf ' PINFAIL (value pins)   %4d   test/engine_value_pins/\n' "$pinfail"
 echo "══════════════════════════════════════════════════════════════════════"
 
 [ "$regress" -gt 0 ] && { echo; cat "$WORK/regress.txt"; }
@@ -469,6 +514,15 @@ if [ "$promote" -gt 0 ]; then
   echo "A known-failure entry started PASSING.  That is good news and a HARD FAIL:"
   echo "the ledger must be promoted, or the fix will silently rot back later."
 fi
+if [ "$pinfail" -gt 0 ]; then
+  echo
+  cat "$WORK/pinfail.txt"
+  echo "An absolute value pin does not match live output — ALL THREE ENGINES MAY"
+  echo "STILL AGREE (a cross-engine PASS does not imply a PINFAIL here is spurious):"
+  echo "that unanimous-but-wrong shape is exactly what test/engine_value_pins/ exists"
+  echo "to catch.  Fix the engine(s), or if the pin itself was wrong, fix the pin —"
+  echo "either way, HARD FAIL."
+fi
 
 # Never report success having compared nothing.
 if [ "$t1p" -eq 0 ] && [ "$t2p" -eq 0 ]; then
@@ -476,4 +530,4 @@ if [ "$t1p" -eq 0 ] && [ "$t2p" -eq 0 ]; then
   exit 1
 fi
 
-[ "$regress" -eq 0 ] && [ "$promote" -eq 0 ]
+[ "$regress" -eq 0 ] && [ "$promote" -eq 0 ] && [ "$pinfail" -eq 0 ]
