@@ -653,15 +653,24 @@ floatTok src len pos e1 depth id =
   let e2 = digitsEnd src len (e1 + 1)
   floatTokEnd src len pos (expEnd src len e2) depth id
 
+-- A Float is finite iff `f * 0.0 == 0.0`: for ±inf, `inf * 0.0` is NaN and
+-- `NaN == 0.0` is False; for NaN, `NaN == 0.0` is likewise False. There is no
+-- `isFinite` extern, so this arithmetic identity is the detection.
+floatIsFinite : Float -> Bool
+floatIsFinite f = f * 0.0 == 0.0
+
 -- Emit a `TFloat` spanning [pos, endp). `substrNoUs` strips underscores across the
 -- whole mantissa+exponent, and `stringToFloat` (strtod) reads the exponent form.
+-- A literal whose magnitude overflows the IEEE-754 double range parses to `inf`,
+-- which the native backend would emit as an invalid `store double inf`; reject it
+-- at the source with a located error rather than let it reach codegen.
 floatTokEnd : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTokEnd src len pos endp depth id =
-  RTok
-      (TFloat (fromOption 0.0 (stringToFloat (substrNoUs src pos endp))))
-      pos
-      endp ::
-    scan src len endp depth id
+  let f = fromOption 0.0 (stringToFloat (substrNoUs src pos endp))
+  if floatIsFinite f then
+    RTok (TFloat f) pos endp :: scan src len endp depth id
+  else
+    lexErrorTok pos "float literal out of range (overflows to infinity)"
 
 -- strings (escapes processed into the content; `\{` opens an interpolation).
 -- `startQ` is the offset of the OPENING quote (captured at the call site in

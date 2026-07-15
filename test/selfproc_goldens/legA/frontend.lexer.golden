@@ -42,6 +42,7 @@ emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List Raw
 escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 expEnd : Array Char -> Int -> Int -> Int
 firstNl : Bool -> String -> Bool
+floatIsFinite : Float -> Bool
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTokEnd : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 flushClose : Token -> Int -> List RawTok -> List Int -> List Int -> Bool -> List (Token, Int)

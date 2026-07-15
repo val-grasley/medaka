@@ -3725,6 +3725,21 @@ IDENT "id"
 NEWLINE
 DEDENT
 NEWLINE
+IDENT "floatIsFinite"
+COLON
+UPPER "Float"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "floatIsFinite"
+IDENT "f"
+EQUAL
+IDENT "f"
+STAR
+FLOAT 0.0
+EQ_EQ
+FLOAT 0.0
+NEWLINE
 IDENT "floatTokEnd"
 COLON
 UPPER "Array"
@@ -3752,10 +3767,9 @@ IDENT "depth"
 IDENT "id"
 EQUAL
 INDENT
-UPPER "RTok"
-LPAREN
-UPPER "TFloat"
-LPAREN
+LET
+IDENT "f"
+EQUAL
 IDENT "fromOption"
 FLOAT 0.0
 LPAREN
@@ -3767,7 +3781,16 @@ IDENT "pos"
 IDENT "endp"
 RPAREN
 RPAREN
-RPAREN
+NEWLINE
+IF
+IDENT "floatIsFinite"
+IDENT "f"
+THEN
+INDENT
+UPPER "RTok"
+LPAREN
+UPPER "TFloat"
+IDENT "f"
 RPAREN
 IDENT "pos"
 IDENT "endp"
@@ -3778,6 +3801,15 @@ IDENT "len"
 IDENT "endp"
 IDENT "depth"
 IDENT "id"
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "lexErrorTok"
+IDENT "pos"
+STRING "float literal out of range (overflows to infinity)"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
