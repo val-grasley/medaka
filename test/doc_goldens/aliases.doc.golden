@@ -1,0 +1,18 @@
+# aliases
+
+## `Name`
+
+```
+type Name = String
+```
+
+A readability alias.
+
+## `Age`
+
+```
+newtype Age = Age Int
+```
+
+A wrapped int.
+

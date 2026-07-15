@@ -1,0 +1,10 @@
+# multiclause
+
+## `classify`
+
+```
+classify : Int -> String
+```
+
+Classifies an int.
+

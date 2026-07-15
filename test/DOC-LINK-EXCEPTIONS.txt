@@ -166,6 +166,5 @@ REF	test/diff_compiler_bytecode_eval_dict.sh	TODO(docs-cleanup): gate for the re
 REF	test/diff_compiler_bytecode_selfproc.sh	TODO(docs-cleanup): gate for the retired bytecode pipeline stage; no successor script exists
 REF	test/diff_compiler_eval_bytecode.sh	TODO(docs-cleanup): gate for the retired bytecode pipeline stage; no successor script exists
 REF	test/diff_compiler_eval_bytecode_modules.sh	TODO(docs-cleanup): gate for the retired bytecode pipeline stage; no successor script exists
-REF	test/diff_compiler_doc.sh	TODO(docs-cleanup): gate no longer exists under this name (test/doc_fixtures/ is still present; the runner that consumed it is gone or renamed)
 REF	compiler/entries/argstamp_parity_probe.mdk	deleted with #157 (single-mode elaboration) — the Phase-0 temp parity probe entry; ARGSTAMP-UNIFY-PLAN.md retains historical citations of it
 REF	test/argstamp_parity_probe.sh	deleted with #157 (single-mode elaboration) — the Phase-0 temp parity probe harness; ARGSTAMP-UNIFY-PLAN.md retains historical citations of it

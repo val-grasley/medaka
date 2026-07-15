@@ -1,0 +1,14 @@
+# nocomment
+
+## `bare`
+
+```
+bare : Int
+```
+
+## `other`
+
+```
+other : Bool
+```
+

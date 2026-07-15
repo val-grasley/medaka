@@ -1,0 +1,23 @@
+# data
+
+## `Tree`
+
+```
+data Tree a
+  = Leaf
+  | Node a (Tree a) (Tree a)
+```
+
+A binary tree of values.
+
+## `Color`
+
+```
+data Color
+  = Red
+  | Green
+  | Blue
+```
+
+A simple enum.
+
