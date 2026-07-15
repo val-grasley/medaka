@@ -1,0 +1,210 @@
+-- lint-disable-file rule-duplicate-body
+-- (The JSON-RPC envelope + field-accessor helpers below — responseMsg/fieldOr/
+--  fieldStr — are intentionally COPIED from compiler/tools/lsp.mdk, which is not
+--  importable here without exporting them and widening the cross-module surface.
+--  The duplication is deliberate; same precedent as lsp.mdk's own top-of-file
+--  disable for its playground_main.mdk mirror.)
+-- compiler/tools/mcp.mdk — the `medaka mcp` MCP (Model Context Protocol) server.
+--
+-- Foundation for the `medaka mcp` workstream (#246 / #247): a JSON-RPC 2.0
+-- server over stdio that exposes the compiler to coding agents.  Everything a
+-- later tool needs bolts onto the TOOL REGISTRY seam near the bottom of this file.
+--
+-- Framing (deliberately NOT lsp.mdk's Content-Length):
+--   MCP stdio transport is **newline-delimited JSON** — exactly one JSON object
+--   per line, no embedded newlines within a message.  We rely on json.stringify
+--   emitting single-line output (it escapes '\n' → \n inside strings and uses
+--   only `,`/`{}`/`[]` separators, so a value can never straddle two lines) and
+--   read one line at a time with readLineOpt.
+--
+-- Channels:
+--   stdout is the EXCLUSIVE protocol channel — every byte written there must be
+--   a framed JSON-RPC message.  All logging goes to stderr via `logMcp`; a stray
+--   stdout write corrupts the stream.
+--
+-- The json parse/stringify + the JSON-RPC envelope builders (responseMsg /
+-- errorMsg) are COPIED here rather than imported from lsp.mdk: those builders are
+-- not exported from lsp.mdk, and copying the tiny envelope helpers keeps the
+-- cross-module surface small (no edit to lsp.mdk, no new shared type/instance
+-- surface) — the json layer itself IS imported, since it is already exported and
+-- drags no new type surface.
+
+import json.{
+  Json,
+  JNull,
+  JInt,
+  JString,
+  jObject,
+  jArray,
+  stringify,
+  parse,
+  lookup,
+  asString,
+}
+import io.{stripCR}
+
+-- ── protocol / server identity ──────────────────────────────────────────────
+
+-- The MCP protocol revision this server implements.  Date-stamped per the MCP
+-- spec's versioning; bump when adopting a newer revision.
+mcpProtocolVersion : String
+mcpProtocolVersion = "2024-11-05"
+
+-- Mirrors medakaVersion in compiler/driver/medaka_cli.mdk (kept in sync by hand;
+-- medaka_cli is the top of the graph and cannot be imported here).
+mcpServerVersion : String
+mcpServerVersion = "0.1.0-preview"
+
+-- ── JSON-RPC envelopes (copied from lsp.mdk; see header) ─────────────────────
+
+-- A JSON-RPC success envelope: { jsonrpc, id, result }.
+responseMsg : Json -> Json -> Json
+responseMsg idJson result =
+  jObject [("jsonrpc", JString "2.0"), ("id", idJson), ("result", result)]
+
+-- A JSON-RPC error envelope: { jsonrpc, id, error: { code, message } }.
+errorMsg : Json -> Int -> String -> Json
+errorMsg idJson code message = jObject
+  [
+    ("jsonrpc", JString "2.0"),
+    ("id", idJson),
+    ("error", jObject [("code", JInt code), ("message", JString message)]),
+  ]
+
+-- ── field accessors (copied from lsp.mdk) ────────────────────────────────────
+
+fieldOr : String -> Json -> Json
+fieldOr key j = match lookup key j
+  Some v => v
+  None => JNull
+
+fieldStr : String -> Json -> Option String
+fieldStr key j = match lookup key j
+  Some v => asString v
+  None => None
+
+methodOf : Json -> Option String
+methodOf msg = fieldStr "method" msg
+
+-- ── stdio transport ──────────────────────────────────────────────────────────
+
+-- Write one JSON-RPC message as a single newline-terminated line to stdout, then
+-- flush (buffered stdout would otherwise strand the response).  `stringify` is
+-- single-line, so this is exactly one MCP frame.
+writeMessage : Json -> <IO> Unit
+writeMessage j =
+  let _ = putStr (stringify j)
+  let _ = putStr "\n"
+  flushStdout ()
+
+-- All diagnostics go to stderr — stdout is protocol-only.
+logMcp : String -> <IO> Unit
+logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
+
+-- ── handshake result values ──────────────────────────────────────────────────
+
+initializeResult : Json
+initializeResult = jObject
+  [
+    ("protocolVersion", JString mcpProtocolVersion),
+    ("capabilities", jObject [("tools", jObject [])]),
+    (
+      "serverInfo",
+      jObject [("name", JString "medaka"), ("version", JString mcpServerVersion)],
+    ),
+  ]
+
+-- tools/list response: { tools: [ {name,description,inputSchema}, ... ] }.
+toolsListResult : Json
+toolsListResult = jObject [("tools", jArray toolDescriptors)]
+
+-- ═══ TOOL REGISTRY ═══════════════════════════════════════════════════════════
+-- To add a tool, edit the TWO lockstep lists below:
+--   1. add ONE `{ name, description, inputSchema }` Json to `toolDescriptors`
+--      (this surfaces it in `tools/list`), and
+--   2. add ONE matching `if name == "<name>" then Some (...) else` arm to
+--      `callTool` (this handles `tools/call`).
+-- A descriptor with no `callTool` arm answers -32601; a `callTool` arm with no
+-- descriptor is invisible to clients.  Keep them in sync.
+--
+-- #247 is transport only: no tools yet, so `toolDescriptors` is empty and
+-- `callTool` always reports "unknown tool".
+
+toolDescriptors : List Json
+toolDescriptors = []
+
+-- Dispatch a tools/call by tool name.  `None` ⇒ no such tool (caller emits a
+-- JSON-RPC -32601 error).  `Some result` ⇒ a tool result Json, typically
+-- `{ content: [ { type: "text", text } ], isError }`.  `runtimeSrc`/`coreSrc`
+-- are the prelude sources threaded from the driver, ready for tools that need to
+-- run the compiler pipeline.
+callTool : String -> String -> String -> Json -> <IO> Option Json
+callTool runtimeSrc coreSrc name args = None
+-- REGISTRY: add tool arms above this line, e.g.
+--   if name == "medaka_check" then Some (runCheckTool runtimeSrc coreSrc args) else None
+
+-- ── tools/call handler ───────────────────────────────────────────────────────
+
+handleToolsCall : String -> String -> Json -> Json -> <IO> Unit
+handleToolsCall runtimeSrc coreSrc idJson params = match fieldStr "name" params
+  None =>
+    writeMessage (errorMsg idJson (0 - 32602) "tools/call: missing 'name'")
+  Some name => match callTool runtimeSrc coreSrc name (fieldOr "arguments" params)
+    None => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Unknown tool: ", name]))
+    Some result => writeMessage (responseMsg idJson result)
+
+-- ── request dispatch ─────────────────────────────────────────────────────────
+
+-- Handle one decoded JSON-RPC message.  Requests carry an `id` and get a
+-- response; notifications have no `id` and get none.  An unrecognized *request*
+-- returns method-not-found (-32601); an unrecognized *notification* is ignored.
+dispatchMsg : String -> String -> Json -> <IO> Unit
+dispatchMsg runtimeSrc coreSrc msg = match methodOf msg
+  None => unit
+  Some meth =>
+    let idJson = fieldOr "id" msg
+    let params = fieldOr "params" msg
+    if meth == "initialize" then writeMessage (responseMsg idJson initializeResult)
+    else
+      if meth == "notifications/initialized" then unit
+      else
+        if meth == "ping" then writeMessage (responseMsg idJson (jObject []))
+        else
+          if meth == "shutdown" then writeMessage (responseMsg idJson (jObject []))
+          else
+            if meth == "tools/list" then writeMessage (responseMsg idJson toolsListResult)
+            else
+              if meth == "tools/call" then handleToolsCall runtimeSrc coreSrc idJson params
+              else match idJson
+                JNull => unit
+                _ => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Method not found: ", meth]))
+
+-- ── read loop ────────────────────────────────────────────────────────────────
+
+-- Parse and dispatch one input line.  Blank lines and malformed JSON are logged
+-- to stderr and skipped, never crashing the stream.
+handleLine : String -> String -> String -> <IO> Unit
+handleLine runtimeSrc coreSrc raw =
+  let line = stripCR raw
+  if line == "" then unit
+  else match parse line
+    Err e => logMcp (stringConcat ["parse error (skipped): ", e])
+    Ok msg => dispatchMsg runtimeSrc coreSrc msg
+
+-- The session loop: one JSON object per line until stdin EOF (clean shutdown).
+serveLoop : String -> String -> <IO> Unit
+serveLoop runtimeSrc coreSrc = match readLineOpt ()
+  None => unit
+  Some raw =>
+    let _ = handleLine runtimeSrc coreSrc raw
+    serveLoop runtimeSrc coreSrc
+
+-- Public entry point for the driver (`runMcpCmd` in medaka_cli.mdk).  The
+-- prelude sources are threaded in so tools added later can run the pipeline.
+export runMcpServer : String -> String -> <IO> Unit
+runMcpServer runtimeSrc coreSrc =
+  let _ = logMcp "medaka mcp server start"
+  serveLoop runtimeSrc coreSrc
+
+unit : Unit
+unit = ()
