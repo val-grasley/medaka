@@ -106,6 +106,8 @@ import driver.diagnostics.{
   optField,
   cjFixJson,
   mkDiag,
+  checkJsonFile,
+  readFileSafe,
 }
 import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{
@@ -338,7 +340,7 @@ runCheckCmd argv =
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
-          Ok csrc => if jsonMode then runCheckJsonCmd allowInternal rsrc csrc target roots stdlibDir
+          Ok csrc => if jsonMode then runCheckJsonCmd allowInternal rsrc csrc target stdlibDir
           else match readFile target
             Err msg =>
               let _ = ePutStrLn msg
@@ -629,79 +631,15 @@ hasFlag flag (x::rest)
 -- Parse errors are detected FIRST (before loadProgram panics) via parseResult.
 -- Output: {"files":[{"file":<path>,"diagnostics":[...]}]}
 -- Exits 1 if any error diagnostic; 0 otherwise.
-runCheckJsonCmd : Bool -> String -> String -> String -> List String -> String -> <IO> Unit
-runCheckJsonCmd allowInternal rsrc csrc target roots stdlibDir =
-  let src = readFileSafe target
-  match parseResult src
-    Err e =>
-      -- Parse error: emit a single located diagnostic, matching LSP format.
-      let ln = parseErrorLine e - 1
-      let col = parseErrorCol e
-      let r = cjRange ln col ln (col + 1)
-      let pcode = parseErrCode (parseErrorMessage e)
-      -- Stage 2 fix (agent-quality nicety): the two clean single-token parse
-      -- hints (`::`→`:`, `/=`→`!=`) get a machine-applicable `fix` + `help`
-      -- here too (this JSON diag is built inline, not via `cjDiagnostic`).
-      -- `parseErrHelpFix` needs a `Loc` with the SAME 1-based line + 0-based
-      -- col convention as `parseErrLoc` (`parseErrorLine e`, not `ln`).
-      let ploc = Loc target (parseErrorLine e) col (parseErrorLine e) (col + 1)
-      let (phelp, pfix) = parseErrHelpFix (parseErrorMessage e) ploc
-      let diagJson = jObject ([("code", JString pcode)] ++ optField "fix" (map cjFixJson pfix) ++ optField "help" (map JString phelp) ++ [("kind", JString (codeKind pcode)), ("message", JString (parseErrorMessage e)), ("range", r), ("severity", JInt 1), ("source", JString "medaka")])
-      let filesJson = jObject [("file", JString target), ("diagnostics", JArray (arrayFromList [diagJson]))]
-      let _ = println (stringify (jObject [("files", JArray (arrayFromList [filesJson]))]))
-      exit 1
-    Ok _ =>
-      match loadProgram target roots
-        Err lmsg =>
-          -- Load error (missing import etc.): report as single diagnostic.
-          -- F3 Chunk B: entry-scan the (already-known-to-parse) source for the
-          -- failing DUse's own span — see moduleLoadErrText's doc comment.
-          -- F: an `unknown module` error additionally gets an "available
-          -- modules: ..." suffix on the message AND a structured `help` (JSON
-          -- consumers get both; `unknownModuleIdOf` gates this to the one
-          -- message shape it applies to — other loader errors are untouched).
-          let mloc = match unknownModuleIdOf lmsg
-            None => None
-            Some mid => findImportLoc mid (parseLocated src)
-          let mhelp = match unknownModuleIdOf lmsg
-            None => None
-            Some _ => match availableModulesText stdlibDir
-              "" => None
-              txt => Some txt
-          let jmsg = lmsg ++ (match unknownModuleIdOf lmsg
-            None => ""
-            Some _ => availableModulesHint stdlibDir)
-          let triples = [(target, src, [Diag SevError "R-MODULE-LOAD" jmsg mloc mhelp None])]
-          let _ = println (cjAllToJson triples)
-          exit 1
-        Ok mods => match mods
-          [(mid, _)] =>
-            -- Single module: analyzeLocated (single-file path, correct for type errors).
-            -- Same fix as checkRoute: honour the owning-root trust signal too
-            -- (projectTrustedMods), not just `--allow-internal`, so a bare
-            -- stdlib/compiler file checked via `--json` isn't noise-flagged.
-            let trusted = projectTrustedMods target roots stdlibDir mods
-            let diags = analyzeLocatedG (allowInternal || contains mid trusted) rsrc csrc src
-            let _ = println (cjAllToJson [(target, src, diags)])
-            let hasErr = any isDiagError diags
-            if hasErr then exit 1 else ()
-          _ =>
-            -- Multi-module: analyzeProject.
-            let cacheRef = Ref []
-            let parseCacheRef = Ref []
-            let results = analyzeProject cacheRef parseCacheRef (_ => None) target roots rsrc csrc
-            let triples = map readDiagSrc results
-            let _ = println (cjAllToJson triples)
-            let hasErr = any cjHasErr results
-            if hasErr then exit 1 else ()
-
-readFileSafe : String -> <IO> String
-readFileSafe path = match readFile path
-  Ok src => src
-  Err _ => ""
-
-cjHasErr : (String, List Diag) -> Bool
-cjHasErr (_, diags) = any isDiagError diags
+-- The whole routing (parse-error / load-error / single / multi module) now lives
+-- in `checkJsonFile` (driver.diagnostics), shared with the `medaka mcp`
+-- medaka_check tool.  This driver just prints the JSON and gates the exit code —
+-- stdout is byte-identical to the old inline body (diff_native_cli golden).
+runCheckJsonCmd : Bool -> String -> String -> String -> String -> <IO> Unit
+runCheckJsonCmd allowInternal rsrc csrc target stdlibDir =
+  let (json, hasErr) = checkJsonFile allowInternal rsrc csrc target stdlibDir
+  let _ = println json
+  if hasErr then exit 1 else ()
 
 isDiagError : Diag -> Bool
 isDiagError (Diag SevError _ _ _ _ _) = True
@@ -2111,6 +2049,7 @@ runMcpCmd _ =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
+  let stdlibDir = root ++ "/stdlib"
   match readPreludeFile rtPath
     Err msg =>
       let _ = ePutStrLn msg
@@ -2119,4 +2058,4 @@ runMcpCmd _ =
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
-      Ok csrc => runMcpServer rsrc csrc
+      Ok csrc => runMcpServer rsrc csrc stdlibDir

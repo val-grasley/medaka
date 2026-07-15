@@ -1,0 +1,5 @@
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+{"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "medaka_check", "arguments": {"source": "x : Int\nx = \"hello\"\nmain = println x\n"}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_check", "arguments": {"source": "double : Int -> Int\ndouble n = n * 2\nmain = println (double 21)\n"}}}
+{"jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": {}}

@@ -51,13 +51,31 @@ import types.typecheck.{
   TcDiag(..),
   tcMsg,
 }
-import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
+import driver.loader.{
+  loadProgramFilesLocated,
+  loadProgramFilesLocatedCached,
+  loadProgram,
+  projectTrustedMods,
+  entrySearchRoots,
+  findImportLoc,
+  unknownModuleIdOf,
+  availableModulesText,
+  availableModulesHint,
+}
+import support.path.{dirOf}
 import driver.main_autoprint.{
   shouldAutoPrintMain,
   autoPrintWrapModules,
   underivedMainDiags,
 }
-import support.util.{joinNl, lookupAssoc, startsWith, anyList, filterList}
+import support.util.{
+  joinNl,
+  lookupAssoc,
+  startsWith,
+  anyList,
+  filterList,
+  contains,
+}
 import json.{Json, JInt, JString, JArray, jObject, stringify}
 
 -- ── types ──────────────────────────────────────────────────────────────────
@@ -794,3 +812,101 @@ export readDiagSrc : (String, List Diag) -> <IO> (String, String, List Diag)
 readDiagSrc (path, diags) = match readFile path
   Ok src => (path, src, diags)
   Err _ => (path, "", diags)
+
+-- ── check → structured-diagnostics JSON ─────────────────────────────────────
+--
+-- Shared by `medaka check --json` (runCheckJsonCmd in medaka_cli) and the
+-- `medaka mcp` medaka_check tool.  Both return (jsonString, hasError): the
+-- {"files":[...]} JSON `medaka check --json` emits, plus whether any diagnostic
+-- is a hard error (severity 1).  The caller decides what to do — the CLI prints +
+-- `exit 1`; MCP wraps the string in a tool result and sets `isError` — so the
+-- serializer + routing live in ONE place, byte-for-byte.
+
+-- True iff the diagnostic is a hard error (severity 1), not a warning.
+export diagIsError : Diag -> Bool
+diagIsError (Diag SevError _ _ _ _ _) = True
+diagIsError _ = False
+
+cjHasErrD : (String, List Diag) -> Bool
+cjHasErrD (_, diags) = anyList diagIsError diags
+
+-- readFile that yields "" on error (any real read failure surfaces as a diag).
+-- Shared with medaka_cli's driver code (which imports it) so the two don't
+-- diverge — the one canonical "read a target, tolerate a missing file" helper.
+export readFileSafe : String -> <IO> String
+readFileSafe path = match readFile path
+  Ok src => src
+  Err _ => ""
+
+-- The single located parse-error diagnostic, as the {"files":[...]} JSON string.
+-- Mirrors runCheckJsonCmd's inline parse-error diag (built inline, not via
+-- cjDiagnostic) so a hard parse failure still carries a stable `code`, a range,
+-- and — for the two single-token hints — a machine-applicable `fix`.
+export cjParseErrJson : String -> String -> ParseError -> String
+cjParseErrJson target src e =
+  let ln = parseErrorLine e - 1
+  let col = parseErrorCol e
+  let r = cjRange ln col ln (col + 1)
+  let pcode = parseErrCode (parseErrorMessage e)
+  let ploc = Loc target (parseErrorLine e) col (parseErrorLine e) (col + 1)
+  let (phelp, pfix) = parseErrHelpFix (parseErrorMessage e) ploc
+  let diagJson = jObject ([("code", JString pcode)] ++ optField "fix" (map cjFixJson pfix) ++ optField "help" (map JString phelp) ++ [("kind", JString (codeKind pcode)), ("message", JString (parseErrorMessage e)), ("range", r), ("severity", JInt 1), ("source", JString "medaka")])
+  let filesJson = jObject [("file", JString target), ("diagnostics", JArray (arrayFromList [diagJson]))]
+  stringify (jObject [("files", JArray (arrayFromList [filesJson]))])
+
+-- Single-module check → JSON.  Parse errors are detected FIRST; otherwise the
+-- single-file located pipeline runs and its diags serialize via cjAllToJson.
+-- Pure — NO import resolution — so it is exactly right for inline `source` (no
+-- file on disk to resolve imports against) and for a no-import file.  `target` is
+-- the value that lands in each diagnostic's `file` field (cjRangeOfLoc ignores the
+-- filename inside each Loc), so an inline check can pass a stable synthetic name.
+export checkJsonSingle : Bool -> String -> String -> String -> String -> (String, Bool)
+checkJsonSingle allowInternal rsrc csrc target src = match parseResult src
+  Err e => (cjParseErrJson target src e, True)
+  Ok _ =>
+    let diags = analyzeLocatedG allowInternal rsrc csrc src
+    (cjAllToJson [(target, src, diags)], anyList diagIsError diags)
+
+-- File check → JSON.  Reads `target`, then routes exactly like runCheckJsonCmd:
+-- parse error → single diag; load error (bad import) → R-MODULE-LOAD diag with the
+-- import span + available-modules hint; single module → checkJsonSingle (honouring
+-- the owning-root trust signal); multi-module → analyzeProject.  `stdlibDir` is the
+-- <root>/stdlib dir; roots are derived from the target's directory + stdlibDir.
+export checkJsonFile : Bool -> String -> String -> String -> String -> <IO> (String, Bool)
+checkJsonFile allowInternal rsrc csrc target stdlibDir =
+  let src = readFileSafe target
+  let roots = entrySearchRoots (dirOf target) ++ [stdlibDir]
+  match parseResult src
+    Err e => (cjParseErrJson target src e, True)
+    Ok _ => match loadProgram target roots
+      Err lmsg =>
+        let mloc = match unknownModuleIdOf lmsg
+          None => None
+          Some mid => findImportLoc mid (parseLocated src)
+        let mhelp = match unknownModuleIdOf lmsg
+          None => None
+          Some _ => match availableModulesText stdlibDir
+            "" => None
+            txt => Some txt
+        let jmsg = lmsg ++ (match unknownModuleIdOf lmsg
+          None => ""
+          Some _ => availableModulesHint stdlibDir)
+        (
+          cjAllToJson [(target, src, [Diag SevError "R-MODULE-LOAD" jmsg mloc mhelp None])],
+          True,
+        )
+      Ok mods => match mods
+        [(mid, _)] =>
+          let trusted = projectTrustedMods target roots stdlibDir mods
+          checkJsonSingle
+            (allowInternal || contains mid trusted)
+            rsrc
+            csrc
+            target
+            src
+        _ =>
+          let cacheRef = Ref []
+          let parseCacheRef = Ref []
+          let results = analyzeProject cacheRef parseCacheRef (_ => None) target roots rsrc csrc
+          let triples = map readDiagSrc results
+          (cjAllToJson triples, anyList cjHasErrD results)
