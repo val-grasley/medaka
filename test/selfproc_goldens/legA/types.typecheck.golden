@@ -114,13 +114,16 @@ blockRecLet : TcEnv -> String -> Expr -> TcEnv
 bodyRDictNames : Expr -> List String
 boolOp : Mono -> Mono -> Mono
 boundTvarId : List Int -> Mono -> List Int
+bucketArgsMatch : List (List Ty, List Require) -> List Mono -> Bool
 bucketImplEntries : List ImplEntry -> Map String (List ImplEntry) -> Map String (List ImplEntry)
 bucketKeyEntries : List KeyEntry -> Map String (List KeyEntry) -> Map String (List KeyEntry)
 bucketOf : String -> Map String (List a) -> List a
+bucketRecvMatch : List (List Ty, List Require) -> Mono -> Bool
 buildAdj : List String -> Map String Unit -> Map String (List (List Pat, Expr)) -> Map String (List String) -> Map String (List String)
 buildAliasGraphEntry : List String -> (String, (List String, Ty)) -> (String, List String)
 buildDefinerShadows : List Decl -> List Decl -> List String
 buildImplTable : List Decl -> Map String (List ImplEntry)
+buildImplUniverse : List Decl -> ImplUniverse
 buildKeyTable : List Decl -> Map String (List KeyEntry)
 buildStandaloneShadowsGraph : List Decl -> List Decl -> List String
 buildTupleCallHint : String -> List Expr -> Expr -> Expr -> (String, Option (Loc, String))
@@ -130,7 +133,7 @@ censusSuperSlotsOf : List Decl -> (String, Int) -> List (String, Int)
 checkAnnotTooGeneral : Ty -> List Mono -> Unit
 checkBodyImpl : List (String, Scheme) -> CheckMode -> List Decl -> List (String, Scheme)
 checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> Unit
-checkCallObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> Unit
+checkCallObligationsU : ImplUniverse -> List String -> List (String, Mono, Option Loc) -> Unit
 checkCoherence : List Decl -> Unit
 checkEffectAtoms : List (String, Option String) -> Unit
 checkEffectEscape : List (String, Ty) -> String -> List Atom -> Unit
@@ -142,7 +145,7 @@ checkErrorsWithRuntime : List Decl -> List Decl -> List Decl -> Bool
 checkImplCompleteness : List Decl -> List Decl -> Unit
 checkImplCompletenessMap : Map String (List String) -> List Decl -> Unit
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> Unit
-checkImplObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> Unit
+checkImplObligationsU : ImplUniverse -> List (String, List String, Ty, Mono, Option Loc) -> Unit
 checkInterfaceCycles : List Decl -> Unit
 checkLetBind : String -> List FunClause -> Unit
 checkLetBinds : List LetBind -> Unit
@@ -162,12 +165,12 @@ checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) 
 checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> String
 checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> String
 checkModulesPreamble : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, Scheme))
-checkNestedReqs : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> Unit
+checkNestedReqs : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
 checkOneAxis : String -> String -> Param -> Unit
-checkOneCallObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> Mono -> Option Loc -> Unit
+checkOneCallObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
 checkOneEffectParam : String -> String -> Unit
 checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> Unit
-checkOneImplObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> Unit
+checkOneImplObligation : ImplUniverse -> String -> List String -> Ty -> Mono -> Option Loc -> Unit
 checkPhantomMethods : List Decl -> Unit
 checkProductAxes : String -> Param -> Unit
 checkProductAxesGo : String -> List (String, Param) -> Unit
@@ -177,8 +180,8 @@ checkProgramSchemesWithRuntime : List Decl -> List Decl -> List Decl -> List (St
 checkProgramSeeded : List (String, Scheme) -> List Decl -> List (String, Scheme)
 checkProgramSeededSplit : List (String, Scheme) -> List Decl -> List Decl -> List (String, Scheme)
 checkRedundantGo : Option String -> List (List Pat) -> Map String Unit -> Bool -> List Arm -> Unit
-checkReqObligations : List (String, List Ty, List Require) -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> Unit
-checkReqOne : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> Unit
+checkReqObligations : ImplUniverse -> Option Loc -> List (String, List Mono) -> Unit
+checkReqOne : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
 checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> Unit
 checkSigTooGeneral : String -> Ty -> List (String, Mono) -> Unit
@@ -186,7 +189,7 @@ checkSigsTooGeneral : List (String, Ty, List (String, Mono)) -> Unit
 checkSuperImpls : List Decl -> List Decl -> Unit
 checkToLines : List Decl -> String
 checkToLinesWithRuntime : List Decl -> List Decl -> List Decl -> String
-checkUndeterminedObligation : List (String, List Ty) -> String -> Mono -> Option Loc -> Unit
+checkUndeterminedObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
 clauseImplDictUser : Int -> ImplMethod -> List String
 clauseIsNonFunction : FunClause -> Bool
 clauseIsValue : FunClause -> Bool
@@ -381,6 +384,7 @@ elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> (List D
 elaborateOne : List Decl -> List Decl -> (String, List Decl) -> List Decl
 emitCyclicAliasErrors : List String -> Unit
 emitSwapDiag : String -> Expr -> Expr -> Option Mono
+emptyImplUniverse : ImplUniverse
 enclDictVarOf : Mono -> String -> Option String
 enclSlot : String -> Mono -> Option Int
 endsWithStr : String -> String -> Bool
@@ -430,7 +434,7 @@ filterNonSelf : String -> List String -> List String
 findAtom : String -> List Atom -> Option Atom
 findImplEntry : Map String (List ImplEntry) -> String -> String -> Mono -> Option ImplEntry
 findImplEntryGo : List ImplEntry -> String -> String -> Mono -> Option ImplEntry
-findMatchingImplReqs : List (String, List Ty, List Require) -> String -> List Mono -> Option (List (String, Mono), List Require)
+findMatchingImplReqsU : ImplUniverse -> String -> List Mono -> Option (List (String, Mono), List Require)
 findMostSpecificEntry : List KeyEntry -> List KeyEntry -> Option KeyEntry
 findSigTvMap : String -> List (String, Ty, List (String, Mono)) -> Option (List (String, Mono))
 findTupleCand : String -> List (Mono, String, Option (Loc, String)) -> Option (String, Option (Loc, String))
@@ -442,6 +446,7 @@ firstDispatchIdx : List String -> Int -> List Ty -> Option Int
 firstFieldName : List FieldAssign -> Option String
 firstImplMethodLoc : List ImplMethod -> Option Loc
 firstOrZero : List Int -> Int
+firstReqMatch : List (List Ty, List Require) -> List Mono -> Option (List (String, Mono), List Require)
 firstTupleCallHint : List Mono -> Option (String, Option (Loc, String))
 firstTvar : Mono -> Mono -> Int -> Option Mono
 flatCoreFnNamesRef : Ref (Map String Unit)
@@ -489,6 +494,7 @@ groupClausesGo : List (String, (List Pat, Expr)) -> Map String (List (List Pat, 
 groupConstraintMonosRef : Ref (List (String, Mono))
 groupNames : List (String, (List Pat, Expr)) -> Map String Unit -> List String
 groupRefs : List (List Pat, Expr) -> List String
+growImplUniverse : List (String, List Ty, List Require) -> ImplUniverse -> ImplUniverse
 guardDictSites : Guard -> List (Ref (List Route))
 guardEVars : Guard -> List String
 guardSites : Guard -> List (Ref Route)
@@ -527,7 +533,7 @@ ifaceSelfAndSupers : String -> List String
 ifaceSupersOf : List Decl -> String -> Option (List String, List Super)
 implCompletenessMsgsOf : List Decl -> Decl -> List (Option Loc, String)
 implCompletenessMsgsOfMap : Map String (List String) -> Decl -> List (Option Loc, String)
-implCountForIface : List (String, List Ty) -> String -> Int
+implCountForIfaceU : ImplUniverse -> String -> Int
 implDeclWithReqs : Decl -> List (String, List Ty, List Require)
 implDeclsWithReqs : List Decl -> List (String, List Ty, List Require)
 implDefinesMethodAt : Map String (List ImplEntry) -> String -> String -> Bool
@@ -541,18 +547,15 @@ implEntryOf : Decl -> List ImplEntry
 implExistsForHead : Map String (List KeyEntry) -> String -> String -> Bool
 implExistsForHeadGo : List KeyEntry -> String -> String -> Bool
 implHeadMatchesArgs : List Ty -> List Mono -> Bool
-implHeadOf : Decl -> List (String, List Ty)
 implHeadSubst : List Ty -> List Mono -> Option (List (String, Mono))
 implHeadSubstGo : List Ty -> List Mono -> Option (List (String, Mono)) -> Option (List (String, Mono))
 implHeadTagForIface : String -> Decl -> List String
 implHeadTagsForIface : List Decl -> String -> List String
-implHeadTagsFromHeads : List (String, List Ty) -> String -> List String
-implHeadsOf : List Decl -> List (String, List Ty)
 implInferEnabled : Ref Bool
 implKeyTc : String -> List Ty -> String
-implMatches : List (String, List Ty) -> String -> List Mono -> Bool
-implMatchesReceiver : List (String, List Ty) -> String -> Mono -> Bool
+implMatchesReceiverU : ImplUniverse -> String -> Mono -> Bool
 implMatchesSuper : String -> List Ty -> Decl -> Bool
+implMatchesU : ImplUniverse -> String -> List Mono -> Bool
 implMethodName : ImplMethod -> String
 implMethodNameTc : ImplMethod -> String
 implTysIfMatch : String -> String -> Decl -> List (List Ty)
@@ -663,6 +666,7 @@ insertAxis : (String, Param) -> List (String, Param) -> List (String, Param)
 insertIfaceMethodsAcc : String -> List String -> List IfaceMethod -> (Map String (String, List String, Ty), Map String Unit) -> (Map String (String, List String, Ty), Map String Unit)
 insertIfaceRequired : List Decl -> Map String (List String) -> Map String (List String)
 insertMethodIfaceParams : List Decl -> (Map String (String, List String, Ty), Map String Unit) -> (Map String (String, List String, Ty), Map String Unit)
+insertUnivImpl : ImplUniverse -> (String, List Ty, List Require) -> ImplUniverse
 instantiate : Scheme -> Mono
 instantiateRecord : RecordInfo -> (Mono, List (String, Mono))
 instantiateSigTracked : Ty -> (Mono, List (String, Mono))
@@ -843,6 +847,9 @@ numlitReframeLoc : Option Loc -> Bool
 numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route))
 numlitUntainted : Ref (List (Mono, Loc))
 numlitVarLocs : Ref (List (Mono, Loc))
+obUnivConcreteRef : Ref (Map String (List (List Ty, List Require)))
+obUnivHeadlessRef : Ref (Map String (List (List Ty, List Require)))
+obUnivIfaceTagsRef : Ref (Map String (Map String Unit))
 oblDispatchMonos : (String, List String, Ty, Mono, Option Loc) -> List Mono
 occursAdjust : Int -> Int -> Mono -> Unit
 occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> Unit
@@ -1036,7 +1043,7 @@ reopenRowN : Bool -> EffRow -> EffRow
 reportAmbiguousImpl : String -> Route
 reportNumOrNoImpl : String -> List Mono -> Option Loc -> Unit
 reportUncovered : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, Int) -> Unit
-reqObligationsFor : List (String, List Ty, List Require) -> String -> List Mono -> List (String, List Mono)
+reqObligationsFor : ImplUniverse -> String -> List Mono -> List (String, List Mono)
 reqToObligation : List (String, Mono) -> Require -> (String, List Mono)
 reqTyToMono : List (String, Mono) -> Ty -> Mono
 requiredMethodNames : List IfaceMethod -> List String
@@ -1275,6 +1282,9 @@ unifyStandaloneDomain : Mono -> Mono -> Option Loc -> Unit
 unifyVars : Ref Tyvar -> Ref Tyvar -> Unit
 uniqueImplTysFor : List Decl -> String -> String -> Option (List Ty)
 unitMangledShadows : List String -> (String, List Decl) -> List (String, String)
+univConcreteBucket : ImplUniverse -> String -> Option String -> List (List Ty, List Require)
+univHeadless : ImplUniverse -> String -> List (List Ty, List Require)
+univReceiverTag : List Ty -> Option String
 universeFunNamesRef : Ref (Map String Unit)
 universeIfaceMethodsRef : Ref (Map String Unit)
 universeIfaceRequiredRef : Ref (Map String (List String))

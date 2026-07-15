@@ -1,0 +1,24 @@
+-- #154 PR3 regression: overlapping specific-vs-parametric impls with DIFFERING
+-- `requires`.  `foo (3 : Int)` dispatches to the MOST-SPECIFIC `impl Foo Int`, whose
+-- `requires Bar Int` is unsatisfiable (there is no `impl Bar Int`) — so obligation
+-- checking MUST reject `No impl of Bar for Int`, matching the actual runtime target.
+--
+-- The parametric `impl Foo a` (no requires) is declared FIRST.  BEFORE #154 PR3 the
+-- obligation check scanned impls in DECLARATION order and selected `impl Foo a`'s
+-- (empty) requires, so it ACCEPTED — then CRASHED at runtime with a null element-dict
+-- (E-NOT-A-FUNCTION), because the value actually dispatches to `impl Foo Int`.  PR3's
+-- keyed lookup consults the concrete "Foo|Int" bucket before the headless bucket,
+-- selecting the most-specific impl's requires, so `check` now agrees with `run`.
+interface Bar a where
+  bar : a -> Int
+
+interface Foo a where
+  foo : a -> Int
+
+impl Foo a where
+  foo _ = 0
+
+impl Foo Int requires Bar Int where
+  foo _ = 1
+
+main = foo 3

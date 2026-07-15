@@ -74,6 +74,7 @@ import support.ordmap.{
   omKeys,
   omFromPairs,
   omMapValues,
+  omSize,
 }
 import list.{replicate}
 import support.util.{
@@ -1396,6 +1397,43 @@ universeMethodIfaceParamsRef = Ref omEmpty
 universeRegisteredIfacesRef : Ref (OrdMap Unit)
 universeRegisteredIfacesRef = Ref omEmpty
 
+-- #154 PR3 (sites #6/#7): the PERSISTENT keyed impl universe for the obligation
+-- checkers (checkImplObligations / checkCallObligations).  The Module arm used to
+-- REBUILD `implDeclsWithReqs fullUniverse` + `implHeadsOf fullUniverse` (two flatMaps
+-- over the whole growing universe) once per module, then the `*Go` checkers scanned
+-- those growing lists per obligation — an O(modules²) rebuild AND an O(modules²) scan
+-- (the perf `modules` shape's dominant remaining quadratic).  These three refs hold
+-- the same impls keyed for O(1)/O(log N) lookup, grown ONE module at a time in
+-- `appendUniverseAccums` (like PR1/PR2's accumulators) and consumed by the KEYED
+-- checkers (implMatchesU / implMatchesReceiverU / findMatchingImplReqsU /
+-- implCountForIfaceU).  Same lifecycle: survive per-module `resetState`, cleared per
+-- RUN by `resetCrossModuleState`, seeded by the core pass.  The head-tag alignment
+-- `headTyconTy` (impl side) == `headTyconMono` (mono side) — the invariant KeyBuckets
+-- already relies on — makes existence/count/tag reads (implMatchesU /
+-- implMatchesReceiverU / implCountForIfaceU) BYTE-IDENTICAL to the old flat scans.
+-- The one deliberate NON-identity is `findMatchingImplReqsU`'s first-match: see its
+-- doc-comment — it canonicalizes overlapping-impl requires-selection to the MOST-
+-- SPECIFIC impl (a soundness/conformance fix over the old declaration-order scan),
+-- NOT an order-immaterial coherence argument (coherence ACCEPTS specific-vs-parametric
+-- overlap, so two impls CAN match one concrete mono).
+--   • concrete-head impls, keyed "iface|tag" (tag = head tycon of the receiver
+--     position), each bucket in forward declaration order → (head tys, requires).
+obUnivConcreteRef : Ref (OrdMap (List (List Ty, List Require)))
+obUnivConcreteRef = Ref omEmpty
+--   • HEADLESS-receiver impls (receiver head is a TyVar / function / empty — no head
+--     tycon, so keyEntry-style tag bucketing can't reach them), keyed by iface.  These
+--     match ANY receiver (matchTyMono wildcard), so every lookup consults them in
+--     addition to the tag bucket.  Almost always empty (`impl Foo a` — the overlapping-
+--     impls / parse fixtures are the only corpus sources), but MUST be kept: dropping
+--     them would change `implMatches` from True to False on such a program.
+obUnivHeadlessRef : Ref (OrdMap (List (List Ty, List Require)))
+obUnivHeadlessRef = Ref omEmpty
+--   • iface name → SET of its impls' concrete head tags (headless impls contribute no
+--     tag, exactly as `implHeadTagsFromHeads` skipped them).  `implCountForIfaceU`
+--     reads its omSize — byte-identical to `listLen (dedupStr (implHeadTagsFromHeads …))`.
+obUnivIfaceTagsRef : Ref (OrdMap (OrdMap Unit))
+obUnivIfaceTagsRef = Ref omEmpty
+
 -- P0-19 (constrained-receiver arm): the `=>`-constraint variables of the top-level
 -- group CURRENTLY being inferred, as (interface name, the constraint's instantiated
 -- mono).  Set by processSCC between preunifySigsEx (which instantiates the sigs) and
@@ -1870,7 +1908,12 @@ resetCrossModuleState _ =
   -- #154 PR2 (site #3): the two accumulators that feed methodIfaceParamsRef /
   -- registeredIfacesRef on the Module path share the same per-run reset boundary.
   let _ = setRef universeMethodIfaceParamsRef omEmpty
-  setRef universeRegisteredIfacesRef omEmpty
+  let _ = setRef universeRegisteredIfacesRef omEmpty
+  -- #154 PR3 (sites #6/#7): the keyed impl universe for the obligation checkers
+  -- shares the same per-run reset boundary.
+  let _ = setRef obUnivConcreteRef omEmpty
+  let _ = setRef obUnivHeadlessRef omEmpty
+  setRef obUnivIfaceTagsRef omEmpty
 
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
@@ -10373,11 +10416,21 @@ checkBodyImpl seed mode prog0 =
       let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
       ()
     Module _ _ _ =>
+      -- #154 PR3: consume the PERSISTENT keyed impl universe (grown per module in
+      -- appendUniverseAccums) — NO per-module `implDeclsWithReqs`/`implHeadsOf` rebuild
+      -- over the growing `fullUniverse`.  The accumulator holds the SAME impls; existence/
+      -- count reads are byte-identical, and findMatchingImplReqsU's most-specific-first
+      -- requires-selection is a deliberate soundness fix (see its doc-comment).  Site #8
+      -- (groundMultiParamObligations groundUniverse) is left on the list path above
+      -- because groundUniverse = implDecls EXCLUDES this module's prog0, which the
+      -- accumulator (appended before this point) includes — and it is a no-op for the
+      -- single-param obligations the perf `modules` shape exercises.
+      let obUniv = ImplUniverse obUnivConcreteRef.value obUnivHeadlessRef.value obUnivIfaceTagsRef.value
       let _ = if not implInferEnabled.value then
-                let _ = checkImplObligations fullUniverse pendingImplObligations.value
+                let _ = checkImplObligationsU obUniv pendingImplObligations.value
                 setNumlitFloats ()
               else ()
-      let _ = checkCallObligations fullUniverse pendingCallObligations.value
+      let _ = checkCallObligationsU obUniv [] pendingCallObligations.value
       ()
   let _ = setRef localSchemesOut (mapLocalSchemes localBindRefs.value)
   let _ = setRef seedSchemesOut seed
@@ -10609,9 +10662,149 @@ restorePendingObls obls n =
 -- method to its interface default body) creates a head entry, so a default-method
 -- call on a type WITH an impl is satisfied; a default-method call on a type with
 -- NO impl is rejected — both matching the oracle.
+-- #154 PR3: the KEYED impl universe consumed by the obligation checkers below.  Bundles
+-- the three accumulator refs' contents (see obUnivConcreteRef): concrete-head impls
+-- keyed "iface|tag", HEADLESS-receiver impls keyed by iface (matched against ANY
+-- receiver), and iface→concrete-head-tag SET (for implCountForIfaceU).  The FLAT path
+-- builds one from its whole `prog` via `buildImplUniverse` (O(N) once — the same cost
+-- as the old `implDeclsWithReqs`+`implHeadsOf` it replaces); the Module path passes the
+-- PERSISTENT accumulator (grown one module at a time in appendUniverseAccums).
+public export data ImplUniverse =
+  | ImplUniverse (OrdMap (List (List Ty, List Require))) (OrdMap (List (List Ty, List Require))) (OrdMap (OrdMap Unit))
+
+emptyImplUniverse : ImplUniverse
+emptyImplUniverse = ImplUniverse omEmpty omEmpty omEmpty
+
+buildImplUniverse : List Decl -> ImplUniverse
+buildImplUniverse prog =
+  growImplUniverse (implDeclsWithReqs prog) emptyImplUniverse
+
+-- fold each (iface, tys, reqs) triple into the universe, APPENDING to keep forward
+-- declaration order within every bucket (matching the old whole-list first-match scan).
+growImplUniverse : List (String, List Ty, List Require) -> ImplUniverse -> ImplUniverse
+growImplUniverse [] univ = univ
+growImplUniverse (t::rest) univ = growImplUniverse rest (insertUnivImpl univ t)
+
+-- concrete receiver head (Some tag) → the "iface|tag" bucket + record the tag in the
+-- iface's tag set; headless receiver (TyVar/function/empty head — None) → the iface's
+-- headless bucket, which every lookup also consults (matchTyMono wildcard matches any).
+insertUnivImpl : ImplUniverse -> (String, List Ty, List Require) -> ImplUniverse
+insertUnivImpl (ImplUniverse conc hl tags) (iface, tys, reqs) = match univReceiverTag tys
+  Some tag =>
+    let k = "\{iface}|\{tag}"
+    ImplUniverse
+      (omInsert k (bucketOf k conc ++ [(tys, reqs)]) conc)
+      hl
+      (omInsert
+        iface
+        (omInsert tag () (fromOption omEmpty (omLookup iface tags)))
+        tags)
+  None => ImplUniverse conc (omInsert iface (bucketOf iface hl ++ [(tys, reqs)]) hl) tags
+
+-- the receiver-position head tycon tag of an impl's head types (None for a headless
+-- receiver or an empty head list) — the SAME tag `headTyconMono` computes for a
+-- dispatch mono, so an impl and the args it matches land under the same key.
+univReceiverTag : List Ty -> Option String
+univReceiverTag (headTy::_) = headTyconTy headTy
+univReceiverTag [] = None
+
+-- ── PR3 keyed lookups (replace implMatches / implMatchesReceiver / findMatchingImplReqs /
+-- implCountForIface).  Each first scans the concrete "iface|tag" bucket, then the iface's
+-- headless bucket.  implMatchesU / implMatchesReceiverU are EXISTENCE tests, so the
+-- concrete-then-headless order is byte-identical to the old flat scan.  findMatchingImplReqsU
+-- is first-MATCH and DOES depend on that order — a deliberate soundness/conformance fix,
+-- documented on it below. ────────────────────────────────────────────────────────────────
+
+-- does SOME impl of [iface] match the concrete dispatch monos [args]? (existence)
+implMatchesU : ImplUniverse -> String -> List Mono -> Bool
+implMatchesU _ _ [] = False
+implMatchesU univ iface (a0::rest) = bucketArgsMatch (univConcreteBucket univ iface (headTyconMono a0)) (a0::rest)
+  || bucketArgsMatch (univHeadless univ iface) (a0::rest)
+
+bucketArgsMatch : List (List Ty, List Require) -> List Mono -> Bool
+bucketArgsMatch [] _ = False
+bucketArgsMatch ((tys, _)::rest) args = implHeadMatchesArgs tys args
+  || bucketArgsMatch rest args
+
+-- does some impl of [iface] have a RECEIVER (first head type) matching the single
+-- dispatch mono [dm]?  (the call-obligation path carries only the receiver mono.)
+implMatchesReceiverU : ImplUniverse -> String -> Mono -> Bool
+implMatchesReceiverU univ iface dm = bucketRecvMatch (univConcreteBucket univ iface (headTyconMono dm)) dm
+  || bucketRecvMatch (univHeadless univ iface) dm
+
+bucketRecvMatch : List (List Ty, List Require) -> Mono -> Bool
+bucketRecvMatch [] _ = False
+bucketRecvMatch ((tys, _)::rest) dm = match tys
+  recv::_ => match matchTyMono recv dm
+    Some _ => True
+    None => bucketRecvMatch rest dm
+  [] => bucketRecvMatch rest dm
+
+-- the FIRST impl of [iface] whose head pattern matches [args], with its (subst, reqs)
+-- — the impl whose `requires` we then check (checkNestedReqs).  Scans the concrete
+-- "iface|tag" bucket BEFORE the iface's headless bucket.
+--
+-- ⚠️ This is a DELIBERATE, sound non-identity vs the old flat declaration-order scan.
+-- Coherence ACCEPTS a specific-vs-parametric overlap (`impl Foo Int` + `impl Foo a`,
+-- most-specific-wins), so TWO impls can match one concrete mono (`Int`).  The old scan
+-- picked whichever was DECLARED FIRST — so it checked the WRONG impl's requires when
+-- the parametric one led: e.g. parametric `impl Foo a` (no reqs) first + concrete
+-- `impl Foo Int requires Bar Int` (no `impl Bar`) → PRE ACCEPTED then CRASHED at
+-- runtime (null dict), because `foo (3:Int)` actually dispatches to the MOST-SPECIFIC
+-- `impl Foo Int`.  Concrete-bucket-first canonicalizes requires-selection to that
+-- most-specific impl — the real dispatch target — so `check` now matches runtime.
+-- Within a bucket, append order (declaration order) is preserved, so a same-tag
+-- overlap keeps first-declared-wins.  Regression: test/typecheck_error_fixtures/
+-- overlap_specific_req_wins.mdk (Case A above).
+findMatchingImplReqsU : ImplUniverse -> String -> List Mono -> Option (List (String, Mono), List Require)
+findMatchingImplReqsU univ iface args =
+  let concrete = match args
+    [] => []
+    a0::_ => univConcreteBucket univ iface (headTyconMono a0)
+  match firstReqMatch concrete args
+    Some r => Some r
+    None => firstReqMatch (univHeadless univ iface) args
+
+firstReqMatch : List (List Ty, List Require) -> List Mono -> Option (List (String, Mono), List Require)
+firstReqMatch [] _ = None
+firstReqMatch ((tys, reqs)::rest) args = match implHeadSubst tys args
+  Some sub => Some (sub, reqs)
+  None => firstReqMatch rest args
+
+-- the number of DISTINCT concrete-head impls of [iface] (headless impls contribute no
+-- tag, exactly as the old implHeadTagsFromHeads skipped them).
+implCountForIfaceU : ImplUniverse -> String -> Int
+implCountForIfaceU (ImplUniverse _ _ tags) iface =
+  omSize (fromOption omEmpty (omLookup iface tags))
+
+-- the concrete "iface|tag" bucket (empty when the tag is None / no such impl).
+univConcreteBucket : ImplUniverse -> String -> Option String -> List (List Ty, List Require)
+univConcreteBucket (ImplUniverse conc _ _) iface (Some t) =
+  bucketOf "\{iface}|\{t}" conc
+univConcreteBucket _ _ None = []
+
+univHeadless : ImplUniverse -> String -> List (List Ty, List Require)
+univHeadless (ImplUniverse _ hl _) iface = bucketOf iface hl
+
+-- ── Error-path B4: missing-impl dispatch-obligation check ──────────────────
+-- Mirror lib/typecheck.ml's check_method_usages (the `No impl of … for …` reject,
+-- :3845).  For each recorded interface-method occurrence, recover the types the
+-- interface params resolved to at this site (dispatchMonosOf), and — ONLY when
+-- they are all CONCRETE (a resolved head tycon, no remaining polymorphic var, so
+-- a constrained-generic `Ord a =>` site whose receiver is still `a` is correctly
+-- deferred to the caller) — verify the program declares a matching impl.  None →
+-- `No impl of <iface> for <args>`.
+-- FLAT entry: builds the keyed universe from `prog`.  MODULE entry: checkImplObligationsU
+-- with the persistent accumulated universe (no per-module rebuild — #154 PR3).
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> Unit
 checkImplObligations prog obligations =
-  checkImplObligationsGo (implDeclsWithReqs prog) (implHeadsOf prog) obligations
+  checkImplObligationsU (buildImplUniverse prog) obligations
+
+checkImplObligationsU : ImplUniverse -> List (String, List String, Ty, Mono, Option Loc) -> Unit
+checkImplObligationsU _ [] = ()
+checkImplObligationsU univ ((iface, typarams, mty, occ, loc)::rest) =
+  let _ = checkOneImplObligation univ iface typarams mty occ loc
+  checkImplObligationsU univ rest
 
 -- #11 soundness (native obligation hole): check each constrained-fn CALL site's
 -- instantiated obligation.  When `f : C a => …` is applied (`g = f "hello"`),
@@ -10623,41 +10816,38 @@ checkImplObligations prog obligations =
 -- check_constraint_obligations (which checks fun_constraints instantiated at the call).
 checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> Unit
 checkCallObligations prog obligations =
-  checkCallObligationsGo
-    (implDeclsWithReqs prog)
-    (implHeadsOf prog)
-    []
-    obligations
+  checkCallObligationsU (buildImplUniverse prog) [] obligations
 
 -- [seen] dedups by (iface, concrete-head-tycon): the SAME unsatisfiable obligation can
 -- be recorded by more than one path (a use marked both EVar and, on the emit path,
 -- EDictAt) or by repeated call sites, but the oracle raises ONE error per missing impl.
-checkCallObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> Unit
-checkCallObligationsGo _ _ _ [] = ()
-checkCallObligationsGo ireqs heads seen ((iface, occ, loc)::rest) =
+-- ORDER of errors follows the OBLIGATION list (unchanged), never the impl universe.
+checkCallObligationsU : ImplUniverse -> List String -> List (String, Mono, Option Loc) -> Unit
+checkCallObligationsU _ _ [] = ()
+checkCallObligationsU univ seen ((iface, occ, loc)::rest) =
   let key = "\{iface}|\{fromOption "" (headTyconMono occ)}"
-  if contains key seen then checkCallObligationsGo ireqs heads seen rest
+  if contains key seen then checkCallObligationsU univ seen rest
   else
-    let _ = checkOneCallObligation ireqs heads iface occ loc
-    checkCallObligationsGo ireqs heads (key::seen) rest
+    let _ = checkOneCallObligation univ iface occ loc
+    checkCallObligationsU univ (key::seen) rest
 
-checkOneCallObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> Mono -> Option Loc -> Unit
-checkOneCallObligation ireqs heads iface occ loc =
+checkOneCallObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
+checkOneCallObligation univ iface occ loc =
   let args = [normalize occ]
   if iface == "Num" && anyListM numUnimplementableHead args then
     pushNoImplError iface loc args
   -- A function-typed constraint obligation is fully ground yet has no impl — report
   -- `No impl of <iface> for <a -> b>` (not the emit path's misleading "Ambiguous").
-  else if anyListM monoIsFunction args && not (implMatchesReceiver heads iface (normalize occ)) then
+  else if anyListM monoIsFunction args && not (implMatchesReceiverU univ iface (normalize occ)) then
     pushNoImplError iface loc args
   else if not (allConcreteHeads args) then
-    checkUndeterminedObligation heads iface occ loc
-  else if implMatchesReceiver heads iface (normalize occ) then
+    checkUndeterminedObligation univ iface occ loc
+  else if implMatchesReceiverU univ iface (normalize occ) then
     -- Recurse into a matched CONDITIONAL instance's `requires` (`impl Display (a, b)
     -- requires Display a, Display b`) so an unsatisfied element constraint surfaces
     -- (`main = (Red, 5)` → `No impl of Display for Color`) instead of the head-only
     -- match silently accepting (→ null element dict → SIGSEGV at runtime).
-    checkNestedReqs ireqs heads iface args loc
+    checkNestedReqs univ iface args loc
   else
     pushNoImplError iface loc args
 
@@ -10671,30 +10861,14 @@ checkOneCallObligation ireqs heads iface occ loc =
 -- first-wins).  Skip "Num" (its literal defaulting handles ambiguity) and ifaces
 -- with no user impls (zero → existing no-impl path).  This runs on BOTH the check
 -- path (checkModuleFullImpl) and the emit/eval path, so `check` rejects too.
-checkUndeterminedObligation : List (String, List Ty) -> String -> Mono -> Option Loc -> Unit
-checkUndeterminedObligation heads iface occ loc
+checkUndeterminedObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
+checkUndeterminedObligation univ iface occ loc
   | iface == "Num" = ()
   | isSome (activeDictVarOf occ) = ()
   | anyIn (monoUnboundIds occ) poisonedVars.value = ()  -- Chunk A: primary mismatch already explained this var
-  | implCountForIface heads iface >= 2 =
+  | implCountForIfaceU univ iface >= 2 =
     pushTypeErrorOnceAt "T-AMBIGUOUS-INSTANCE" loc (ambiguousImplMsg iface)
   | otherwise = ()
-
--- the number of DISTINCT-head impls of [iface] in [heads] (one (iface, tys) per
--- impl).  Dedups by head-tycon so a prelude impl imported twice doesn't inflate.
-implCountForIface : List (String, List Ty) -> String -> Int
-implCountForIface heads iface =
-  listLen (dedupStr (implHeadTagsFromHeads heads iface))
-
-implHeadTagsFromHeads : List (String, List Ty) -> String -> List String
-implHeadTagsFromHeads [] _ = []
-implHeadTagsFromHeads ((iface2, tys)::rest) iface
-  | iface2 == iface = match tys
-    headTy::_ => match headTyconTy headTy
-      Some tag => tag :: implHeadTagsFromHeads rest iface
-      None => implHeadTagsFromHeads rest iface
-    [] => implHeadTagsFromHeads rest iface
-  | otherwise = implHeadTagsFromHeads rest iface
 
 -- PLAN.md #11: after HM + defaulting every source integer literal's type var is
 -- ground (or a genuine `Num a` survivor).  Decide each literal's runtime rep
@@ -10796,14 +10970,8 @@ substTyVars sub (TyTuple ts) = TyTuple (map (substTyVars sub) ts)
 substTyVars sub (TyEffect es eff t) = TyEffect es eff (substTyVars sub t)
 substTyVars sub (TyConstrained cs t) = TyConstrained cs (substTyVars sub t)
 
-checkImplObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> Unit
-checkImplObligationsGo _ _ [] = ()
-checkImplObligationsGo ireqs heads ((iface, typarams, mty, occ, loc)::rest) =
-  let _ = checkOneImplObligation ireqs heads iface typarams mty occ loc
-  checkImplObligationsGo ireqs heads rest
-
-checkOneImplObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> Unit
-checkOneImplObligation ireqs heads iface typarams mty occ loc =
+checkOneImplObligation : ImplUniverse -> String -> List String -> Ty -> Mono -> Option Loc -> Unit
+checkOneImplObligation univ iface typarams mty occ loc =
   let args = dispatchMonosOf typarams mty occ
   -- PLAN.md #11 soundness: under Num-polymorphic literals a literal's var can unify
   -- with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`) or be forced
@@ -10822,7 +10990,7 @@ checkOneImplObligation ireqs heads iface typarams mty occ loc =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyListM numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyListM eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyListM ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (ifaceRegistered "Num") then () else if isEmptyL args then () else if anyListM monoIsFunction args && not (implMatches heads iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatches heads iface args then checkNestedReqs ireqs heads iface args loc else reportNumOrNoImpl iface args loc
+  if iface == "Num" && anyListM numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyListM eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyListM ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (ifaceRegistered "Num") then () else if isEmptyL args then () else if anyListM monoIsFunction args && not (implMatchesU univ iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatchesU univ iface args then checkNestedReqs univ iface args loc else reportNumOrNoImpl iface args loc
 
 -- A function-typed dispatch mono is fully GROUND — its head is `->`, structurally
 -- un-implementable for an ordinary interface (no `impl Display (a -> b)` exists).
@@ -10845,9 +11013,9 @@ monoIsFunction m = match normalize m
 -- accepting the unsatisfiable element constraint (→ null element dict → SIGSEGV).
 -- A satisfied requirement (`Display Int`, `Display String`) recurses into ITS own
 -- (empty) requires and accepts, so `(5, "hi")` / `[1,2,3]` still build.
-checkNestedReqs : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> Unit
-checkNestedReqs ireqs heads iface args loc =
-  checkReqObligations ireqs heads loc (reqObligationsFor ireqs iface args)
+checkNestedReqs : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkNestedReqs univ iface args loc =
+  checkReqObligations univ loc (reqObligationsFor univ iface args)
 
 -- Impl decls paired with their `requires` (implHeadsOf drops reqs; this keeps them).
 implDeclsWithReqs : List Decl -> List (String, List Ty, List Require)
@@ -10861,28 +11029,16 @@ implDeclWithReqs _ = []
 -- The substituted requirement obligations of the impl of [iface] whose head
 -- matches [args]: bind the impl's typaram vars from the head match, then apply that
 -- binding to each `Require`'s type args.  No matching impl / no reqs → [].
--- PERF: takes the ALREADY-COMPUTED impl-reqs table, not `prog`.  It used to take
--- `prog` and call `implDeclsWithReqs` itself — a flatMap over every decl in the
--- program, re-run once per obligation.  With O(N) obligations over an O(N)-decl
--- program that was O(N²) time AND allocation, and it dominated the typecheck stage
--- on a large file.  The table is now hoisted to the checkImplObligations /
--- checkCallObligations entry points and threaded, exactly like `heads`.
-reqObligationsFor : List (String, List Ty, List Require) -> String -> List Mono -> List (String, List Mono)
-reqObligationsFor ireqs iface args = match findMatchingImplReqs ireqs iface args
+-- #154 PR3: the FIRST-match impl lookup is now the keyed `findMatchingImplReqsU`
+-- (bucket by iface|tag, headless fallback) instead of a flat scan over every impl.
+reqObligationsFor : ImplUniverse -> String -> List Mono -> List (String, List Mono)
+reqObligationsFor univ iface args = match findMatchingImplReqsU univ iface args
   None => []
   Some (subst, reqs) => map (reqToObligation subst) reqs
 
 reqToObligation : List (String, Mono) -> Require -> (String, List Mono)
 reqToObligation subst (Require ifaceR tysR) =
   (ifaceR, map (reqTyToMono subst) tysR)
-
-findMatchingImplReqs : List (String, List Ty, List Require) -> String -> List Mono -> Option (List (String, Mono), List Require)
-findMatchingImplReqs [] _ _ = None
-findMatchingImplReqs ((iface2, tys, reqs)::rest) iface args
-  | iface2 == iface = match implHeadSubst tys args
-    Some sub => Some (sub, reqs)
-    None => findMatchingImplReqs rest iface args
-  | otherwise = findMatchingImplReqs rest iface args
 
 -- Convert a `Require`'s declared type arg to a mono under the head-match subst.
 -- Impl-typaram vars (the common case, `Display a`) resolve to their bound mono; an
@@ -10900,11 +11056,11 @@ reqTyToMono sub (TyConstrained _ t) = reqTyToMono sub t
 
 -- Check each substituted requirement with the SAME accept/reject logic as a
 -- top-level obligation, recursing into a satisfied conditional impl's own reqs.
-checkReqObligations : List (String, List Ty, List Require) -> List (String, List Ty) -> Option Loc -> List (String, List Mono) -> Unit
-checkReqObligations _ _ _ [] = ()
-checkReqObligations ireqs heads loc ((ifaceR, monoArgs)::rest) =
-  let _ = checkReqOne ireqs heads ifaceR monoArgs loc
-  checkReqObligations ireqs heads loc rest
+checkReqObligations : ImplUniverse -> Option Loc -> List (String, List Mono) -> Unit
+checkReqObligations _ _ [] = ()
+checkReqObligations univ loc ((ifaceR, monoArgs)::rest) =
+  let _ = checkReqOne univ ifaceR monoArgs loc
+  checkReqObligations univ loc rest
 
 -- A function-typed requirement arg is fully GROUND yet structurally un-Ord/Eq/etc
 -- (no `impl Ord (a -> b)` exists), so it must REJECT — but its head has no tycon,
@@ -10913,12 +11069,12 @@ checkReqObligations ireqs heads loc ((ifaceR, monoArgs)::rest) =
 -- `requires Ord k` with k = (Int -> Int) — e.g. `Map { f => 1 }` selecting
 -- `FromEntries (Map k v) (k, v) requires Ord k` — would DEFER into a silent accept,
 -- and `check` would pass a program `run` rejects at runtime (P0-18).
-checkReqOne : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> Unit
-checkReqOne ireqs heads iface args loc
-  | anyListM monoIsFunction args && not (implMatches heads iface args) =
+checkReqOne : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkReqOne univ iface args loc
+  | anyListM monoIsFunction args && not (implMatchesU univ iface args) =
     pushNoImplError iface loc args
   | not (allConcreteHeads args) = ()
-  | implMatches heads iface args = checkNestedReqs ireqs heads iface args loc
+  | implMatchesU univ iface args = checkNestedReqs univ iface args loc
   | otherwise = pushNoImplError iface loc args
 
 -- a mono no `Ord` impl can ever match: a function type (`<` on functions).  Like
@@ -11082,15 +11238,6 @@ locEq (Loc f1 a1 b1 c1 d1) (Loc f2 a2 b2 c2 d2) = f1 == f2
   && c1 == c2
   && d1 == d2
 
--- the (iface, head-arg types) of every USER/prelude impl declared in [prog].
-implHeadsOf : List Decl -> List (String, List Ty)
-implHeadsOf prog = flatMap implHeadOf prog
-
-implHeadOf : Decl -> List (String, List Ty)
-implHeadOf (DAttrib _ d) = implHeadOf d
-implHeadOf (DImpl { iface, tys, ... }) = [(iface, tys)]
-implHeadOf _ = []
-
 -- the dispatch (interface-param) monos at one occurrence: parallel-walk the
 -- declared method type against the normalized occurrence mono; wherever the
 -- declared type is a bare interface-param tyvar, read the corresponding sub-mono.
@@ -11149,16 +11296,11 @@ allConcreteHeads : List Mono -> Bool
 allConcreteHeads [] = True
 allConcreteHeads (m::rest) = isSome (headTyconMono m) && allConcreteHeads rest
 
--- does some impl of [iface] in [heads] match the concrete dispatch monos?  Each
--- head-arg type pattern is matched against the corresponding mono via matchTyMono
--- (a TyVar in the head is a wildcard; a parametric impl `impl Eq (List a)` thus
--- matches `List Int`).
-implMatches : List (String, List Ty) -> String -> List Mono -> Bool
-implMatches [] _ _ = False
-implMatches ((iface2, tys)::rest) iface args
-  | iface2 == iface && implHeadMatchesArgs tys args = True
-  | otherwise = implMatches rest iface args
-
+-- #154 PR3: implMatches / implMatchesReceiver (flat whole-universe scans) are replaced
+-- by the keyed implMatchesU / implMatchesReceiverU above.  implHeadMatchesArgs (used by
+-- both the keyed matcher and matchTyMono callers) stays: a head-arg type pattern is
+-- matched against the corresponding mono via matchTyMono (a TyVar in the head is a
+-- wildcard; a parametric impl `impl Eq (List a)` thus matches `List Int`).
 implHeadMatchesArgs : List Ty -> List Mono -> Bool
 implHeadMatchesArgs tys args
   | listLen tys == listLen args = allHeadArgsMatch (zipL tys args)
@@ -11169,25 +11311,6 @@ allHeadArgsMatch [] = True
 allHeadArgsMatch ((ty, m)::rest) = match matchTyMono ty m
   Some _ => allHeadArgsMatch rest
   None => False
-
--- Does some impl of [iface] have a RECEIVER (first head type) matching the single
--- dispatch mono [dm]?  The call-obligation path (checkOneCallObligation) only ever
--- carries the receiver dispatch mono — NOT every interface param — so it must match
--- against the impl head's receiver position alone.  For a single-param interface
--- (`Eq (List a)`) this is identical to implMatches (the head has one type); for a
--- MULTI-param interface (`Index (Array a) Int a`) a full-length implMatches would
--- length-mismatch [dm] (1) against the 3-type head and spuriously reject.  Soundness
--- is preserved because the full-arity checkImplObligations path (recordImplObligation)
--- still validates all interface params of the same occurrence.
-implMatchesReceiver : List (String, List Ty) -> String -> Mono -> Bool
-implMatchesReceiver [] _ _ = False
-implMatchesReceiver ((iface2, tys)::rest) iface dm
-  | iface2 == iface = match tys
-    recv::_ => match matchTyMono recv dm
-      Some _ => True
-      None => implMatchesReceiver rest iface dm
-    [] => implMatchesReceiver rest iface dm
-  | otherwise = implMatchesReceiver rest iface dm
 
 -- render the dispatch monos space-separated under ONE shared naming context
 -- (mirrors lib/typecheck.ml's pp_monos), so distinct free vars don't all collapse
@@ -12845,7 +12968,17 @@ appendUniverseAccums prog =
   -- THIS module's interfaces, in lockstep (one decl walk).
   let acc = insertMethodIfaceParams prog (universeMethodIfaceParamsRef.value, universeRegisteredIfacesRef.value)
   let _ = setRef universeMethodIfaceParamsRef (fst acc)
-  setRef universeRegisteredIfacesRef (snd acc)
+  let _ = setRef universeRegisteredIfacesRef (snd acc)
+  -- #154 PR3 (sites #6/#7): grow the keyed obligation impl universe by THIS module's
+  -- impls (append to keep forward declaration order within each bucket).  Uses the
+  -- SAME `implDeclsWithReqs` (iface, tys, reqs) triples the old rebuild consumed, so
+  -- the accumulated buckets are entry-for-entry that per-module `fullUniverse` rebuild.
+  let obUni = growImplUniverse (implDeclsWithReqs prog) (ImplUniverse obUnivConcreteRef.value obUnivHeadlessRef.value obUnivIfaceTagsRef.value)
+  match obUni
+    ImplUniverse c h t =>
+      let _ = setRef obUnivConcreteRef c
+      let _ = setRef obUnivHeadlessRef h
+      setRef obUnivIfaceTagsRef t
 
 -- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
 -- replaced by the persistent interface-method membership SET.  `direct` still filters
