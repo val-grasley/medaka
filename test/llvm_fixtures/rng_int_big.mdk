@@ -1,0 +1,6 @@
+-- Tier D RNG, LARGE range: `randomInt lo hi` is INCLUSIVE and its modulus is an
+-- EXACT uint64 `%` (hi-lo+1), so a range far above 2^46 (here ~10^15) must still
+-- byte-match native.  Regression lock for issue #98: an approximate/running-mod
+-- interpreter shortcut re-diverged run vs build here (85495900495149 vs the
+-- correct 457532755261734) while the small-range fixtures stayed green.
+main = let _ = setSeed 42 in randomInt 0 1000000000000000

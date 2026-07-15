@@ -1,0 +1,4 @@
+-- hashInt of a NEGATIVE Int: the untagged value is a two's-complement 64-bit
+-- word, mixed by the SplitMix64 finalizer identically in eval and native.  Locks
+-- the negative-input arm of the cross-engine hash contract (issue #98).
+main = hashInt (-12345)

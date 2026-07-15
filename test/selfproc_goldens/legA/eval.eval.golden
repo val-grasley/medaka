@@ -1,3 +1,4 @@
+add64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
 addrCell : List (String, Ref (Value a)) -> Int -> String -> Ref (Value a)
 anyTypedImpl : List (Value a) -> Bool
 appendOutput : String -> Value a
@@ -32,6 +33,7 @@ buildIfaceDispatch : List Decl -> List ((String, String), List Int)
 buildMethodReqCounts : List Decl -> List ((String, String), Int)
 buildModInfos : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> List (String, List Decl) -> List (ModInfo (Value a))
 buildWith : Value a -> Int -> Int -> List (Value a)
+bytesBEToU64 : Array Int -> (Int, Int, Int, Int)
 cellOf : (String, Value a) -> (String, Ref (Value a))
 cellResult : (String, Ref (Value a)) -> (String, Value a)
 charFromCodeUnsafe : Int -> Char
@@ -41,6 +43,7 @@ charUpper : String -> String -> Bool -> Bool
 clauseClosure : EvalEnv (Value a) -> (List Pat, Expr) -> Value a
 clauseDef : String -> FunClause -> (String, (List Pat, Expr))
 clausesForName : String -> List (String, (List Pat, Expr)) -> List (List Pat, Expr)
+cmp64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> Int
 coalesceImpls : List (String, (Int, Value a)) -> List (String, Value a)
 coalesceOne : String -> List (String, (Int, Value a)) -> Value a
 collectCtors : List Decl -> List (String, Value a)
@@ -119,10 +122,8 @@ findCell : List (String, Ref (Value a)) -> String -> Ref (Value a)
 firstOrEmpty : List String -> String
 flattenEnv : EvalEnv (Value a) -> List (String, Value a)
 fmtSentinel : String
-fnvFoldList30 : List Int -> Int -> Int
-fnvOffset30 : Int
-fnvPrime30 : Int
-fnvStep30 : Int -> Int -> Int
+fnvFold64 : List Int -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+fnvStep64 : (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
 force : Value a -> Value a
 forceCell : Ref (Value a) -> String -> Value a
 forceMemo : Ref (Value a) -> String -> (Unit -> Value a) -> Value a
@@ -136,7 +137,6 @@ getByte64 : Int -> Array (Value a) -> Int -> Int
 groupValue : EvalEnv (Value a) -> List (List Pat, Expr) -> Value a
 groupsOf : List Decl -> List (String, List (List Pat, Expr))
 hasTag : String -> Value a -> Bool
-hashMask30 : Int
 headTycon : Ty -> Option String
 headTyconHead : List Ty -> Option String
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
@@ -160,6 +160,7 @@ installGroup : EvalEnv (Value a) -> List (String, Ref (Value a)) -> List LetBind
 installGroups : EvalEnv (Value a) -> List (String, Ref (Value a)) -> List (String, List (List Pat, Expr)) -> Unit
 installModGroups : List (ModInfo (Value a)) -> Unit
 intSeq : Int -> Int -> List Int
+intToU64 : Int -> (Int, Int, Int, Int)
 ioExternBindings : Unit -> List (String, Value a)
 isDefaultCand : Value a -> Bool
 isDispatching : Value a -> Bool
@@ -205,11 +206,11 @@ methodCell : List (String, Ref (Value a)) -> String -> List (String, Ref (Value 
 methodCellsOf : List (String, Ref (Value a)) -> List Decl -> List (String, Ref (Value a))
 methodDeclArities : Decl -> List (String, Int)
 methodReqCountRef : Ref (List ((String, String), Int))
-mixInt30 : Int -> Int
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 modImplEntries : List ((String, String), List Int) -> ModInfo (Value a) -> List (String, (Int, Value a))
 moduleMethodNames : List Decl -> List String
 moduleMethodNamesOf : Decl -> List String
+mulLow64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
 narrowMethod : Value a -> String -> Value a
 noMainMsg : String
 oneOrMulti : List (Value a) -> Value a
@@ -359,8 +360,9 @@ recordCreateVals : String -> List String -> List (String, Value a) -> List (Valu
 reexport : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> Decl -> List (String, Ref (Value a))
 resolveMembers : UsePath -> List (String, Ref (Value a)) -> List (String, Ref (Value a))
 resultToValue : Result String (Value a) -> Value a
-rngNext : Unit -> Int
+rngDraw : Unit -> (Int, Int, Int, Int)
 rngStateRef : Ref Int
+rngU64Ref : Ref (Int, Int, Int, Int)
 rootFullEnv : List (ModInfo (Value a)) -> List (String, Ref (Value a)) -> List (String, Value a)
 rootLocals : List (ModInfo (Value a)) -> List (String, Value a)
 routeTag : EvalEnv (Value a) -> Route -> String
@@ -373,6 +375,9 @@ selectByName : String -> List (String, (Int, Value a)) -> List (Int, Value a)
 selfBind : String -> (String, String)
 seqV : Unit -> Value a -> Value a
 shadowedFun : List String -> Decl -> Bool
+shr64 : (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
+shr64Limb : (Int, Int, Int, Int) -> Int -> Int -> Int -> Int
+shrWords : Int -> Int
 sliceArray : Array (Value a) -> Int -> Int -> Value a
 sortByScore : List (Int, Value a) -> List (Int, Value a)
 sortGo : List (Int, Value a) -> List (Int, Value a) -> List (Int, Value a)
@@ -382,6 +387,7 @@ storeMemo : Ref (Option (Value a)) -> Value a -> Value a
 stringIndexCp : String -> Int -> Value a
 stripBody : Value a -> Value a -> Value a
 stripResolved : Value a -> Value a
+sub64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
 subClampZero : Int -> Int -> Int
 sumInts : List Int -> Int
 takeN : Int -> List a -> List a
@@ -389,6 +395,22 @@ topGroupValue : EvalEnv (Value a) -> List (List Pat, Expr) -> Value a
 tupleHeadTag : Int -> String
 tyMentions : Ty -> List String -> Bool
 tyvarsInArgs : List Ty -> Int
+u64Bit63 : (Int, Int, Int, Int) -> Int
+u64BitAt : (Int, Int, Int, Int) -> Int -> Int
+u64Const1 : (Int, Int, Int, Int)
+u64Const2 : (Int, Int, Int, Int)
+u64Finalize : (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+u64FnvBasis : (Int, Int, Int, Int)
+u64FnvPrime : (Int, Int, Int, Int)
+u64Golden : (Int, Int, Int, Int)
+u64IsZero : (Int, Int, Int, Int) -> Bool
+u64Limb : (Int, Int, Int, Int) -> Int -> Int
+u64Low30 : (Int, Int, Int, Int) -> Int
+u64Mix : (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+u64Mod : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+u64ModExactGo : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
+u64ToInt : (Int, Int, Int, Int) -> Int
+u64ToSignedInt : (Int, Int, Int, Int) -> Int
 unChar : Value a -> Char
 unInt : Value a -> Int
 unIntArray : Value a -> Array Int
@@ -406,4 +428,5 @@ valueListEq : List (Value a) -> List (Value a) -> Bool
 valueTag : Value a -> Int
 variantFieldOrder : Variant -> List (String, List String)
 variantName : Variant -> String
+xor64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
 zipFieldOrder : List String -> List (Value a) -> List (String, Value a)

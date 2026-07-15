@@ -1844,7 +1844,10 @@ u64FnvPrime = (435, 0, 256, 0)  -- 01B3 0000 0100 0000
 
 -- Untagged Int -> uint64. The eval Int is a native two's-complement long long,
 -- so masking successive 16-bit windows reproduces C's `(unsigned long long)n`
--- for negatives too (sign-extension is already baked into `shiftRight`).
+-- for negatives too. This is correct regardless of whether `shiftRight` sign- or
+-- zero-extends the vacated high bits, because each window is immediately masked
+-- to exactly 16 bits — only bits [16k, 16k+15] of the two's-complement value
+-- survive, which are the same in either shift convention.
 intToU64 : Int -> (Int, Int, Int, Int)
 intToU64 n = (
   bitAnd n 65535,
@@ -1937,20 +1940,77 @@ u64Mix x = u64Finalize (add64 x u64Golden)
 u64Low30 : (Int, Int, Int, Int) -> Int
 u64Low30 (a0, a1, _, _) = bitAnd (bitOr a0 (shiftLeft a1 16)) 1073741823
 
--- uint64 -> Int for a value known to fit in 53 bits (randomFloat mantissa).
-u64ToInt53 : (Int, Int, Int, Int) -> Int
-u64ToInt53 (a0, a1, a2, a3) =
+-- uint64 -> Int, for a value known to fit in a positive Medaka Int (< 2^62):
+-- the randomFloat mantissa (53 bits) and any `next % range` remainder (< range
+-- <= 2^62 - 1) both qualify, so `shiftLeft a3 48` never reaches the sign bit.
+u64ToInt : (Int, Int, Int, Int) -> Int
+u64ToInt (a0, a1, a2, a3) =
   bitOr (bitOr a0 (shiftLeft a1 16)) (bitOr (shiftLeft a2 32) (shiftLeft a3 48))
 
--- uint64 `%` a positive `r` (< 2^46 so the running remainder never overflows),
--- reducing most-significant limb first. Faithful to C's `next % (u64)range` for
--- the realistic randomInt/randomChar ranges.
-u64ModRange : (Int, Int, Int, Int) -> Int -> Int
-u64ModRange (a0, a1, a2, a3) r =
-  let m3 = a3 % r
-  let m2 = (shiftLeft m3 16 + a2) % r
-  let m1 = (shiftLeft m2 16 + a1) % r
-  (shiftLeft m1 16 + a0) % r
+-- Compare two uint64 limb tuples: -1 if a < b, 0 if equal, 1 if a > b.
+cmp64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> Int
+cmp64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
+  if a3 == b3 then
+    if a2 == b2 then if a1 == b1 then if a0 == b0 then 0 else if a0 > b0 then 1 else 0 - 1 else if a1 > b1 then 1 else 0 - 1 else if a2 > b2 then 1 else 0 - 1
+  else if a3 > b3 then
+    1
+  else
+    0 - 1
+
+-- uint64 subtraction a - b (assumes a >= b), with borrow propagation. A negative
+-- limb difference masks to its low 16 bits (== +65536), which IS the borrow.
+sub64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+sub64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
+  let d0 = a0 - b0
+  let d1 = a1 - b1 - (if d0 < 0 then 1 else 0)
+  let d2 = a2 - b2 - (if d1 < 0 then 1 else 0)
+  let d3 = a3 - b3 - (if d2 < 0 then 1 else 0)
+  (bitAnd d0 65535, bitAnd d1 65535, bitAnd d2 65535, bitAnd d3 65535)
+
+-- Bit `i` (0 = LSB) of a uint64.
+u64BitAt : (Int, Int, Int, Int) -> Int -> Int
+u64BitAt u i = bitAnd (u64Limb (shr64 u i) 0) 1
+
+-- EXACT uint64 `%` a nonzero uint64 divisor (any value up to 2^64 - 1) —
+-- schoolbook bit-by-bit long division, MSB first, kept entirely inside the limb
+-- rep so nothing overflows a bare 63-bit Int. Faithful to C's
+-- `mdk_next_u64() % (unsigned long long)range` (medaka_rt.c) for every range,
+-- not just small ones (issue #98 — a running-remainder shortcut here re-opened
+-- the very run != build divergence this fix exists to kill).
+u64ModExactGo : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
+u64ModExactGo dividend divisor rem i =
+  if i < 0 then rem
+  else
+    let shifted = add64 rem rem
+    let bit = u64BitAt dividend i
+    let rem2 = (
+      bitOr (u64Limb shifted 0) bit,
+      u64Limb shifted 1,
+      u64Limb shifted 2,
+      u64Limb shifted 3,
+    )
+    let rem3 = if cmp64 rem2 divisor >= 0 then sub64 rem2 divisor else rem2
+    u64ModExactGo dividend divisor rem3 (i - 1)
+
+-- dividend `%` divisor, both uint64, exact for any divisor up to 2^64 - 1.
+u64Mod : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+u64Mod dividend divisor = u64ModExactGo dividend divisor (0, 0, 0, 0) 63
+
+u64IsZero : (Int, Int, Int, Int) -> Bool
+u64IsZero (a0, a1, a2, a3) = a0 == 0 && a1 == 0 && a2 == 0 && a3 == 0
+
+-- Bit 63 — the sign bit under a two's-complement (signed long long) reading.
+u64Bit63 : (Int, Int, Int, Int) -> Int
+u64Bit63 (_, _, _, a3) = bitAnd (shiftRight a3 15) 1
+
+-- uint64 -> signed Medaka Int, interpreting the top bit as a two's-complement
+-- sign. Used only where the value is known to land in [-2^62, 2^62 - 1] (a
+-- randomInt result is always in [lo, hi]); the sign-extended `hi16 << 48` then
+-- has magnitude <= 2^62, so it fits the Int without overflow.
+u64ToSignedInt : (Int, Int, Int, Int) -> Int
+u64ToSignedInt (a0, a1, a2, a3) =
+  let hi16 = if bitAnd a3 32768 == 0 then a3 else a3 - 65536
+  bitOr (bitOr a0 (shiftLeft a1 16)) (shiftLeft a2 32) + shiftLeft hi16 48
 
 -- ── deterministic SplitMix64 RNG — byte-identical to runtime/medaka_rt.c ─────
 -- State is a uint64 (limb tuple), default 0; `setSeed n` sets state = n. Each
@@ -1973,10 +2033,21 @@ rngDraw _ =
   let _ = setRef rngU64Ref s
   u64Finalize s
 
+-- randomInt lo hi (INCLUSIVE). Mirrors mdk_random_int (medaka_rt.c) EXACTLY,
+-- including for spans that overflow a 62-bit Medaka Int: native computes
+-- `range = hi - lo + 1` and the modulus in 64-bit, so eval must too, or the
+-- draw sequence itself desyncs. Everything is done in uint64 — `hi - lo + 1`
+-- via sub64/add64, native's `range <= 0` guard as `zero || sign-bit set`, the
+-- modulus with the exact long division, and `lo + rem` back to a signed Int —
+-- so no bare 63-bit Int op is ever asked to hold a value it cannot (issue #98).
 pRandomInt : Value e -> Value e -> <e> Value e
 pRandomInt (VInt lo) (VInt hi) =
-  let range = hi - lo + 1
-  if range <= 0 then VInt lo else VInt (lo + u64ModRange (rngDraw ()) range)
+  let loU = intToU64 lo
+  let rangeU = add64 (sub64 (intToU64 hi) loU) (intToU64 1)
+  if u64IsZero rangeU || u64Bit63 rangeU == 1 then VInt lo
+  else
+    let rem = u64Mod (rngDraw ()) rangeU
+    VInt (u64ToSignedInt (add64 loU rem))
 pRandomInt _ _ = panic "randomInt: expected Int Int"
 
 pRandomBool : Value e -> <e> Value e
@@ -1986,12 +2057,13 @@ pRandomFloat : Value e -> <e> Value e
 pRandomFloat _ =
   -- `intToFloat 9007199254740992` is the double 2^53 (the mantissa scale); written
   -- via an Int literal because `medaka fmt` corrupts a >= 1e15 float literal (#51).
-  let bits = u64ToInt53 (shr64 (rngDraw ()) 11)
+  let bits = u64ToInt (shr64 (rngDraw ()) 11)
   VFloat (intToFloat bits * (1.0 / intToFloat 9007199254740992) * 2.0 - 1.0)
 
 pRandomChar : Value e -> <e> Value e
 pRandomChar _ =
-  VChar (charToStr (charFromCodeUnsafe (32 + u64ModRange (rngDraw ()) 95)))
+  VChar (charToStr (charFromCodeUnsafe
+    (32 + u64ToInt (u64Mod (rngDraw ()) (intToU64 95)))))
 
 charFromCodeUnsafe : Int -> Char
 -- Intentional cross-file duplicate of the same helper in prop_runner.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
