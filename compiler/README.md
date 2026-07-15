@@ -926,8 +926,9 @@ compiler mirror, 2026-06-06), so unsigned wrappers now propagate effects too.
      `typecheck_module`). The self-hosted front-end is itself **executed by the
      OCaml `eval_modules` oracle** (`medaka run check_all_main.mdk …`), so a pass
      means: *self-hosted front-end (run on eval_modules) == OCaml-native front-end,
-     for all 13 modules of its own source.* (This is the union-closure form of
-     `diff_compiler_check_modules_batch.sh`, promoted to the milestone gate.)
+     for all 13 modules of its own source.* (This union-closure form is the
+     milestone gate; it superseded the per-module `check_all_main` gate that was
+     removed with issue #175.)
    - **Leg B — eval engine "runs itself."** A real compiler **stage module** (the
      lexer) is executed through the **self-hosted** eval path (`eval.mdk`'s
      `evalModules`, the untyped per-module-frame tree-walker) over an embedded

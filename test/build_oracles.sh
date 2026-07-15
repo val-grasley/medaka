@@ -107,7 +107,7 @@ fi
 #   check_main              — diff_compiler_typecheck_errors.sh (driver B) / diff_compiler_check.sh
 #   check_batch             — diff_compiler_check_batch.sh
 #   check_modules_main      — diff_compiler_check_modules.sh
-#   check_all_main          — diff_compiler_check_modules_batch.sh
+#   check_all_main          — diff_compiler_selfproc.sh (LEG A)
 #   check_match_main        — diff_compiler_check_match.sh
 #   exhaust_main            — diff_compiler_exhaust.sh
 #   lint_main               — diff_compiler_lint.sh (added by the lint workstream)
