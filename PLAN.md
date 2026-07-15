@@ -1471,7 +1471,7 @@ Current native-backend state + residual gaps: `compiler/BOOTSTRAP.md`,
 
 #### Known parser gaps (compiler `parser.mdk`)
 
-Constructs the **OCaml parser accepts but `compiler/parser.mdk` rejects** — check
+Constructs the **OCaml parser accepts but `compiler/frontend/parser.mdk` rejects** — check
 here before assuming `compiler/` can parse a construct (AGENTS.md points here).
 The differential `test/diff_compiler_parse*` / `diff_compiler_check*` gates only
 cover the corpus; these are known holes outside it.
@@ -2180,7 +2180,7 @@ non-package-manager gaps:
   Full `core.mdk` prelude supported (the old `max`/`min` + no-DCE block is LIFTED,
   verified 2026-06-18 audit). `import map/set/array/list/string` all work in `medaka build`.
   **Deferred:** a build-artifact CACHE — the serialized Core IR exists
-  (`compiler/core_ir_sexp.mdk` — `cprogramToSexp`/`parseCProgram`, round-trip
+  (`compiler/ir/core_ir_sexp.mdk` — `cprogramToSexp`/`parseCProgram`, round-trip
   proven; `test/diff_compiler_core_ir_roundtrip.sh`) but a cache-key strategy
   (content hash of source + transitive imports) + on-disk layout remain unbuilt;
   also install-prefix asset packaging (assets resolved repo-relative today).

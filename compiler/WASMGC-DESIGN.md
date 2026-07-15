@@ -371,7 +371,7 @@ engine, and diffs stdout against the interpreter/native oracle.
   `fd_write` (Wasmtime GC is off-by-default — the `-W gc` flag is mandatory;
   Wasmtime ≥27 for GC, ≥22 for tail calls).
   ([Wasmtime 27.0](https://bytecodealliance.org/articles/wasmtime-27.0))
-- A new `test/diff_wasm.sh` peer to the existing diff scripts; same golden corpus,
+- A new `test/wasm/diff_wasm.sh` peer to the existing diff scripts; same golden corpus,
   same path-stripping discipline (MEMORY "Golden path-stability"). Stage the
   corpus to grow with §9's slices.
 

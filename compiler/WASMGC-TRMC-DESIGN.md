@@ -331,7 +331,7 @@ function inventory:
   are **pure structural analysis over `CExpr`/`CApp`/`CBinPrim`/`CMethod`** — no LLVM
   dependency. `TRMC-DESIGN.md` §"Reusable" says exactly this and notes the lift is "a
   mechanical move; not worth factoring now with no second consumer." **WasmGC is now
-  that second consumer** → lift them into a shared module (e.g. `compiler/ir/trmc.mdk` or
+  that second consumer** → lift them into a shared module (landed as
   `compiler/backend/trmc_analysis.mdk`) consumed by both `llvm_emit.mdk` and
   `wasm_emit.mdk`. Caveat: a couple of helpers thread an `Emit`-typed handle for
   `isCtor`/`ctorArity` (ctor-arity lookup) — that lookup is itself backend-neutral
