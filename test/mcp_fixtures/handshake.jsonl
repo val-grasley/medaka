@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bogus_tool","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"method":"ping","params":{}}
+{"jsonrpc":"2.0","id":5,"method":"shutdown","params":{}}

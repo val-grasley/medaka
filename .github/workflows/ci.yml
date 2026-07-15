@@ -547,7 +547,15 @@ jobs:
             # 14 ok / 0 failing. Reads no test/bin oracle; needs only ./medaka + the emitter.
             pattern: "'diff_compiler_llvm*' 'diff_compiler_build' 'diff_compiler_rt_obj' 'diff_compiler_selfproc' 'diff_compiler_stack_overflow' 'diff_compiler_let_refute' 'diff_compiler_tmc_parity' 'selfcompile_lex' 'selfcompile_emit' 'selfcompile_build_fixpoint' 'diff_native_cli' 'diff_native_stack' 'build_cmd'"
           - name: tools
-            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_codemod' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_doc' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_stdout_flush' 'diff_compiler_run_entry_subdir' 'diff_compiler_ci_shard_coverage' 'diff_compiler_fixture_corpus_coverage' 'diff_compiler_source_bytes' 'check_syntax_examples' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
+            # 'diff_compiler_mcp' (#253): golden JSON-RPC transcript gate for `medaka
+            # mcp` — same shape as its nearest sibling here, diff_compiler_lsp* (a
+            # dev-tool server driven directly over stdio, no test/bin oracle to
+            # build). Placed by COST, not just theme: it reads no oracle and the
+            # T1 handshake fixture is a handful of tiny `./medaka mcp` invocations
+            # (<1s), so it adds negligible weight to this shard, while `engines`
+            # (5.8min critical path) and `backend` (5.3min, 2nd-heaviest) have none
+            # to spare.
+            pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_mcp' 'diff_compiler_codemod' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_doc' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_run_check_agreement' 'diff_compiler_run_stdout_flush' 'diff_compiler_run_entry_subdir' 'diff_compiler_ci_shard_coverage' 'diff_compiler_fixture_corpus_coverage' 'diff_compiler_source_bytes' 'check_syntax_examples' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
     name: gates (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4

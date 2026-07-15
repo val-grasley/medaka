@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}
+{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"Unknown tool: bogus_tool"}}
+{"jsonrpc":"2.0","id":4,"result":{}}
+{"jsonrpc":"2.0","id":5,"result":{}}
