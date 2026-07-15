@@ -34,6 +34,7 @@ import frontend.ast.{Decl, DData, DInterface, Expr}
 import frontend.parser.{parse, parseLocated}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram}
+import driver.build_cmd.{readPreludeFile}
 import types.typecheck.{elaborateOne, elaborateModules}
 import frontend.lexer.{collectComments}
 import eval.eval.{
@@ -76,11 +77,11 @@ rootsOrDefault _ roots = roots
 -- pre-existing printed behaviour; callers gate `exit 1` on this Bool rather
 -- than on the printed report, since the report is prose, not a signal).
 export runTest : String -> String -> String -> List String -> <IO> Bool
-runTest runtimeP coreP target roots = match readFile runtimeP
+runTest runtimeP coreP target roots = match readPreludeFile runtimeP
   Err e =>
     let _ = ePutStrLn e
     True
-  Ok rsrc => match readFile coreP
+  Ok rsrc => match readPreludeFile coreP
     Err e =>
       let _ = ePutStrLn e
       True

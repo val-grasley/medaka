@@ -36,6 +36,7 @@ import driver.build_cmd.{
   emitPreludeObj,
   envOr,
   defaultMedakaRoot,
+  readPreludeFile,
 }
 import support.util.{
   reverseL,
@@ -267,11 +268,11 @@ runCheckCmd argv =
       let corePath = root ++ "/stdlib/core.mdk"
       let stdlibDir = root ++ "/stdlib"
       let roots = entrySearchRoots (dirOf2 target) ++ [stdlibDir]
-      match readFile rtPath
+      match readPreludeFile rtPath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
-        Ok rsrc => match readFile corePath
+        Ok rsrc => match readPreludeFile corePath
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
@@ -1082,9 +1083,9 @@ typecheckGate allowInternal root input =
   let corePath = root ++ "/stdlib/core.mdk"
   let stdlibDir = root ++ "/stdlib"
   let roots = entrySearchRoots (dirOf2 input) ++ [stdlibDir]
-  match readFile rtPath
+  match readPreludeFile rtPath
     Err msg => TGErr msg
-    Ok rsrc => match readFile corePath
+    Ok rsrc => match readPreludeFile corePath
       Err msg => TGErr msg
       Ok csrc => match readFile input
         Err msg => TGErr msg
@@ -1256,11 +1257,11 @@ runRunCmd argv =
       -- (eval.mdk's pArgs reads this Ref): `medaka run prog.mdk a b` ⇒ ["a","b"],
       -- matching what the same program's compiled binary sees.
       let _ = setRef progArgsRef progArgs
-      match readFile rtPath
+      match readPreludeFile rtPath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
-        Ok rsrc => match readFile corePath
+        Ok rsrc => match readPreludeFile corePath
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
@@ -1417,11 +1418,11 @@ runDocCmd argv = match dropFlags argv
     let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
-    match readFile rtPath
+    match readPreludeFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
-      Ok rsrc => match readFile corePath
+      Ok rsrc => match readPreludeFile corePath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
@@ -1448,11 +1449,11 @@ runCheckPolicyCmd argv = match parsePolicyArgs argv
     let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
-    match readFile rtPath
+    match readPreludeFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
-      Ok rsrc => match readFile corePath
+      Ok rsrc => match readPreludeFile corePath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
@@ -1497,11 +1498,11 @@ runManifestCmd argv = match parseManifestArgs argv
     let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
-    match readFile rtPath
+    match readPreludeFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
-      Ok rsrc => match readFile corePath
+      Ok rsrc => match readPreludeFile corePath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
@@ -1961,11 +1962,11 @@ runReplCmd _ =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
-  match readFile rtPath
+  match readPreludeFile rtPath
     Err msg =>
       let _ = ePutStrLn msg
       exit 1
-    Ok rsrc => match readFile corePath
+    Ok rsrc => match readPreludeFile corePath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
@@ -1984,11 +1985,11 @@ runLspCmd _ =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
-  match readFile rtPath
+  match readPreludeFile rtPath
     Err msg =>
       let _ = ePutStrLn msg
       exit 1
-    Ok rsrc => match readFile corePath
+    Ok rsrc => match readPreludeFile corePath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1

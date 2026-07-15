@@ -1,5 +1,5 @@
 # META
-source_lines=693
+source_lines=708
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/driver/build_cmd.mdk — `medaka build` ported to self-hosted Medaka
@@ -95,6 +95,21 @@ defaultMedakaRoot = exeDir
 
 export defaultMedakaEmitter : <IO> String
 defaultMedakaEmitter = joinPath exeDir "medaka_emitter"
+
+-- Reads a stdlib prelude file (stdlib/runtime.mdk or stdlib/core.mdk) and, on
+-- failure, wraps the bare strerror `readFile` returns (e.g. "No such file or
+-- directory") in an ACTIONABLE message naming the resolved path and the fix —
+-- same style as the MEDAKA_WASM_EMITTER hint below.  Without this, a relocated
+-- `medaka` binary with no exe-relative stdlib/ sibling (and no MEDAKA_ROOT set)
+-- fails every subcommand with a bare, contextless "No such file or directory"
+-- (#132) — the structural exe-relative/MEDAKA_ROOT lookup (above) is correct,
+-- but a MISS gave the user nothing to act on.  Prelude reads only — a missing
+-- USER file should keep reporting its own bare "No such file or directory:
+-- <path>", which is already unambiguous.
+export readPreludeFile : String -> <IO> Result String String
+readPreludeFile path = match readFile path
+  Err e => Err "error: cannot read the stdlib prelude at \"\{path}\" (\{e})\n  set MEDAKA_ROOT to your medaka repo/install root, run from the project root, or place stdlib/ next to the medaka binary"
+  Ok src => Ok src
 
 -- ---- the trailing-Unit auto-print trim ----
 -- The interpreter auto-prints main's Unit as a trailing "()\n"; the emitter's
@@ -718,6 +733,8 @@ emitRtObj cc root outObjPath = match makeTempDir ()
 (DFunDef false "defaultMedakaRoot" () (EVar "exeDir"))
 (DTypeSig true "defaultMedakaEmitter" (TyEffect ("IO") None (TyCon "String")))
 (DFunDef false "defaultMedakaEmitter" () (EApp (EApp (EVar "joinPath") (EVar "exeDir")) (ELit (LString "medaka_emitter"))))
+(DTypeSig true "readPreludeFile" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "String")))))
+(DFunDef false "readPreludeFile" ((PVar "path")) (EMatch (EApp (EVar "readFile") (EVar "path")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "Err") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "error: cannot read the stdlib prelude at \"")) (EApp (EVar "display") (EVar "path"))) (ELit (LString "\" ("))) (EApp (EVar "display") (EVar "e"))) (ELit (LString ")\n  set MEDAKA_ROOT to your medaka repo/install root, run from the project root, or place stdlib/ next to the medaka binary"))))) (arm (PCon "Ok" (PVar "src")) () (EApp (EVar "Ok") (EVar "src")))))
 (DTypeSig false "stripTrailingUnit" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "stripTrailingUnit" ((PVar "s")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "stringLength") (EVar "s"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">=" (EVar "n") (ELit (LInt 3))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "-" (EVar "n") (ELit (LInt 3)))) (EVar "n")) (EVar "s")) (ELit (LString "()\n")))) (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "-" (EVar "n") (ELit (LInt 3)))) (EVar "s")) (EVar "s")))))
 (DTypeSig false "makeTempDir" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "String")))))
@@ -800,6 +817,8 @@ emitRtObj cc root outObjPath = match makeTempDir ()
 (DFunDef false "defaultMedakaRoot" () (EVar "exeDir"))
 (DTypeSig true "defaultMedakaEmitter" (TyEffect ("IO") None (TyCon "String")))
 (DFunDef false "defaultMedakaEmitter" () (EApp (EApp (EVar "joinPath") (EVar "exeDir")) (ELit (LString "medaka_emitter"))))
+(DTypeSig true "readPreludeFile" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "String")))))
+(DFunDef false "readPreludeFile" ((PVar "path")) (EMatch (EApp (EVar "readFile") (EVar "path")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "Err") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "error: cannot read the stdlib prelude at \"")) (EApp (EMethodRef "display") (EVar "path"))) (ELit (LString "\" ("))) (EApp (EMethodRef "display") (EVar "e"))) (ELit (LString ")\n  set MEDAKA_ROOT to your medaka repo/install root, run from the project root, or place stdlib/ next to the medaka binary"))))) (arm (PCon "Ok" (PVar "src")) () (EApp (EVar "Ok") (EVar "src")))))
 (DTypeSig false "stripTrailingUnit" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "stripTrailingUnit" ((PVar "s")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "stringLength") (EVar "s"))) (DoExpr (EIf (EBinOp "&&" (EBinOp ">=" (EVar "n") (ELit (LInt 3))) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "-" (EVar "n") (ELit (LInt 3)))) (EVar "n")) (EVar "s")) (ELit (LString "()\n")))) (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "-" (EVar "n") (ELit (LInt 3)))) (EVar "s")) (EVar "s")))))
 (DTypeSig false "makeTempDir" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "String")))))
