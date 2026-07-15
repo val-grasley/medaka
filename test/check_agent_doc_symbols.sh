@@ -49,6 +49,38 @@
 #     INLINE prose or a markdown table, never inside a fence, in every
 #     instance found in the original audit)
 #
+# DOTTED SPANS (#94): a bare-identifier-only regex silently DROPS a dotted
+# claim like `Method_marker.marked_prelude` (an OCaml module path, for a
+# compiler deleted 2026-06-26) at extraction — never reaching the resolver,
+# so a gate reporting "0 dead" was actually reporting "0 dead of the ones it
+# looked at". A dotted span is now ALSO a symbol claim when:
+#   - the WHOLE span matches ^ident(\.ident)+$ (one or more dot-joined bare
+#     identifiers, nothing else — so a real filesystem path
+#     (`compiler/frontend/ast.mdk`), a hyphenated doc name (`ERROR-QUALITY.md`),
+#     a file:line ref (`core.mdk:380`), and any span with a space, `<>`, `*`,
+#     or other punctuation still fail this shape and are excluded, same as
+#     the bare case above)
+#   - AND at least one dot-separated SEGMENT independently satisfies the bare
+#     isSymbolShaped rule above (mixed case, length >= 3). This is the
+#     precision lever for dotted spans, mirroring the bare-token one: OCaml
+#     module paths are `Capitalized_Module.lower_fn` — the module segment
+#     alone is mixed-case-shaped (`Method_marker`, `Dict_pass`) even though
+#     the function segment (`marked_prelude`, `run`) is plain snake_case. A
+#     filename dotted span is EITHER all-lowercase in every segment
+#     (`core.mdk`, `core_ir_eval.mdk`, `diff_compiler_engines.sh`) or has an
+#     all-caps stem plus a lowercase extension (`AGENTS.md`, `README.md`) —
+#     in both cases NO segment individually has both an uppercase and a
+#     lowercase letter, so "at least one segment is mixed-case" cleanly
+#     separates real dotted symbol claims from file-path mentions. Verified
+#     against the current doc corpus: this rule adds ZERO new claims over the
+#     existing corpus (no dotted symbol claim is currently live) and is the
+#     narrowest rule that still catches the motivating #94 examples.
+#   - Resolution reuses is_resolved() UNCHANGED: a dotted token is checked as
+#     a literal whole-word fixed string via `grep -wF`, same as a bare token
+#     — a dotted OCaml path never appears verbatim in Medaka source, so this
+#     is already the right (and simplest) resolution rule; no new grep logic
+#     needed.
+#
 # A token that resolves nowhere in compiler/*.mdk + stdlib/*.mdk + runtime/*.c
 # is DEAD unless excused in test/AGENT-DOC-SYMBOL-EXCEPTIONS.txt.
 #
@@ -139,6 +171,22 @@ function isSymbolShaped(tok,    i, c, hasLower, hasUpper) {
   return (hasLower && hasUpper)
 }
 
+# #94: a dotted span (`Method_marker.marked_prelude`) — see file header
+# "DOTTED SPANS" for the full rationale. Shape: one-or-more dot-joined bare
+# identifiers, nothing else (no slash/space/colon/hyphen/angle-bracket), AND
+# at least one dot-separated segment independently passes isSymbolShaped
+# (mixed case, len >= 3) — this is what separates a real OCaml-style module
+# path from a same-shaped filename mention (`core.mdk`, `AGENTS.md`), where
+# NO segment ever has both cases.
+function isDottedSymbolShaped(tok,    n, i, parts) {
+  if (tok !~ /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/) return 0
+  n = split(tok, parts, ".")
+  for (i = 1; i <= n; i++) {
+    if (isSymbolShaped(parts[i])) return 1
+  }
+  return 0
+}
+
 function countTicks(s,    n, i) {
   n = 0
   for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == "`") n++
@@ -156,6 +204,7 @@ function processLine(fname, lineno, line,    work, mstart, mlen, tok) {
     # shape of this hazard; here the fix is simpler: just advance first).
     work = substr(work, mstart + mlen)
     if (isSymbolShaped(tok)) emit(fname, lineno, tok)
+    else if (isDottedSymbolShaped(tok)) emit(fname, lineno, tok)
   }
 }
 
