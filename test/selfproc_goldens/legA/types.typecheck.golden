@@ -59,15 +59,15 @@ argDispatchIndices : List Decl -> List (String, Int)
 argDispatchOf : String -> Option Int
 argDispatchOfDecl : Decl -> List (String, Int)
 argDispatchOfMethod : List String -> IfaceMethod -> List (String, Int)
-argImplDictRoutesFor : List ImplEntry -> String -> String -> Mono -> List Route
-argImplDictRoutesForEncl : List ImplEntry -> String -> String -> String -> Mono -> List Route
-argImplDictRoutesForGo : List ImplEntry -> List ImplEntry -> String -> String -> String -> Mono -> List Route
-argImplReqRoutes : List ImplEntry -> String -> List (String, Mono) -> List Require -> List Route
-argImplRequiresRoutesRec : List ImplEntry -> String -> String -> Mono -> List Route
-argImplRequiresRoutesRecEncl : List ImplEntry -> String -> String -> String -> Mono -> List Route
+argImplDictRoutesFor : Map String (List ImplEntry) -> String -> String -> Mono -> List Route
+argImplDictRoutesForEncl : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Route
+argImplDictRoutesForGo : Map String (List ImplEntry) -> List ImplEntry -> String -> String -> String -> Mono -> List Route
+argImplReqRoutes : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Require -> List Route
+argImplRequiresRoutesRec : Map String (List ImplEntry) -> String -> String -> Mono -> List Route
+argImplRequiresRoutesRecEncl : Map String (List ImplEntry) -> String -> String -> String -> Mono -> List Route
 argLitFits : Expr -> Mono -> Bool
 argMentions : List String -> Ty -> Bool
-argReqRoute : List ImplEntry -> String -> String -> List (String, Mono) -> List Ty -> Route
+argReqRoute : Map String (List ImplEntry) -> String -> String -> List (String, Mono) -> List Ty -> Route
 argStampMono : (String, Ref Route, Ref (List Route), Mono, String) -> Mono
 armDictSites : Arm -> List (Ref (List Route))
 armEVars : Arm -> List String
@@ -112,11 +112,14 @@ blockRecLet : TcEnv -> String -> Expr -> TcEnv
 bodyRDictNames : Expr -> List String
 boolOp : Mono -> Mono -> Mono
 boundTvarId : List Int -> Mono -> List Int
+bucketImplEntries : List ImplEntry -> Map String (List ImplEntry) -> Map String (List ImplEntry)
+bucketKeyEntries : List KeyEntry -> Map String (List KeyEntry) -> Map String (List KeyEntry)
+bucketOf : String -> Map String (List a) -> List a
 buildAdj : List String -> Map String Unit -> Map String (List (List Pat, Expr)) -> Map String (List String) -> Map String (List String)
 buildAliasGraphEntry : List String -> (String, (List String, Ty)) -> (String, List String)
 buildDefinerShadows : List Decl -> List Decl -> List String
-buildImplTable : List Decl -> List ImplEntry
-buildKeyTable : List Decl -> List KeyEntry
+buildImplTable : List Decl -> Map String (List ImplEntry)
+buildKeyTable : List Decl -> Map String (List KeyEntry)
 buildStandaloneShadows : List Decl -> List Decl -> List String
 buildStandaloneShadowsGraph : List Decl -> List Decl -> List String
 buildTupleCallHint : String -> List Expr -> Expr -> Expr -> (String, Option (Loc, String))
@@ -253,7 +256,8 @@ containerArgMsg : Option String -> String -> String
 containerParamScalarArg : Mono -> Mono -> Option String
 containsI : Int -> List Int -> Bool
 containsPair : (String, Int) -> List (String, Int) -> Bool
-countHead : List KeyEntry -> String -> String -> Int
+countHead : Map String (List KeyEntry) -> String -> String -> Int
+countHeadGo : List KeyEntry -> String -> String -> Int
 countInSubst : List Int -> List (Int, Mono) -> Int
 crossModuleFunConstraintIfacesQualRef : Ref (List ((String, String), List String))
 crossModuleFunConstraintIfacesRef : Ref (List (String, List String))
@@ -416,7 +420,8 @@ filterMaybeIds : List (Option Int) -> List Int
 filterNonSelf : String -> List String -> List String
 findAtom : String -> List Atom -> Option Atom
 findHelpFixEntry : String -> List (String, String, Option (Loc, String)) -> Option (String, Option (Loc, String))
-findImplEntry : List ImplEntry -> String -> String -> Mono -> Option ImplEntry
+findImplEntry : Map String (List ImplEntry) -> String -> String -> Mono -> Option ImplEntry
+findImplEntryGo : List ImplEntry -> String -> String -> Mono -> Option ImplEntry
 findMatchWarningHelpEntry : String -> List (String, String) -> Option String
 findMatchingImplReqs : List (String, List Ty, List Require) -> String -> List Mono -> Option (List (String, Mono), List Require)
 findMostSpecificEntry : List KeyEntry -> List KeyEntry -> Option KeyEntry
@@ -486,7 +491,7 @@ hasDupI : List Int -> Bool
 hasKeySL2 : String -> List (String, List Int) -> Bool
 hasMethodLevelConstraint : List String -> Ty -> Bool
 headAnnotTy : Ty -> Mono
-headCollides : List KeyEntry -> String -> String -> Bool
+headCollides : Map String (List KeyEntry) -> String -> String -> Bool
 headL : List String -> String
 headSubstWithParams : Ty -> List Ty -> Mono -> List Mono -> Option (List (String, Mono))
 headTyconMono : Mono -> Option String
@@ -516,14 +521,16 @@ implCompletenessMsgsOf : List Decl -> Decl -> List (Option Loc, String)
 implCountForIface : List (String, List Ty) -> String -> Int
 implDeclWithReqs : Decl -> List (String, List Ty, List Require)
 implDeclsWithReqs : List Decl -> List (String, List Ty, List Require)
-implDefinesMethodAt : List ImplEntry -> String -> String -> Bool
+implDefinesMethodAt : Map String (List ImplEntry) -> String -> String -> Bool
+implDefinesMethodAtGo : List ImplEntry -> String -> String -> Bool
 implDictNames : String -> Int -> List String
 implDictPassMethods : Int -> List ImplMethod -> List ImplMethod
-implDictRoutesForFull : List ImplEntry -> String -> String -> Mono -> List Mono -> List Route
-implDictRoutesIn : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> List Mono -> List Route
+implDictRoutesForFull : Map String (List ImplEntry) -> String -> String -> Mono -> List Mono -> List Route
+implDictRoutesIn : Map String (List ImplEntry) -> List ImplEntry -> String -> String -> Mono -> List Mono -> List Route
 implEntryFromTys : String -> List Ty -> List Require -> List ImplMethod -> List ImplEntry
 implEntryOf : Decl -> List ImplEntry
-implExistsForHead : List KeyEntry -> String -> String -> Bool
+implExistsForHead : Map String (List KeyEntry) -> String -> String -> Bool
+implExistsForHeadGo : List KeyEntry -> String -> String -> Bool
 implHeadMatchesArgs : List Ty -> List Mono -> Bool
 implHeadOf : Decl -> List (String, List Ty)
 implHeadSubst : List Ty -> List Mono -> Option (List (String, Mono))
@@ -539,10 +546,10 @@ implMatchesReceiver : List (String, List Ty) -> String -> Mono -> Bool
 implMatchesSuper : String -> List Ty -> Decl -> Bool
 implMethodName : ImplMethod -> String
 implMethodNameTc : ImplMethod -> String
-implReqRoutes : List ImplEntry -> List (String, Mono) -> List Require -> List Route
-implReqRoutesD : List ImplEntry -> List (String, Mono) -> List Require -> Int -> List Route
-implRequiresRoutesRec : List ImplEntry -> String -> String -> Mono -> List Route
-implRequiresRoutesRecD : List ImplEntry -> String -> String -> Mono -> Int -> List Route
+implReqRoutes : Map String (List ImplEntry) -> List (String, Mono) -> List Require -> List Route
+implReqRoutesD : Map String (List ImplEntry) -> List (String, Mono) -> List Require -> Int -> List Route
+implRequiresRoutesRec : Map String (List ImplEntry) -> String -> String -> Mono -> List Route
+implRequiresRoutesRecD : Map String (List ImplEntry) -> String -> String -> Mono -> Int -> List Route
 implTysIfMatch : String -> String -> Decl -> List (List Ty)
 importDefinersOf : List Decl -> List (String, String)
 importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, Scheme)
@@ -675,7 +682,7 @@ keepBetterField : String -> Int -> Option (String, Int) -> Option (String, Int)
 keepGroupNames : Map String Unit -> List String -> List String
 keptConstraintIfaces : List (String, Mono) -> List String
 keyEntryOf : Decl -> List KeyEntry
-keyForSite : List KeyEntry -> String -> Mono -> Option String
+keyForSite : Map String (List KeyEntry) -> String -> Mono -> Option String
 kindArgMono : List (String, Ref Effvar) -> List (String, Mono) -> Kind -> Ty -> Mono
 kpLcp : String -> String -> KP
 krowArgVarNames : List Kind -> List Ty -> List String
@@ -733,8 +740,9 @@ matchTyMonoList : List Ty -> List Mono -> Option (List (String, Mono))
 matchWarningHelp : Ref (List (String, String))
 matchWarningLocs : Ref (List (Option Loc))
 matchWarnings : Ref (List String)
-matchedEntry : List KeyEntry -> String -> Mono -> Option KeyEntry
-matchingEntries : List KeyEntry -> String -> Mono -> List KeyEntry
+matchedEntry : Map String (List KeyEntry) -> String -> Mono -> Option KeyEntry
+matchingEntries : Map String (List KeyEntry) -> String -> Mono -> List KeyEntry
+matchingEntriesGo : List KeyEntry -> String -> Mono -> List KeyEntry
 maybeInferConstraint : List (String, Ty) -> String -> Scheme -> Unit
 maybeStandaloneValueMono : String -> Option Mono
 memberAliasEntry : String -> List ((String, String), List a) -> UseMember -> List (String, List a)
@@ -1021,31 +1029,31 @@ reportAmbiguousImpl : String -> Route
 reportNumOrNoImpl : String -> List Mono -> Option Loc -> Unit
 reportUncovered : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, Int) -> Unit
 reqObligationsFor : List (String, List Ty, List Require) -> String -> List Mono -> List (String, List Mono)
-reqRoute : List ImplEntry -> String -> List (String, Mono) -> List Ty -> Route
-reqRouteD : List ImplEntry -> String -> List (String, Mono) -> List Ty -> Int -> Route
+reqRoute : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Ty -> Route
+reqRouteD : Map String (List ImplEntry) -> String -> List (String, Mono) -> List Ty -> Int -> Route
 reqToObligation : List (String, Mono) -> Require -> (String, List Mono)
 reqTyToMono : List (String, Mono) -> Ty -> Mono
 requiredMethodNames : List IfaceMethod -> List String
 resetCrossModuleState : Unit -> Unit
 resetState : Unit -> Unit
 resetTypeErrorsSticky : Unit -> Unit
-resolveArgStamp : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> Unit
-resolveArgStamps : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Ref (List Route), Mono, String) -> Unit
+resolveArgStamp : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> Unit
+resolveArgStamps : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List (String, Ref Route, Ref (List Route), Mono, String) -> Unit
 resolveArithSite : Ref Route -> Mono -> Unit
 resolveArithSites : List (Ref Route, Mono) -> Unit
-resolveDictApps : List Decl -> List ImplEntry -> List (Ref (List Route), List Mono, List String) -> Unit
+resolveDictApps : List Decl -> Map String (List ImplEntry) -> List (Ref (List Route), List Mono, List String) -> Unit
 resolveFieldAmbiguous : Mono -> String -> List String -> Option (String, RecordInfo)
 resolveFieldByOwners : Mono -> String -> Option (String, RecordInfo)
 resolveFieldRecord : Mono -> String -> Option (String, RecordInfo)
 resolveMemberSchemes : (String, String) -> List (String, Scheme) -> List (String, Scheme)
-resolveMethodDicts : List ImplEntry -> List (Ref (List Route), List Mono) -> Unit
-resolveOpSite : Bool -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> Unit
-resolveOpSites : Bool -> List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> Unit
-resolveRLocalSite : List Decl -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> List Mono -> List String -> Unit
-resolveRLocalSites : List Decl -> List ImplEntry -> List KeyEntry -> List RLocalSite -> Unit
+resolveMethodDicts : Map String (List ImplEntry) -> List (Ref (List Route), List Mono) -> Unit
+resolveOpSite : Bool -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Mono -> Bool -> String -> Unit
+resolveOpSites : Bool -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> List (String, Ref Route, Mono, Bool, String) -> Unit
+resolveRLocalSite : List Decl -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Mono -> String -> List Mono -> List String -> Unit
+resolveRLocalSites : List Decl -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> List RLocalSite -> Unit
 resolveRecMono : String -> Mono -> Route
-resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> Unit
-resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> Unit
+resolveSite : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> Unit
+resolveSites : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> Unit
 restorePendingObls : List (String, List String, Ty, Mono, Option Loc) -> Int -> Unit
 returnPosMethod : List String -> IfaceMethod -> List String
 returnPosMethodNames : List Decl -> List String
@@ -1067,13 +1075,13 @@ rewriteRPDictArg : List String -> List String -> List String -> Expr -> Expr
 rootIdOf : Mono -> Int
 rootVarId : Mono -> Int
 routeLocalSym : Route -> String
-routeOfMono : List ImplEntry -> Mono -> Route
-routeOfMonoEncl : List ImplEntry -> String -> String -> Mono -> Route
-routeOfMonoTop : List Decl -> List ImplEntry -> String -> Mono -> Route
+routeOfMono : Map String (List ImplEntry) -> Mono -> Route
+routeOfMonoEncl : Map String (List ImplEntry) -> String -> String -> Mono -> Route
+routeOfMonoTop : List Decl -> Map String (List ImplEntry) -> String -> Mono -> Route
 routeRDictName : Route -> List String
-routeUndeterminedTop : List Decl -> List ImplEntry -> String -> Route
-routesOfMonos : List ImplEntry -> List Mono -> List Route
-routesOfMonosTop : List Decl -> List ImplEntry -> List Mono -> List String -> List Route
+routeUndeterminedTop : List Decl -> Map String (List ImplEntry) -> String -> Route
+routesOfMonos : Map String (List ImplEntry) -> List Mono -> List Route
+routesOfMonosTop : List Decl -> Map String (List ImplEntry) -> List Mono -> List String -> List Route
 rowArgNames : Ty -> List String
 rowArgNamesApp : String -> List Ty -> List String -> List String
 rowArgOf : List (String, Ref Effvar) -> Ty -> EffRow
@@ -1107,7 +1115,7 @@ setNumlitFloats : Unit -> Unit
 setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> Unit
 shadowDomainFor : TcEnv -> String -> String -> Option Mono
 shadowHeadCtxRef : Ref Bool
-shadowKeyTableRef : Ref (List KeyEntry)
+shadowKeyTableRef : Ref (Map String (List KeyEntry))
 shadowStandaloneDictSlots : (List Int, List String) -> List (Int, Mono) -> (List Mono, List String)
 shadowStandaloneDictSlotsAt : Option Scheme -> String -> Mono -> (List Mono, List String)
 shadowStandaloneDicts : TcEnv -> String -> String -> Mono -> (List Mono, List String)
@@ -1140,7 +1148,7 @@ splitOnFirstEqGo : String -> Int -> Int -> Option Int
 splitOnFirstEqStr : String -> Option Int
 splitOnSemi : String -> List String
 splitOnSemiGo : String -> Int -> Int -> List String -> List String
-stampOpRoute : Bool -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> Unit
+stampOpRoute : Bool -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Mono -> String -> Unit
 stampRLocalOrFallback : Bool -> Ref Route -> String -> List Route -> Unit
 stampRoutes : List (Ref Route) -> Unit
 standaloneSchemeFor : TcEnv -> String -> String -> Option Scheme
