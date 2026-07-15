@@ -46,11 +46,12 @@ PROBE="$TMP/sqlprobe"
 #         the row, and `amount * qty` is NULL for it.
 #
 # ⚠️ The numbers are chosen so every avg() is EXACT (28.0, 200.0, 150.0, 75.0,
-# 165.0).  Not cosmetic: Medaka's `floatToString` renders only ~12 significant
-# digits, so an inexact avg like 85/3 prints `28.3333333333` where sqlite3 prints
-# `28.3333333333333` and the diff is a FORMATTING artefact, not a query bug.  That
-# divergence is real and is asserted deliberately in the FLOAT_PREFIX section
-# below rather than swept under the rug.  See findings/sql-parser-select.md F3.
+# 165.0).  Not cosmetic: for an INEXACT float the two engines print DIFFERENT text —
+# Medaka's `floatToString` emits shortest-round-trip (issue #57, e.g. `28.333333333333332`)
+# while sqlite3 emits `%.15g` (`28.3333333333333`) — even though both denote the SAME
+# IEEE double, so a byte-diff would spuriously fail.  Those inexact cases are pulled out
+# into the FLOAT ROUND-TRIP section below, which asserts same-double (not byte-equality).
+# See findings/sql-parser-select.md F3.
 sqlite3 "$DB" "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, city TEXT); \
   CREATE TABLE orders (id INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER, qty INTEGER); \
   INSERT INTO users VALUES (1,'ada',30,'pdx'),(2,'bob',NULL,'nyc'),(3,'cyd',24,'pdx'),(4,'dee',30,NULL); \
@@ -302,13 +303,20 @@ for q in "${REJECTS[@]}"; do
   esac
 done
 
-# ── FLOAT_PREFIX: the ONE known, documented divergence ────────────────────────
-# Medaka's `floatToString` emits ~12 significant digits; sqlite3 (C `%!.15g`)
-# emits 15.  So an inexact float renders SHORTER, not WRONGLY.  Rather than
-# excluding such queries and pretending the problem doesn't exist, assert exactly
-# what is true: Medaka's answer is a PREFIX of sqlite3's.  The day `floatToString`
-# is fixed this section starts passing as an exact match too (a prefix of itself),
-# so it never has to be revisited.  See findings/sql-parser-select.md F3.
+# ── FLOAT ROUND-TRIP: inexact floats PRINT differently but denote the SAME double ─
+# Medaka's `floatToString` emits SHORTEST-ROUND-TRIP digits (issue #57): the fewest
+# digits that read back to the identical IEEE double.  sqlite3 renders C `%.15g`
+# (15 significant digits), which is SHORTER and — unlike Medaka's form — does NOT
+# itself round-trip (15 digits cannot always identify a double; 17 can).  So the two
+# printed strings for an inexact avg like 85/3 differ (Medaka `28.333333333333332`,
+# sqlite3 `28.3333333333333`) yet are the SAME double.
+#
+# Assert exactly that INVARIANT: CAST Medaka's text back to REAL via sqlite3's own
+# strtod and compare to the value the query computes.  Comparing the two PRINTED
+# strings (the pre-#57 "Medaka is a PREFIX of sqlite3" check) is now wrong twice
+# over — Medaka is the longer/precise side, and sqlite3's own string does not
+# round-trip, so `CAST(sqlite3_text)` would not even reproduce sqlite3's own double.
+# See findings/sql-parser-select.md F3.
 FLOAT_QUERIES=(
   "SELECT avg(amount) FROM orders WHERE amount IS NOT NULL AND uid = 1 OR uid = 3"
   "SELECT sum(amount) / 7.0 FROM orders"
@@ -316,17 +324,20 @@ FLOAT_QUERIES=(
 )
 fpass=0; ffail=0
 for q in "${FLOAT_QUERIES[@]}"; do
-  want="$(sqlite3 "$DB" "$q" 2>&1)"
   got="$("$BIN" "$DB" "$q" 2>&1)"
-  case "$want" in
-    "$got"*) fpass=$((fpass + 1)) ;;
-    *)
-      ffail=$((ffail + 1))
-      echo "FLOAT-DIVERGE (not a mere truncation): $q"
-      echo "    medaka : $got"
-      echo "    sqlite3: $want"
-      ;;
-  esac
+  # Each query is a single-row, single-column SELECT, so `($q)` is a scalar
+  # subquery: sqlite3 evaluates the true double, CASTs Medaka's shortest-round-trip
+  # text back to REAL, and compares.  "1" ⇔ Medaka's printed value round-trips to
+  # exactly the double sqlite3 computed.
+  same="$(sqlite3 "$DB" "SELECT CAST('$got' AS REAL) = ($q);" 2>&1)"
+  if [ "$same" = "1" ]; then fpass=$((fpass + 1))
+  else
+    ffail=$((ffail + 1))
+    want="$(sqlite3 "$DB" "$q" 2>&1)"
+    echo "FLOAT-DIVERGE (wrong VALUE, not formatting): $q"
+    echo "    medaka : $got"
+    echo "    sqlite3: $want   (CAST-equal to query double? $same)"
+  fi
 done
 
 # ── run section 3: round trip (parseSelect → renderSelect → parseSelect) ──────
@@ -342,7 +353,7 @@ case "$probe_out" in *"TOTAL: PASS") probe_st=0 ;; esac
 echo
 echo "queries:    $qpass ok, $qfail diffs   (vs sqlite3, ${#QUERIES[@]} SQL strings)"
 echo "rejections: $rpass ok, $rfail bad     (${#REJECTS[@]} unsupported SQL strings)"
-echo "float-prec: $fpass ok, $ffail bad     (${#FLOAT_QUERIES[@]} known floatToString truncations)"
+echo "float-prec: $fpass ok, $ffail bad     (${#FLOAT_QUERIES[@]} inexact floats: same double, different %g width)"
 echo "$probe_out"
 
 if [ "$qfail" -eq 0 ] && [ "$rfail" -eq 0 ] && [ "$ffail" -eq 0 ] && [ "$probe_st" -eq 0 ]; then

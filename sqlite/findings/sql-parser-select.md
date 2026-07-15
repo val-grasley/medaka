@@ -103,10 +103,10 @@ it. The **interpreter does not**, and reports it as if the name did not exist.
 
 ---
 
-## F3 — `floatToString` silently truncates to ~12 significant digits: a `Float` cannot be printed faithfully
+## F3 — ✅ FIXED (issue #57) — `floatToString` now emits shortest-round-trip; a `Float` prints faithfully
 
 - **Category:** missing-stdlib / surprising-semantics
-- **Severity:** workaround-required (a real interop/data-fidelity bug)
+- **Severity:** was workaround-required (a real interop/data-fidelity bug); **RESOLVED**.
 
 - **Repro:**
 
@@ -118,30 +118,33 @@ it. The **interpreter does not**, and reports it as if the name did not exist.
     println (floatToString 123456789012345.6)
   ```
 
-- **Expected:** enough digits to round-trip an IEEE-754 double (17 significant digits, or the
-  shortest round-tripping form). C's `%.15g` — what `sqlite3` uses — is the de-facto baseline.
-- **Actual:**
+- **Expected:** enough digits to round-trip an IEEE-754 double (the shortest round-tripping
+  form). C's `%.15g` — what `sqlite3` uses — is SHORTER than round-trip, so it is *not* the
+  baseline to match; it is itself lossy.
+- **Before #57 (`%.12g`) vs after (shortest-round-trip):**
 
-  | value | Medaka `floatToString` | `sqlite3` (C `%.15g`) |
-  |---|---|---|
-  | `1.0 / 3.0` | `0.333333333333` | `0.333333333333333` |
-  | `1.2345678901234567` | `1.23456789012` | `1.23456789012346` |
-  | `123456789012345.6` | `1.23456789012e+14` | `123456789012346.0` |
+  | value | Medaka BEFORE (`%.12g`) | Medaka AFTER (#57) | `sqlite3` (C `%.15g`) |
+  |---|---|---|---|
+  | `1.0 / 3.0` | `0.333333333333` | `0.3333333333333333` | `0.333333333333333` |
+  | `1.2345678901234567` | `1.23456789012` | `1.2345678901234567` | `1.23456789012346` |
+  | `123456789012345.6` | `1.23456789012e+14` | `1.234567890123456e+14` | `123456789012346.0` |
 
-  Twelve significant digits, and it flips to scientific notation at 1e14. So
-  `toFloat (floatToString x) != x` for most doubles — **printing a Float loses data**, silently.
+  The AFTER column round-trips (`toFloat (floatToString x) == x`); the pre-#57 column and
+  sqlite3's `%.15g` do not. Scientific notation still kicks in at the same threshold
+  (exp < -4 or exp ≥ 12), now at full precision.
 
-- **Workaround:** the oracle's fixture data is chosen so every `avg()` is exact (28.0, 200.0,
-  150.0, 75.0, 165.0), and the residual divergence is asserted deliberately rather than hidden:
-  the `FLOAT_PREFIX` section of `sql_oracle.sh` runs three genuinely-inexact queries and asserts
-  Medaka's answer is a **prefix** of sqlite3's — i.e. the value agrees and only the digit count
-  differs. When `floatToString` is fixed, that section keeps passing (a string is a prefix of
-  itself), so it never needs revisiting.
-- **Notes:** this matters well beyond cosmetics for a library whose job is real `.sqlite` files.
-  Storage is fine (`beFloat64` writes the true 8 bytes), but **any text path — display, JSON,
-  logs, a generated SQL literal — is lossy.** Lives in the `floatToString` extern (C runtime +
-  the eval-side implementation, which must agree byte-for-byte). The fix is `%.17g` and then trim,
-  or a shortest-round-trip (Ryū/Grisu) formatter.
+- **Fix:** `floatToString` renders shortest-round-trip digits (fewest that `strtod` reads back
+  bit-identically). Shared C helper `mdk_float_lexeme` (`runtime/medaka_rt.c`) backs both the
+  `floatToString` extern and the bare-Float auto-print; the two WasmGC JS host copies
+  (`test/wasm/run.js`, `playground/worker.js`) mirror it byte-for-byte.
+- **Oracle:** the `FLOAT ROUND-TRIP` section of `sql_oracle.sh` (formerly `FLOAT_PREFIX`) no
+  longer asserts a text-prefix relationship — that inverted, since Medaka is now the longer,
+  precise side and sqlite3's `%.15g` string does not itself round-trip. It now asserts the true
+  invariant: Medaka's printed value, CAST back to `REAL` by sqlite3, equals the double the query
+  computes.
+- **Notes:** this mattered well beyond cosmetics for a library whose job is real `.sqlite` files
+  — storage was always fine (`beFloat64` writes the true 8 bytes), but every text path (display,
+  JSON, logs, a generated SQL literal) was lossy. Now faithful.
 
 ---
 
