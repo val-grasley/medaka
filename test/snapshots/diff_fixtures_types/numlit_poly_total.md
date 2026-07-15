@@ -1,0 +1,18 @@
+# META
+source_lines=11
+stages=TYPES_USER
+# SOURCE
+-- PLAN.md #11 soundness (e7031e6 mirror): a polymorphic-`Num` accumulator literal.
+-- `total : Num a => List a -> a` folds `(+)` from the literal `0`, which stays a
+-- `Num a` survivor and routes through total's Num dict via `fromInt` — `total
+-- [1.0,2.0]` ⇒ 3.0 (Float), `total [1,2]` ⇒ 3 (Int).  Same shape as core.mdk's
+-- `sum xs = fold (+) (fromInt 0) xs`, but with the literal `0` carrying the route.
+total xs = fold (+) 0 xs
+
+main : <IO> Unit
+main =
+  println (total [1.0, 2.0])
+  println (total [1, 2])
+# TYPES_USER
+total : (Foldable a, Num b) => a b -> b
+main : Unit

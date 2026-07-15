@@ -1,0 +1,22 @@
+# META
+source_lines=14
+stages=TYPES_USER
+# SOURCE
+data Cat = { name : String }
+
+data Box = { name : Int }
+
+catName c = (c : Cat).name
+
+boxName b = (b : Box).name
+
+main : <IO> Unit
+main =
+  let c = Cat { name = "Tom" }
+  let b = Box { name = 7 }
+  println (catName c)
+  println (boxName b)
+# TYPES_USER
+catName : Cat -> String
+boxName : Box -> Int
+main : Unit

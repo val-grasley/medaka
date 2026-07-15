@@ -1,0 +1,19 @@
+# META
+source_lines=10
+stages=TYPES_USER
+# SOURCE
+double x = x * 2
+isEven x = x % 2 == 0
+
+sumList xs = fold (acc x => acc + x) 0 xs
+
+main : <IO> Unit
+main =
+  println (map double [1, 2, 3, 4, 5])
+  println (filter isEven [1, 2, 3, 4, 5, 6])
+  println (sumList (map double [1, 2, 3]))
+# TYPES_USER
+isEven : Int -> Bool
+double : Num a => a -> a
+sumList : (Foldable a, Num b) => a b -> b
+main : Unit

@@ -254,6 +254,7 @@ snapSections = [
   "DESUGAR",
   "MARK",
   "TYPES",
+  "TYPES_USER",
   "CORE_IR",
   "LLVM",
   "WASM",
@@ -516,6 +517,48 @@ typesOf runtimeDecls d =
   let text = checkToLinesWithRuntime runtimeDecls [] d
   (text, hadTypeErrors () || hadMatchWarnings ())
 
+-- `# TYPES_USER` — the PRELUDE-AWARE user-only variant.  `# TYPES` above is
+-- prelude-FREE (`checkToLinesWithRuntime runtimeDecls [] d`): correct for the minimal
+-- typecheck_fixtures (which test errors *without* a prelude in scope), but WRONG for a
+-- real program that references prelude types — every prelude reference would be an
+-- unbound-name error.  This variant typechecks `coreDecls ++ d` (prelude in scope) so
+-- the user schemes infer correctly, then keeps ONLY the user program's own bindings.
+--
+-- WHY name-filter, not `full − prelude_baseline` (measured): a prelude function whose
+-- inferred scheme is context-sensitive (`abs : a -> a` under ambiguous-Num defaulting
+-- resolves differently per fixture) does NOT cancel against a fixed prelude baseline and
+-- LEAKS in as a false user line.  Keying on the NAME is exact: keep a scheme line iff
+-- its binding name is in `funNamesOf d` (the DESUGARED user decls, so deriving-generated
+-- functions are covered).  User data CONSTRUCTORS never appear in the scheme dump (it is
+-- top-level function bindings only), so `funNamesOf` alone is the complete user-name set.
+-- A user binding that SHADOWS a prelude name is in `funNamesOf d`, so its (user) scheme
+-- is kept.  See [[project_81_prelude_aware_types_design]] — the filter lives here because
+-- compiler/types/typecheck.mdk is LOCKED by ws:typecheck.
+--
+-- The ERROR/warning path is NOT filtered: on a type error `checkToLinesWithRuntime`
+-- returns `TYPE ERROR:` lines instead of a scheme dump, and match warnings are appended
+-- as `Warning:` prose — neither is a `name : scheme` line, and both must survive so the
+-- section still reports the diagnostic (and stays unblessable).
+typesUserOf : List Decl -> List Decl -> List Decl -> (String, Bool)
+typesUserOf runtimeDecls coreDecls d =
+  let _ = setCoherenceUserDecls d
+  let _ = resetTypeErrorsSticky ()
+  let full = checkToLinesWithRuntime runtimeDecls coreDecls d
+  let diag = hadTypeErrors () || hadMatchWarnings ()
+  -- Filter the SUCCESS path (scheme dump) only; a diagnostic run has no schemes to trim.
+  let text = if hadTypeErrors () then full
+             else blockOf (filterList (userSchemeLine (funNamesOf d)) (contentLines full))
+  (text, diag)
+
+-- Keep a `# TYPES_USER` line iff it is NOT a scheme line (a `Warning:` / blank line has
+-- no ` : ` separator ⇒ ≤1 split part ⇒ kept) OR its binding name is a user binding.
+-- Type syntax uses `->`/`=>`, never ` : `, so the first ` : ` is always the name/scheme
+-- boundary; a nested record ` : ` only adds parts AFTER the name, so `nm` stays correct.
+userSchemeLine : List String -> String -> Bool
+userSchemeLine userNames line = match split " : " line
+  nm::_::_ => anyList (== nm) userNames
+  _ => True
+
 -- PRELUDE-FREE, exactly as entries/core_ir_dump_main.mdk (which is what the existing
 -- core_ir_sexp goldens are captured from): lower the USER program only.  Elaborating
 -- against the prelude instead would splice ~110 KB of identical prelude IR into every
@@ -711,6 +754,7 @@ workerStages root sel runtimeDecls coreDecls decls =
   let _ = if wants sel "MARK" then emitSection root "MARK" (markOf coreDecls d) else ()
   -- OFF-mode (eval-path) stages first...
   let _ = if wants sel "TYPES" then emitTypes root runtimeDecls d else ()
+  let _ = if wants sel "TYPES_USER" then emitTypesUser root runtimeDecls coreDecls d else ()
   let _ = if wants sel "CORE_IR" then emitSection root "CORE_IR" (coreIrOf d) else ()
   -- ...then the RUNNABLE stages, but ONLY for a fixture that has a `main`.
   --
@@ -756,6 +800,12 @@ emitTypes : String -> List Decl -> List Decl -> <IO> Unit
 emitTypes root runtimeDecls d =
   let (text, diag) = typesOf runtimeDecls d
   emitSectionTagged root "TYPES" text diag
+
+-- `# TYPES_USER` is diagnostic-bearing on the same accumulator keying as `# TYPES`.
+emitTypesUser : String -> List Decl -> List Decl -> List Decl -> <IO> Unit
+emitTypesUser root runtimeDecls coreDecls d =
+  let (text, diag) = typesUserOf runtimeDecls coreDecls d
+  emitSectionTagged root "TYPES_USER" text diag
 
 hasMain : List Decl -> Bool
 hasMain d = anyList (== "main") (funNamesOf d)

@@ -1,0 +1,19 @@
+# META
+source_lines=13
+stages=TYPES_USER
+# SOURCE
+data Point = { x : Int, y : Int } deriving (Eq, Ord, Debug)
+
+main =
+  let p1 = Point { x = 1, y = 2 }
+  let p2 = Point { x = 1, y = 2 }
+  let p3 = Point { x = 1, y = 9 }
+  let p4 = Point { x = 2, y = 0 }
+  println (p1 == p2)
+  println (p1 == p3)
+  println (compare p3 p4)
+  println (compare p1 p2)
+  println (compare p4 p3)
+  println (debug p1)
+# TYPES_USER
+main : Unit
