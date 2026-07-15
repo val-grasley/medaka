@@ -143,7 +143,7 @@ anywhere else, so it is listed here:
 ```sh
 gh issue list --label "S0: silent wrongness"      # always start here — silent wrongness beats everything
 gh issue list --label "ws:soundness" --state open # one workstream (ws:soundness|language|tooling|wasm|
-                                                  #   diagnostics|testing|release|perf|stdlib)
+                                                  #   diagnostics|testing|release|perf|stdlib|typecheck)
 gh issue list --label "needs-repro"               # inherited claims NOBODY has reproduced
 gh issue list --milestone "0.1.0 public preview"  # the release floor
 ```
