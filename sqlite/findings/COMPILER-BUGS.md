@@ -257,13 +257,19 @@ is shortest-round-trip formatting (Ryū/Grisu, or `%.17g` then trim).
 
 ## P2 — tooling
 
-### B8 ✅ VERIFIED — `medaka test` parses a Markdown blockquote in a doc comment as a doctest
-A `-- > This is prose.` line inside a doc comment is compiled as a doctest and dies with an
-**unlocated** `runtime error [E-PANIC]: parse error` — which **aborts the whole file's doctest
-run**. This had **silently disabled every doctest in `sqlite/lib/rowtype.mdk` for months**; they
-run now (2/2). Markdown's blockquote and the doctest marker are the same character, so either the
-doctest scanner needs to be stricter, or the failure must be located and non-fatal. **A tool that
-silently runs zero tests is worse than one that fails.**
+### B8 ✅ FIXED (GH #55) — `medaka test` parses a Markdown blockquote in a doc comment as a doctest
+A `-- > This is prose.` line inside a doc comment is compiled as a doctest and used to die with an
+**unlocated** `runtime error [E-PANIC]: parse error` — which **aborted the whole file's doctest
+run**. This had **silently disabled every doctest in `sqlite/lib/rowtype.mdk` for months**.
+Markdown's blockquote and the doctest marker are still the same character (`-- > …`) — that half
+of the report (a) is genuinely ambiguous (prose vs. expression) and was NOT attempted; it needs a
+format decision, not a heuristic. What shipped is half (b), the load-bearing fix: each example is
+now synthesized+parsed through `parseResult` (the non-panicking entry `frontend/parser.mdk`
+already exposes for the LSP) **individually**, so a malformed example — blockquote or otherwise —
+becomes one located `ERROR <file>:<line>: …` in that file's report instead of an uncatchable panic
+that zeroes every OTHER example in the file. See `compiler/tools/doctest.mdk`
+(`buildSynthResults`/`synthOne`/`oneResult`) and `compiler/tools/test_cmd.mdk`. Regression fixture:
+`test/doctest_fixtures/blockquote_and_valid.mdk` (gate: `test/diff_compiler_doctest.sh`).
 
 ### B9 🟡 REPORTED — the tree is not `fmt`-clean under its own compiler
 The `arr.[i]` → `arr[i]` Index migration landed in the compiler but never swept the tree, so
