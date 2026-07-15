@@ -9,9 +9,10 @@
 #   Always-2-stage is correct; the rebuilt emitter's self-consistency is guaranteed
 #   separately by test/selfcompile_fixpoint.sh (not run here), so the warm loop is
 #   sound.  A CONTENT-FINGERPRINT short-circuit skips stage A when compiler/**.mdk
-#   hashes to what ./medaka_emitter was built from (can be disabled with
-#   FORCE_EMITTER_REBUILD=1).  See "Emitter provenance" below for why this is a
-#   hash and NOT a timestamp.
+#   AND runtime/*.c (the emitter links medaka_rt.c — e.g. floatToString feeds
+#   float-literal codegen, see issue #182) hash to what ./medaka_emitter was built
+#   from (can be disabled with FORCE_EMITTER_REBUILD=1).  See "Emitter provenance"
+#   below for why this is a hash and NOT a timestamp.
 #
 #   COLD (no ./medaka_emitter — fresh clone): bootstrap emitter_v0 from the gzipped
 #   committed seed (test/bootstrap_from_seed.sh, TOLERANT — a lagging seed only WARNS,
@@ -165,8 +166,37 @@ hash_stream() {
 
 # Names AND contents, REPO-RELATIVE, so an add/rename/delete registers as loudly as
 # an edit and the stamp never bakes in an absolute worktree path.
-src_fingerprint() {
+#
+# TWO fingerprints, because the value has two consumers with DIFFERENT scopes:
+#
+#   FP_FULL      = compiler/**.mdk + runtime/*.c.  Drives the stage-A rebuild-skip
+#                  and the .medaka_emitter.srcstamp write.  The emitter links
+#                  medaka_rt.c directly (see the clang invocation below), so a
+#                  codegen-affecting runtime change — e.g. #57's floatToString
+#                  formatting — must invalidate the emitter (issue #182). Before
+#                  this, only compiler/**.mdk was hashed, so a medaka_rt.c-only
+#                  change was invisible: stage A reported "up-to-date" and kept
+#                  emitting with the OLD linked runtime — a native≠native(rebuilt)
+#                  split that reads as a miscompile.
+#
+#   FP_COMPILER  = compiler/**.mdk ONLY.  Baked into ./medaka as -DMEDAKA_SRC_FP
+#                  (below) and recomputed at runtime by `liveSourceFingerprint` in
+#                  compiler/driver/medaka_cli.mdk, which is documented as a
+#                  byte-for-byte mirror hashing `find compiler -name '*.mdk'`. The
+#                  baked value MUST match that compiler-only computation, else every
+#                  ./medaka invocation warns "stale" (and hard-fails under
+#                  MEDAKA_STRICT=1). So the bake stays compiler-only; do NOT fold
+#                  runtime/*.c into it without also editing medaka_cli.mdk.
+#
+# FORCE_EMITTER_REBUILD=1 overrides the FP_FULL skip regardless.
+src_fingerprint_compiler() {
   ( cd "$ROOT" && find compiler -name '*.mdk' -print | LC_ALL=C sort | while IFS= read -r f; do
+      printf '%s\n' "$f"
+      cat "$f"
+    done ) | hash_stream | cut -d' ' -f1
+}
+src_fingerprint_full() {
+  ( cd "$ROOT" && { find compiler -name '*.mdk' -print; find runtime -name '*.c' -print; } | LC_ALL=C sort | while IFS= read -r f; do
       printf '%s\n' "$f"
       cat "$f"
     done ) | hash_stream | cut -d' ' -f1
@@ -174,12 +204,14 @@ src_fingerprint() {
 
 # ---- STAGE A (WARM): existing emitter rebuilds itself from CURRENT source --------
 # Skip ONLY when the emitter exists AND its stamp says it was built from exactly this
-# compiler source (an up-to-date emitter re-emits byte-identically anyway).
-CUR_FP="$(src_fingerprint)"
+# compiler source AND runtime source (an up-to-date emitter re-emits byte-identically
+# anyway; runtime/*.c is linked into the emitter binary, so it counts too — issue #182).
+FP_FULL="$(src_fingerprint_full)"
+FP_COMPILER="$(src_fingerprint_compiler)"
 STAMP_FP=""
 [ -f "$SRC_STAMP" ] && STAMP_FP="$(cat "$SRC_STAMP" 2>/dev/null)"
-if [ "$FORCE_EMITTER_REBUILD" != "1" ] && [ -x "$EMITTER" ] && [ -n "$STAMP_FP" ] && [ "$STAMP_FP" = "$CUR_FP" ]; then
-  echo "stage A: emitter up-to-date (compiler source fingerprint unchanged) — skipping rebuild."
+if [ "$FORCE_EMITTER_REBUILD" != "1" ] && [ -x "$EMITTER" ] && [ -n "$STAMP_FP" ] && [ "$STAMP_FP" = "$FP_FULL" ]; then
+  echo "stage A: emitter up-to-date (compiler + runtime source fingerprint unchanged) — skipping rebuild."
 else
   if [ "$FORCE_EMITTER_REBUILD" = "1" ]; then
     echo "stage A: FORCE_EMITTER_REBUILD=1 — rebuilding emitter from current source ..."
@@ -188,7 +220,7 @@ else
     # from another tree. Both are "provenance unknown" — rebuild rather than guess.
     echo "stage A: emitter provenance unknown (fresh bootstrap, or copied in from another tree) — rebuilding from current source ..."
   else
-    echo "stage A: compiler source changed since this emitter was built — rebuilding emitter from current source ..."
+    echo "stage A: compiler or runtime source changed since this emitter was built — rebuilding emitter from current source ..."
   fi
   EMIT_LL="$WORK/emitter.ll"
   if ! emit_graph "$EMIT_LL" "$WORK/emitA.err" "$DRIVER"; then
@@ -227,22 +259,26 @@ trim_unit "$CLI_LL"
 # (The EMITTER, by contrast, is always -O2 — it's the reused workhorse; see stage A.)
 CLI_OPT="${CLI_OPT:--O2}"
 echo "stage B: clang(medaka_cli.ll, $CLI_OPT) -> $OUT ..."
-# STALENESS STAMP (issue #89): bake the compiler-source fingerprint into ./medaka
+# STALENESS STAMP (issue #89): bake the COMPILER-source fingerprint into ./medaka
 # so the CLI can warn when it is run against a NEWER compiler/ than it was built
 # from.  The -D hits ONLY this C compile of medaka_rt.c — never the emitter IR —
-# so it is fixpoint/seed-safe (the text IR is produced before clang runs).  CUR_FP
-# is the SAME value written to .medaka_emitter.srcstamp below; the driver recomputes
-# it byte-for-byte at runtime.  Empty on paths that never set it (returns "" → the
-# check silently skips).
-if ! "$CC" -pthread "$CLI_OPT" "-DMEDAKA_SRC_FP=$CUR_FP" $GC_SECTION_CFLAGS $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS "$GC_SECTION_LDFLAGS" -lm -o "$OUT" 2>"$WORK/cc.err"; then
+# so it is fixpoint/seed-safe (the text IR is produced before clang runs).  We bake
+# FP_COMPILER (compiler/**.mdk only), NOT FP_FULL: the driver's `liveSourceFingerprint`
+# (compiler/driver/medaka_cli.mdk) recomputes a compiler-only hash at runtime and
+# hard-fails a mismatch under MEDAKA_STRICT, so the baked value must stay byte-for-byte
+# compiler-only.  FP_FULL (which folds in runtime/*.c for the emitter-rebuild trigger,
+# issue #182) is written to .medaka_emitter.srcstamp below, a DIFFERENT consumer.
+# Empty on paths that never set it (returns "" → the check silently skips).
+if ! "$CC" -pthread "$CLI_OPT" "-DMEDAKA_SRC_FP=$FP_COMPILER" $GC_SECTION_CFLAGS $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS "$GC_SECTION_LDFLAGS" -lm -o "$OUT" 2>"$WORK/cc.err"; then
   echo "FAIL (clang medaka): $(cat "$WORK/cc.err")"; exit 1
 fi
 
-# Record WHICH SOURCE this emitter was built from. Correct on every path that got
-# here: stage A rebuilt it, or its stamp already matched, or emit_graph's reseed
-# rebuilt it from the current-source re-emission. Written last, so a failed build
-# never leaves a stamp claiming a provenance the binary does not have.
-printf '%s\n' "$CUR_FP" > "$SRC_STAMP"
+# Record WHICH SOURCE this emitter was built from — FP_FULL (compiler + runtime), so
+# a later medaka_rt.c change re-triggers stage A (issue #182). Correct on every path
+# that got here: stage A rebuilt it, or its stamp already matched, or emit_graph's
+# reseed rebuilt it from the current-source re-emission. Written last, so a failed
+# build never leaves a stamp claiming a provenance the binary does not have.
+printf '%s\n' "$FP_FULL" > "$SRC_STAMP"
 
 echo
 echo "BUILT $OUT — native, OCaml-free."
