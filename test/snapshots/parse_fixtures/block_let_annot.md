@@ -1,6 +1,6 @@
 # META
 source_lines=10
-stages=PARSE,DESUGAR,MARK
+stages=PARSE,PRINTER,DESUGAR,MARK
 # SOURCE
 -- block-form `let` with a type annotation (plain and function-typed)
 annotated =
@@ -15,6 +15,14 @@ plain =
 # PARSE
 (DFunDef false "annotated" () (EBlock (DoLet false false (PVar "p") (EAnnot (ELit (LInt 5)) (TyCon "Int"))) (DoLet false false (PVar "q") (EAnnot (EVar "addOne") (TyFun (TyCon "Int") (TyCon "Int")))) (DoExpr (EApp (EVar "q") (EVar "p")))))
 (DFunDef false "plain" () (EBlock (DoLet false false (PVar "s") (ELit (LInt 5))) (DoExpr (EVar "s"))))
+# PRINTER
+annotated =
+  let p = 5 : Int
+  let q = addOne : Int -> Int
+  q p
+plain =
+  let s = 5
+  s
 # DESUGAR
 (DFunDef false "annotated" () (EBlock (DoLet false false (PVar "p") (EAnnot (ELit (LInt 5)) (TyCon "Int"))) (DoLet false false (PVar "q") (EAnnot (EVar "addOne") (TyFun (TyCon "Int") (TyCon "Int")))) (DoExpr (EApp (EVar "q") (EVar "p")))))
 (DFunDef false "plain" () (EBlock (DoLet false false (PVar "s") (ELit (LInt 5))) (DoExpr (EVar "s"))))

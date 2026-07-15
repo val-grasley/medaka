@@ -1,6 +1,6 @@
 # META
 source_lines=64
-stages=PARSE,DESUGAR,MARK
+stages=PARSE,PRINTER,DESUGAR,MARK
 # SOURCE
 -- Rare/under-exercised grammar constructs, gathered so the self-hosted parser
 -- (compiler/parser.mdk) still exercises these paths even though stdlib/compiler
@@ -82,6 +82,40 @@ shape s = match s
 (DFunDef false "setField" ((PVar "r")) (EBlock (DoFieldAssign "r" ("x") (ELit (LInt 1))) (DoFieldAssign "r" ("pos" "y") (ELit (LInt 2)))))
 (DFunDef false "doFunLet" () (EBlock (DoLet false false (PVar "twice") (ELam ((PVar "n")) (EBinOp "+" (EVar "n") (EVar "n")))) (DoExpr (EApp (EVar "twice") (ELit (LInt 21))))))
 (DFunDef false "shape" ((PVar "s")) (EMatch (EVar "s") (arm (PRec "Point" ((rf "x" (PVar "px")) (rf "y" (PVar "py"))) false) () (EBinOp "+" (EVar "px") (EVar "py"))) (arm (PRec "Circle" ((rf "radius" None)) false) () (EVar "radius")) (arm (PRec "Box" ((rf "w" None)) true) () (EVar "w")) (arm (PRec "Empty" () true) () (ELit (LInt 0)))))
+# PRINTER
+leftSection = (2 * _)
+cmpSection = (== 0)
+notFlag b = !b
+classify = x => match x
+  0 => "zero"
+  n if n < 0 => "neg"
+  n => "pos"
+arrRange = [|1..5|]
+arrRangeIncl = [|0..=9|]
+sliceIt xs = xs.[1..3]
+sliceInclIt xs = xs.[1..=3]
+indexIt xs = xs[0]
+grade n = match n
+  0..59 => "F"
+  60..=100 => "P"
+vowelKind c = match c
+  'a'..'z' => "lower"
+  _ => "other"
+counter =
+  let a = Ref 0
+  a := a.value + 1
+  a.value
+setField r =
+  r.x = 1
+  r.pos.y = 2
+doFunLet =
+  let twice = n => n + n
+  twice 21
+shape s = match s
+  Point { x = px, y = py } => px + py
+  Circle { radius } => radius
+  Box { w, ... } => w
+  Empty { ... } => 0
 # DESUGAR
 (DFunDef false "leftSection" () (ELam ((PVar "_s")) (EBinOp "*" (ELit (LInt 2)) (EVar "_s"))))
 (DFunDef false "cmpSection" () (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (ELit (LInt 0)))))

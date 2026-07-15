@@ -297,8 +297,8 @@ comment). Gates: `diff_compiler_{fmt,printer,parse}`, whole-repo idempotency,
 6-file comment-multiset sweep (0 loss), `selfcompile_fixpoint` C3a/C3b YES.
 
 **Gates summary per stage:** `bash test/diff_compiler_fmt.sh` +
-`bash test/diff_compiler_printer.sh` (recapture with `CAPTURE=1` when output
-intentionally changes) and `bash test/selfcompile_fixpoint.sh`. Always
+`bash test/diff_compiler_snapshot_frontend.sh` (the `# PRINTER` section; re-cut with
+`--bless` when output intentionally changes) and `bash test/selfcompile_fixpoint.sh`. Always
 `FORCE=1 bash test/build_oracles.sh` before trusting stale-prone gates, and run
 `make -C <worktree> medaka` first (fmt runs on the *binary*).
 

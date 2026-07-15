@@ -152,6 +152,7 @@ import frontend.parser.{
   parseErrorCol,
   parseErrorMessage,
 }
+import tools.printer.{programToString}
 import frontend.desugar.{desugar}
 import frontend.marker.{markWithPrelude}
 import ir.sexp.{programToSexp}
@@ -240,6 +241,7 @@ snapSections = [
   "TOKENS",
   "COMMENTS",
   "PARSE",
+  "PRINTER",
   "DESUGAR",
   "MARK",
   "TYPES",
@@ -669,6 +671,11 @@ workerRender root sel runtimeDecls coreDecls path = match readFile path
 workerStages : String -> List String -> List Decl -> List Decl -> List Decl -> <IO> Unit
 workerStages root sel runtimeDecls coreDecls decls =
   let _ = if wants sel "PARSE" then emitSection root "PARSE" (programToSexp decls) else ()
+  -- # PRINTER: reprinted source (AST -> source via tools.printer.programToString).
+  -- Renders the comment-preserving reprint the retired diff_compiler_printer gate
+  -- checked, in-process; decls here is the parseResult Ok list, identical to `parse`
+  -- for a parseable fixture.
+  let _ = if wants sel "PRINTER" then emitSection root "PRINTER" (programToString decls) else ()
   let d = desugar decls
   let _ = if wants sel "DESUGAR" then emitSection root "DESUGAR" (programToSexp d) else ()
   let _ = if wants sel "MARK" then emitSection root "MARK" (markOf coreDecls d) else ()

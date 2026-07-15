@@ -1,6 +1,6 @@
 # META
 source_lines=28
-stages=PARSE,DESUGAR,MARK
+stages=PARSE,PRINTER,DESUGAR,MARK
 # SOURCE
 data Bool = True | False
 
@@ -42,6 +42,18 @@ data Event = Click { x : Int, y : Int } | Scroll Int
 (DData Private "Point" () ((variant "Point" (ConNamed (field "x" (TyCon "Int")) (field "y" (TyCon "Int"))))) ())
 (DData Private "Tagged" () ((variant "Tagged" (ConNamed (field "label" (TyCon "Int"))))) ("Eq" "Debug"))
 (DData Private "Event" () ((variant "Click" (ConNamed (field "x" (TyCon "Int")) (field "y" (TyCon "Int")))) (variant "Scroll" (ConPos (TyCon "Int")))) ())
+# PRINTER
+data Bool = True | False
+data Option a = Some a | None
+data Shape = Circle Int | Rect Int Int deriving (Display)
+public export data Tree a = Leaf | Node (Tree a) a (Tree a)
+export data Color = Red | Green | Blue
+data Shape2 = Sphere Int | Box Int Int Int
+data Shape3 = Disc Int | Tri Int Int deriving (Eq, Debug)
+data Shape4 = Dot Int | Seg Int Int deriving (Eq, Debug)
+data Point = { x : Int, y : Int }
+data Tagged = { label : Int } deriving (Eq, Debug)
+data Event = Click { x : Int, y : Int } | Scroll Int
 # DESUGAR
 (DData Private "Bool" () ((variant "True" (ConPos)) (variant "False" (ConPos))) ())
 (DData Private "Option" ("a") ((variant "Some" (ConPos (TyVar "a"))) (variant "None" (ConPos))) ())

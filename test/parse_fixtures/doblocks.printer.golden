@@ -1,8 +1,0 @@
-combine m n = do
-  x <- m
-  y <- n
-  pure (x + y)
-chained m = do
-  a <- m
-  b <- f a
-  g b

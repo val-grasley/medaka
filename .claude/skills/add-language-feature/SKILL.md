@@ -90,8 +90,8 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
    is a divergence, not a gap.
 9. **Printer/fmt** — `compiler/tools/printer.mdk` and `compiler/tools/fmt.mdk`.
    Round-trip must hold: parse → print → parse yields the same AST.
-   `test/diff_compiler_printer.sh` enforces this; `test/diff_compiler_fmt.sh`
-   covers the comment-preserving formatter.
+   The `# PRINTER` section of `test/diff_compiler_snapshot_frontend.sh` pins the
+   reprinted source; `test/diff_compiler_fmt.sh` covers the comment-preserving formatter.
 
 ## Nodes introduced by a pass, not the parser
 
@@ -135,7 +135,7 @@ Then the gates for the stages you touched:
 ```sh
 bash test/diff_compiler_check.sh          # front-end + typecheck
 bash test/diff_compiler_eval.sh           # eval
-bash test/diff_compiler_printer.sh        # printer round-trip
+bash test/diff_compiler_snapshot_frontend.sh  # printer (# PRINTER) + parse/desugar/mark
 bash test/diff_compiler_check_modules.sh  # multi-module path
 ```
 

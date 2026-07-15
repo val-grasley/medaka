@@ -1,9 +1,0 @@
-fromMaybe d m = match m
-  None => d
-  Some x => x
-len xs = match xs
-  [] => 0
-  y::ys => 1 + len ys
-classify n = match n
-  0 => "zero"
-  _ => "other"

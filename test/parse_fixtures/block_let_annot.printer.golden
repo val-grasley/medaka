@@ -1,7 +1,0 @@
-annotated =
-  let p = 5 : Int
-  let q = addOne : Int -> Int
-  q p
-plain =
-  let s = 5
-  s

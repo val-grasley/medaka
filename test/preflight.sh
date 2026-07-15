@@ -296,7 +296,7 @@ for f in $changed; do
       add 'diff_compiler_lex*'; add 'diff_compiler_positions'
       add 'diff_compiler_parse*'; add 'diff_compiler_snapshot*' ;;
     compiler/frontend/parser.mdk|compiler/frontend/ast.mdk)
-      add 'diff_compiler_parse*'; add 'diff_compiler_printer'; add 'diff_compiler_positions'
+      add 'diff_compiler_parse*'; add 'diff_compiler_positions'
       add 'diff_compiler_snapshot*'; add 'diff_compiler_fmt' ;;
     compiler/frontend/desugar.mdk)
       add 'diff_compiler_snapshot*'; add 'diff_compiler_eval*' ;;
@@ -327,7 +327,7 @@ for f in $changed; do
     compiler/driver/*)
       add 'diff_compiler_check*'; add 'diff_compiler_diagnostics'; add 'diff_compiler_build' ;;
     compiler/tools/lint*.mdk)      add 'diff_compiler_lint*' ;;
-    compiler/tools/fmt.mdk|compiler/tools/printer.mdk) add 'diff_compiler_fmt'; add 'diff_compiler_printer' ;;
+    compiler/tools/fmt.mdk|compiler/tools/printer.mdk) add 'diff_compiler_fmt'; add 'diff_compiler_snapshot*' ;;
     compiler/tools/lsp.mdk)        add 'diff_compiler_lsp*' ;;
     compiler/tools/snapshot.mdk)
                                    add 'diff_compiler_snapshot*' ;;

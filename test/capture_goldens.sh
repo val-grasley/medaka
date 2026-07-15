@@ -128,8 +128,6 @@ if [ -n "$FROZEN_TAG" ]; then
     fmt)
       regen_frozen fmt_main fmt.golden "" \
         "$ROOT/test/fmt_fixtures/*.mdk" "$ROOT/test/parse_fixtures/*.mdk" ;;
-    printer)
-      regen_frozen printer_main printer.golden "" "$ROOT/test/parse_fixtures/*.mdk" ;;
     selfproc_legA)
       # Mirrors LEG A of test/diff_compiler_selfproc.sh EXACTLY: one full-closure
       # check_all_main run over all_modules_entry.mdk, split by `## MODULE <mid>`,

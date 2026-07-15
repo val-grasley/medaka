@@ -1,5 +1,0 @@
-identity x = x
-add x y = x + y
-const x y = x
-apply f x = f x
-answer = 42
