@@ -227,7 +227,14 @@ trim_unit "$CLI_LL"
 # (The EMITTER, by contrast, is always -O2 — it's the reused workhorse; see stage A.)
 CLI_OPT="${CLI_OPT:--O2}"
 echo "stage B: clang(medaka_cli.ll, $CLI_OPT) -> $OUT ..."
-if ! "$CC" -pthread "$CLI_OPT" $GC_SECTION_CFLAGS $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS "$GC_SECTION_LDFLAGS" -lm -o "$OUT" 2>"$WORK/cc.err"; then
+# STALENESS STAMP (issue #89): bake the compiler-source fingerprint into ./medaka
+# so the CLI can warn when it is run against a NEWER compiler/ than it was built
+# from.  The -D hits ONLY this C compile of medaka_rt.c — never the emitter IR —
+# so it is fixpoint/seed-safe (the text IR is produced before clang runs).  CUR_FP
+# is the SAME value written to .medaka_emitter.srcstamp below; the driver recomputes
+# it byte-for-byte at runtime.  Empty on paths that never set it (returns "" → the
+# check silently skips).
+if ! "$CC" -pthread "$CLI_OPT" "-DMEDAKA_SRC_FP=$CUR_FP" $GC_SECTION_CFLAGS $GC_CFLAGS "$CLI_LL" "$RT" $GC_LIBS "$GC_SECTION_LDFLAGS" -lm -o "$OUT" 2>"$WORK/cc.err"; then
   echo "FAIL (clang medaka): $(cat "$WORK/cc.err")"; exit 1
 fi
 

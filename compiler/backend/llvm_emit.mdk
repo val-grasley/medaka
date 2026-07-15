@@ -2039,6 +2039,7 @@ isFileExtern name = contains
     "statFile",
     "runCommand",
     "executablePath",
+    "buildFingerprint",
   ]
 
 emitFileExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> (String, LTy)
@@ -2156,6 +2157,12 @@ emitFileExtern e env "executablePath" args = match emitArgs e env args
     let _ = emit e "  \{r} = call i64 @mdk_executable_path(i64 \{u})"
     (r, LTStr)
   _ => panic "llvm spike: executablePath takes one (Unit) argument"
+emitFileExtern e env "buildFingerprint" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e "  \{r} = call i64 @mdk_build_fingerprint(i64 \{u})"
+    (r, LTStr)
+  _ => panic "llvm spike: buildFingerprint takes one (Unit) argument"
 emitFileExtern _ _ name _ = gapE ("unsupported file extern " ++ name)
 
 -- Net externs (NET-DESIGN.md).  A SEPARATE family from isFileExtern — deliberately,

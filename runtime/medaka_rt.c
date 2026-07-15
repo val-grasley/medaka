@@ -1478,6 +1478,25 @@ long long mdk_executable_path(long long unit_ignored) {
   return mdk_str_cstr(buf);
 }
 
+/* buildFingerprint : Unit -> String — the compiler-source fingerprint THIS
+ * binary was built from.  test/build_native_medaka.sh computes it (find
+ * compiler -name '*.mdk' | sort | hash names+contents) and bakes it into the
+ * ./medaka link with -DMEDAKA_SRC_FP=<hex>.  The `-D` reaches ONLY this C
+ * compile of medaka_rt.c — never the emitter IR — so it is fixpoint/seed-safe.
+ * Empty on every path that does not bake it (cold seed bootstrap, oracle
+ * builds, a shipped/relocated binary); the driver reads "" as "skip the check"
+ * (issue #89). */
+#define MDK_FP_STR2(x) #x
+#define MDK_FP_STR(x) MDK_FP_STR2(x)
+long long mdk_build_fingerprint(long long unit_ignored) {
+  (void)unit_ignored;
+#ifdef MEDAKA_SRC_FP
+  return mdk_str_cstr(MDK_FP_STR(MEDAKA_SRC_FP));
+#else
+  return mdk_str_cstr("");
+#endif
+}
+
 /* statFile : String -> Result String (Int, Bool, Bool, Float).
  * stat(2) the path; Ok (sizeBytes, isDir, isFile, mtimeSeconds) or Err strerror.
  * 4-tuple cell layout mirrors mdk_run_command's 3-tuple: [TUPLE_TAG, e0..e3].

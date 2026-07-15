@@ -216,6 +216,7 @@ wallTimeSec	wasm	WASM-GAP	real gettimeofday FFI in llvm (isPerfExtern), no wasm 
 # not the rest of llvm's isFileExtern family.
 appendFile	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
 executablePath	wasm	WASM-GAP	ported in llvm (isEnvExtern), not yet in wasm
+buildFingerprint	wasm	PERMANENT	build-provenance (issue #89 staleness guard) is meaningless in the WasmGC playground — there is no baked -DMEDAKA_SRC_FP and no host filesystem to re-hash compiler/ against; the compiler is only ever built via the LLVM backend, never wasm
 listDir	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
 makeDir	wasm	WASM-GAP	ported in llvm (isFileExtern), not yet in wasm's host-fs seam
 readAll	wasm	WASM-GAP	ported in llvm (isFileExtern, stdin family), not yet in wasm
