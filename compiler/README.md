@@ -120,7 +120,7 @@ only the non-exhaustive-match warnings.
 > preflight` for a targeted subset — do not run the whole suite locally).
 
 ```sh
-sh test/diff_compiler_lexer.sh                # diff the Medaka lexer vs captured goldens
+sh test/diff_compiler_snapshot_frontend.sh    # lexer (# TOKENS) + parse/desugar/mark snapshots
 sh test/diff_compiler_parse_errors.sh         # parser/lexer rejection path (~0.4s)
 sh test/diff_compiler_check_match.sh          # type-aware non-exhaustive-match warnings vs diagdump --check-match (11 fixtures)
 sh test/diff_compiler_eval_errors.sh          # eval runtime-error messages vs reference (~1s)
@@ -173,7 +173,7 @@ the stage is done when all pass.
   depth so the closing `}` resumes the triple continuation (vs the single-string
   one). Covered by `test/diff_fixtures/triple_str.mdk`.
 - ✅ **Validated two ways**, both byte-for-byte against the OCaml reference:
-  - **17/17 curated fixtures** — `sh test/diff_compiler_lexer.sh`.
+  - **curated fixtures** — the `# TOKENS` section of `sh test/diff_compiler_snapshot_frontend.sh`.
   - **All real `.mdk` files** (every stdlib module + this lexer lexing itself)
     — `sh test/diff_compiler_lex_files.sh`, which diffs against
     `dev/lextok.exe` (the OCaml reference dumper). FLOAT literal *text* is
