@@ -251,5 +251,32 @@ fi
 # error/* — RETIRED with the OCaml oracle (native canonical; oracle-coupled leg
 # deleted per LIB-REMOVAL-DESIGN §6 Stage C).
 
+# ── dirguard (#165) — readFile/readFileBytes on a real directory must fail
+# clean, not GC-OOM.  Before the fix, fopen(2) opens a directory fine, so
+# fseek(SEEK_END)+ftell reported an absurd size (LONG_MAX on ext4), which
+# overflowed mdk_alloc and sent the GC after ~2^63 bytes (spews "GC Warning:
+# Failed to expand heap ..." / "Out of Memory!"); on filesystems where ftell
+# behaves, fread on the dir FD silently returned 0, giving a quiet "" instead
+# of an error.  `runtime/medaka_rt.c`'s mdk_read_file / mdk_read_file_bytes
+# now stat() the path and reject S_ISDIR up front — filesystem-independent,
+# so this is CI-safe.  DIR is test/native_cli_fixtures/run (this gate's own
+# fixture dir, not a scratch path), so no shared-corpus footgun.
+DIR="$FIX/run"
+dir_got="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$DIR" 2>&1)"; dir_ec=$?
+case "$dir_got" in
+  *"GC Warning"*|*"Out of Memory"*)
+    fail=$((fail+1)); printf 'FAIL dirguard/check (GC-OOM spew on a directory)\n'
+    printf '  got:  [%s]\n' "$dir_got" ;;
+  *"Is a directory"*)
+    if [ "$dir_ec" -ne 0 ]; then
+      pass=$((pass+1)); printf 'ok   dirguard/check\n'
+    else
+      fail=$((fail+1)); printf 'FAIL dirguard/check (clean message but exit 0)\n'
+    fi ;;
+  *)
+    fail=$((fail+1)); printf 'FAIL dirguard/check (unexpected output)\n'
+    printf '  got:  [%s]\n' "$dir_got" ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
