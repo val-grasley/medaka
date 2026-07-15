@@ -445,9 +445,36 @@ done
 # Without this, preflight reported GREEN on (say) a compiler/eval/ change while
 # diff_compiler_snapshot_frontend was red — the exact "your change would have been tested
 # by NOTHING" failure the gate-existence check below exists to prevent, one level up.
+#
+# ── the SAME reasoning applies to LEG A of diff_compiler_selfproc (#189) ─────
+# LEG A runs the WHOLE compiler/*.mdk source through itself in one union closure
+# (compiler/entries/all_modules_entry.mdk forces every module in) and diffs each
+# module's inferred schemes against test/selfproc_goldens/legA/<module>.golden.
+# ANY compiler/*.mdk change that adds/renames/removes a top-level binding can move
+# that module's legA golden — same shape as the snapshot corpus, and for the same
+# reason: no single arm of the table above names this gate, so it never fires there.
+# Bit #161 and #185 identically (each needed a second rebless commit after CI, not
+# preflight, caught it).
+#
+# stdlib/core.mdk and stdlib/runtime.mdk belong in this trigger too — for a DIFFERENT
+# reason than the compiler modules. legA's closure is not just compiler source: the
+# harness passes $CORE (stdlib/core.mdk, the implicit prelude) and $RUNTIME
+# (stdlib/runtime.mdk, the extern catalog) into check_all_main
+# (diff_compiler_selfproc.sh:103 — `"$CHECK_ALL" "$RUNTIME" "$CORE" "$ENTRY" ...`). A
+# prelude- or runtime-signature change can therefore shift the inferred schemes of the
+# COMPILER modules that reference it, moving a compiler module's legA golden even though
+# core/runtime carry no golden of their own (the legA golden set is exactly the 13
+# compiler-only dotted mids in MODULES — verified: `ls test/selfproc_goldens/legA/`).
+# So the stdlib side of this trigger is scoped to exactly the two files legA loads by
+# name. A LEAF stdlib module (map, set, …) is not passed into the closure by name, so it
+# gets no entry here; a change to one still reaches selfproc via the blast-radius
+# `stdlib/*|runtime/*` arm above (which does `add 'diff_compiler_*'`, matching selfproc).
 for f in $changed; do
   case "$f" in
     compiler/*.mdk|compiler/*/*.mdk|stdlib/*.mdk) add 'diff_compiler_snapshot*' ;;
+  esac
+  case "$f" in
+    compiler/*.mdk|compiler/*/*.mdk|stdlib/core.mdk|stdlib/runtime.mdk) add 'diff_compiler_selfproc' ;;
   esac
 done
 
