@@ -1,6 +1,6 @@
 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
 {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "medaka_type_at", "arguments": {"file": "test/mcp_fixtures/type_at_single.mdk", "line": 4, "col": 0}}}
-{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_type_at", "arguments": {"file": "test/mcp_fixtures/projects/type_at_proj/main.mdk", "line": 4, "col": 17}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_type_at", "arguments": {"file": "test/mcp_fixtures/projects/type_at_proj/main.mdk", "line": 5, "col": 17}}}
 {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "medaka_type_at", "arguments": {"file": "test/mcp_fixtures/type_at_single.mdk", "line": 5, "col": 6}}}
 {"jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": {}}
