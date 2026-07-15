@@ -1,0 +1,15 @@
+-- A fixture for the medaka_test MCP tool (#252): a couple of doctests, one
+-- PASSING and one FAILING, so the golden exercises both statuses.  Kept
+-- prelude-only (no imports) and deterministic — no timings, no paths, no RNG.
+
+-- A doctest that PASSES: 1 + 1 evaluates to 2.
+-- > 1 + 1
+-- 2
+double : Int -> Int
+double n = n * 2
+
+-- A doctest that FAILS: the expected rendering is deliberately wrong.
+-- > double 3
+-- 7
+triple : Int -> Int
+triple n = n * 3

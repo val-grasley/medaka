@@ -56,6 +56,24 @@ import frontend.parser.{
 }
 import tools.fmt.{formatSource}
 import tools.lint.{lintFileDiagTriple, splitLintNames}
+import tools.test_cmd.{runTestReport}
+import tools.doctest.{
+  Example,
+  ExResult(..),
+  RunResult,
+  exampleInput,
+  exampleLine,
+  runPassed,
+  runFailed,
+  runErrors,
+  runDetails,
+}
+import tools.prop_runner.{
+  PropResult,
+  propResultName,
+  propResultPassed,
+  propResultDetail,
+}
 
 -- ── protocol / server identity ──────────────────────────────────────────────
 
@@ -172,6 +190,7 @@ mcpTools = [
   McpTool "medaka_definition" "Find the declaration that defines the identifier at a position — the LSP go-to-definition, driven statelessly. Give a `file` path plus a 0-based `line` and `col` (LSP-style). INTRA-FILE ONLY: it scans declarations in this same file, so a use of a name defined in ANOTHER file returns an empty result rather than a wrong location. A position off any identifier also returns an empty result." medakaDefinitionSchema runDefinitionTool,
   McpTool "medaka_fmt" "Format Medaka source with the compiler's canonical formatter (`medaka fmt`), driven statelessly. Provide exactly one of `file` or `source`. NEVER writes to disk — a `file` argument is only READ, never opened for writing; apply the returned text yourself if you want it saved. Default: returns the formatted source text. Pass `check: true` to instead get a clean/dirty verdict (`{\"clean\": true|false}`) without the full text. Input that fails to PARSE returns an isError result carrying the parse diagnostic, never a crash." medakaFmtSchema runFmtTool,
   McpTool "medaka_lint" "Run the compiler's style linter (`medaka lint`) over one or more files and return structured diagnostics — the same JSON envelope `medaka_check`/`medaka lint --json` emit (stable `range`/`severity`/`source`, with the lint RULE NAME in `code`). Give `paths` (array of file paths); optionally narrow with comma-separated `deny`/`only`/`disable` rule-name lists (mirror the CLI's --deny/--only/--disable). Report-only — no autofix; apply a fix yourself if you want one." medakaLintSchema runLintTool,
+  McpTool "medaka_test" "Run a file's doctests (and property tests, if any) and return structured PER-EXAMPLE results. Give a `file` path. ⚠️ RESULTS ARE UNDER THE INTERPRETER (eval), NOT the native backend — a native-only miscompile is INVISIBLE here (a file can show every doctest green over a grammar the native binary silently mis-lowers, #81), so treat these as \"passes UNDER EVAL\", never an unqualified \"passes\". Returns `{file, engine:\"eval\", note, doctests:{total,passed,failed,errors,examples:[{line,input,status:pass|fail|error,expected?,actual?,detail?}]}, properties:[{name,status,detail}], summary:{passed,failed,ok}}`. A property's FAILING counterexample is RNG-dependent (non-portable). `isError` is true iff any doctest or property did not pass." medakaTestSchema runTestTool,
 ]
 
 -- The `tools/list` descriptor for one tool: { name, description, inputSchema }.
@@ -655,6 +674,130 @@ runLintTool _runtimeSrc _coreSrc _stdlibDir args = match pathsArg args
     let deny = lintNameListArg "deny" args
     let triples = lintPathsToDiagTriples disable only deny paths
     toolTextResult (cjAllToJson triples) (anyTripleHasErr triples)
+
+-- ── medaka_test tool ──────────────────────────────────────────────────────────
+
+-- inputSchema: `file` (path), required.
+medakaTestSchema : Json
+medakaTestSchema = jObject
+  [
+    ("type", JString "object"),
+    (
+      "properties",
+      jObject [
+        (
+          "file",
+          jObject [
+            ("type", JString "string"),
+            (
+              "description",
+              JString "Path to the .mdk file whose doctests (and property tests, if any) to run.",
+            ),
+          ],
+        )
+      ],
+    ),
+    ("required", jArray [JString "file"]),
+  ]
+
+-- The per-example fields, keyed by outcome.  A smoke example (no expected line)
+-- that evaluated cleanly is `Pass` with no expected/actual; a `Fail` carries
+-- both; an `Errored` carries the message under `detail`.
+exResultFields : ExResult -> List (String, Json)
+exResultFields Pass = [("status", JString "pass")]
+exResultFields (Fail expected actual) = [
+  ("status", JString "fail"),
+  ("expected", JString expected),
+  ("actual", JString actual),
+]
+exResultFields (Errored msg) =
+  [("status", JString "error"), ("detail", JString msg)]
+
+exampleJson : (Example, ExResult) -> Json
+exampleJson (ex, res) =
+  jObject
+    ([("line", JInt (exampleLine ex)), ("input", JString (exampleInput ex))] ++ exResultFields res)
+
+doctestsJson : RunResult -> Json
+doctestsJson run = jObject
+  [
+    ("total", JInt (runPassed run + runFailed run + runErrors run)),
+    ("passed", JInt (runPassed run)),
+    ("failed", JInt (runFailed run)),
+    ("errors", JInt (runErrors run)),
+    ("examples", jArray (map exampleJson (runDetails run))),
+  ]
+
+propJson : PropResult -> Json
+propJson p = jObject
+  [
+    ("name", JString (propResultName p)),
+    ("status", JString (if propResultPassed p then "pass" else "fail")),
+    ("detail", JString (propResultDetail p)),
+  ]
+
+allPropsPass : List PropResult -> Bool
+allPropsPass [] = True
+allPropsPass (p::rest) = propResultPassed p && allPropsPass rest
+
+countPassProps : List PropResult -> Int
+countPassProps [] = 0
+countPassProps (p::rest) =
+  (if propResultPassed p then 1 else 0) + countPassProps rest
+
+countFailProps : List PropResult -> Int
+countFailProps [] = 0
+countFailProps (p::rest) =
+  (if propResultPassed p then 0 else 1) + countFailProps rest
+
+-- The run OVERALL passed iff every doctest and every property passed.  Drives
+-- both the `summary.ok` field and the result's `isError` flag.
+testReportOk : RunResult -> List PropResult -> Bool
+testReportOk run props = runFailed run == 0
+  && runErrors run == 0
+  && allPropsPass props
+
+-- The full structured result body.  `engine`/`note` carry the interpreter caveat
+-- INTO the payload (not just the tool description) so a consumer that never read
+-- the description is still told these results are eval-only.
+testReportJson : String -> RunResult -> List PropResult -> Json
+testReportJson path run props = jObject
+  [
+    ("file", JString path),
+    ("engine", JString "eval"),
+    (
+      "note",
+      JString "Results are under the interpreter (eval), NOT the native backend — a native-only miscompile is not observed here (see #81). Report these as passing UNDER EVAL, not unqualified.",
+    ),
+    ("doctests", doctestsJson run),
+    ("properties", jArray (map propJson props)),
+    (
+      "summary",
+      jObject [
+        ("passed", JInt (runPassed run + countPassProps props)),
+        ("failed", JInt (runFailed run + runErrors run + countFailProps props)),
+        ("ok", JBool (testReportOk run props)),
+      ],
+    ),
+  ]
+
+-- medaka_test handler: read `file`, run its doctests + props through the
+-- non-printing structured reporter (tools.test_cmd.runTestReport), and return
+-- the per-example/per-property JSON.  isError=true iff any example/property
+-- failed (mirrors medaka_check's convention: isError flags a bad OUTCOME, with
+-- the detail in the structured content).  A missing/unreadable file is an
+-- argument error, not a crash.  Results are eval-only — see the tool
+-- description and the payload's `note`.
+runTestTool : String -> String -> String -> Json -> <IO> Json
+runTestTool runtimeSrc coreSrc stdlibDir args = match fieldStr "file" args
+  None => toolArgError "medaka_test: missing or invalid argument — require 'file' (string)"
+  Some path => match readFile path
+    Err e => toolArgError (stringConcat ["medaka_test: cannot read file '", path, "': ", e])
+    Ok tsrc =>
+      let (run, props) = runTestReport runtimeSrc coreSrc path tsrc stdlibDir
+      toolTextResult
+        (stringify (testReportJson path run props))
+        (not (testReportOk run props))
 
 -- ── tools/call handler ───────────────────────────────────────────────────────
 

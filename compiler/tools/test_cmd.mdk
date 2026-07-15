@@ -33,7 +33,7 @@
 import frontend.ast.{Decl, DData, DInterface, Expr}
 import frontend.parser.{parse, parseLocated}
 import frontend.desugar.{desugar}
-import driver.loader.{loadProgram}
+import driver.loader.{loadProgram, entrySearchRoots}
 import driver.build_cmd.{readPreludeFile}
 import types.typecheck.{elaborateOne, elaborateModules}
 import frontend.lexer.{collectComments}
@@ -49,7 +49,7 @@ import eval.eval.{
 import tools.doctest.{
   Example,
   ExResult(..),
-  RunResult,
+  RunResult(..),
   extractExamples,
   buildSynthResults,
   buildSynthDecls,
@@ -63,7 +63,7 @@ import tools.doctest.{
   exampleLine,
   synthName,
 }
-import tools.prop_runner.{runAllProps, hasProps}
+import tools.prop_runner.{runAllProps, hasProps, runAllPropsResults, PropResult}
 import tools.test_runner.{collectTests, runOneTest, hasTests}
 import support.util.{listLen}
 import support.path.{dirOf}
@@ -415,3 +415,80 @@ testFailSuffix failed errors
   | failed > 0 || errors > 0 =
     " (\{intToString failed} failed, \{intToString errors} errors)"
   | otherwise = ""
+
+-- ── structured (non-printing) report — for `medaka mcp`'s medaka_test (#252) ──
+-- Returns the doctest RunResult (per-example ExResult details) plus a PropResult
+-- per property for `target`, WITHOUT printing anything: the human `medaka test`
+-- path (runTest/driveAll above) is left entirely intact.  It reuses the SAME
+-- drivers — runChosen for doctests, the prop single/multi split for props — so
+-- what medaka_test decides can never diverge from what `medaka test` would
+-- decide, only how it is reported.  The prelude sources are parsed+desugared
+-- here (mirroring runTest), and the module-search roots are derived exactly as
+-- the CLI does (entry dir + project root, then stdlib).
+--
+-- ⚠️ Results are under the INTERPRETER (eval) — a native-only miscompile is
+-- invisible here (see #81); the CALLER must present them as "passes under eval",
+-- never an unqualified pass.  The `test "…"` phase is intentionally NOT reported
+-- (medaka_test covers doctests + props, per #252); a file's `test "…"` decls are
+-- run only by the human `medaka test`.
+export runTestReport : String -> String -> String -> String -> String -> <IO> (RunResult, List PropResult)
+runTestReport runtimeSrc coreSrc target tsrc stdlibDir =
+  let runtimeDecls = desugar (parse runtimeSrc)
+  let coreDecls = desugar (parse coreSrc)
+  let roots = entrySearchRoots (dirOf target) ++ [stdlibDir]
+  let userDecls = desugar (parse tsrc)
+  let doctestRun = doctestReport runtimeDecls coreDecls target tsrc userDecls roots
+  let propResults = propsReport runtimeDecls coreDecls target userDecls roots
+  (doctestRun, propResults)
+
+-- Doctest phase as pure data: extraction + runChosen, minus reportDoctests'
+-- printing.  A file with zero doctests yields the empty RunResult.
+doctestReport : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO> RunResult
+doctestReport runtimeDecls coreDecls target tsrc userDecls roots =
+  let examples = extractExamples (collectComments tsrc)
+  match examples
+    [] => RunResult 0 0 0 0 []
+    _ =>
+      let synthResults = buildSynthResults examples
+      let synthDecls = buildSynthDecls synthResults
+      runChosen
+        runtimeDecls
+        coreDecls
+        target
+        userDecls
+        roots
+        examples
+        synthDecls
+        synthResults
+
+-- Prop phase as pure data: same single-file/multi-module split as runProps, but
+-- calling runAllPropsResults (silent) instead of runAllProps (printing).
+propsReport : List Decl -> List Decl -> String -> List Decl -> List String -> <IO> List PropResult
+propsReport runtimeDecls coreDecls target userDecls roots
+  | not (hasProps userDecls) = []
+  | hasUseDecls userDecls =
+    propsReportMulti runtimeDecls coreDecls target userDecls roots
+  | otherwise = propsReportSingle runtimeDecls coreDecls userDecls
+
+propsReportSingle : List Decl -> List Decl -> List Decl -> <IO> List PropResult
+propsReportSingle runtimeDecls coreDecls userDecls =
+  let userNames = funNamesOf userDecls
+  let livePrelude = if programIsCore userDecls then
+    []
+  else
+    dropShadowedExp userNames coreDecls
+  let elaborated = elaborateModules runtimeDecls livePrelude [("__user__", userDecls)]
+  let env = evalModulesRootEnvWith (testCapableExterns ()) (fst elaborated) (snd elaborated)
+  let rootProps = match lookupModuleDecls "__user__" (snd elaborated)
+    Some decls => decls
+    None => userDecls
+  runAllPropsResults env rootProps
+
+propsReportMulti : List Decl -> List Decl -> String -> List Decl -> List String -> <IO> List PropResult
+propsReportMulti runtimeDecls coreDecls target userDecls roots = match loadProgram target roots
+  Err _ => []
+  Ok mods =>
+    let elaborated = elaborateModules runtimeDecls coreDecls (map desugarPair mods)
+    let env = evalModulesRootEnvWith (testCapableExterns ()) (fst elaborated) (snd elaborated)
+    let rootProps = elaboratedRootProps target (snd elaborated) userDecls
+    runAllPropsResults env rootProps
