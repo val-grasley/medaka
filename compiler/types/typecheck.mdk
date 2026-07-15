@@ -1733,6 +1733,28 @@ crossModuleMethodConstraintsRef = Ref []
 crossModuleMethodConstraintsQualRef : Ref (List ((String, String), List Int))
 crossModuleMethodConstraintsQualRef = Ref []
 
+-- ── the ONE lifecycle owner for the six cross-module accumulators (#143/#144) ──
+-- These six deliberately SURVIVE the per-module `resetState` (so dict arities/ifaces
+-- cross module boundaries within one graph — see the declaration comments above), but
+-- they must NOT survive a whole multi-module RUN: a long-lived process (LSP, playground,
+-- snapshot runner) drives the analyze/elaborate path repeatedly, and without a per-run
+-- reset run K+1 seeds `funConstraintsRef`/`funConstraintIfacesRef` from run K's residue
+-- (checkModuleFullImpl reads them for the FIRST module before any fresh snapshot lands),
+-- while the `*Qual` mirrors are prepend-appended and never truncated → unbounded growth.
+-- Give them exactly ONE reset owner, called at the top of EVERY multi-module entry
+-- (`checkModules`, `checkModulesDiags`, `checkModulesEntryFull`, `elaborateModules`), so
+-- the next entry added cannot silently miss one — and so all six are cleared symmetrically
+-- (the pre-#144 elaborateModules clear block omitted `crossModuleFunConstraintIfacesRef`).
+-- Scoped to exactly these six; do NOT fold into `resetState` (they must survive THAT).
+resetCrossModuleState : Unit -> Unit
+resetCrossModuleState _ =
+  let _ = setRef crossModuleFunConstraintsRef []
+  let _ = setRef crossModuleFunConstraintsQualRef []
+  let _ = setRef crossModuleFunConstraintIfacesRef []
+  let _ = setRef crossModuleFunConstraintIfacesQualRef []
+  let _ = setRef crossModuleMethodConstraintsRef []
+  setRef crossModuleMethodConstraintsQualRef []
+
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
 
@@ -6995,8 +7017,8 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let implTable = buildImplTable prog2
   let keyTable = buildKeyTable prog2
   let _ = resolveSites implTable keyTable (returnPosMethodNames prog2) pendingSites.value
-  let _ = resolveBinopSites implTable keyTable pendingBinopSites.value
-  let _ = resolveUnopSites implTable keyTable pendingUnopSites.value
+  let _ = resolveOpSites True implTable keyTable pendingBinopSites.value
+  let _ = resolveOpSites False implTable keyTable pendingUnopSites.value
   let _ = resolveArithSites pendingArithSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps prog2 implTable pendingDictApps.value
@@ -7856,11 +7878,17 @@ resolveArithSite dref m = match dref.value
     _ => ()
   _ => ()
 
-resolveBinopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> Unit
-resolveBinopSites _ _ [] = ()
-resolveBinopSites implTable keyTable ((method, tagRef, operandMono, inImpl, encl)::rest) =
-  let _ = resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl
-  resolveBinopSites implTable keyTable rest
+-- EBinOp and EUnOp share ONE dict-route resolution family
+-- (resolveOpSites/resolveOpSite/stampOpRoute/opDictVarOf), selected by an `isBinop`
+-- flag (Roadmap #18c collapsed the binop/unop mirror pair — unopMethodApp already
+-- reused binopRouteSplit, proving the shapes unify).  The two paths differ in exactly
+-- two flag-keyed places: the dict-var-of policy (opDictVarOf) and the RKey stamp
+-- (stampOpRoute — its builtin-head guard and Ord-style innerDefaultMethod reduction).
+resolveOpSites : Bool -> List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> Unit
+resolveOpSites _ _ _ [] = ()
+resolveOpSites isBinop implTable keyTable ((method, tagRef, operandMono, inImpl, encl)::rest) =
+  let _ = resolveOpSite isBinop implTable keyTable method tagRef operandMono inImpl encl
+  resolveOpSites isBinop implTable keyTable rest
 
 -- G4: an `==`/`<`/… INSIDE an impl body ([inImpl]) whose operand is the enclosing
 -- impl's abstract `requires`-constrained tyvar routes RDict that impl's element dict
@@ -7912,17 +7940,29 @@ resolveBinopSites implTable keyTable ((method, tagRef, operandMono, inImpl, encl
 -- What does NOT: `++` on an impl's abstract `requires`-bound tyvar — it keeps the
 -- pre-#18a builtin behaviour exactly (correct for List/String, which is every such
 -- site in the tree today), so this is a residual, not a regression.
-binopDictVarOf : String -> Mono -> Bool -> String -> Option String
-binopDictVarOf "append" m _ encl = enclDictVarOf m encl
-binopDictVarOf _ m inImpl encl
+-- BINOP path (`isBinop`): `append` → enclDictVarOf even when inImpl (Roadmap #18a
+-- residual, above); any other method → activeDictVarOf when inImpl, else enclDictVarOf.
+-- UNOP path (not `isBinop`): ALWAYS enclDictVarOf.  Roadmap #18a/#45 landmine (same
+-- shape as the `append` residual): routing `-x` through activeDictVarOf can make
+-- usesImplDict true for a method for the FIRST time, prepending a dict param that
+-- shifts the impl's arg-dispatch index without re-offsetting the VTypedImpl's
+-- discriminating indices — dispatch then tag-checks the dict instead of the receiver.
+-- So `-x` on an impl's own abstract `requires`-bound tyvar stays on the structural
+-- builtin (RNone) via a top-level fn's own declared constraint slot, never
+-- activeDictVarOf — a residual, not a regression (mirrors the `++` residual exactly).
+opDictVarOf : Bool -> String -> Mono -> Bool -> String -> Option String
+opDictVarOf True "append" m _ encl = enclDictVarOf m encl
+opDictVarOf True _ m inImpl encl
   | inImpl = activeDictVarOf m
   | otherwise = enclDictVarOf m encl
+opDictVarOf False _ m _ encl = enclDictVarOf m encl
 
-resolveBinopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> Unit
-resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl = match binopDictVarOf method operandMono inImpl encl
+resolveOpSite : Bool -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> Unit
+resolveOpSite isBinop implTable keyTable method tagRef operandMono inImpl encl = match opDictVarOf isBinop method operandMono inImpl encl
   Some dname => setRef tagRef (RDict dname)
   None => match headTyconMono operandMono
-    Some tag => stampBinopRoute implTable keyTable method tagRef operandMono tag
+    Some tag =>
+      stampOpRoute isBinop implTable keyTable method tagRef operandMono tag
     None => ()
 
 -- Native Gap C: a tuple (or other parametric-with-requires) Eq/Ord impl carries
@@ -7946,67 +7986,34 @@ resolveBinopSite implTable keyTable method tagRef operandMono inImpl encl = matc
 -- RNone, which the backend lowered as a raw pointer `icmp` (silently WRONG result) /
 -- SIGSEGV on the by-name `lt` path.  Concrete Ord (no requires) keeps empty reqs →
 -- the plain `@mdk_default_<op>_<tag>(a, b)` direct call, unchanged.
-stampBinopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> Unit
-stampBinopRoute implTable keyTable method tagRef operandMono tag
-  | binopBuiltinHead method tag = ()
-  | otherwise =
+-- Flag-keyed differences between the two paths:
+--   * builtin-head guard — BINOP: `binopBuiltinHead method tag` (append also treats
+--     List as builtin); UNOP: `binopPrimitiveHead tag` (a ground Int/Float stays on
+--     evalUnop's VInt/VFloat fast path, the unop analogue of the comparison guard).
+--   * dictMethod — BINOP reduces an Ord-style interface DEFAULT to its inner
+--     same-interface `compare` (innerDefaultMethod) when the head does not impl the
+--     method directly; UNOP has no interface-level default to reduce through (every
+--     `impl Num`, including Int/Float's own `negate a = 0 - a`, defines `negate`
+--     directly), so dictMethod is just `method`.
+stampOpRoute : Bool -> List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> Unit
+stampOpRoute isBinop implTable keyTable method tagRef operandMono tag =
+  let isBuiltin = if isBinop then
+    binopBuiltinHead method tag
+  else
+    binopPrimitiveHead tag
+  if isBuiltin then ()
+  else
     let key = fromOption tag (keyForSite keyTable method operandMono)
-    let dictMethod = if implDefinesMethodAt implTable method tag then
-      method
+    let dictMethod = if isBinop then
+      if implDefinesMethodAt implTable method tag then method else innerDefaultMethod method
     else
-      innerDefaultMethod method
+      method
     let reqs = argImplDictRoutesFor implTable dictMethod tag operandMono
     setRef tagRef (RKey key reqs)
 -- Gap #21 (CLOSED): element reqs are now forwarded unconditionally on both eval and
 -- emit paths.  The impl method `eq`/`compare` carries leading `$dict_*` params
 -- (resolveArgStamps runs on both paths); emitter applies them; eval's methodAtNarrow
 -- forwards dict reqs (like RDictFwd) truncated to the matched impl's reqCount.
-
--- Roadmap #18c: the EUnOp analogue of resolveBinopSites/resolveBinopSite/
--- stampBinopRoute for `-` → `negate`.  Only ONE method ever reaches here
--- (unopMethod only routes `-`), so there is no per-method dispatch table like
--- binopDictVarOf's `"append"` case, and no Ord-style innerDefaultMethod
--- reduction — every `impl Num` (including Int/Float's own, `negate a = 0 - a`)
--- defines `negate` directly, no interface-level default body to reduce through.
-resolveUnopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono, Bool, String) -> Unit
-resolveUnopSites _ _ [] = ()
-resolveUnopSites implTable keyTable ((method, tagRef, operandMono, inImpl, encl)::rest) =
-  let _ = resolveUnopSite implTable keyTable method tagRef operandMono inImpl encl
-  resolveUnopSites implTable keyTable rest
-
--- Roadmap #18a/#45 landmine (see binopDictVarOf above): routing THROUGH an
--- impl's own `requires` element dict (activeDictVarOf) can make usesImplDict
--- true for a method for the FIRST time, prepending a dict param that shifts
--- the impl's arg-dispatch index without re-offsetting the VTypedImpl's
--- discriminating indices — dispatch then tag-checks the dict instead of the
--- receiver.  Rather than wait to hit that wall, `unopDictVarOf` takes the same
--- narrow escape #18a landed on for `append`: ALWAYS route via enclDictVarOf
--- (a top-level fn's own declared constraint slot — a different, already-sound
--- dict source), never activeDictVarOf, regardless of `inImpl`.  So `-x` on an
--- impl's own abstract `requires`-bound tyvar stays on the structural builtin
--- (RNone) instead of routing the impl's threaded element dict — a residual,
--- not a regression (mirrors the pre-existing `++` residual exactly).
-unopDictVarOf : String -> Mono -> Bool -> String -> Option String
-unopDictVarOf _ m _ encl = enclDictVarOf m encl
-
-resolveUnopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> Bool -> String -> Unit
-resolveUnopSite implTable keyTable method tagRef operandMono inImpl encl = match unopDictVarOf method operandMono inImpl encl
-  Some dname => setRef tagRef (RDict dname)
-  None => match headTyconMono operandMono
-    Some tag => stampUnopRoute implTable keyTable method tagRef operandMono tag
-    None => ()
-
--- A ground Int/Float operand stays on the structural builtin (evalUnop's
--- VInt/VFloat fast paths, unchanged) — mirrors stampBinopRoute's
--- binopPrimitiveHead guard for the comparison operators.  Any OTHER concrete
--- head (a user `impl Num MyVector`) routes RKey to the user's `negate`.
-stampUnopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> Unit
-stampUnopRoute implTable keyTable method tagRef operandMono tag
-  | binopPrimitiveHead tag = ()
-  | otherwise =
-    let key = fromOption tag (keyForSite keyTable method operandMono)
-    let reqs = argImplDictRoutesFor implTable method tag operandMono
-    setRef tagRef (RKey key reqs)
 
 -- The inner same-interface method an interface DEFAULT reduces to, supplying the
 -- element `requires` dicts.  Ord's `lt`/`gt`/`lte`/`gte`/`min`/`max` defaults all
@@ -12990,6 +12997,7 @@ checkModulesGo baseSeed coreV depEnv accData ((mid, prog)::rest) =
 -- modules = (moduleId, desugared program) in dependency-first order.
 export checkModules : List Decl -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
 checkModules runtimeDecls coreDecls modules =
+  let _ = resetCrossModuleState ()
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
@@ -13076,6 +13084,7 @@ checkModulesDiagsGo baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
 
 export checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
 checkModulesDiags runtimeDecls coreDecls modules =
+  let _ = resetCrossModuleState ()
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
@@ -13112,6 +13121,7 @@ entryOwnSchemes (_::rest) = entryOwnSchemes rest
 -- more than one module.
 checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
 checkModulesEntryFull runtimeDecls coreDecls modules =
+  let _ = resetCrossModuleState ()
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
@@ -13227,11 +13237,7 @@ elaborateModules runtimeDecls coreDecls modulesIn =
   -- SPELLING, not a second binding.
   let modules = renameAliasedMethods coreDecls modulesIn
   let _ = setRef mainSchemeRef None
-  let _ = setRef crossModuleFunConstraintsRef []
-  let _ = setRef crossModuleFunConstraintsQualRef []
-  let _ = setRef crossModuleFunConstraintIfacesQualRef []
-  let _ = setRef crossModuleMethodConstraintsRef []
-  let _ = setRef crossModuleMethodConstraintsQualRef []
+  let _ = resetCrossModuleState ()
   let allDecls = coreDecls ++ flatMap snd modules
   -- P0-18: recover the definer-shadow map from the (already-mangled on the emit path)
   -- decls BEFORE marking/typecheck reads it.  Empty on the un-mangled path.  Set once
@@ -13636,8 +13642,8 @@ elabModuleStamp mid seedVars accData implDecls prog =
   let _ = setNumlitFloats ()  -- PLAN.md #11: stamp Float-typed int literals (per module, before dictPass)
   let stampImplTable = buildImplTable implDecls
   let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
-  let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
-  let _ = resolveUnopSites stampImplTable (buildKeyTable implDecls) pendingUnopSites.value
+  let _ = resolveOpSites True stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
+  let _ = resolveOpSites False stampImplTable (buildKeyTable implDecls) pendingUnopSites.value
   let _ = resolveArithSites pendingArithSites.value
   let _ = resolveArgStamps stampImplTable (buildKeyTable implDecls) pendingArgStamps.value
   let _ = resolveRLocalSites implDecls stampImplTable (buildKeyTable implDecls) pendingRLocalSites.value
