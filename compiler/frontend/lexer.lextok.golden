@@ -40,6 +40,8 @@ DOT
 IDENT "util"
 DOT_LBRACE
 IDENT "joinWith"
+COMMA
+IDENT "compareDecMag"
 RBRACE
 NEWLINE
 PUBLIC
@@ -1775,62 +1777,6 @@ DEDENT
 NEWLINE
 DEDENT
 NEWLINE
-IDENT "dropZerosL"
-COLON
-UPPER "List"
-UPPER "Char"
-ARROW
-UPPER "List"
-UPPER "Char"
-NEWLINE
-IDENT "dropZerosL"
-LPAREN
-CHAR "0"
-CONS
-IDENT "rest"
-RPAREN
-EQUAL
-IDENT "dropZerosL"
-IDENT "rest"
-NEWLINE
-IDENT "dropZerosL"
-IDENT "xs"
-EQUAL
-IDENT "xs"
-NEWLINE
-IDENT "cleanDigits"
-COLON
-UPPER "Array"
-UPPER "Char"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "String"
-NEWLINE
-IDENT "cleanDigits"
-IDENT "src"
-IDENT "start"
-IDENT "endp"
-EQUAL
-INDENT
-IDENT "stringFromChars"
-LPAREN
-IDENT "arrayFromList"
-LPAREN
-IDENT "dropZerosL"
-LPAREN
-IDENT "collectNoUs"
-IDENT "src"
-IDENT "start"
-IDENT "endp"
-RPAREN
-RPAREN
-RPAREN
-NEWLINE
-DEDENT
-NEWLINE
 IDENT "intLitOverflows"
 COLON
 UPPER "Array"
@@ -1848,31 +1794,16 @@ IDENT "start"
 IDENT "endp"
 EQUAL
 INDENT
-LET
-IDENT "ds"
-EQUAL
-IDENT "cleanDigits"
+IDENT "compareDecMag"
+LPAREN
+IDENT "substrNoUs"
 IDENT "src"
 IDENT "start"
 IDENT "endp"
-NEWLINE
-LET
-IDENT "n"
-EQUAL
-IDENT "stringLength"
-IDENT "ds"
-NEWLINE
-IDENT "n"
-GT
-INT 19
-OR
-IDENT "n"
-EQ_EQ
-INT 19
-AND
-IDENT "ds"
-GT
+RPAREN
 STRING "4611686018427387904"
+EQ_EQ
+UPPER "Gt"
 NEWLINE
 DEDENT
 NEWLINE

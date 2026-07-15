@@ -350,6 +350,80 @@ utf8Len s =
   let arr = stringToChars s
   utf8LenGo arr (arrayLength arr) 0 0
 
+-- ── Decimal-integer magnitude compare + overflow-checked parse ────────────
+-- The 63-bit tagged `Int` (runtime/medaka_rt.c) WRAPS on overflow, so a literal
+-- consumer cannot detect an out-of-range value by parsing it — the arithmetic
+-- silently wraps.  These helpers work on the digit STRING instead: compare
+-- magnitudes without arithmetic, and parse only after that compare proves the
+-- value fits.  Both assume ASCII decimal digits '0'..'9' (`parseDecChecked` also
+-- skips '_' group separators); neither validates non-digit input.
+
+-- Index of the first significant digit (leading zeros skipped), but never past
+-- the last char, so an all-zero string normalizes to a single "0".
+decMagFirstSig : Array Char -> Int -> Int -> Int
+decMagFirstSig cs n i
+  | i + 1 >= n = i
+  | arrayGetUnsafe i cs == '0' = decMagFirstSig cs n (i + 1)
+  | otherwise = i
+
+decMagNorm : String -> String
+decMagNorm s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  stringFromChars (arraySubChars cs (decMagFirstSig cs n 0) n)
+
+{- | Compare two decimal digit strings by numeric magnitude, ignoring leading
+     zeros.  At equal significant length ASCII order coincides with numeric
+     order, so this needs no arithmetic and therefore never wraps.
+
+     > compareDecMag "42" "9"
+     Gt
+     > compareDecMag "007" "7"
+     Eq
+     > compareDecMag "123" "1230"
+     Lt -}
+export compareDecMag : String -> String -> Ordering
+compareDecMag a b =
+  let na = decMagNorm a
+  let nb = decMagNorm b
+  let la = stringLength na
+  let lb = stringLength nb
+  if la < lb then Lt else if la > lb then Gt else stringCompare na nb
+
+decDigitsNoUs : Array Char -> Int -> Int -> List Char
+decDigitsNoUs cs n i
+  | i >= n = []
+  | arrayGetUnsafe i cs == '_' = decDigitsNoUs cs n (i + 1)
+  | otherwise = arrayGetUnsafe i cs :: decDigitsNoUs cs n (i + 1)
+
+decFold : List Char -> Int -> Int
+decFold [] acc = acc
+decFold (c::cs) acc = decFold cs (acc * 10 + (charCode c - 48))
+
+{- | Parse a decimal integer string to `Int`, or `None` when its magnitude
+     exceeds the positive `Int` maximum (2^62 - 1 = 4611686018427387903) — the
+     range in which naive accumulation would silently WRAP.  '_' group separators
+     and leading zeros are accepted; the input is assumed ASCII digits otherwise.
+
+     > parseDecChecked "1_000"
+     Some 1000
+     > parseDecChecked "007"
+     Some 7
+     > parseDecChecked "4611686018427387903"
+     Some 4611686018427387903
+     > parseDecChecked "4611686018427387904"
+     None -}
+export parseDecChecked : String -> Option Int
+parseDecChecked s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  let digs = decDigitsNoUs cs n 0
+  let ds = stringFromChars (arrayFromList digs)
+  if compareDecMag ds "4611686018427387903" == Gt then
+    None
+  else
+    Some (decFold digs 0)
+
 -- ── Canonical compiler-internal names ─────────────────────────────────────
 -- Names produced in one stage and consumed in another (cross-module contract);
 -- defined once here so the stages can't silently drift out of agreement.

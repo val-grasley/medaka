@@ -1,5 +1,5 @@
 # META
-source_lines=367
+source_lines=441
 stages=DESUGAR,MARK
 # SOURCE
 -- Shared internal helpers for the self-hosted compiler stages.  compiler
@@ -354,6 +354,80 @@ utf8Len s =
   let arr = stringToChars s
   utf8LenGo arr (arrayLength arr) 0 0
 
+-- ── Decimal-integer magnitude compare + overflow-checked parse ────────────
+-- The 63-bit tagged `Int` (runtime/medaka_rt.c) WRAPS on overflow, so a literal
+-- consumer cannot detect an out-of-range value by parsing it — the arithmetic
+-- silently wraps.  These helpers work on the digit STRING instead: compare
+-- magnitudes without arithmetic, and parse only after that compare proves the
+-- value fits.  Both assume ASCII decimal digits '0'..'9' (`parseDecChecked` also
+-- skips '_' group separators); neither validates non-digit input.
+
+-- Index of the first significant digit (leading zeros skipped), but never past
+-- the last char, so an all-zero string normalizes to a single "0".
+decMagFirstSig : Array Char -> Int -> Int -> Int
+decMagFirstSig cs n i
+  | i + 1 >= n = i
+  | arrayGetUnsafe i cs == '0' = decMagFirstSig cs n (i + 1)
+  | otherwise = i
+
+decMagNorm : String -> String
+decMagNorm s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  stringFromChars (arraySubChars cs (decMagFirstSig cs n 0) n)
+
+{- | Compare two decimal digit strings by numeric magnitude, ignoring leading
+     zeros.  At equal significant length ASCII order coincides with numeric
+     order, so this needs no arithmetic and therefore never wraps.
+
+     > compareDecMag "42" "9"
+     Gt
+     > compareDecMag "007" "7"
+     Eq
+     > compareDecMag "123" "1230"
+     Lt -}
+export compareDecMag : String -> String -> Ordering
+compareDecMag a b =
+  let na = decMagNorm a
+  let nb = decMagNorm b
+  let la = stringLength na
+  let lb = stringLength nb
+  if la < lb then Lt else if la > lb then Gt else stringCompare na nb
+
+decDigitsNoUs : Array Char -> Int -> Int -> List Char
+decDigitsNoUs cs n i
+  | i >= n = []
+  | arrayGetUnsafe i cs == '_' = decDigitsNoUs cs n (i + 1)
+  | otherwise = arrayGetUnsafe i cs :: decDigitsNoUs cs n (i + 1)
+
+decFold : List Char -> Int -> Int
+decFold [] acc = acc
+decFold (c::cs) acc = decFold cs (acc * 10 + (charCode c - 48))
+
+{- | Parse a decimal integer string to `Int`, or `None` when its magnitude
+     exceeds the positive `Int` maximum (2^62 - 1 = 4611686018427387903) — the
+     range in which naive accumulation would silently WRAP.  '_' group separators
+     and leading zeros are accepted; the input is assumed ASCII digits otherwise.
+
+     > parseDecChecked "1_000"
+     Some 1000
+     > parseDecChecked "007"
+     Some 7
+     > parseDecChecked "4611686018427387903"
+     Some 4611686018427387903
+     > parseDecChecked "4611686018427387904"
+     None -}
+export parseDecChecked : String -> Option Int
+parseDecChecked s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  let digs = decDigitsNoUs cs n 0
+  let ds = stringFromChars (arrayFromList digs)
+  if compareDecMag ds "4611686018427387903" == Gt then
+    None
+  else
+    Some (decFold digs 0)
+
 -- ── Canonical compiler-internal names ─────────────────────────────────────
 -- Names produced in one stage and consumed in another (cross-module contract);
 -- defined once here so the stages can't silently drift out of agreement.
@@ -508,6 +582,19 @@ noneHeadTag = "__none__"
 (DFunDef false "utf8LenGo" ((PVar "arr") (PVar "len") (PVar "i") (PVar "acc")) (EIf (EBinOp ">=" (EVar "i") (EVar "len")) (EVar "acc") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "utf8LenGo") (EVar "arr")) (EVar "len")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "acc") (EApp (EVar "utf8CharWidth") (EApp (EVar "charCode") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "utf8Len" (TyFun (TyCon "String") (TyCon "Int")))
 (DFunDef false "utf8Len" ((PVar "s")) (EBlock (DoLet false false (PVar "arr") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "utf8LenGo") (EVar "arr")) (EApp (EVar "arrayLength") (EVar "arr"))) (ELit (LInt 0))) (ELit (LInt 0))))))
+(DTypeSig false "decMagFirstSig" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
+(DFunDef false "decMagFirstSig" ((PVar "cs") (PVar "n") (PVar "i")) (EIf (EBinOp ">=" (EBinOp "+" (EVar "i") (ELit (LInt 1))) (EVar "n")) (EVar "i") (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "0"))) (EApp (EApp (EApp (EVar "decMagFirstSig") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EVar "i") (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "decMagNorm" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "decMagNorm" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "cs"))) (DoExpr (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "arraySubChars") (EVar "cs")) (EApp (EApp (EApp (EVar "decMagFirstSig") (EVar "cs")) (EVar "n")) (ELit (LInt 0)))) (EVar "n"))))))
+(DTypeSig true "compareDecMag" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Ordering"))))
+(DFunDef false "compareDecMag" ((PVar "a") (PVar "b")) (EBlock (DoLet false false (PVar "na") (EApp (EVar "decMagNorm") (EVar "a"))) (DoLet false false (PVar "nb") (EApp (EVar "decMagNorm") (EVar "b"))) (DoLet false false (PVar "la") (EApp (EVar "stringLength") (EVar "na"))) (DoLet false false (PVar "lb") (EApp (EVar "stringLength") (EVar "nb"))) (DoExpr (EIf (EBinOp "<" (EVar "la") (EVar "lb")) (EVar "Lt") (EIf (EBinOp ">" (EVar "la") (EVar "lb")) (EVar "Gt") (EApp (EApp (EVar "stringCompare") (EVar "na")) (EVar "nb")))))))
+(DTypeSig false "decDigitsNoUs" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Char"))))))
+(DFunDef false "decDigitsNoUs" ((PVar "cs") (PVar "n") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "_"))) (EApp (EApp (EApp (EVar "decDigitsNoUs") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (EApp (EApp (EApp (EVar "decDigitsNoUs") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "decFold" (TyFun (TyApp (TyCon "List") (TyCon "Char")) (TyFun (TyCon "Int") (TyCon "Int"))))
+(DFunDef false "decFold" ((PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "decFold" ((PCons (PVar "c") (PVar "cs")) (PVar "acc")) (EApp (EApp (EVar "decFold") (EVar "cs")) (EBinOp "+" (EBinOp "*" (EVar "acc") (ELit (LInt 10))) (EBinOp "-" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48))))))
+(DTypeSig true "parseDecChecked" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int"))))
+(DFunDef false "parseDecChecked" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "cs"))) (DoLet false false (PVar "digs") (EApp (EApp (EApp (EVar "decDigitsNoUs") (EVar "cs")) (EVar "n")) (ELit (LInt 0)))) (DoLet false false (PVar "ds") (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EVar "digs")))) (DoExpr (EIf (EBinOp "==" (EApp (EApp (EVar "compareDecMag") (EVar "ds")) (ELit (LString "4611686018427387903"))) (EVar "Gt")) (EVar "None") (EApp (EVar "Some") (EApp (EApp (EVar "decFold") (EVar "digs")) (ELit (LInt 0))))))))
 (DTypeSig true "fallthroughName" (TyCon "String"))
 (DFunDef false "fallthroughName" () (ELit (LString "__fallthrough__")))
 (DTypeSig true "noneHeadTag" (TyCon "String"))
@@ -651,6 +738,19 @@ noneHeadTag = "__none__"
 (DFunDef false "utf8LenGo" ((PVar "arr") (PVar "len") (PVar "i") (PVar "acc")) (EIf (EBinOp ">=" (EVar "i") (EVar "len")) (EVar "acc") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "utf8LenGo") (EVar "arr")) (EVar "len")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "acc") (EApp (EVar "utf8CharWidth") (EApp (EVar "charCode") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "utf8Len" (TyFun (TyCon "String") (TyCon "Int")))
 (DFunDef false "utf8Len" ((PVar "s")) (EBlock (DoLet false false (PVar "arr") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "utf8LenGo") (EVar "arr")) (EApp (EVar "arrayLength") (EVar "arr"))) (ELit (LInt 0))) (ELit (LInt 0))))))
+(DTypeSig false "decMagFirstSig" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
+(DFunDef false "decMagFirstSig" ((PVar "cs") (PVar "n") (PVar "i")) (EIf (EBinOp ">=" (EBinOp "+" (EVar "i") (ELit (LInt 1))) (EVar "n")) (EVar "i") (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "0"))) (EApp (EApp (EApp (EVar "decMagFirstSig") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EVar "i") (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "decMagNorm" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "decMagNorm" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "cs"))) (DoExpr (EApp (EVar "stringFromChars") (EApp (EApp (EApp (EVar "arraySubChars") (EVar "cs")) (EApp (EApp (EApp (EVar "decMagFirstSig") (EVar "cs")) (EVar "n")) (ELit (LInt 0)))) (EVar "n"))))))
+(DTypeSig true "compareDecMag" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Ordering"))))
+(DFunDef false "compareDecMag" ((PVar "a") (PVar "b")) (EBlock (DoLet false false (PVar "na") (EApp (EVar "decMagNorm") (EVar "a"))) (DoLet false false (PVar "nb") (EApp (EVar "decMagNorm") (EVar "b"))) (DoLet false false (PVar "la") (EApp (EVar "stringLength") (EVar "na"))) (DoLet false false (PVar "lb") (EApp (EVar "stringLength") (EVar "nb"))) (DoExpr (EIf (EBinOp "<" (EVar "la") (EVar "lb")) (EVar "Lt") (EIf (EBinOp ">" (EVar "la") (EVar "lb")) (EVar "Gt") (EApp (EApp (EVar "stringCompare") (EVar "na")) (EVar "nb")))))))
+(DTypeSig false "decDigitsNoUs" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Char"))))))
+(DFunDef false "decDigitsNoUs" ((PVar "cs") (PVar "n") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EListLit) (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "_"))) (EApp (EApp (EApp (EVar "decDigitsNoUs") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (EApp (EApp (EApp (EVar "decDigitsNoUs") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "decFold" (TyFun (TyApp (TyCon "List") (TyCon "Char")) (TyFun (TyCon "Int") (TyCon "Int"))))
+(DFunDef false "decFold" ((PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "decFold" ((PCons (PVar "c") (PVar "cs")) (PVar "acc")) (EApp (EApp (EVar "decFold") (EVar "cs")) (EBinOp "+" (EBinOp "*" (EVar "acc") (ELit (LInt 10))) (EBinOp "-" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48))))))
+(DTypeSig true "parseDecChecked" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int"))))
+(DFunDef false "parseDecChecked" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "cs"))) (DoLet false false (PVar "digs") (EApp (EApp (EApp (EVar "decDigitsNoUs") (EVar "cs")) (EVar "n")) (ELit (LInt 0)))) (DoLet false false (PVar "ds") (EApp (EVar "stringFromChars") (EApp (EVar "arrayFromList") (EVar "digs")))) (DoExpr (EIf (EBinOp "==" (EApp (EApp (EVar "compareDecMag") (EVar "ds")) (ELit (LString "4611686018427387903"))) (EVar "Gt")) (EVar "None") (EApp (EVar "Some") (EApp (EApp (EVar "decFold") (EVar "digs")) (ELit (LInt 0))))))))
 (DTypeSig true "fallthroughName" (TyCon "String"))
 (DFunDef false "fallthroughName" () (ELit (LString "__fallthrough__")))
 (DTypeSig true "noneHeadTag" (TyCon "String"))

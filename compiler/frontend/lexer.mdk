@@ -39,7 +39,7 @@ import support.char.{
   isAlnum,
   isHexDigit,
 }
-import support.util.{joinWith}
+import support.util.{joinWith, compareDecMag}
 
 public export data Token =
   | TInt Int
@@ -407,22 +407,13 @@ parseIntFrom src p endp acc
 -- 2^62 = 4611686018427387904 (19 digits). A bare positive 2^62 still wraps
 -- (the lexer can't see the sign); 2^62+1 and above are rejected outright.
 -- `parseIntFrom` accumulates in the compiler's own 63-bit `Int` and would wrap,
--- so overflow is detected on the digit STRING (length, then lexicographic order,
--- which coincides with numeric order at equal length), never by arithmetic.
-dropZerosL : List Char -> List Char
-dropZerosL ('0'::rest) = dropZerosL rest
-dropZerosL xs = xs
-
--- Digits of the literal with underscores AND leading zeros removed.
-cleanDigits : Array Char -> Int -> Int -> String
-cleanDigits src start endp =
-  stringFromChars (arrayFromList (dropZerosL (collectNoUs src start endp)))
-
+-- so overflow is detected on the digit STRING via `compareDecMag` (magnitude
+-- compare with no arithmetic), never by parsing.  `substrNoUs` strips the '_'
+-- separators; `compareDecMag` ignores leading zeros, so the largest admissible
+-- magnitude is exactly 2^62 (anything greater overflows).
 intLitOverflows : Array Char -> Int -> Int -> Bool
 intLitOverflows src start endp =
-  let ds = cleanDigits src start endp
-  let n = stringLength ds
-  n > 19 || n == 19 && ds > "4611686018427387904"
+  compareDecMag (substrNoUs src start endp) "4611686018427387904" == Gt
 
 -- ── Keyword table ───────────────────────────────────────────────────────
 -- True/False are NOT here: they start uppercase, so the OCaml lexer emits them

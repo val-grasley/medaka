@@ -17,7 +17,6 @@ bumpFrame : List Int -> List Int
 canEndExpr : Token -> Bool
 canStartAtom : Token -> Bool
 charClose : Array Char -> Int -> Int -> Int
-cleanDigits : Array Char -> Int -> Int -> String
 closeAll : List Int -> Int -> List (Token, Int)
 closeAllPairs : List Int -> Int -> List (Token, Int, Int)
 closeBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
@@ -35,7 +34,6 @@ digitVal : Char -> Int
 digitsEnd : Array Char -> Int -> Int -> Int
 dropCharsToStr : Array Char -> Int -> Int -> String
 dropFrame : List Int -> List Int
-dropZerosL : List Char -> List Char
 elseFilter : List (Token, Int) -> List (Token, Int)
 elseFilterPairs : List (Token, Int, Int) -> List (Token, Int, Int)
 emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List RawTok
