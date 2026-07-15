@@ -7760,6 +7760,24 @@ implExistsForHeadGo ((KeyEntry methods tag2 _ _)::rest) name tag
 -- would read `[]`.  Resolving inside the stamp is ordering-immune.  An unconstrained
 -- standalone has no monos ⇒ routesOfMonosTop returns [] immediately (it cannot even
 -- reach its AmbiguousImpl arm) ⇒ `RLocal sym []` ⇒ byte-identical to the pre-S1 stamp.
+-- #156 S3d — resolveRLocalSites is DELIBERATELY NOT routed through `entail`, and DICT-
+-- SEMANTICS §3 conformance REQUIRES that, rather than merely permitting it.  This pass
+-- implements §4 `(var)`'s FIRST premise — binding selection: does this occurrence denote the
+-- module's own standalone `sym` or a shadowed interface method?  (Keyed on the solved receiver
+-- mono, which is why it runs post-inference.)  That decision reads shadow facts — isDefinerShadow,
+-- definerShadowNamesRef — that are NOT components of entailment's domain `(IE, CE, P, π)` (§3
+-- resolution-determinism); they are facts about Γ.  Folding them into the one entailment function
+-- would make it depend on inputs outside its spec-given domain — violating the very law a merge
+-- would invoke.  The tell: the `Some tag` arm treats "a live impl exists" as DO-NOTHING (the name
+-- is a genuine method, dispatched elsewhere) and emits RLocal for the NO-impl case — the inverse of
+-- `entailInst`'s success condition.  "No π to discharge; the name denotes another binding" is not an
+-- evidence statement.  §4 `(var)`'s SECOND premise — the chosen standalone's actual entailment
+-- obligations — IS routed through the one engine: every RLocal payload is filled by routesOfMonosTop
+-- → entail (EKNestedTop).  So the single-entailment-function law holds at 4-of-5 BY CONSTRUCTION; what
+-- stays out is exactly the binding-selection axis §3 never claimed (cf. §8 I1: identity keyed by
+-- binding, not bare name).  ⚠️ implExistsForHead MUST read the same KeyBuckets table entailInst's
+-- keyForSite keys on — a drift between "does an impl exist" and "which impl entails" would be a real
+-- dispatch bug.
 resolveRLocalSites : List Decl -> ImplBuckets -> KeyBuckets -> List PendingEntry -> Unit
 resolveRLocalSites _ _ _ [] = ()
 resolveRLocalSites prog implTable keyTable ((PendingEntry name tagRef am _ kind)::rest) =
