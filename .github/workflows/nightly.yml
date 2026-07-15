@@ -277,13 +277,24 @@ jobs:
       # keeps CI and the dev box on the IDENTICAL launch path with no test-code change;
       # relying on "ubuntu-latest probably ships Chrome" would make an image change
       # someone else's silent infra rot.
-      - name: Install system Google Chrome
+      - name: Ensure Google Chrome is available
         run: |
-          curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update -qq
-          sudo apt-get install -y google-chrome-stable
-          google-chrome-stable --version
+          # ubuntu-latest ships Google Chrome preinstalled — use it when present.
+          # Only fall back to installing if it is absent, and then with a
+          # NON-interactive gpg: plain `gpg --dearmor` opens /dev/tty and dies on
+          # the hosted runner ("cannot open '/dev/tty'"), which is what red'd the
+          # first nightly run. --batch --yes keeps it off the tty.
+          if command -v google-chrome >/dev/null 2>&1; then
+            google-chrome --version
+          elif command -v google-chrome-stable >/dev/null 2>&1; then
+            google-chrome-stable --version
+          else
+            curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/google-chrome.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+            sudo apt-get update -qq
+            sudo apt-get install -y google-chrome-stable
+            google-chrome-stable --version
+          fi
 
       # Same cache as this workflow's other two jobs and ci.yml's gates/wasm/inlang
       # jobs (identical key -> shared cache hits across workflows). build_playground_wasm.sh
