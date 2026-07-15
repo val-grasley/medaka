@@ -165,6 +165,8 @@ parseErrCode msg
   | startsWith "unexpected '\\'" msg = "L-HS-LAMBDA"
   | startsWith "Medaka has no '$'" msg = "L-HS-DOLLAR"
   | startsWith "unexpected character" msg = "L-BAD-CHAR"
+  | startsWith "integer literal too large" msg = "L-INT-OVERFLOW"
+  | startsWith "float literal out of range" msg = "L-FLOAT-OVERFLOW"
   | startsWith "unexpected end of input" msg = "P-UNEXPECTED-EOF"
   | startsWith "unexpected '/='" msg = "P-BAD-NEQ"
   | startsWith "Medaka has no 'case" msg = "P-HS-CASE"

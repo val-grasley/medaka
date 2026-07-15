@@ -1775,6 +1775,107 @@ DEDENT
 NEWLINE
 DEDENT
 NEWLINE
+IDENT "dropZerosL"
+COLON
+UPPER "List"
+UPPER "Char"
+ARROW
+UPPER "List"
+UPPER "Char"
+NEWLINE
+IDENT "dropZerosL"
+LPAREN
+CHAR "0"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+IDENT "dropZerosL"
+IDENT "rest"
+NEWLINE
+IDENT "dropZerosL"
+IDENT "xs"
+EQUAL
+IDENT "xs"
+NEWLINE
+IDENT "cleanDigits"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "cleanDigits"
+IDENT "src"
+IDENT "start"
+IDENT "endp"
+EQUAL
+INDENT
+IDENT "stringFromChars"
+LPAREN
+IDENT "arrayFromList"
+LPAREN
+IDENT "dropZerosL"
+LPAREN
+IDENT "collectNoUs"
+IDENT "src"
+IDENT "start"
+IDENT "endp"
+RPAREN
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "intLitOverflows"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "intLitOverflows"
+IDENT "src"
+IDENT "start"
+IDENT "endp"
+EQUAL
+INDENT
+LET
+IDENT "ds"
+EQUAL
+IDENT "cleanDigits"
+IDENT "src"
+IDENT "start"
+IDENT "endp"
+NEWLINE
+LET
+IDENT "n"
+EQUAL
+IDENT "stringLength"
+IDENT "ds"
+NEWLINE
+IDENT "n"
+GT
+INT 19
+OR
+IDENT "n"
+EQ_EQ
+INT 19
+AND
+IDENT "ds"
+GT
+STRING "4611686018427387904"
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "keywordOrIdent"
 COLON
 UPPER "String"
@@ -3344,6 +3445,126 @@ INT 1
 RPAREN
 RPAREN
 NEWLINE
+IDENT "isExpMarker"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "isExpMarker"
+IDENT "c"
+EQUAL
+IDENT "c"
+EQ_EQ
+CHAR "e"
+OR
+IDENT "c"
+EQ_EQ
+CHAR "E"
+NEWLINE
+IDENT "expEnd"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "expEnd"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+PIPE
+IDENT "p"
+LT
+IDENT "len"
+AND
+IDENT "isExpMarker"
+LPAREN
+IDENT "at"
+IDENT "src"
+IDENT "p"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "q"
+EQUAL
+IF
+IDENT "p"
+PLUS
+INT 1
+LT
+IDENT "len"
+AND
+LPAREN
+IDENT "at"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 1
+RPAREN
+EQ_EQ
+CHAR "+"
+OR
+IDENT "at"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 1
+RPAREN
+EQ_EQ
+CHAR "-"
+RPAREN
+THEN
+INDENT
+IDENT "p"
+PLUS
+INT 2
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "p"
+PLUS
+INT 1
+NEWLINE
+DEDENT
+NEWLINE
+IF
+IDENT "q"
+LT
+IDENT "len"
+AND
+IDENT "isDigit"
+LPAREN
+IDENT "at"
+IDENT "src"
+IDENT "q"
+RPAREN
+THEN
+IDENT "digitsEnd"
+IDENT "src"
+IDENT "len"
+IDENT "q"
+ELSE
+IDENT "p"
+NEWLINE
+DEDENT
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "p"
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "numFinish"
 COLON
 UPPER "Array"
@@ -3383,6 +3604,43 @@ IDENT "pos"
 IDENT "e1"
 IDENT "depth"
 IDENT "id"
+NEWLINE
+PIPE
+IDENT "expEnd"
+IDENT "src"
+IDENT "len"
+IDENT "e1"
+GT
+IDENT "e1"
+EQUAL
+INDENT
+IDENT "floatTokEnd"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+LPAREN
+IDENT "expEnd"
+IDENT "src"
+IDENT "len"
+IDENT "e1"
+RPAREN
+IDENT "depth"
+IDENT "id"
+NEWLINE
+DEDENT
+NEWLINE
+PIPE
+IDENT "intLitOverflows"
+IDENT "src"
+IDENT "pos"
+IDENT "e1"
+EQUAL
+INDENT
+IDENT "lexErrorTok"
+IDENT "pos"
+STRING "integer literal too large for Int (max magnitude 2^62)"
+NEWLINE
+DEDENT
 NEWLINE
 PIPE
 IDENT "otherwise"
@@ -3452,10 +3710,66 @@ PLUS
 INT 1
 RPAREN
 NEWLINE
-UPPER "RTok"
+IDENT "floatTokEnd"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
 LPAREN
-UPPER "TFloat"
-LPAREN
+IDENT "expEnd"
+IDENT "src"
+IDENT "len"
+IDENT "e2"
+RPAREN
+IDENT "depth"
+IDENT "id"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "floatIsFinite"
+COLON
+UPPER "Float"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "floatIsFinite"
+IDENT "f"
+EQUAL
+IDENT "f"
+STAR
+FLOAT 0.0
+EQ_EQ
+FLOAT 0.0
+NEWLINE
+IDENT "floatTokEnd"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+NEWLINE
+IDENT "floatTokEnd"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+IDENT "endp"
+IDENT "depth"
+IDENT "id"
+EQUAL
+INDENT
+LET
+IDENT "f"
+EQUAL
 IDENT "fromOption"
 FLOAT 0.0
 LPAREN
@@ -3464,20 +3778,38 @@ LPAREN
 IDENT "substrNoUs"
 IDENT "src"
 IDENT "pos"
-IDENT "e2"
+IDENT "endp"
 RPAREN
 RPAREN
-RPAREN
+NEWLINE
+IF
+IDENT "floatIsFinite"
+IDENT "f"
+THEN
+INDENT
+UPPER "RTok"
+LPAREN
+UPPER "TFloat"
+IDENT "f"
 RPAREN
 IDENT "pos"
-IDENT "e2"
+IDENT "endp"
 CONS
 IDENT "scan"
 IDENT "src"
 IDENT "len"
-IDENT "e2"
+IDENT "endp"
 IDENT "depth"
 IDENT "id"
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "lexErrorTok"
+IDENT "pos"
+STRING "float literal out of range (overflows to infinity)"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE

@@ -31,6 +31,10 @@ p4 = 0o17                   -- octal Int
 p5 = 1_000_000              -- underscores allowed
 p6 = 3.14                   -- Float
 p7 = 3.141_592              -- Float
+p7a = 1e12                   -- Float (scientific: integer mantissa + exponent)
+p7b = 1.5e10                 -- Float (fractional mantissa + exponent)
+p7c = 9e+15                  -- Float (explicit `+` exponent)
+p7d = 1e-05                  -- Float (negative exponent)
 p8 = "hello"                -- String
 p9 = """triple quoted"""    -- triple-quoted String (may span lines)
 p10 = 'a'                   -- Char
@@ -46,11 +50,17 @@ p18 = (1, "hi")             -- Tuple
 
 `Int` is a 63-bit tagged signed integer (`intMinBound`/`intMaxBound` = `-2^62`
 / `2^62 - 1`, i.e. `-4611686018427387904` / `4611686018427387903`), not a full
-64-bit machine word. Literals and arithmetic silently wrap on overflow with no
-diagnostic. `println 9223372036854775807` (a legal-looking 64-bit-max literal)
-prints `-1`; `4611686018427387903 + 1` wraps to a negative number. (There is
-no `minInt`/`maxInt` — use `intMinBound`/`intMaxBound`, or the polymorphic
-`minBound`/`maxBound : Bounded a => a` with a type annotation.)
+64-bit machine word. An **integer literal** whose magnitude exceeds `2^62` is a
+lex error (`L-INT-OVERFLOW`) — `println 9223372036854775807` (a legal-looking
+64-bit-max literal) no longer silently prints `-1`, it is rejected. The lexer
+sees only the unsigned digits (the `-` is a separate token), so it admits
+magnitude `2^62` = `4611686018427387904` for the writable negative minimum
+`-4611686018427387904` and rejects `4611686018427387905` (= `2^62 + 1`) and
+above; a bare *positive* `4611686018427387904` therefore still wraps to the
+negative minimum (the lexer cannot see the sign). **Arithmetic** overflow is
+still silent: `4611686018427387903 + 1` wraps to a negative number with no
+diagnostic. (There is no `minInt`/`maxInt` — use `intMinBound`/`intMaxBound`, or
+the polymorphic `minBound`/`maxBound : Bounded a => a` with a type annotation.)
 
 String escapes: `\n \t \\ \" \{` and unicode `\u{48}`.
 
