@@ -2057,17 +2057,51 @@ resolveArgStamp implTable keyTable name tagRef implRef am encl =
 -- dict params; emitDefaultRKey forwards these words.  Concrete head / a method
 -- with its own impl ⇒ same key as before (empty for non-parametric), unchanged.
 
+-- ── structured typecheck diagnostic (TcDiag) ───────────────────────────────
+-- #159: ONE structured record replaces the old flat (code, msg, Option Loc)
+-- triple PLUS its parallel message-keyed side channels — `typeErrorHelpFix` for
+-- errors, and `matchWarningLocs` / `matchWarningHelp` for the non-exhaustive-match
+-- warnings.  Every accumulated diagnostic (errors AND match warnings) now carries
+-- its code, severity, span, message, and optional help/fix INLINE, so nothing
+-- downstream has to zip parallel lists or look help up by message text.  The
+-- observable output is unchanged: `driver/diagnostics.mdk` maps a TcDiag to its
+-- `Diag` and thence to the `--json` shape (DIAGNOSTIC-CODES-DESIGN.md), byte for
+-- byte as before.  `severity` is an Int (1 = error, 2 = warning — the same codes
+-- `--json` emits) because the real `Severity` type lives in `driver/diagnostics.mdk`,
+-- which imports THIS module, so importing it back would cycle.  `fix` is a plain
+-- (Loc span, replacement) pair, converted to a real `Fix` on the diagnostics side.
+public export data TcDiag =
+  | TcDiag String Int (Option Loc) String (Option String) (Option (Loc, String))
+
+export tcCode : TcDiag -> String
+tcCode (TcDiag c _ _ _ _ _) = c
+
+export tcSeverity : TcDiag -> Int
+tcSeverity (TcDiag _ s _ _ _ _) = s
+
+export tcLoc : TcDiag -> Option Loc
+tcLoc (TcDiag _ _ l _ _ _) = l
+
+export tcMsg : TcDiag -> String
+tcMsg (TcDiag _ _ _ m _ _) = m
+
+export tcHelp : TcDiag -> Option String
+tcHelp (TcDiag _ _ _ _ h _) = h
+
+export tcFix : TcDiag -> Option (Loc, String)
+tcFix (TcDiag _ _ _ _ _ f) = f
+
 -- ── type-error accumulator ─────────────────────────────────────────────────
 -- Unification failures record diagnostics here instead of panicking, so
 -- ill-typed programs emit matching `TYPE ERROR: …` lines.  occursCheckFailed
 -- is a per-bindVar flag: occursAdjustUnbound sets it so bindVar can skip the
 -- actual link (preventing a cyclic union-find entry).
--- B.10.2b: each accumulated error is paired with the `currentLoc` span in
--- effect at the push site (its `Option Loc`), mirroring lib/typecheck.ml binding
--- `!current_loc` into `Type_error (e, !current_loc)` at the RAISE site rather
--- than reading the global last-entered loc afterwards.  `pushTypeError` captures
--- `currentLoc.value` so locs don't drift as inference continues past the error.
-typeErrors : Ref (List (String, String, Option Loc))
+-- B.10.2b: each accumulated error carries the `currentLoc` span in effect at the
+-- push site (its `Option Loc`), mirroring lib/typecheck.ml binding `!current_loc`
+-- into `Type_error (e, !current_loc)` at the RAISE site rather than reading the
+-- global last-entered loc afterwards.  `pushTypeError` captures `currentLoc.value`
+-- so locs don't drift as inference continues past the error.  severity = 1.
+typeErrors : Ref (List TcDiag)
 typeErrors = Ref []
 
 -- G1 (SOUNDNESS): a STICKY mirror of typeErrors that resetState does NOT clear.
@@ -2092,11 +2126,9 @@ hadTypeErrors _ = typeErrorsSticky.value
 pushTypeError : String -> String -> Unit
 pushTypeError code msg =
   let _ = setRef typeErrorsSticky True
-  setRef typeErrors ((code, msg, currentLoc.value)::typeErrors.value)
-
--- The message field of an accumulated (code, msg, loc) type-error entry.
-teErrMsg : (String, String, Option Loc) -> String
-teErrMsg (_, m, _) = m
+  setRef
+    typeErrors
+    (TcDiag code 1 currentLoc.value msg None None :: typeErrors.value)
 
 -- #11 soundness: push an obligation error only if the SAME message isn't already
 -- accumulated.  A single missing impl can be detected by both checkImplObligations
@@ -2105,7 +2137,7 @@ teErrMsg (_, m, _) = m
 -- by message to keep native == oracle (one TYPE ERROR line).
 pushTypeErrorOnce : String -> String -> Unit
 pushTypeErrorOnce code msg =
-  if anyList (e => teErrMsg e == msg) typeErrors.value then
+  if anyList (e => tcMsg e == msg) typeErrors.value then
     ()
   else
     pushTypeError code msg
@@ -2118,48 +2150,27 @@ pushTypeErrorOnce code msg =
 -- captured a span is unchanged.
 pushTypeErrorOnceAt : String -> Option Loc -> String -> Unit
 pushTypeErrorOnceAt code loc msg =
-  if anyList (e => teErrMsg e == msg) typeErrors.value then ()
+  if anyList (e => tcMsg e == msg) typeErrors.value then ()
   else
     let _ = setRef typeErrorsSticky True
     setRef
       typeErrors
-      ((code, msg, orElseLoc loc currentLoc.value)::typeErrors.value)
-
--- ── structured help/fix side channel (ERROR-QUALITY dim F) ─────────────────
--- `typeErrors` is a plain (code, msg, loc) triple, and that shape is threaded
--- through a dozen signatures across this file + driver/diagnostics.mdk
--- (checkProgramDiags, checkModuleFullDiags, checkModulesDiags, …).  Widening
--- it to carry `help`/`fix` too would touch all of those.  Instead, record any
--- help/fix keyed by the error's (already-the-dedup-key) message text in this
--- side ref; driver/diagnostics.mdk's Diag-construction sites look it up by
--- message when building the final `Diag` for CLI/--json.  `Fix`/`Diag` live in
--- driver/diagnostics.mdk, which already imports this module — importing them
--- back here would cycle — so the fix is carried as a plain (Loc, String)
--- span+replacement pair, converted to a real `Fix` on the diagnostics.mdk side.
-typeErrorHelpFix : Ref (List (String, String, Option (Loc, String)))
-typeErrorHelpFix = Ref []
-
--- Look up the help text + optional (loc, replacement) fix recorded for a
--- pushed type-error message, if any.  `None` for the overwhelming majority of
--- type errors, which carry no structured help/fix yet.
-export lookupTypeErrorHelpFix : String -> Option (String, Option (Loc, String))
-lookupTypeErrorHelpFix msg = findHelpFixEntry msg typeErrorHelpFix.value
-
-findHelpFixEntry : String -> List (String, String, Option (Loc, String)) -> Option (String, Option (Loc, String))
-findHelpFixEntry _ [] = None
-findHelpFixEntry msg ((m, help, fix)::rest)
-  | m == msg = Some (help, fix)
-  | otherwise = findHelpFixEntry msg rest
+      (TcDiag code 1 (orElseLoc loc currentLoc.value) msg None None :: typeErrors.value)
 
 -- Push a deduped type error (same dedup rule as pushTypeErrorOnceAt) that also
--- carries a human `help` string and an optional machine-applicable `fix`.
+-- carries a human `help` string and an optional machine-applicable `fix`
+-- (ERROR-QUALITY dim F).  #159: help/fix now ride INSIDE the TcDiag — no
+-- message-keyed side channel.  `Fix`/`Diag` live in driver/diagnostics.mdk (which
+-- imports this module), so the fix is carried as a plain (Loc, String)
+-- span+replacement pair, converted to a real `Fix` on the diagnostics.mdk side.
 pushTypeErrorHelpFixAt : String -> Option Loc -> String -> String -> Option (Loc, String) -> Unit
 pushTypeErrorHelpFixAt code loc msg help fix =
-  if anyList (e => teErrMsg e == msg) typeErrors.value then ()
+  if anyList (e => tcMsg e == msg) typeErrors.value then ()
   else
     let _ = setRef typeErrorsSticky True
-    let _ = setRef typeErrors ((code, msg, orElseLoc loc currentLoc.value)::typeErrors.value)
-    setRef typeErrorHelpFix ((msg, help, fix)::typeErrorHelpFix.value)
+    setRef
+      typeErrors
+      (TcDiag code 1 (orElseLoc loc currentLoc.value) msg (Some help) fix :: typeErrors.value)
 
 -- the first `Some` loc, else the second (so a captured record-site span wins,
 -- and a `None` capture still degrades to the live currentLoc).
@@ -2245,7 +2256,14 @@ mainTypeIsFloat _ = match mainSchemeRef.value
 -- inference runs.  Neither is touched by `resetState` — the driver seeds them and
 -- reads `matchWarnings` after the typecheck pass; runs that ignore match warnings
 -- (the schemes/selfproc paths) simply never read it.
-matchWarnings : Ref (List String)
+-- #159: element type is now `TcDiag` (severity 2), carrying the span (formerly the
+-- parallel `matchWarningLocs`) and the actionable-fix help (formerly the message-
+-- keyed `matchWarningHelp`) INLINE — no parallel lists, no lookup-by-message.  The
+-- `TcDiag.msg` holds the FULL "Warning: …"-prefixed string exactly as the old
+-- `List String` did, so the text-rendering paths (checkMatchToLines,
+-- checkToLinesWithRuntime, checkModulesEntryReport) stay byte-identical; the
+-- `W-*` code and the prefix strip happen on the driver/diagnostics.mdk side.
+matchWarnings : Ref (List TcDiag)
 matchWarnings = Ref []
 
 -- True iff the last typecheck pass pushed any match warning.  Read by the snapshot
@@ -2255,37 +2273,12 @@ matchWarnings = Ref []
 -- the accumulator rather than sniffing the rendered text: the renderer must not have to
 -- guess which of its own lines are diagnostics.
 export hadMatchWarnings : Unit -> Bool
-hadMatchWarnings _ = matchWarnings.value != []
-
--- Stage-C (S4): the `currentLoc` span snapshotted at each non-exhaustive-match
--- push, parallel to `matchWarnings` (same length, same order).  The diagnostics
--- path (`checkProgramDiags`) zips the two so the CLI/--json warning carries a
--- span like the OCaml oracle's `pp_loc match_loc`.  String-only readers
--- (schemes/selfproc/diff_compiler_diagnostics) ignore it.
-matchWarningLocs : Ref (List (Option Loc))
-matchWarningLocs = Ref []
+hadMatchWarnings _ = match matchWarnings.value
+  [] => False
+  _ => True
 
 matchOracle : Ref Oracle
 matchOracle = Ref (buildOracle [])
-
--- Structured-help side channel for the non-exhaustive-match warning (mirrors
--- `typeErrorHelpFix` above, same rationale: widening `matchWarnings`'s element
--- type would touch every reader of the plain `List String`).  Keyed by the
--- exact warning message text (post-hint-append, since that's the dedup key a
--- lookup by message needs to match); `driver/diagnostics.mdk` looks this up
--- when building the `Diag` for `--json`'s `help` field.
-matchWarningHelp : Ref (List (String, String))
-matchWarningHelp = Ref []
-
-export lookupMatchWarningHelp : String -> Option String
-lookupMatchWarningHelp msg =
-  findMatchWarningHelpEntry msg matchWarningHelp.value
-
-findMatchWarningHelpEntry : String -> List (String, String) -> Option String
-findMatchWarningHelpEntry _ [] = None
-findMatchWarningHelpEntry msg ((m, help)::rest)
-  | m == msg = Some help
-  | otherwise = findMatchWarningHelpEntry msg rest
 
 resetState : Unit -> Unit
 resetState _ =
@@ -2354,8 +2347,6 @@ resetState _ =
   let _ = setRef flatUserShadowNamesRef []
   let _ = setRef groupConstraintMonosRef []
   let _ = setRef typeErrors []
-  let _ = setRef typeErrorHelpFix []
-  let _ = setRef matchWarningHelp []
   let _ = setRef occursCheckFailed False
   setRef currentLevel 0
 
@@ -2536,7 +2527,7 @@ recordDoMonadError doLoc =
   let _ = setRef typeErrorsSticky True
   setRef
     typeErrors
-    (("T-DO-NOT-MONAD", doRequiresMonadMsg, Some doLoc)::typeErrors.value)
+    (TcDiag "T-DO-NOT-MONAD" 1 (Some doLoc) doRequiresMonadMsg None None :: typeErrors.value)
 
 monoIsApp : Mono -> Bool
 monoIsApp (TApp _ _) = True
@@ -6335,8 +6326,10 @@ checkMatchExhaustive : Mono -> List Arm -> Unit
 checkMatchExhaustive scrutTy arms =
   let rows = nonGuardedRows arms
   if useful matchOracle.value (matchCol0Type scrutTy) rows [PWild] then
-    let _ = setRef matchWarnings (nonExhaustiveMsg scrutTy rows :: matchWarnings.value)
-    setRef matchWarningLocs (currentLoc.value::matchWarningLocs.value)
+    let (msg, help) = nonExhaustiveMsg scrutTy rows
+    setRef
+      matchWarnings
+      (TcDiag "" 2 currentLoc.value msg help None :: matchWarnings.value)
   else ()
 
 -- ── unreachable / redundant match-arm warning (W-UNREACHABLE-ARM) ──────────
@@ -6374,8 +6367,7 @@ checkRedundantGo _ _ _ _ [] = ()
 checkRedundantGo col0 prec heads offCol ((Arm pat gs body)::rest) =
   let dp = desugarPat matchOracle.value pat
   let _ = if armUnreachable col0 prec heads offCol dp then
-    let _ = setRef matchWarnings (unreachableArmWarning :: matchWarnings.value)
-    setRef matchWarningLocs (orElseLoc (exprLoc body) currentLoc.value :: matchWarningLocs.value)
+    setRef matchWarnings (TcDiag "" 2 (orElseLoc (exprLoc body) currentLoc.value) unreachableArmWarning None None :: matchWarnings.value)
   else ()
   -- Only UNGUARDED, range-free arms contribute to the covered set: a guarded arm
   -- may not fire, and a range collapses to a wildcard that over-states coverage
@@ -6425,18 +6417,18 @@ armIsUnguarded (_::_) = False
 -- (keeps the warning firing whenever `useful` should, never naming a wrong
 -- constructor).  Actionable-fix hint (F dimension): when a witness IS
 -- recoverable, append a concrete-edit suggestion using the witness string
--- VERBATIM (so `Triangle _` reads as `Triangle _`, not `Triangle`) and record
--- it in `matchWarningHelp` (keyed by the full message, mirroring
--- `typeErrorHelpFix`) so `--json`'s `help` field carries it too.
-nonExhaustiveMsg : Mono -> List (List Pat) -> String
+-- VERBATIM (so `Triangle _` reads as `Triangle _`, not `Triangle`) and return it
+-- as the `Some` help so `--json`'s `help` field carries it too.  #159: returns
+-- `(message, Option help)` so the caller can stash both in the warning's TcDiag —
+-- no more message-keyed `matchWarningHelp` side channel.
+nonExhaustiveMsg : Mono -> List (List Pat) -> (String, Option String)
 nonExhaustiveMsg scrutTy rows = match usefulWitness matchOracle.value (matchCol0Type scrutTy) rows 1
   Some (w::_) =>
     let witnessStr = renderWitness w
     let hint = "add a '\{witnessStr} => …' arm, or a '_' wildcard arm to catch the rest."
     let msg = "Warning: non-exhaustive match\{tyOfMsg (matchCol0Type scrutTy)}. Missing case: '\{witnessStr}'; \{hint}"
-    let _ = setRef matchWarningHelp ((msg, hint)::matchWarningHelp.value)
-    msg
-  _ => nonExhaustiveMatchWarning
+    (msg, Some hint)
+  _ => (nonExhaustiveMatchWarning, None)
 
 -- Name the scrutinee type (skip the synthetic tuple type names, which aren't
 -- user-facing — the witness pattern already reads as a tuple).
@@ -12437,7 +12429,7 @@ checkToLines prog =
   let errs = reverseL typeErrors.value
   match errs
     [] => joinNl (schemeLines schemes)
-    _ => joinNl (typeErrorLines (map teErrMsg errs))
+    _ => joinNl (typeErrorLines (map tcMsg errs))
 -- coherence over the WHOLE prog: this path (typecheck_main single-arg) is
 -- prelude-free, so every impl is a user impl (mirrors check_program_no_prelude).
 
@@ -12455,10 +12447,10 @@ checkToLinesWithRuntime runtimeDecls coreProg userProg =
   let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
   let _ = runFinalChecks coherenceUserDecls.value prog
   let errs = reverseL typeErrors.value
-  let warns = reverseL matchWarnings.value
+  let warns = map tcMsg (reverseL matchWarnings.value)
   match errs
     [] => joinNl (schemeLines schemes ++ warns)
-    _ => joinNl (typeErrorLines (map teErrMsg errs))
+    _ => joinNl (typeErrorLines (map tcMsg errs))
 -- B5: seed the exhaustiveness oracle and clear any stale match warnings so the
 -- composed check.mdk path surfaces non-exhaustive-match warnings, mirroring the
 -- OCaml oracle's `medaka check` output.
@@ -12496,26 +12488,22 @@ checkMatchToLines runtimeDecls prog =
   let _ = setRef matchWarnings []
   let _ = setRef matchOracle (buildOracle prog)
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
-  joinNl (reverseL matchWarnings.value)
+  joinNl (map tcMsg (reverseL matchWarnings.value))
 
 -- ── diagnostics entry point (compiler/diagnostics.mdk bridge) ────────────
--- Run the full typecheck pass (runtime-seeded) over [prog] and return the raw
--- error strings — each paired with its captured `Option Loc` (B.10.2b) — plus
--- the warning strings (each paired with its captured `Option Loc`, S4), so
--- diagnostics.mdk can wrap them in structured Diag values carrying the span.
-export checkProgramDiags : List Decl -> List Decl -> List Decl -> (List (String, String, Option Loc), List (String, Option Loc))
+-- Run the full typecheck pass (runtime-seeded) over [prog] and return the
+-- accumulated errors and non-exhaustive-match warnings as `TcDiag`s — each
+-- carrying its own code, span (B.10.2b / S4), message, and optional help/fix —
+-- so diagnostics.mdk maps them straight to structured `Diag` values.
+export checkProgramDiags : List Decl -> List Decl -> List Decl -> (List TcDiag, List TcDiag)
 checkProgramDiags runtimeDecls coreProg userProg =
   let prog = coreProg ++ userProg
   let _ = setRef implInferEnabled False
   let _ = setRef matchWarnings []
-  let _ = setRef matchWarningLocs []
   let _ = setRef matchOracle (buildOracle prog)
   let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
   let _ = runFinalChecks coherenceUserDecls.value prog
-  (
-    reverseL typeErrors.value,
-    zipL (reverseL matchWarnings.value) (reverseL matchWarningLocs.value),
-  )
+  (reverseL typeErrors.value, reverseL matchWarnings.value)
 
 -- ── multi-module typecheck (bootstrap front-end) ───────────────────────────
 -- Threads per-module exports in dependency order.  The prelude (core) is checked
@@ -13322,11 +13310,10 @@ checkModules runtimeDecls coreDecls modules =
 -- exactly THIS module's contribution; matchWarnings is cleared here explicitly
 -- (resetState does NOT clear it).  Returns (own value schemes, errs, warns) so the
 -- driver can thread accV/accData exactly as foldModules does.
-export checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+export checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModuleFullDiags seedVars accData accAll prog =
   let _ = setRef implInferEnabled False
   let _ = setRef matchWarnings []
-  let _ = setRef matchWarningLocs []
   -- P0-9: THIS module's own decls (`prog`) come FIRST so its constructors win
   -- the oracle's first-wins bare-name tables.  Another loaded module (in accData)
   -- can define a same-named ctor at a different arity (`map`'s arity-5 `Bin` vs
@@ -13348,7 +13335,7 @@ checkModuleFullDiags seedVars accData accAll prog =
   (
     schemes,
     reverseL typeErrors.value,
-    zipL (reverseL matchWarnings.value) (reverseL matchWarningLocs.value),
+    reverseL matchWarnings.value,
   )
 -- Seed the ctor oracle over ALL data decls in scope (prelude + every imported
 -- module via accData, plus this module's own prog), NOT just `prog`.  The
@@ -13378,12 +13365,12 @@ checkModuleFullDiags seedVars accData accAll prog =
 -- worker: ISOLATED per-module diagnostics harvest (checkModuleFullDiags — see its
 -- doc above).  Surfaces this module's own `schemes` (for pubV) plus its (errs, warns)
 -- payload.  IMPORT-SCOPED seed exactly like cmCheckWorker; NOT a flat union.
-cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, String, Option Loc), List (String, Option Loc)))
+cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List TcDiag, List TcDiag))
 cmDiagsWorker _mid seed accData accAll prog =
   let (schemes, errs, warns) = checkModuleFullDiags seed accData accAll prog
   (schemes, (errs, warns))
 
-export checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
+export checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List TcDiag, List TcDiag))
 checkModulesDiags runtimeDecls coreDecls modules =
   let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
   let perMod = foldModules
@@ -13400,11 +13387,11 @@ checkModulesDiags runtimeDecls coreDecls modules =
   -- module's diagnostics (last in dependency-first order), so LSP/analyzeProject
   -- surfaces it too.  User modules only (prelude excluded).
   match globalCoherenceConflict modules
-    Some msg => attachEntryDiag ("T-CONFLICTING-IMPL", msg, None) perMod
+    Some msg => attachEntryDiag (TcDiag "T-CONFLICTING-IMPL" 1 None msg None None) perMod
     None => perMod
 
 -- prepend an error to the LAST module's (errs, warns) in a per-module diag list.
-attachEntryDiag : (String, String, Option Loc) -> List (String, (List (String, String, Option Loc), List (String, Option Loc))) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
+attachEntryDiag : TcDiag -> List (String, (List TcDiag, List TcDiag)) -> List (String, (List TcDiag, List TcDiag))
 attachEntryDiag _ [] = []
 attachEntryDiag e [(mid, (errs, warns))] = [(mid, (e::errs, warns))]
 attachEntryDiag e (m::rest) = m :: attachEntryDiag e rest
@@ -13426,7 +13413,7 @@ entryOwnSchemes (_::rest) = entryOwnSchemes rest
 -- order.  No-import (1-module) files still route through runCheck (full prelude+
 -- user dump, byte-identical); this path is reached ONLY when the load returned
 -- more than one module.
-checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModulesEntryFull runtimeDecls coreDecls modules =
   let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
   let (schemes, errs, warns) = foldModules
@@ -13443,13 +13430,13 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
   -- excluded — it is checked separately and a user impl may override a prelude one).
   -- Prepend any conflict (dependency-first, ahead of the entry's own errors).
   match globalCoherenceConflict modules
-    Some msg => (schemes, ("T-CONFLICTING-IMPL", msg, None) :: errs, warns)
+    Some msg => (schemes, TcDiag "T-CONFLICTING-IMPL" 1 None msg None None :: errs, warns)
     None => (schemes, errs, warns)
 
 -- worker: same ISOLATED per-module diagnostics as cmDiagsWorker, but surfaces the
 -- FULL triple (schemes, errs, warns) as its payload so cmEntryCollect can keep the
 -- terminal module's OWN schemes/warns.  IMPORT-SCOPED seed, exactly like the others.
-cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)))
+cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List TcDiag, List TcDiag))
 cmEntryWorker _mid seed accData accAll prog =
   let (schemes, errs, warns) = checkModuleFullDiags seed accData accAll prog
   (schemes, (schemes, errs, warns))
@@ -13461,7 +13448,7 @@ cmEntryWorker _mid seed accData accAll prog =
 -- codegen — the G1-class soundness hole).  Earlier-module errors are PREPENDED
 -- (`e ++ eE`) to the recursion's; only isLast (the terminal module) uses its OWN
 -- schemes/warns, every earlier module inherits eS/eW from the recursion.
-cmEntryCollect : Bool -> String -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+cmEntryCollect : Bool -> String -> (List (String, Scheme), List TcDiag, List TcDiag) -> (List (String, Scheme), List TcDiag, List TcDiag) -> (List (String, Scheme), List TcDiag, List TcDiag)
 cmEntryCollect isLast _mid extra rest =
   let (s, e, w) = extra
   let (eS, eE, eW) = rest
@@ -13475,8 +13462,8 @@ export checkModulesEntryReport : List Decl -> List Decl -> List (String, List De
 checkModulesEntryReport runtimeDecls coreDecls modules =
   let (schemes, errs, warns) = checkModulesEntryFull runtimeDecls coreDecls modules
   match errs
-    [] => joinNl (schemeLines schemes ++ map fst warns)
-    _ => joinNl (typeErrorLines (map teErrMsg errs))
+    [] => joinNl (schemeLines schemes ++ map tcMsg warns)
+    _ => joinNl (typeErrorLines (map tcMsg errs))
 
 -- exit-code predicate analog of checkHasErrors: any type error in ANY module of
 -- the resolved graph (entry or imported — see cmEntryCollect / foldModules).

@@ -14,7 +14,7 @@ import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import support.util.{splitLast}
 import support.path.{dirOf}
-import types.typecheck.{elaborateOne, elaborateModules}
+import types.typecheck.{elaborateOne, elaborateModules, tcMsg}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 import driver.loader.{loadProgram}
 import backend.private_mangle.{mangleUnits}
@@ -130,7 +130,7 @@ runEmitWith emitTail runtimeDecls coreDecls modules =
   if shouldAutoPrintMain coreDecls modules then
     let modulesW = autoPrintWrapModules modules
     match underivedMainDiags runtimeDecls coreDecls modulesW
-      (_, msg, _)::_ => ePutStrLn msg
+      d::_ => ePutStrLn (tcMsg d)
       [] => emitModulesWith emitTail runtimeDecls coreDecls modulesW
   else emitTail runtimeDecls coreD modules2
 

@@ -33,6 +33,7 @@ import types.typecheck.{
   mainTypeIsAsync,
   checkProgramDiags,
   setCoherenceUserDecls,
+  TcDiag,
 }
 
 -- The loader hands modules dependency-first, so the ENTRY module is last.
@@ -118,8 +119,8 @@ wrapPrintln body = EApp (EVar "println") body
 -- multi-module program flattened this way risks the over-rejection the CLI's
 -- multi-module gate deliberately avoids, so it is skipped there (best-effort —
 -- the compiler graph never wraps, so this never affects the fixpoint).  Returns
--- the raw `(code, msg, Option Loc)` type-error tuples for the caller to render.
-export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, String, Option Loc)
+-- the type-error `TcDiag`s for the caller to render.
+export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> List TcDiag
 underivedMainDiags runtimeDecls coreDecls [(_, entryDecls)] =
   let _ = setCoherenceUserDecls entryDecls
   let (tcErrs, _) = checkProgramDiags runtimeDecls coreDecls entryDecls

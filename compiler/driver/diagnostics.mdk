@@ -48,8 +48,8 @@ import types.typecheck.{
   entryOwnSchemes,
   Scheme(..),
   setCoherenceUserDecls,
-  lookupTypeErrorHelpFix,
-  lookupMatchWarningHelp,
+  TcDiag(..),
+  tcMsg,
 }
 import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
 import driver.main_autoprint.{
@@ -107,31 +107,26 @@ diagOfResError e =
   let (help, fix) = resErrorHelpFix e
   Diag SevError (resErrorCode e) (ppResError e) (resErrorLoc e) help fix
 
--- Convert a typecheck (code, msg, loc) accumulator triple to a Diag, attaching
--- any structured help/fix that `pushTypeErrorHelpFixAt` recorded for this exact
--- message (e.g. the record-field did-you-mean) via typecheck.mdk's message-keyed
--- side channel — see `lookupTypeErrorHelpFix`'s doc comment for why it's a side
--- channel rather than a widened `typeErrors` tuple.
-export diagOfTypeError : (String, String, Option Loc) -> Diag
-diagOfTypeError (code, msg, loc) = match lookupTypeErrorHelpFix msg
-  None => mkDiag SevError code msg loc
-  Some (help, mfix) =>
-    Diag SevError code msg loc (Some help) (map fixOfLocRepl mfix)
+-- Convert a typecheck error `TcDiag` to a Diag.  #159: the code, span, and any
+-- structured help/fix (e.g. the record-field did-you-mean that
+-- `pushTypeErrorHelpFixAt` attaches) now ride INSIDE the TcDiag — no message-keyed
+-- side-channel lookup.  A type-error TcDiag always carries SevError severity.
+export diagOfTypeError : TcDiag -> Diag
+diagOfTypeError (TcDiag code _ loc msg help fix) =
+  Diag SevError code msg loc help (map fixOfLocRepl fix)
 
 fixOfLocRepl : (Loc, String) -> Fix
 fixOfLocRepl (l, r) = Fix l r
 
--- Convert a non-exhaustive-match warning (full "Warning: …" string, paired with
--- its captured loc) to a Diag, attaching the actionable-fix hint
--- `nonExhaustiveMsg` recorded in `matchWarningHelp` (typecheck.mdk's
--- message-keyed side channel, mirroring `typeErrorHelpFix`) for this exact
--- (pre-strip) message, if any.  No machine `fix` — the hint has no single
+-- Convert a non-exhaustive-match warning `TcDiag` (whose `msg` is the full
+-- "Warning: …" string, carrying its captured loc and any actionable-fix hint as
+-- `help`) to a Diag.  #159: the hint rides in the TcDiag's `help` field — no
+-- `matchWarningHelp` lookup.  The `W-*` code and the prefix strip are computed
+-- here from the full message.  No machine `fix` — the hint has no single
 -- mechanical edit.
-diagOfMatchWarning : (String, Option Loc) -> Diag
-diagOfMatchWarning (w, loc) = match lookupMatchWarningHelp w
-  None => mkDiag SevWarning (matchWarnCode w) (stripWarnPrefix w) loc
-  Some help =>
-    Diag SevWarning (matchWarnCode w) (stripWarnPrefix w) loc (Some help) None
+diagOfMatchWarning : TcDiag -> Diag
+diagOfMatchWarning (TcDiag _ _ loc w help _) =
+  Diag SevWarning (matchWarnCode w) (stripWarnPrefix w) loc help None
 
 -- The two typecheck match warnings share the `matchWarnings` channel but carry
 -- distinct codes; disambiguate by the message shape (the unreachable-arm warning
@@ -660,7 +655,7 @@ isRedundantUnbound existing d
 -- For each (mid, path, rawProg): look up its harvested (errs, warns) by mid, wrap
 -- them as Diags (preserving each type error's Option Loc), fold in this module's
 -- guard-exhaustiveness warnings from the raw decls, and bucket by path.
-foldModuleTc : List Decl -> List (String, String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc))) -> List (String, List Diag) -> List (String, List Diag)
+foldModuleTc : List Decl -> List (String, String, List Decl) -> List (String, (List TcDiag, List TcDiag)) -> List (String, List Diag) -> List (String, List Diag)
 foldModuleTc _ [] _ buckets = buckets
 foldModuleTc oracleDecls ((mid, path, prog)::rest) tcByMid buckets =
   let (tcErrs, tcWarns) = lookupTcDiags mid tcByMid
@@ -674,7 +669,7 @@ foldModuleTc oracleDecls ((mid, path, prog)::rest) tcByMid buckets =
   let buckets2 = pushDiags path (guardDiags ++ errDiags ++ warnDiags) buckets
   foldModuleTc oracleDecls rest tcByMid buckets2
 
-lookupTcDiags : String -> List (String, (List (String, String, Option Loc), List (String, Option Loc))) -> (List (String, String, Option Loc), List (String, Option Loc))
+lookupTcDiags : String -> List (String, (List TcDiag, List TcDiag)) -> (List TcDiag, List TcDiag)
 lookupTcDiags _ [] = ([], [])
 lookupTcDiags mid ((m, d)::rest)
   | m == mid = d

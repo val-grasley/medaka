@@ -1,5 +1,5 @@
 # META
-source_lines=127
+source_lines=128
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/driver/main_autoprint.mdk — shared composite-`main` auto-print wrap.
@@ -37,6 +37,7 @@ import types.typecheck.{
   mainTypeIsAsync,
   checkProgramDiags,
   setCoherenceUserDecls,
+  TcDiag,
 }
 
 -- The loader hands modules dependency-first, so the ENTRY module is last.
@@ -122,8 +123,8 @@ wrapPrintln body = EApp (EVar "println") body
 -- multi-module program flattened this way risks the over-rejection the CLI's
 -- multi-module gate deliberately avoids, so it is skipped there (best-effort —
 -- the compiler graph never wraps, so this never affects the fixpoint).  Returns
--- the raw `(code, msg, Option Loc)` type-error tuples for the caller to render.
-export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, String, Option Loc)
+-- the type-error `TcDiag`s for the caller to render.
+export underivedMainDiags : List Decl -> List Decl -> List (String, List Decl) -> List TcDiag
 underivedMainDiags runtimeDecls coreDecls [(_, entryDecls)] =
   let _ = setCoherenceUserDecls entryDecls
   let (tcErrs, _) = checkProgramDiags runtimeDecls coreDecls entryDecls
@@ -131,7 +132,7 @@ underivedMainDiags runtimeDecls coreDecls [(_, entryDecls)] =
 underivedMainDiags _ _ _ = []
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" true) (mem "Expr" true) (mem "Pat" false) (mem "Loc" false))))
-(DUse false (UseGroup ("types" "typecheck") ((mem "mainTypeIsUnit" false) (mem "mainTypeIsAsync" false) (mem "checkProgramDiags" false) (mem "setCoherenceUserDecls" false))))
+(DUse false (UseGroup ("types" "typecheck") ((mem "mainTypeIsUnit" false) (mem "mainTypeIsAsync" false) (mem "checkProgramDiags" false) (mem "setCoherenceUserDecls" false) (mem "TcDiag" false))))
 (DTypeSig false "entryPair" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))
 (DFunDef false "entryPair" ((PList)) (EVar "None"))
 (DFunDef false "entryPair" ((PList (PVar "p"))) (EApp (EVar "Some") (EVar "p")))
@@ -163,12 +164,12 @@ underivedMainDiags _ _ _ = []
 (DTypeSig false "wrapPrintln" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "wrapPrintln" ((PCon "ELoc" (PVar "l") (PVar "inner"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "inner")))))
 (DFunDef false "wrapPrintln" ((PVar "body")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EVar "body")))
-(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "TcDiag"))))))
 (DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "entryDecls"))) (DoExpr (EVar "tcErrs"))))
 (DFunDef false "underivedMainDiags" (PWild PWild PWild) (EListLit))
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" true) (mem "Expr" true) (mem "Pat" false) (mem "Loc" false))))
-(DUse false (UseGroup ("types" "typecheck") ((mem "mainTypeIsUnit" false) (mem "mainTypeIsAsync" false) (mem "checkProgramDiags" false) (mem "setCoherenceUserDecls" false))))
+(DUse false (UseGroup ("types" "typecheck") ((mem "mainTypeIsUnit" false) (mem "mainTypeIsAsync" false) (mem "checkProgramDiags" false) (mem "setCoherenceUserDecls" false) (mem "TcDiag" false))))
 (DTypeSig false "entryPair" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))))
 (DFunDef false "entryPair" ((PList)) (EVar "None"))
 (DFunDef false "entryPair" ((PList (PVar "p"))) (EApp (EVar "Some") (EVar "p")))
@@ -200,6 +201,6 @@ underivedMainDiags _ _ _ = []
 (DTypeSig false "wrapPrintln" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "wrapPrintln" ((PCon "ELoc" (PVar "l") (PVar "inner"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "inner")))))
 (DFunDef false "wrapPrintln" ((PVar "body")) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "println")))) (EVar "body")))
-(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DTypeSig true "underivedMainDiags" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "TcDiag"))))))
 (DFunDef false "underivedMainDiags" ((PVar "runtimeDecls") (PVar "coreDecls") (PList (PTuple PWild (PVar "entryDecls")))) (EBlock (DoLet false false PWild (EApp (EVar "setCoherenceUserDecls") (EVar "entryDecls"))) (DoLet false false (PTuple (PVar "tcErrs") PWild) (EApp (EApp (EApp (EVar "checkProgramDiags") (EVar "runtimeDecls")) (EVar "coreDecls")) (EVar "entryDecls"))) (DoExpr (EVar "tcErrs"))))
 (DFunDef false "underivedMainDiags" (PWild PWild PWild) (EListLit))
