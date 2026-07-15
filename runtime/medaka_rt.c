@@ -1227,9 +1227,19 @@ static long long mdk_str_cstr(const char *s) {
   return mdk_str_lit(s, (long long)strlen(s));
 }
 
-/* readFile : String -> Result String String — Ok content / Err msg. */
+/* readFile : String -> Result String String — Ok content / Err msg.
+ * fopen(2) happily opens a directory for reading, but SEEK_END+ftell then
+ * reports an absurd size (LONG_MAX on ext4), which overflows mdk_alloc and
+ * sends the GC after ~2^63 bytes — and even where it doesn't, fread on a
+ * directory FD silently returns 0, so the caller would get a quiet "" for a
+ * directory instead of an error.  Reject directories up front with S_ISDIR
+ * (already used for fileType/stat below), mirroring the existing
+ * mdk_err(mdk_str_cstr(strerror(errno))) shape. */
 long long mdk_read_file(long long path) {
   const char *p = (const char *)path + 24;
+  struct stat st;
+  if (stat(p, &st) == 0 && S_ISDIR(st.st_mode))
+    return mdk_err(mdk_str_cstr("Is a directory"));
   FILE *f = fopen(p, "rb");
   if (!f) return mdk_err(mdk_str_cstr(strerror(errno)));
   fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
@@ -1240,9 +1250,13 @@ long long mdk_read_file(long long path) {
 
 /* readFileBytes : String -> Result String (Array Int) — raw bytes, no decode.
  * Builds an Array cell [len, b0<<1|1, b1<<1|1, ...] of TAGGED int byte values
- * 0..255 (mirrors mdk_array_from_list element tagging). */
+ * 0..255 (mirrors mdk_array_from_list element tagging).
+ * Same directory guard as mdk_read_file — see comment there. */
 long long mdk_read_file_bytes(long long path) {
   const char *p = (const char *)path + 24;
+  struct stat st;
+  if (stat(p, &st) == 0 && S_ISDIR(st.st_mode))
+    return mdk_err(mdk_str_cstr("Is a directory"));
   FILE *f = fopen(p, "rb");
   if (!f) return mdk_err(mdk_str_cstr(strerror(errno)));
   fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
@@ -1476,6 +1490,25 @@ long long mdk_executable_path(long long unit_ignored) {
   char resolved[PATH_MAX];
   if (realpath(buf, resolved) != 0) return mdk_str_cstr(resolved);
   return mdk_str_cstr(buf);
+}
+
+/* buildFingerprint : Unit -> String — the compiler-source fingerprint THIS
+ * binary was built from.  test/build_native_medaka.sh computes it (find
+ * compiler -name '*.mdk' | sort | hash names+contents) and bakes it into the
+ * ./medaka link with -DMEDAKA_SRC_FP=<hex>.  The `-D` reaches ONLY this C
+ * compile of medaka_rt.c — never the emitter IR — so it is fixpoint/seed-safe.
+ * Empty on every path that does not bake it (cold seed bootstrap, oracle
+ * builds, a shipped/relocated binary); the driver reads "" as "skip the check"
+ * (issue #89). */
+#define MDK_FP_STR2(x) #x
+#define MDK_FP_STR(x) MDK_FP_STR2(x)
+long long mdk_build_fingerprint(long long unit_ignored) {
+  (void)unit_ignored;
+#ifdef MEDAKA_SRC_FP
+  return mdk_str_cstr(MDK_FP_STR(MEDAKA_SRC_FP));
+#else
+  return mdk_str_cstr("");
+#endif
 }
 
 /* statFile : String -> Result String (Int, Bool, Bool, Float).

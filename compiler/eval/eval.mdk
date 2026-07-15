@@ -3130,6 +3130,9 @@ pGetEnv _ = panic "getEnv: not a String"
 pExecutablePath : Value e -> <Env | e> Value e
 pExecutablePath _ = VString (executablePath ())
 
+pBuildFingerprint : Value e -> <Env | e> Value e
+pBuildFingerprint _ = VString (buildFingerprint ())
+
 -- ── Stdin ─────────────────────────────────────────────────────────────────
 pReadLine : Value e -> <Stdin | e> Value e
 pReadLine _ = VString (readLine ())
@@ -3171,6 +3174,7 @@ ioExternBindings _ = [
   ("args", prim1M pArgs),
   ("getEnv", prim1 pGetEnv),
   ("executablePath", prim1M pExecutablePath),
+  ("buildFingerprint", prim1M pBuildFingerprint),
   -- Stdin
   ("readLine", prim1M pReadLine),
   ("readLineOpt", prim1M pReadLineOpt),

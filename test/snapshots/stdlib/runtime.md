@@ -1,5 +1,5 @@
 # META
-source_lines=251
+source_lines=257
 stages=DESUGAR,MARK
 # SOURCE
 -- Built-in extern declarations.
@@ -91,6 +91,12 @@ extern getEnv : String -> <Env "_"> Option String  -- environment variable, or N
 -- relocated `medaka` binary derive an exe-relative default MEDAKA_ROOT instead
 -- of assuming it runs inside the repo (DISTRIBUTION-DESIGN.md D1).
 extern executablePath : Unit -> <Env> String
+-- Compiler-source fingerprint this binary was BUILT from, baked at C-compile
+-- time by test/build_native_medaka.sh (-DMEDAKA_SRC_FP).  "" on any build path
+-- that does not bake it (cold seed bootstrap, oracle builds, a shipped binary).
+-- The CLI recomputes the same fingerprint over the LIVE compiler/ sources and
+-- warns when they diverge (issue #89 staleness guard).  Native-only.
+extern buildFingerprint : Unit -> <Env> String
 extern fileExists : String -> <FileRead "_"> Bool
 extern canonicalizePath : String -> <FileRead "_"> String  -- realpath(3): resolve ./../symlinks to an absolute path; input unchanged on failure
 extern appendFile : String -> String -> <FileWrite "_"> Result String Unit
@@ -285,6 +291,7 @@ extern stringToLower : String -> String
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
 (DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
+(DExtern false "buildFingerprint" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
 (DExtern false "fileExists" (TyFun (TyCon "String") (TyEffect ((hole "FileRead")) None (TyCon "Bool"))))
 (DExtern false "canonicalizePath" (TyFun (TyCon "String") (TyEffect ((hole "FileRead")) None (TyCon "String"))))
 (DExtern false "appendFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ((hole "FileWrite")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))
@@ -420,6 +427,7 @@ extern stringToLower : String -> String
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
 (DExtern false "getEnv" (TyFun (TyCon "String") (TyEffect ((hole "Env")) None (TyApp (TyCon "Option") (TyCon "String")))))
 (DExtern false "executablePath" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
+(DExtern false "buildFingerprint" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyCon "String"))))
 (DExtern false "fileExists" (TyFun (TyCon "String") (TyEffect ((hole "FileRead")) None (TyCon "Bool"))))
 (DExtern false "canonicalizePath" (TyFun (TyCon "String") (TyEffect ((hole "FileRead")) None (TyCon "String"))))
 (DExtern false "appendFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ((hole "FileWrite")) None (TyApp (TyApp (TyCon "Result") (TyCon "String")) (TyCon "Unit"))))))

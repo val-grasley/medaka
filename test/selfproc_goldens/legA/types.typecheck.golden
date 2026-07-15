@@ -155,13 +155,11 @@ checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl 
 checkModules : List Decl -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
 checkModulesAllLines : List Decl -> List Decl -> List (String, List Decl) -> String
 checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
-checkModulesDiagsGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
 checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
-checkModulesEntryFullGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
 checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) -> Bool
 checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> String
 checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> String
-checkModulesGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
+checkModulesPreamble : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, Scheme))
 checkNestedReqs : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> List Mono -> Option Loc -> Unit
 checkOneAxis : String -> String -> Param -> Unit
 checkOneCallObligation : List (String, List Ty, List Require) -> List (String, List Ty) -> String -> Mono -> Option Loc -> Unit
@@ -194,6 +192,10 @@ clauseRefs : (List Pat, Expr) -> List String
 clausesAreValue : List FunClause -> Bool
 clausesAt : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
 clausesOf : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
+cmCheckWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List (String, Scheme))
+cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, String, Option Loc), List (String, Option Loc)))
+cmEntryCollect : Bool -> String -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)))
 cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option String
 cohBind : Ref (List (Int, Mono)) -> Int -> Mono -> Bool
 cohCollectImpls : List Decl -> List CohImpl
@@ -372,7 +374,7 @@ effvarId : Ref Effvar -> Int
 effvarIdOf : (String, Ref Effvar) -> Int
 effvarLevel : Ref Effvar -> Int
 elabModuleStamp : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> List (String, Scheme)
-elabModulesGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> Unit
+elabWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), Unit)
 elaborateDict : List Decl -> List String -> List String -> List Decl -> List Decl
 elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
 elaborateOne : List Decl -> List Decl -> (String, List Decl) -> List Decl
@@ -444,6 +446,7 @@ flatShadowScopingRef : Ref Bool
 flatUserShadowNamesRef : Ref (List String)
 foldAppFallback : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Ty -> Mono
 foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Kind -> List Ty -> Mono
+foldModules : (String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), a)) -> (Bool -> String -> a -> b -> b) -> b -> List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> b
 foldrFun : List Mono -> Mono -> Mono
 foreachUnit : (a -> Unit) -> List a -> Unit
 freeEffvars : Mono -> List Int
@@ -1088,6 +1091,7 @@ rowArgNames : Ty -> List String
 rowArgNamesApp : String -> List Ty -> List String -> List String
 rowArgOf : List (String, Ref Effvar) -> Ty -> EffRow
 rowFreeEffvars : EffRow -> List Int
+runFinalChecks : List Decl -> List Decl -> Unit
 sameRootId : Int -> Mono -> Bool
 scEdge : String -> String -> Map String (List String) -> Unit
 scEdges : String -> List String -> Map String (List String) -> Unit

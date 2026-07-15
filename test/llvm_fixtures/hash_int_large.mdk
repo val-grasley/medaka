@@ -1,0 +1,2 @@
+-- #199: hashInt of an Int outside +-2^30 must unbox full width (not read i31).
+main = hashInt 4503599627370497

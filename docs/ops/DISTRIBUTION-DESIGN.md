@@ -34,14 +34,16 @@ So the work is entirely in the **packaging + discovery seam**.
 Each is a thing that currently assumes "running inside this repo, on this dev
 machine." File:line references are from the audited tree.
 
-1. **stdlib is located only via `MEDAKA_ROOT` (default `.` = cwd).** No
-   argv[0]-relative and no compiled-in path. `medaka_cli.mdk` header comment
-   states there is **no `getcwd`/`executable_name` extern**. Every subcommand
-   derives `root ++ "/stdlib/..."` (`medaka_cli.mdk` `check`~:203, `build`~:481,
-   `run`~:633, `test`~:717, `doc`~:732). A binary moved out of the repo, run
-   anywhere but the repo root, fails to load `stdlib/{runtime,core}.mdk`.
-   → **Needs a new exe-path primitive + exe-relative default.** *(This is also
-   shared with any interpreter-only distribution — it's not native-build-specific.)*
+1. **DONE (D1).** ~~stdlib is located only via `MEDAKA_ROOT` (default `.` =
+   cwd), with no argv[0]-relative fallback.~~ `defaultMedakaRoot` now resolves
+   exe-relative (`dirOf (executablePath ())`, `build_cmd.mdk:86-90`) and every
+   subcommand falls back to it via `envOr "MEDAKA_ROOT" defaultMedakaRoot`
+   (`medaka_cli.mdk` `check`/`run`/`doc`/`test`/`repl`/`lsp`/…) — an explicit
+   `MEDAKA_ROOT` still wins. Remaining gap was **diagnostic quality, not
+   structure**: a MISS (no exe-relative `stdlib/` sibling, no `MEDAKA_ROOT`) gave
+   a bare, contextless `No such file or directory` with no path and no remedy
+   (issue #132). Fixed via a shared `readPreludeFile` helper
+   (`build_cmd.mdk`) that names the resolved path and points at `MEDAKA_ROOT`.
 
 2. **Mach-O-only stack-size linker flag, hardcoded + unconditional.**
    `-Wl,-stack_size,0x20000000` at `build_cmd.mdk:262` (and every bootstrap

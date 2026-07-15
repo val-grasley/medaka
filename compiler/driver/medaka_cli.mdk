@@ -36,6 +36,7 @@ import driver.build_cmd.{
   emitPreludeObj,
   envOr,
   defaultMedakaRoot,
+  readPreludeFile,
 }
 import support.util.{
   reverseL,
@@ -49,9 +50,10 @@ import support.util.{
   contains,
   sortUniqS,
   schemeLineName,
+  stringTrim,
 }
 import support.ordmap.{OrdMap, omEmpty, omHasKey, omFromNames}
-import support.path.{baseOf, chopExt}
+import support.path.{baseOf, chopExt, joinPath}
 import frontend.ast.{Decl(..), Expr(..), Loc(..), Pat, LetBind(..)}
 import frontend.parser.{
   parse,
@@ -164,8 +166,66 @@ medakaVersion = "0.1.0-preview"
 printVersion : Unit -> <IO> Unit
 printVersion _ = putStrLn ("medaka " ++ medakaVersion)
 
+-- ── staleness guard (issue #89) ─────────────────────────────────────────────
+-- A ./medaka built in tree Y but run against tree X's NEWER compiler sources
+-- silently applies OLD compiler semantics (an old binary misreads `1.5e3` as
+-- `Unbound variable: e3`), and the version string ("0.1.0-preview") never moves,
+-- so it is useless as a staleness signal.  test/build_native_medaka.sh bakes the
+-- compiler-source fingerprint into the binary (-DMEDAKA_SRC_FP, surfaced by the
+-- `buildFingerprint` extern); here we recompute the SAME fingerprint over the
+-- LIVE <root>/compiler and warn on a mismatch.  MEDAKA_STRICT=1 promotes the
+-- warning to a hard error.  Runs on every invocation, so it is gated TIGHTLY:
+-- only when a stamp was baked AND <root>/compiler is present (a shipped binary
+-- has neither).
+--
+-- `liveSourceFingerprint` reproduces src_fingerprint() from the build script
+-- byte-for-byte: names AND contents of `find compiler -name '*.mdk' | LC_ALL=C
+-- sort`, hashed by the same hash_stream chain (sha256sum → shasum → cksum).  The
+-- per-file `while read; cat` shell loop the script uses costs ~110ms (118 forks);
+-- we stream through ONE perl process (~16ms, verified byte-identical).  perl
+-- absent → the guard exits non-zero → None → the check silently skips (never a
+-- false warning).
+liveSourceFingerprint : String -> <IO> Option String
+liveSourceFingerprint root =
+  let script = stringConcat [
+    "command -v perl >/dev/null 2>&1 || exit 7; cd \"",
+    root,
+    "\" && find compiler -name '*.mdk' -print | LC_ALL=C sort",
+    " | perl -ne 'chomp; print \"$_\\n\"; open F,\"<\",$_ or next; local $/; my $c=<F>; print $c if defined $c; close F' 2>/dev/null",
+    " | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; elif command -v shasum >/dev/null 2>&1; then shasum -a 256; else cksum; fi; }",
+    " | cut -d' ' -f1",
+  ]
+  match runCommand "sh" ["-c", script]
+    Ok (0, out, _) =>
+      let h = stringTrim out
+      if h == "" then None else Some h
+    _ => None
+
+checkSourceStaleness : Unit -> <IO> Unit
+checkSourceStaleness _ =
+  let baked = buildFingerprint ()
+  if baked == "" then ()
+  else
+    let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
+    let compilerDir = joinPath root "compiler"
+    if not (fileExists compilerDir) then ()
+    else match liveSourceFingerprint root
+      None => ()
+      Some live => if live == baked then ()
+      else
+        let msg = "warning: this ./medaka was built from compiler source that differs from " ++ compilerDir ++ " — it may be stale; rebuild with 'make medaka'."
+        if envOr "MEDAKA_STRICT" "" != "" then
+          let _ = ePutStrLn msg
+          exit 1
+        else ePutStrLn msg
+
 main : <IO> Unit
-main = match args ()
+main =
+  let _ = checkSourceStaleness ()
+  runCli ()
+
+runCli : Unit -> <IO> Unit
+runCli _ = match args ()
   [] => usage ()
   "help"::_ => usage ()
   "--help"::_ => usage ()
@@ -267,11 +327,11 @@ runCheckCmd argv =
       let corePath = root ++ "/stdlib/core.mdk"
       let stdlibDir = root ++ "/stdlib"
       let roots = entrySearchRoots (dirOf2 target) ++ [stdlibDir]
-      match readFile rtPath
+      match readPreludeFile rtPath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
-        Ok rsrc => match readFile corePath
+        Ok rsrc => match readPreludeFile corePath
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
@@ -1082,9 +1142,9 @@ typecheckGate allowInternal root input =
   let corePath = root ++ "/stdlib/core.mdk"
   let stdlibDir = root ++ "/stdlib"
   let roots = entrySearchRoots (dirOf2 input) ++ [stdlibDir]
-  match readFile rtPath
+  match readPreludeFile rtPath
     Err msg => TGErr msg
-    Ok rsrc => match readFile corePath
+    Ok rsrc => match readPreludeFile corePath
       Err msg => TGErr msg
       Ok csrc => match readFile input
         Err msg => TGErr msg
@@ -1256,11 +1316,11 @@ runRunCmd argv =
       -- (eval.mdk's pArgs reads this Ref): `medaka run prog.mdk a b` ⇒ ["a","b"],
       -- matching what the same program's compiled binary sees.
       let _ = setRef progArgsRef progArgs
-      match readFile rtPath
+      match readPreludeFile rtPath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
-        Ok rsrc => match readFile corePath
+        Ok rsrc => match readPreludeFile corePath
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
@@ -1417,11 +1477,11 @@ runDocCmd argv = match dropFlags argv
     let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
-    match readFile rtPath
+    match readPreludeFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
-      Ok rsrc => match readFile corePath
+      Ok rsrc => match readPreludeFile corePath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
@@ -1448,11 +1508,11 @@ runCheckPolicyCmd argv = match parsePolicyArgs argv
     let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
-    match readFile rtPath
+    match readPreludeFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
-      Ok rsrc => match readFile corePath
+      Ok rsrc => match readPreludeFile corePath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
@@ -1497,11 +1557,11 @@ runManifestCmd argv = match parseManifestArgs argv
     let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
-    match readFile rtPath
+    match readPreludeFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
-      Ok rsrc => match readFile corePath
+      Ok rsrc => match readPreludeFile corePath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
@@ -1961,11 +2021,11 @@ runReplCmd _ =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
-  match readFile rtPath
+  match readPreludeFile rtPath
     Err msg =>
       let _ = ePutStrLn msg
       exit 1
-    Ok rsrc => match readFile corePath
+    Ok rsrc => match readPreludeFile corePath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1
@@ -1984,11 +2044,11 @@ runLspCmd _ =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
-  match readFile rtPath
+  match readPreludeFile rtPath
     Err msg =>
       let _ = ePutStrLn msg
       exit 1
-    Ok rsrc => match readFile corePath
+    Ok rsrc => match readPreludeFile corePath
       Err msg =>
         let _ = ePutStrLn msg
         exit 1

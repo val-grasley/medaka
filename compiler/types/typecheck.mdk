@@ -2182,7 +2182,7 @@ occursCheckFailed : Ref Bool
 occursCheckFailed = Ref False
 
 -- ASYNC-DESIGN Stage 2 (D5): the entry program's inferred `main` scheme, stashed
--- by elabModulesGo on the EVAL path so the native `run` driver can detect a
+-- by elabWorker on the EVAL path so the native `run` driver can detect a
 -- `main : Async _` and route it through `runAsync` (perform its row) instead of
 -- forcing it to an inert Async value.  Last module wins (the entry is last in
 -- dependency order), matching bin/main.ml's `final_schemes` lookup.  `None` until
@@ -3533,7 +3533,7 @@ recordMethodDicts name methodRef subst = match alignedMethodConstraintIds name s
 -- instantiation [subst].  methodConstraintsRef can hold MULTIPLE entries for one
 -- (uniquely-named) method, each registered with its own FRESH ids by a different
 -- elaborate sweep (discoverPromotedModules' discovery sweep, then the real
--- elabModulesGo sweep) — crossModuleMethodConstraintsRef accumulates them across
+-- elabWorker sweep) — crossModuleMethodConstraintsRef accumulates them across
 -- sweeps and is not re-keyed before recordMethodDicts reads it.  A plain bare-name
 -- first-match (lookupAssocSL2) returns whichever entry is frontmost, which after the
 -- discovery sweep is a STALE entry whose ids belong to a dead id range, disjoint from
@@ -7122,7 +7122,7 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
 -- type-error side effects must NOT leak into the STICKY accumulator that gates the
 -- build/run exit code.  The joint-flattened program can surface spurious errors
 -- (cross-module names that resolve per-module but look ambiguous flattened) that
--- the REAL per-module pass (elabModulesGo) does not — so snapshot typeErrors +
+-- the REAL per-module pass (elabWorker) does not — so snapshot typeErrors +
 -- typeErrorsSticky here and restore them after, leaving the gate to reflect only
 -- the real per-module typecheck.  On the EMIT path discovery already ran, but
 -- elaborateModules's caller (the emit driver) never reads hadTypeErrors, so this
@@ -8420,6 +8420,20 @@ checkInterfaceCycles allDecls =
   let done = Ref []
   foreachUnit (checkOneIfaceCycle allDecls done) ifaceNames
 
+-- #152: the whole-program final-checks tail, shared by all five entry points
+-- (checkToLines / checkToLinesWithRuntime / checkErrorsWithRuntime /
+-- checkProgramDiags / checkModuleFullDiags).  [cohDecls] feeds coherence AND
+-- phantom-methods; [cycDecls] feeds interface-cycles AND checkSuperImpls's second
+-- (whole-universe) argument.  ⚠️ trap #5: coherence must see USER decls only, so
+-- this helper has NO access to `prog` — the caller decides [cohDecls] explicitly
+-- (never a `prog` fallback).  Call ORDER is load-bearing (all push into typeErrors).
+runFinalChecks : List Decl -> List Decl -> Unit
+runFinalChecks cohDecls cycDecls =
+  let _ = checkCoherence cohDecls
+  let _ = checkInterfaceCycles cycDecls
+  let _ = checkPhantomMethods cohDecls
+  checkSuperImpls cohDecls cycDecls
+
 checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> Unit
 checkOneIfaceCycle allDecls done ifaceName =
   if not (contains ifaceName done.value) then
@@ -8583,7 +8597,7 @@ cohCollectModuleImpls ((mid, prog)::rest) = flatMap (cohImplsOfMid mid) prog
   ++ cohCollectModuleImpls rest
 
 -- the first cross-module coherence conflict (if any) as a bare message — drivers
--- that thread errs as a VALUE (checkModulesEntryFullGo) prepend this themselves,
+-- that thread errs as a VALUE (cmEntryCollect) prepend this themselves,
 -- rather than relying on the typeErrors ref (cleared per-module by resetState).
 globalCoherenceConflict : List (String, List Decl) -> Option String
 globalCoherenceConflict modules =
@@ -12132,10 +12146,7 @@ typeErrorLines (e::rest) = "TYPE ERROR: " ++ e :: typeErrorLines rest
 export checkToLines : List Decl -> String
 checkToLines prog =
   let schemes = checkProgramSchemes [] prog
-  let _ = checkCoherence prog
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods prog
-  let _ = checkSuperImpls prog prog
+  let _ = runFinalChecks prog prog
   let errs = reverseL typeErrors.value
   match errs
     [] => joinNl (schemeLines schemes)
@@ -12155,10 +12166,7 @@ checkToLinesWithRuntime runtimeDecls coreProg userProg =
   let _ = setRef matchWarnings []
   let _ = setRef matchOracle (buildOracle prog)
   let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = checkCoherence coherenceUserDecls.value
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods coherenceUserDecls.value
-  let _ = checkSuperImpls coherenceUserDecls.value prog
+  let _ = runFinalChecks coherenceUserDecls.value prog
   let errs = reverseL typeErrors.value
   let warns = reverseL matchWarnings.value
   match errs
@@ -12184,10 +12192,7 @@ checkErrorsWithRuntime runtimeDecls coreProg userProg =
   let _ = setRef matchWarnings []
   let _ = setRef matchOracle (buildOracle prog)
   let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = checkCoherence coherenceUserDecls.value
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods coherenceUserDecls.value
-  let _ = checkSuperImpls coherenceUserDecls.value prog
+  let _ = runFinalChecks coherenceUserDecls.value prog
   match typeErrors.value
     [] => False
     _ => True
@@ -12219,10 +12224,7 @@ checkProgramDiags runtimeDecls coreProg userProg =
   let _ = setRef matchWarningLocs []
   let _ = setRef matchOracle (buildOracle prog)
   let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = checkCoherence coherenceUserDecls.value
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods coherenceUserDecls.value
-  let _ = checkSuperImpls coherenceUserDecls.value prog
+  let _ = runFinalChecks coherenceUserDecls.value prog
   (
     reverseL typeErrors.value,
     zipL (reverseL matchWarnings.value) (reverseL matchWarningLocs.value),
@@ -13075,27 +13077,90 @@ reexportSeed coreV ((DUse True path _)::rest) depEnv =
       ++ reexportSeed coreV rest depEnv
 reexportSeed coreV (_::rest) depEnv = reexportSeed coreV rest depEnv
 
-checkModulesGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
-checkModulesGo _ _ _ _ [] = []
-checkModulesGo baseSeed coreV depEnv accData ((mid, prog)::rest) =
+-- ── UNIFIED per-module fold (#151) ─────────────────────────────────────────
+-- The single home for the identical per-module skeleton the four module drivers
+-- (checkModules / checkModulesDiags / checkModulesEntryFull / elaborateModules)
+-- share, so the next import-scoped-seed-style fix touches ONE place instead of
+-- four (the miss would otherwise be path-specific — LSP-only or emit-only).  It
+-- owns: the IMPORT-SCOPED seed (`baseSeed ++ importSeed prog depEnv` — a flat
+-- union let `string.reverse` shadow the `list.reverse` a module imports), the
+-- per-module PUBLIC accumulator (`pubV = pickSchemes (publicValNames prog) schemes
+-- ++ reexportSeed coreV prog depEnv`), and the DEPENDENCY-FIRST threading of
+-- depEnv (PREPEND `(mid,pubV)::depEnv`, so importSeed's first-match picks the
+-- nearest dependency), accData (`++ publicDataDecls prog`) and accAll (`++ prog`,
+-- the cumulative impl-body universe).  Each driver supplies:
+--   * worker  : mid seed accData accAll prog -> (schemes, extra) — runs the
+--               per-module pass; MUST surface `schemes` (pubV needs it for the
+--               next depEnv) plus its driver-specific payload `extra`.
+--   * collect : isLast mid extra restResult -> result — a foldr combiner, where
+--               restResult is the fold over the REMAINING modules (`base` for []).
+--               `isLast` is True only for the terminal (entry) module — the one
+--               place checkModulesEntryFull keeps the module's OWN schemes/warns
+--               rather than the recursion's.
+-- foldModules owns ONLY the loop and performs NO resetCrossModuleState: the reset
+-- boundary stays in each driver's preamble (a reset leaking in here would hand the
+-- `check*` drivers a reset they must not have).
+foldModules : (String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), e)) -> (Bool -> String -> e -> acc -> acc) -> acc -> List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> acc
+foldModules _ _ base _ _ _ _ _ [] = base
+foldModules worker collect base baseSeed _coreV depEnv accData accAll [(mid, prog)] =
   let seed = baseSeed ++ importSeed prog depEnv
-  let schemes = checkModuleFull seed accData prog
+  let (_, extra) = worker mid seed accData accAll prog
+  collect True mid extra base
+foldModules worker collect base baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
+  let seed = baseSeed ++ importSeed prog depEnv
+  let (schemes, extra) = worker mid seed accData accAll prog
   let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed coreV prog depEnv
-  (mid, schemes) :: checkModulesGo baseSeed coreV ((mid, pubV)::depEnv) (accData ++ publicDataDecls prog) rest
+  collect
+    False
+    mid
+    extra
+    (foldModules
+      worker
+      collect
+      base
+      baseSeed
+      coreV
+      ((mid, pubV)::depEnv)
+      (accData ++ publicDataDecls prog)
+      (accAll ++ prog)
+      rest)
+
+-- Shared preamble of the three `check*` module drivers (the "three verbatim entry
+-- wrappers" of #151): reset the cross-module accumulators, register abstract
+-- record types, and seed runtime + core schemes.  Returns (runtimeSeed,
+-- coreSchemes) for the caller to thread into foldModules.  elaborateModules does
+-- NOT use this — its preamble additionally marks/prePasses the graph and stamps
+-- core via elabModuleStamp.
+checkModulesPreamble : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, Scheme))
+checkModulesPreamble runtimeDecls coreDecls modules =
+  let _ = resetCrossModuleState ()
+  let runtimeSeed = externSchemes runtimeDecls
+  let _ = seedAbstractRecordTypes coreDecls modules
+  let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
+  (runtimeSeed, coreSchemes)
+
+-- worker: plain per-module typecheck (no diagnostics harvest, no accAll).  Surfaces
+-- `schemes` twice — once as the pubV source foldModules needs, once as the payload
+-- checkModules collects.
+cmCheckWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List (String, Scheme))
+cmCheckWorker _mid seed accData _accAll prog =
+  let schemes = checkModuleFull seed accData prog
+  (schemes, schemes)
 
 -- check every module in dependency order against a shared prelude + runtime.
 -- modules = (moduleId, desugared program) in dependency-first order.
 export checkModules : List Decl -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
 checkModules runtimeDecls coreDecls modules =
-  let _ = resetCrossModuleState ()
-  let runtimeSeed = externSchemes runtimeDecls
-  let _ = seedAbstractRecordTypes coreDecls modules
-  let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
-  checkModulesGo
+  let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
+  foldModules
+    cmCheckWorker
+    (_last mid schemes rest => (mid, schemes)::rest)
+    []
     (runtimeSeed ++ coreSchemes)
     coreSchemes
     []
     (publicDataDecls coreDecls)
+    coreDecls
     modules
 
 -- ── per-module ISOLATED diagnostics (the analyzeProject typecheck stage) ────
@@ -13108,7 +13173,7 @@ checkModules runtimeDecls coreDecls modules =
 -- which clears typeErrors at module start, so the post-call typeErrors snapshot is
 -- exactly THIS module's contribution; matchWarnings is cleared here explicitly
 -- (resetState does NOT clear it).  Returns (own value schemes, errs, warns) so the
--- driver can thread accV/accData exactly as checkModulesGo does.
+-- driver can thread accV/accData exactly as foldModules does.
 export checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
 checkModuleFullDiags seedVars accData accAll prog =
   let _ = setRef implInferEnabled False
@@ -13131,10 +13196,7 @@ checkModuleFullDiags seedVars accData accAll prog =
   -- only feeds the shadow/dispatch-index/key tables, matching the eval path's
   -- elabModuleStamp (which passes accAll ++ prog too).
   let schemes = checkModuleFullImpl "" seedVars accData accAll prog
-  let _ = checkCoherence prog
-  let _ = checkInterfaceCycles (accAll ++ accData ++ prog)
-  let _ = checkPhantomMethods prog
-  let _ = checkSuperImpls prog (accAll ++ accData ++ prog)
+  let _ = runFinalChecks prog (accAll ++ accData ++ prog)
   (
     schemes,
     reverseL typeErrors.value,
@@ -13157,28 +13219,35 @@ checkModuleFullDiags seedVars accData accAll prog =
 -- module decls).  Pushes any conflict into typeErrors AFTER the resetState above.
 
 -- multi-module diagnostics driver: threads the runtime+core seed and per-module
--- PUBLIC accumulators exactly as checkModulesGo, but at each module harvests its
+-- PUBLIC accumulators exactly as foldModules threads, but at each module harvests its
 -- ISOLATED diagnostics via checkModuleFullDiags.  Returns one
 -- (mid, (errs, warns)) per module in load order.  Core is checked ONCE (its
 -- diagnostics are not surfaced — it is the trusted prelude, as in checkModules).
 -- IMPORT-SCOPED seed (baseSeed ++ importSeed prog depEnv), exactly like
--- checkModulesGo — NOT a flat union of every earlier module's publics, which let
+-- foldModules — NOT a flat union of every earlier module's publics, which let
 -- a same-named function from a non-imported module win by load order (e.g.
 -- string.reverse shadowing the list.reverse a module imports → spurious errors).
-checkModulesDiagsGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
-checkModulesDiagsGo _ _ _ _ _ [] = []
-checkModulesDiagsGo baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
-  let (schemes, errs, warns) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accAll prog
-  let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed coreV prog depEnv
-  (mid, (errs, warns)) :: checkModulesDiagsGo baseSeed coreV ((mid, pubV)::depEnv) (accData ++ publicDataDecls prog) (accAll ++ prog) rest
+-- worker: ISOLATED per-module diagnostics harvest (checkModuleFullDiags — see its
+-- doc above).  Surfaces this module's own `schemes` (for pubV) plus its (errs, warns)
+-- payload.  IMPORT-SCOPED seed exactly like cmCheckWorker; NOT a flat union.
+cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, String, Option Loc), List (String, Option Loc)))
+cmDiagsWorker _mid seed accData accAll prog =
+  let (schemes, errs, warns) = checkModuleFullDiags seed accData accAll prog
+  (schemes, (errs, warns))
 
 export checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
 checkModulesDiags runtimeDecls coreDecls modules =
-  let _ = resetCrossModuleState ()
-  let runtimeSeed = externSchemes runtimeDecls
-  let _ = seedAbstractRecordTypes coreDecls modules
-  let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
-  let perMod = checkModulesDiagsGo (runtimeSeed ++ coreSchemes) coreSchemes [] (publicDataDecls coreDecls) coreDecls modules
+  let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
+  let perMod = foldModules
+    cmDiagsWorker
+    (_last mid ew rest => (mid, ew) :: rest)
+    []
+    (runtimeSeed ++ coreSchemes)
+    coreSchemes
+    []
+    (publicDataDecls coreDecls)
+    coreDecls
+    modules
   -- D3 / WS-2 part-2: attach any cross-module coherence conflict to the ENTRY
   -- module's diagnostics (last in dependency-first order), so LSP/analyzeProject
   -- surfaces it too.  User modules only (prelude excluded).
@@ -13211,11 +13280,17 @@ entryOwnSchemes (_::rest) = entryOwnSchemes rest
 -- more than one module.
 checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
 checkModulesEntryFull runtimeDecls coreDecls modules =
-  let _ = resetCrossModuleState ()
-  let runtimeSeed = externSchemes runtimeDecls
-  let _ = seedAbstractRecordTypes coreDecls modules
-  let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
-  let (schemes, errs, warns) = checkModulesEntryFullGo (runtimeSeed ++ coreSchemes) coreSchemes [] (publicDataDecls coreDecls) coreDecls modules
+  let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
+  let (schemes, errs, warns) = foldModules
+    cmEntryWorker
+    cmEntryCollect
+    ([], [], [])
+    (runtimeSeed ++ coreSchemes)
+    coreSchemes
+    []
+    (publicDataDecls coreDecls)
+    coreDecls
+    modules
   -- D3 / WS-2 part-2: cross-module coherence over the USER modules only (prelude
   -- excluded — it is checked separately and a user impl may override a prelude one).
   -- Prepend any conflict (dependency-first, ahead of the entry's own errors).
@@ -13223,30 +13298,26 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
     Some msg => (schemes, ("T-CONFLICTING-IMPL", msg, None) :: errs, warns)
     None => (schemes, errs, warns)
 
--- thread the public accumulators exactly as checkModulesGo.  The returned
--- triple keeps the ENTRY (last) module's SCHEMES and WARNINGS (those belong to the
--- entry's report), but ACCUMULATES type errors from EVERY module: a type error in
--- an IMPORTED module is still a hard error of `check`ing the entry graph and must
--- surface (otherwise it silently reaches codegen — the G1-class soundness hole).
--- Earlier-module errors are prepended (dependency-first) to the entry's own.
---
--- Each module's VALUE seed is IMPORT-SCOPED (`baseSeed ++ importSeed prog depEnv`,
--- exactly like checkModulesGo), NOT the flat union of every earlier module's public
--- schemes.  A flat union let a same-named function from a non-imported module win by
--- load order — e.g. `string.reverse : String -> String` shadowing the `list.reverse`
--- a module actually imported, producing spurious `String vs List a` errors (json.mdk).
--- baseSeed (runtime + core) is always in scope; depEnv keys earlier modules' public
--- schemes by module id for importSeed to pick from.  accData stays a flat union
--- (data/type collisions aren't the issue here; mirrors checkModulesGo).
-checkModulesEntryFullGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
-checkModulesEntryFullGo _ _ _ _ _ [] = ([], [], [])
-checkModulesEntryFullGo baseSeed _ depEnv accData accAll [(_, prog)] =
-  checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accAll prog
-checkModulesEntryFullGo baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
-  let (schemes, errs, _) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData accAll prog
-  let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed coreV prog depEnv
-  let (eSchemes, eErrs, eWarns) = checkModulesEntryFullGo baseSeed coreV ((mid, pubV)::depEnv) (accData ++ publicDataDecls prog) (accAll ++ prog) rest
-  (eSchemes, errs ++ eErrs, eWarns)
+-- worker: same ISOLATED per-module diagnostics as cmDiagsWorker, but surfaces the
+-- FULL triple (schemes, errs, warns) as its payload so cmEntryCollect can keep the
+-- terminal module's OWN schemes/warns.  IMPORT-SCOPED seed, exactly like the others.
+cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)))
+cmEntryWorker _mid seed accData accAll prog =
+  let (schemes, errs, warns) = checkModuleFullDiags seed accData accAll prog
+  (schemes, (schemes, errs, warns))
+
+-- collect: the ENTRY report keeps the ENTRY (last/terminal) module's SCHEMES and
+-- WARNINGS (those belong to the entry's report), but ACCUMULATES type errors from
+-- EVERY module dependency-first: a type error in an IMPORTED module is still a hard
+-- error of `check`ing the entry graph and must surface (else it silently reaches
+-- codegen — the G1-class soundness hole).  Earlier-module errors are PREPENDED
+-- (`e ++ eE`) to the recursion's; only isLast (the terminal module) uses its OWN
+-- schemes/warns, every earlier module inherits eS/eW from the recursion.
+cmEntryCollect : Bool -> String -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc)) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
+cmEntryCollect isLast _mid extra rest =
+  let (s, e, w) = extra
+  let (eS, eE, eW) = rest
+  if isLast then (s, e ++ eE, w) else (eS, e ++ eE, eW)
 
 -- render the entry report: type errors win (each `TYPE ERROR: …`), else the
 -- entry's `name : scheme` lines followed by its non-exhaustive-match warnings.
@@ -13260,7 +13331,7 @@ checkModulesEntryReport runtimeDecls coreDecls modules =
     _ => joinNl (typeErrorLines (map teErrMsg errs))
 
 -- exit-code predicate analog of checkHasErrors: any type error in ANY module of
--- the resolved graph (entry or imported — see checkModulesEntryFullGo).
+-- the resolved graph (entry or imported — see cmEntryCollect / foldModules).
 export checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) -> Bool
 checkModulesEntryHasErrors runtimeDecls coreDecls modules =
   let (_, errs, _) = checkModulesEntryFull runtimeDecls coreDecls modules
@@ -13354,7 +13425,16 @@ elaborateModules runtimeDecls coreDecls modulesIn =
   let modules2 = map (prePassModulePairArg markRpNames dictNames argNames mangledShadowMapRef.value) modules
   let runtimeSeed = externSchemes runtimeDecls
   let coreSchemes = elabModuleStamp "" runtimeSeed [] core2 core2
-  let _ = elabModulesGo (runtimeSeed ++ coreSchemes) coreSchemes [] (publicDataDecls core2) core2 modules2
+  let _ = foldModules
+    elabWorker
+    (_last _mid _extra _rest => ())
+    ()
+    (runtimeSeed ++ coreSchemes)
+    coreSchemes
+    []
+    (publicDataDecls core2)
+    core2
+    modules2
   dictPassModulesIfEnabled dictNames core2 modules2
 -- arg-position interface-method names whose route resolveArgStamps may stamp
 -- (empty when OFF → prePassDictArg degenerates to prePassDict, goldens unchanged)
@@ -13794,24 +13874,19 @@ elabModuleStamp mid seedVars accData implDecls prog =
 -- value param (method_constraint_impl_offset: was `non-exhaustive match`).  No-op
 -- when pendingMethodDicts is empty → golden drivers byte-identical.
 
-elabModulesGo : List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> Unit
-elabModulesGo _ _ _ _ _ [] = ()
--- IMPORT-SCOPED seed (see importSeed / checkModulesGo): only the names THIS
--- module's DUse decls import; accAll stays the cumulative impl-body universe.
-elabModulesGo baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
-  let seed = baseSeed ++ importSeed prog depEnv
+-- worker: per-module elaboration + route-stamping (elabModuleStamp).  IMPORT-SCOPED
+-- seed (see importSeed / foldModules): only the names THIS module's DUse decls
+-- import; implDecls (`accAll ++ prog`) is the cumulative impl-body universe.
+-- Side-effects mainSchemeRef when this module binds `main` — the entry module (last
+-- in dependency order) wins, exactly as the old head-recursive loop.  Payload is
+-- Unit; elaborateModules discards foldModules' result and re-reads the stamped trees.
+elabWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), Unit)
+elabWorker mid seed accData accAll prog =
   let schemes = elabModuleStamp mid seed accData (accAll ++ prog) prog
   let _ = match lookupAssoc "main" schemes
     Some s => setRef mainSchemeRef (Some s)
     None => ()
-  let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed coreV prog depEnv
-  elabModulesGo
-    baseSeed
-    coreV
-    ((mid, pubV)::depEnv)
-    (accData ++ publicDataDecls prog)
-    (accAll ++ prog)
-    rest
+  (schemes, ())
 
 schemeLines : List (String, Scheme) -> List String
 schemeLines [] = []

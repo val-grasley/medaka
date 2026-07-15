@@ -92,6 +92,21 @@ defaultMedakaRoot = exeDir
 export defaultMedakaEmitter : <IO> String
 defaultMedakaEmitter = joinPath exeDir "medaka_emitter"
 
+-- Reads a stdlib prelude file (stdlib/runtime.mdk or stdlib/core.mdk) and, on
+-- failure, wraps the bare strerror `readFile` returns (e.g. "No such file or
+-- directory") in an ACTIONABLE message naming the resolved path and the fix —
+-- same style as the MEDAKA_WASM_EMITTER hint below.  Without this, a relocated
+-- `medaka` binary with no exe-relative stdlib/ sibling (and no MEDAKA_ROOT set)
+-- fails every subcommand with a bare, contextless "No such file or directory"
+-- (#132) — the structural exe-relative/MEDAKA_ROOT lookup (above) is correct,
+-- but a MISS gave the user nothing to act on.  Prelude reads only — a missing
+-- USER file should keep reporting its own bare "No such file or directory:
+-- <path>", which is already unambiguous.
+export readPreludeFile : String -> <IO> Result String String
+readPreludeFile path = match readFile path
+  Err e => Err "error: cannot read the stdlib prelude at \"\{path}\" (\{e})\n  set MEDAKA_ROOT to your medaka repo/install root, run from the project root, or place stdlib/ next to the medaka binary"
+  Ok src => Ok src
+
 -- ---- the trailing-Unit auto-print trim ----
 -- The interpreter auto-prints main's Unit as a trailing "()\n"; the emitter's
 -- IR is captured via subprocess stdout, so strip a trailing "()\n" if present

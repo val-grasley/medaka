@@ -1,0 +1,3 @@
+-- #199: intToFloat of an Int outside +-2^30 must not trap the wasm i31 cast.
+-- 4503599627370497 = 2^52 + 1 (an int literal, NOT a >=1e15 float literal — #57).
+main = intToFloat 4503599627370497
