@@ -152,6 +152,54 @@ cleanupTempDir dir = match listDir dir
     let _ = removeDir dir
     ()
 
+-- ---- startup sweep of leaked scratch dirs (issue #97) ----
+-- A build stages scratch under makeTempDir's /tmp/medaka_build_* dir and removes
+-- it on the NORMAL exit path (cleanupTempDir).  A build KILLED before that runs —
+-- `timeout`, Ctrl-C, OOM, SIGKILL — leaks its dir.  Over a long multi-agent
+-- session these accumulated to 96% of a 16 GB RAM-backed tmpfs (1,041 dirs).  A
+-- signal trap cannot cover SIGKILL, so instead every build, at startup, sweeps
+-- dirs that are provably NOT in use BEFORE creating its own (issue #97 option 2).
+--
+-- CONCURRENCY SAFETY is the hard constraint: this is the exact file whose
+-- per-process-dir design fixed a 19/20 silent-WRONG-binary race, and a sweep that
+-- deletes a LIVE build's dir reintroduces it.  The guard is AGE: a dir is removed
+-- only if its mtime is older than 6 HOURS — far beyond any real build (seconds to
+-- minutes).  A just-created or in-progress dir has a recent mtime, so a
+-- concurrently-starting build (parallel worktrees on the same box) is never
+-- swept — the age gate IS the concurrency guard.  The predicate is evaluated by
+-- `find -mmin +360`, atomic w.r.t. the filesystem and supported by BOTH GNU find
+-- (Linux) and BSD find (macOS), so no "now" primitive is needed and the module
+-- stays self-contained.
+--
+-- BEST-EFFORT: the sweep must never fail or slow a build.  Every failure mode —
+-- `find` absent, a foreign user's dir we cannot remove, a dir another process
+-- removed mid-sweep — is swallowed (the Err arm is (), and cleanupTempDir already
+-- discards every Result).  A leaked dir only ever holds the flat files a build
+-- stages (program.ll, the gc probe, a stub .mdk / obj), so cleanupTempDir's
+-- listDir + flat removeFile + removeDir tears it down exactly as for a live build.
+sweepStaleTempDirs : Unit -> <IO> Unit
+sweepStaleTempDirs _ =
+  let findArgs = [
+    "/tmp",
+    "-maxdepth",
+    "1",
+    "-type",
+    "d",
+    "-name",
+    "medaka_build_*",
+    "-mmin",
+    "+360",
+  ]
+  match runCommand "find" findArgs
+    Ok (_, out, _) => sweepEachStale (splitWS out)
+    Err _ => ()
+
+sweepEachStale : List String -> <IO> Unit
+sweepEachStale [] = ()
+sweepEachStale (d::rest) =
+  let _ = cleanupTempDir d
+  sweepEachStale rest
+
 -- ---- Boehm GC flag detection (pkg-config → brew → bare -lgc) ----
 -- Returns Some (cflags, libs) or None.  tmpDir is the caller's per-invocation
 -- scratch dir (the bare-lgc probe is staged inside it).
@@ -266,8 +314,10 @@ keepIrNote path contents = match writeFile path contents
 --             MEDAKA_KEEP_IR inside effectiveKeepIr)
 export runBuild : String -> String -> String -> BuildTarget -> String -> String -> Bool -> <IO> BuildResult
 runBuild root medaka cc TNative inputAbs outPath keepIrCli =
+  let _ = sweepStaleTempDirs ()
   runBuildNative root medaka cc inputAbs outPath keepIrCli
 runBuild root medaka cc TWasm inputAbs outPath keepIrCli =
+  let _ = sweepStaleTempDirs ()
   runBuildWasm root medaka inputAbs outPath keepIrCli
 
 -- ---- native (LLVM/clang) target — the original path ----

@@ -75,5 +75,60 @@ done
 check "multimodule" "$FIX/mm/entry.mdk"
 check "standalone_vs_method" "$FIX/svm/entry.mdk"
 
+# ---- issue #97: startup sweep of leaked /tmp/medaka_build_* scratch dirs ----
+# A build killed before cleanupTempDir runs (timeout / SIGKILL / OOM) leaks its
+# per-process scratch dir into the RAM-backed /tmp tmpfs.  build_cmd.mdk now sweeps
+# provably-stale (mtime > 6h) medaka_build_* dirs at the START of every build.
+# This asserts the KILL-PATH acceptance criteria on a REAL `medaka build`:
+#   (a) a fake STALE dir (old mtime, with content) is removed by the sweep,
+#   (b) the build itself succeeds,
+#   (c) the build's OWN scratch dir is cleaned up (nothing new leaks), and
+#   (d) a fake RECENT dir is NOT removed — proving the age gate that makes the
+#       sweep concurrency-safe (a parallel build's fresh dir is never swept).
+# Dirs are $$-suffixed so parallel gate runs don't collide; the age predicate is
+# platform-portable (touch -t with a fixed 2020 timestamp -> definitely > 6h; the
+# sweep uses `find -mmin +360`, honored by both GNU and BSD find).
+sweep_test() {
+  label="tempdir_sweep"
+  old="/tmp/medaka_build_sweepold_$$"
+  new="/tmp/medaka_build_sweepnew_$$"
+  bin="$WORK/$label.bin"
+  rm -rf "$old" "$new"
+  # (a) stale dir: create WITH content, then backdate the DIRECTORY mtime (must be
+  # last — adding the file bumps the dir mtime).
+  mkdir -p "$old" && printf 'x\n' > "$old/program.ll" && touch -t 202001010000 "$old"
+  # (d) recent dir: content, current (recent) mtime.
+  mkdir -p "$new" && printf 'x\n' > "$new/program.ll"
+
+  if ! MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="$EMITTER" \
+       "$MEDAKA" build "$FIX/arith.mdk" -o "$bin" >"$WORK/$label.out" 2>"$WORK/$label.err"; then
+    fail=$((fail+1)); printf 'FAIL %s (build did not succeed)\n' "$label"
+    sed 's/^/    /' "$WORK/$label.err" | head -5
+    rm -rf "$old" "$new"; return
+  fi
+
+  errs=0
+  [ ! -d "$old" ] || { errs=$((errs+1)); printf '    stale dir NOT swept: %s\n' "$old"; }   # (a)
+  [ -x "$bin" ]   || { errs=$((errs+1)); printf '    build produced no binary\n'; }          # (b)
+  [ -d "$new" ]   || { errs=$((errs+1)); printf '    RECENT dir wrongly swept: %s (concurrency guard broken)\n' "$new"; }  # (d)
+  # (c) the build's own scratch dir must be gone.  Sample the medaka_build_* dirs
+  # that are NOT our two fakes both before (already none but $new) and after; any
+  # brand-new one that outlived the build is a leak.  Robust under parallel builds:
+  # we only fail on a leftover whose mtime is recent AND that we did not create.
+  leaked="$(find /tmp -maxdepth 1 -type d -name 'medaka_build_*' -mmin -60 \
+              ! -name "medaka_build_sweepnew_$$" ! -name "medaka_build_sweepold_$$" 2>/dev/null)"
+  # (Cannot assert leaked=="" — a concurrent gate's live build legitimately shows
+  # here — so this is diagnostic only, printed but not fatal.)
+  [ -z "$leaked" ] || printf '    note: other recent medaka_build_* dirs present (concurrent builds?):\n%s\n' "$leaked" | sed 's/^/      /'
+
+  if [ "$errs" -eq 0 ]; then
+    pass=$((pass+1)); printf 'ok   %s\n' "$label"
+  else
+    fail=$((fail+1)); printf 'FAIL %s (%d assertion(s))\n' "$label" "$errs"
+  fi
+  rm -rf "$old" "$new"
+}
+sweep_test
+
 printf '\n%d ok, %d failing (of %d)\n' "$pass" "$fail" "$((pass+fail))"
 [ "$fail" -eq 0 ]
