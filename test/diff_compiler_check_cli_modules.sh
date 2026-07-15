@@ -401,5 +401,91 @@ case "$imp_bld" in
   *) fail=$((fail+1)); printf 'FAIL imported-diag/build (imported error not located: [%s])\n' "$imp_bld" ;;
 esac
 
+# 12. IMPORTED-MODULE *RESOLVE* diagnostics (#41 — the RESOLVE-path analog of leg 11).
+#     Leg 11 covers imported TYPE errors (routed through analyzeProject, which already
+#     bucketed by file); RESOLVE errors take a DIFFERENT CLI path
+#     (resolveModulesToHumane*) that applied a SINGLE `target` fallback to EVERY
+#     module's errors, so an imported module's `Unbound variable` printed the ENTRY
+#     file's path (and, for a >entry-length file, an entry line number that does not
+#     exist).  The per-module path map (resolveModulesToHumaneByPath) must now
+#     attribute the imported module's resolve error to ITS OWN file.
+cat > "$TMP/reshelper.mdk" <<'EOF'
+export rh : Int -> Int
+rh x = x + missingName
+EOF
+cat > "$TMP/resuse.mdk" <<'EOF'
+import reshelper.{rh}
+main = println (rh 3)
+EOF
+res_chk="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/resuse.mdk" 2>&1)"
+res_chk_code=$?
+case "$res_chk" in
+  *resuse.mdk:*"Unbound variable"*) fail=$((fail+1)); printf 'FAIL imported-resolve/attr (#41 regressed: imported error mislabeled as entry: [%s])\n' "$res_chk" ;;
+  *reshelper.mdk:*:*:*"Unbound variable"*) if [ "$res_chk_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   imported-resolve/attr (#41: imported resolve error located at its OWN file)\n'
+                  else fail=$((fail+1)); printf 'FAIL imported-resolve/attr (located but exit %d)\n' "$res_chk_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL imported-resolve/attr (imported resolve error not located: [%s])\n' "$res_chk" ;;
+esac
+
+# 13. ENTRY-PROJECT internal-extern trust (#42, POSITIVE).  A sibling module of the
+#     entry, within the SAME `medaka.toml` project, legitimately calls an
+#     internal-only kernel (`arrayGetUnsafe`).  Checking your OWN multi-module
+#     project must NOT require `--allow-internal`: the entry project's own modules
+#     are trusted exactly as stdlib is.  (Previously trusted ONLY stdlib, so this
+#     flagged `internal-only primitive` unless the flag was passed.)  The trust
+#     keys on the manifest — a `medaka.toml` marks this as a real project (a LOOSE
+#     no-manifest file stays untrusted; that leg lives in
+#     diff_compiler_internal_extern.sh).  Must ACCEPT (no internal-only error).
+mkdir -p "$TMP/ownproj"
+cat > "$TMP/ownproj/medaka.toml" <<'EOF'
+name = "ownproj"
+EOF
+cat > "$TMP/ownproj/kern.mdk" <<'EOF'
+export first : Array Int -> Int
+first a = arrayGetUnsafe 0 a
+EOF
+cat > "$TMP/ownproj/kernuse.mdk" <<'EOF'
+import kern.{first}
+main = println (first (arrayFromList [1, 2, 3]))
+EOF
+kern_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/ownproj/kernuse.mdk" 2>&1)"
+kern_code=$?
+case "$kern_out" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL own-project-trust (#42 regressed: own sibling flagged internal-only: [%s])\n' "$kern_out" ;;
+  *) if [ "$kern_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   own-project-trust (#42: entry-project sibling may use internal kernels)\n'
+     else fail=$((fail+1)); printf 'FAIL own-project-trust (exit %d: [%s])\n' "$kern_code" "$kern_out"; fi ;;
+esac
+
+# 14. DECLARED-DEPENDENCY internal-extern trust (#42, SECURITY BOUNDARY / NEGATIVE).
+#     The trust from leg 13 must NOT extend to a THIRD-PARTY dependency: a dep
+#     declared in medaka.toml [dependencies] resolves to a root OUTSIDE the entry's
+#     search roots, so its use of an internal-only kernel MUST still be REJECTED
+#     (this is the whole point of the guard — an imported package cannot silently
+#     reach for memory-unsafe primitives).  Rejected + attributed to the DEP's file.
+mkdir -p "$TMP/depapp" "$TMP/depdep"
+cat > "$TMP/depdep/medaka.toml" <<'EOF'
+name = "depdep"
+EOF
+cat > "$TMP/depdep/k.mdk" <<'EOF'
+export peek : Array Int -> Int
+peek a = arrayGetUnsafe 0 a
+EOF
+cat > "$TMP/depapp/medaka.toml" <<'EOF'
+name = "depapp"
+
+[dependencies]
+depdep = "../depdep"
+EOF
+cat > "$TMP/depapp/m.mdk" <<'EOF'
+import depdep.k.{peek}
+main = println (peek (arrayFromList [1, 2, 3]))
+EOF
+dep_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/depapp/m.mdk" 2>&1)"
+dep_code=$?
+case "$dep_out" in
+  *k.mdk:*:*:*"internal-only primitive"*) if [ "$dep_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   dep-untrusted (#42 boundary: declared dep still rejected, located at dep file)\n'
+                  else fail=$((fail+1)); printf 'FAIL dep-untrusted (rejected but exit %d)\n' "$dep_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL dep-untrusted (#42 boundary BROKEN: dep internal-extern not rejected: [%s])\n' "$dep_out" ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
