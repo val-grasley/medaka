@@ -1148,6 +1148,34 @@ seedAbstractRecordTypes coreDecls modules =
     abstractRecordTypesRef
     (collectAbstractRecordTypes coreDecls ++ flatMap (m => collectAbstractRecordTypes (snd m)) modules)
 
+-- #156 S3a: ONE record for every pending dispatch-site shape.  The four historical
+-- tuple/record shapes (return-position sites, arg-position stamps, operator sites,
+-- standalone-shadow RLocal sites) collapse into `PendingEntry`; `kind` (a
+-- payload-carrying `SiteKind`) records which recorder built it and carries the
+-- fields unique to that shape.  The common fields are: the method/name, the route
+-- ref the resolver stamps, the primary discriminating mono, and the enclosing-fn
+-- name (`currentFn` at record time; "" for RLocal sites, which carry no encl).  The
+-- five pending lists stay SEPARATE (the drain schedule is unchanged — this is a
+-- pure data-representation change): each recorder builds a `PendingEntry` with its
+-- own `kind`, and each resolver reads the fields instead of destructuring a tuple.
+public export data SiteKind =
+  -- return-position site: the EMethodAt impl-dicts ref to fill + the method's full
+  -- (un-stripped) type.  The primary mono is the result mono.
+  | SKReturn (Ref (List Route)) Mono
+  -- arg-position stamp: the EMethodAt impl-dicts ref.  Primary mono = arg mono.
+  | SKArg (Ref (List Route))
+  -- operator (EBinOp/EUnOp) site: the inImpl-body flag.  Primary mono = operand mono.
+  -- (binop vs unop is carried by WHICH list holds it / the resolveOpSites flag, not here.)
+  | SKOp Bool
+  -- standalone-shadow RLocal site: mangled standalone symbol, forceLocal (P0-20),
+  -- and the shadowing standalone's own `=>`-constraint dict monos + iface names
+  -- (S-1).  Primary mono = receiver mono; encl is unused ("").
+  | SKRLocal String Bool (List Mono) (List String)
+
+public export data PendingEntry =
+  -- fields: name/method, route ref to stamp, primary mono, enclosing-fn name, kind
+  | PendingEntry String (Ref Route) Mono String SiteKind
+
 -- return-position method sites discovered during inference: (method name, the
 -- EMethodAt route ref to fill, the EMethodAt impl-dicts ref to fill, the method's
 -- result mono).  After the whole program is inferred, each result mono's head
@@ -1155,7 +1183,8 @@ seedAbstractRecordTypes coreDecls modules =
 -- constrained function's constraint variable, that function's dict parameter
 -- (RDict).  The impl-dicts ref is filled (single-module elaborate path only) when
 -- the route is a parametric impl with a `requires` — one route per requires.
-pendingSites : Ref (List (String, Ref Route, Ref (List Route), Mono, Mono, String))
+-- #156 S3a: entries are `PendingEntry`s of kind `SKReturn`.
+pendingSites : Ref (List PendingEntry)
 pendingSites = Ref []
 
 -- Phase 151 / Gap G: comparison/equality OPERATOR sites discovered during
@@ -1169,13 +1198,14 @@ pendingSites = Ref []
 -- field is currentFn at record time: for a TOP-LEVEL constrained fn an operator on
 -- its own constraint var routes RDict $dict_<encl>_<slot> (via enclDictVarOf), the
 -- operator analogue of the direct `eq x y` arg-stamp path.
-pendingBinopSites : Ref (List (String, Ref Route, Mono, Bool, String))
+-- #156 S3a: entries are `PendingEntry`s of kind `SKOp`.
+pendingBinopSites : Ref (List PendingEntry)
 pendingBinopSites = Ref []
 
 -- Roadmap #18c: the EUnOp analogue of pendingBinopSites — `-` (Num's `negate`)
 -- sites discovered during inference.  Same tuple shape/fields, same resolve/
 -- rewrite seam (resolveUnopSites / rewriteUnopExpr), one operand instead of two.
-pendingUnopSites : Ref (List (String, Ref Route, Mono, Bool, String))
+pendingUnopSites : Ref (List PendingEntry)
 pendingUnopSites = Ref []
 
 -- SHARED-FLOAT-RESIDUAL §3(C): arithmetic EBinOp sites whose operand type may
@@ -1404,11 +1434,10 @@ flatUserShadowNamesRef = Ref []
 -- resolveDictApps in elabModuleStamp: routing them through pendingDictApps would read
 -- `[]` and reproduce the S-1 bug with more code.  This way the fix is ordering-immune
 -- and the route has a single writer.  Empty for an unconstrained standalone.
--- (A record, not a 6/7-tuple: Medaka tuples top out at arity 5.)
-public export data RLocalSite =
-  | RLocalSite String (Ref Route) Mono String Bool (List Mono) (List String)
-
-pendingRLocalSites : Ref (List RLocalSite)
+-- #156 S3a: these fields now live in `PendingEntry`'s `SKRLocal` kind (mangledSym,
+-- forceLocal, dictMonos, dictIfaces); the name/route/receiver-mono are the shared
+-- PendingEntry fields, and encl is unused ("") for RLocal sites.
+pendingRLocalSites : Ref (List PendingEntry)
 pendingRLocalSites = Ref []
 
 -- P0-18: while typing a definer-shadow method occurrence that heads a single-arg
@@ -1905,7 +1934,8 @@ argDispatchIdxRef = Ref []
 -- concrete site whose head names a parametric `requires` impl can thread the
 -- element dict (resolveArgStamp → argImplDictRoutesFor), exactly as the
 -- return-position pendingSites carry implRef for resolveSite.
-pendingArgStamps : Ref (List (String, Ref Route, Ref (List Route), Mono, String))
+-- #156 S3a: entries are `PendingEntry`s of kind `SKArg`.
+pendingArgStamps : Ref (List PendingEntry)
 pendingArgStamps = Ref []
 
 -- the dispatch-index registry: each interface method → index of its first arg
@@ -1959,7 +1989,7 @@ recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> Unit
 recordArgStamp name tagRef implRef idx mono
   | suppressArgStamp.value = ()
   | otherwise = match nthArgMono idx mono
-    Some am => setRef pendingArgStamps ((name, tagRef, implRef, am, currentFn.value)::pendingArgStamps.value)
+    Some am => setRef pendingArgStamps (PendingEntry name tagRef am currentFn.value (SKArg implRef) :: pendingArgStamps.value)
     None => ()
 
 -- Cause-A prerequisite: an ARG-position method occurrence's discriminating-arg
@@ -1985,10 +2015,13 @@ recordArgSiteFn _ idx mono = match nthArgMono idx mono
 -- call threads the element dict (concrete element → RKey Int; a recursive element
 -- of the SAME parametric type → RDict forwarding the in-scope dict param).  A
 -- still-unsolved free type variable → left RNone (the emitter arg-tag-dispatches).
-resolveArgStamps : ImplBuckets -> KeyBuckets -> List (String, Ref Route, Ref (List Route), Mono, String) -> Unit
+resolveArgStamps : ImplBuckets -> KeyBuckets -> List PendingEntry -> Unit
 resolveArgStamps _ _ [] = ()
-resolveArgStamps implTable keyTable ((name, tagRef, implRef, am, encl)::rest) =
-  let _ = resolveArgStamp implTable keyTable name tagRef implRef am encl
+resolveArgStamps implTable keyTable ((PendingEntry name tagRef am encl kind)::rest) =
+  let _ = match kind
+    SKArg implRef =>
+      resolveArgStamp implTable keyTable name tagRef implRef am encl
+    _ => ()
   resolveArgStamps implTable keyTable rest
 
 resolveArgStamp : ImplBuckets -> KeyBuckets -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> Unit
@@ -3471,7 +3504,7 @@ recordRLocalSite env name tagRef inst
         let dicts = shadowStandaloneDictSlotsAt (standaloneSchemeFor env name sym) (if sym == "" then name else sym) am
         setRef
           pendingRLocalSites
-          (RLocalSite name tagRef am sym False (fst dicts) (snd dicts) :: pendingRLocalSites.value)
+          (PendingEntry name tagRef am "" (SKRLocal sym False (fst dicts) (snd dicts)) :: pendingRLocalSites.value)
       None => ()
 
 -- the SHADOWING STANDALONE's scheme.  An IMPORTER shadow's bare name is rebound by env1
@@ -3582,7 +3615,7 @@ countInSubst (id::rest) subst =
 recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> Mono
 recordSite name tagRef implRef methodType =
   let stripped = stripArrows methodType
-  let _ = setRef pendingSites ((name, tagRef, implRef, stripped, methodType, currentFn.value)::pendingSites.value)
+  let _ = setRef pendingSites (PendingEntry name tagRef stripped currentFn.value (SKReturn implRef methodType) :: pendingSites.value)
   let _ = setRef methodSiteFns (consSiteFn currentFn.value stripped methodSiteFns.value)
   methodType
 
@@ -4319,7 +4352,7 @@ binopSpanLoc l r = match (exprLoc l, exprLoc r)
 -- in-impl-body sites (a top-level operand may collide with stale activeDictVars ids).
 recordBinopSite : String -> Ref Route -> Mono -> Unit
 recordBinopSite op dref m = match binopMethod op
-  Some method => setRef pendingBinopSites ((method, dref, m, currentImplBody.value, currentFn.value)::pendingBinopSites.value)
+  Some method => setRef pendingBinopSites (PendingEntry method dref m currentFn.value (SKOp currentImplBody.value) :: pendingBinopSites.value)
   None => ()
 
 -- SHARED-FLOAT-RESIDUAL §3(C): stash an arithmetic binop's operand mono + route
@@ -4364,7 +4397,7 @@ unopMethod _ = None
 -- (nothing for `!`).  Same currentImplBody/currentFn snapshot, same reason.
 recordUnopSite : String -> Ref Route -> Mono -> Unit
 recordUnopSite op dref m = match unopMethod op
-  Some method => setRef pendingUnopSites ((method, dref, m, currentImplBody.value, currentFn.value)::pendingUnopSites.value)
+  Some method => setRef pendingUnopSites (PendingEntry method dref m currentFn.value (SKOp currentImplBody.value) :: pendingUnopSites.value)
   None => ()
 
 -- The EUnOp analogue of inferBinopE: infer the single operand, record its
@@ -5157,7 +5190,7 @@ recordImporterShadowDicts env mname (r::rest) tx =
     (routeLocalSym r.value)
     tx
   let _ = setRef pendingRLocalSites
-    (RLocalSite mname r tx (routeLocalSym r.value) True (fst dicts) (snd dicts)
+    (PendingEntry mname r tx "" (SKRLocal (routeLocalSym r.value) True (fst dicts) (snd dicts))
       ::pendingRLocalSites.value)
   recordImporterShadowDicts env mname rest tx
 
@@ -5267,10 +5300,10 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- (its head is already ground; RKey comes from resolveArgStamps on the emit path).
   let _ = if isDictVar then ()
     else setRef pendingRLocalSites
-      (RLocalSite name tagRef xt (routeLocalSym tagRef.value) (not dispatches) (fst dicts) (snd dicts)
+      (PendingEntry name tagRef xt "" (SKRLocal (routeLocalSym tagRef.value) (not dispatches) (fst dicts) (snd dicts))
         ::pendingRLocalSites.value)
   let _ = match argDispatchOf name
-    Some _ => setRef pendingArgStamps ((name, tagRef, implRef, xt, currentFn.value)::pendingArgStamps.value)
+    Some _ => setRef pendingArgStamps (PendingEntry name tagRef xt currentFn.value (SKArg implRef)::pendingArgStamps.value)
     None => ()
   -- P0-19: on the UN-MANGLED path (sym == "") `ft` is the permissive METHOD scheme
   -- (`a -> Int`), so `inferApp ft xt` would accept ANY receiver.  When this
@@ -6720,8 +6753,8 @@ methodConstrainedIds : Unit -> List Int
 methodConstrainedIds _ =
   flatMap (s => monoUnboundIds (argStampMono s)) pendingArgStamps.value
 
-argStampMono : (String, Ref Route, Ref (List Route), Mono, String) -> Mono
-argStampMono (_, _, _, am, _) = am
+argStampMono : PendingEntry -> Mono
+argStampMono (PendingEntry _ _ am _ _) = am
 
 monoUnboundIds : Mono -> List Int
 monoUnboundIds t = match normalize t
@@ -7626,10 +7659,12 @@ constraintNonParamVars : List String -> Constraint -> List String
 constraintNonParamVars typarams (Constraint _ args) =
   removeAllS typarams (flatMap tyVarNames args)
 
-resolveSites : ImplBuckets -> KeyBuckets -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> Unit
+resolveSites : ImplBuckets -> KeyBuckets -> List String -> List PendingEntry -> Unit
 resolveSites _ _ _ [] = ()
-resolveSites implTable keyTable rpNames ((name, tagRef, implRef, resultMono, fullMono, encl)::rest) =
-  let _ = resolveSite implTable keyTable rpNames name tagRef implRef resultMono fullMono encl
+resolveSites implTable keyTable rpNames ((PendingEntry name tagRef resultMono encl kind)::rest) =
+  let _ = match kind
+    SKReturn implRef fullMono => resolveSite implTable keyTable rpNames name tagRef implRef resultMono fullMono encl
+    _ => ()
   resolveSites implTable keyTable rpNames rest
 
 -- a method occurrence's route: if its discriminating type is a constrained
@@ -7711,13 +7746,16 @@ implExistsForHeadGo ((KeyEntry methods tag2 _ _)::rest) name tag
 -- would read `[]`.  Resolving inside the stamp is ordering-immune.  An unconstrained
 -- standalone has no monos ⇒ routesOfMonosTop returns [] immediately (it cannot even
 -- reach its AmbiguousImpl arm) ⇒ `RLocal sym []` ⇒ byte-identical to the pre-S1 stamp.
-resolveRLocalSites : List Decl -> ImplBuckets -> KeyBuckets -> List RLocalSite -> Unit
+resolveRLocalSites : List Decl -> ImplBuckets -> KeyBuckets -> List PendingEntry -> Unit
 resolveRLocalSites _ _ _ [] = ()
-resolveRLocalSites prog implTable keyTable ((RLocalSite name tagRef am sym forceLocal monos ifaces)::rest) =
-  let _ = if forceLocal then
-    setRef tagRef (RLocal sym (routesOfMonosTop prog implTable monos ifaces))
-  else
-    resolveRLocalSite prog implTable keyTable name tagRef am sym monos ifaces
+resolveRLocalSites prog implTable keyTable ((PendingEntry name tagRef am _ kind)::rest) =
+  let _ = match kind
+    SKRLocal sym forceLocal monos ifaces =>
+      if forceLocal then
+        setRef tagRef (RLocal sym (routesOfMonosTop prog implTable monos ifaces))
+      else
+        resolveRLocalSite prog implTable keyTable name tagRef am sym monos ifaces
+    _ => ()
   resolveRLocalSites prog implTable keyTable rest
 
 -- C5: stamp RLocal on each recorded standalone-shadow arg-position site whose
@@ -7882,10 +7920,12 @@ resolveArithSite dref m = match dref.value
 -- reused binopRouteSplit, proving the shapes unify).  The two paths differ in exactly
 -- two flag-keyed places: the dict-var-of policy (opDictVarOf) and the RKey stamp
 -- (stampOpRoute — its builtin-head guard and Ord-style innerDefaultMethod reduction).
-resolveOpSites : Bool -> ImplBuckets -> KeyBuckets -> List (String, Ref Route, Mono, Bool, String) -> Unit
+resolveOpSites : Bool -> ImplBuckets -> KeyBuckets -> List PendingEntry -> Unit
 resolveOpSites _ _ _ [] = ()
-resolveOpSites isBinop implTable keyTable ((method, tagRef, operandMono, inImpl, encl)::rest) =
-  let _ = resolveOpSite isBinop implTable keyTable method tagRef operandMono inImpl encl
+resolveOpSites isBinop implTable keyTable ((PendingEntry method tagRef operandMono encl kind)::rest) =
+  let _ = match kind
+    SKOp inImpl => resolveOpSite isBinop implTable keyTable method tagRef operandMono inImpl encl
+    _ => ()
   resolveOpSites isBinop implTable keyTable rest
 
 -- G4: an `==`/`<`/… INSIDE an impl body ([inImpl]) whose operand is the enclosing

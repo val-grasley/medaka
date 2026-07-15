@@ -69,7 +69,7 @@ argImplRequiresRoutesRecD : Map String (List ImplEntry) -> String -> String -> S
 argLitFits : Expr -> Mono -> Bool
 argMentions : List String -> Ty -> Bool
 argReqRoute : Map String (List ImplEntry) -> String -> String -> List (String, Mono) -> List Ty -> Int -> Route
-argStampMono : (String, Ref Route, Ref (List Route), Mono, String) -> Mono
+argStampMono : PendingEntry -> Mono
 armDictSites : Arm -> List (Ref (List Route))
 armEVars : Arm -> List String
 armIsUnguarded : List Guard -> Bool
@@ -857,9 +857,9 @@ payloadAstTypes : ConPayload -> List Ty
 payloadTypesE : List (String, Ref Effvar) -> List (String, Mono) -> ConPayload -> List Mono
 peelArrows : Int -> Mono -> List Mono
 peelOntoParams : Option Mono -> List Mono -> List Pat -> Unit
-pendingArgStamps : Ref (List (String, Ref Route, Ref (List Route), Mono, String))
+pendingArgStamps : Ref (List PendingEntry)
 pendingArithSites : Ref (List (Ref Route, Mono))
-pendingBinopSites : Ref (List (String, Ref Route, Mono, Bool, String))
+pendingBinopSites : Ref (List PendingEntry)
 pendingCallObligations : Ref (List (String, Mono, Option Loc))
 pendingCallObligationsN : Ref Int
 pendingDictApps : Ref (List (Ref (List Route), List Mono, List String))
@@ -867,10 +867,10 @@ pendingDictAppsN : Ref Int
 pendingImplObligations : Ref (List (String, List String, Ty, Mono, Option Loc))
 pendingImplObligationsN : Ref Int
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
-pendingRLocalSites : Ref (List RLocalSite)
+pendingRLocalSites : Ref (List PendingEntry)
 pendingRecDictApps : Ref (List RecDictApp)
-pendingSites : Ref (List (String, Ref Route, Ref (List Route), Mono, Mono, String))
-pendingUnopSites : Ref (List (String, Ref Route, Mono, Bool, String))
+pendingSites : Ref (List PendingEntry)
+pendingUnopSites : Ref (List PendingEntry)
 performEffect : Ref EffRow -> EffRow -> Unit
 performLink : Ref Effvar -> Ref Effvar -> Unit
 phantomMethodMsg : String -> List String -> IfaceMethod -> List String
@@ -1037,7 +1037,7 @@ resetCrossModuleState : Unit -> Unit
 resetState : Unit -> Unit
 resetTypeErrorsSticky : Unit -> Unit
 resolveArgStamp : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> Unit
-resolveArgStamps : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List (String, Ref Route, Ref (List Route), Mono, String) -> Unit
+resolveArgStamps : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List PendingEntry -> Unit
 resolveArithSite : Ref Route -> Mono -> Unit
 resolveArithSites : List (Ref Route, Mono) -> Unit
 resolveDictApps : List Decl -> Map String (List ImplEntry) -> List (Ref (List Route), List Mono, List String) -> Unit
@@ -1047,12 +1047,12 @@ resolveFieldRecord : Mono -> String -> Option (String, RecordInfo)
 resolveMemberSchemes : (String, String) -> List (String, Scheme) -> List (String, Scheme)
 resolveMethodDicts : Map String (List ImplEntry) -> List (Ref (List Route), List Mono) -> Unit
 resolveOpSite : Bool -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Mono -> Bool -> String -> Unit
-resolveOpSites : Bool -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> List (String, Ref Route, Mono, Bool, String) -> Unit
+resolveOpSites : Bool -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> List PendingEntry -> Unit
 resolveRLocalSite : List Decl -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Mono -> String -> List Mono -> List String -> Unit
-resolveRLocalSites : List Decl -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> List RLocalSite -> Unit
+resolveRLocalSites : List Decl -> Map String (List ImplEntry) -> Map String (List KeyEntry) -> List PendingEntry -> Unit
 resolveRecMono : String -> Mono -> Route
 resolveSite : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> Unit
-resolveSites : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> Unit
+resolveSites : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List String -> List PendingEntry -> Unit
 restorePendingObls : List (String, List String, Ty, Mono, Option Loc) -> Int -> Unit
 returnPosMethod : List String -> IfaceMethod -> List String
 returnPosMethodNames : List Decl -> List String
