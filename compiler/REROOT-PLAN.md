@@ -128,7 +128,6 @@ core_ir_modules, llvm_modules): no oracle swap — just compile the entry; the
 | diff_compiler_check.sh | C+D | diff_fixtures (25)+resolve (14)+import_error | partial (.golden/.expected) | check_main |
 | diff_compiler_check_batch.sh | C+D | diff_fixtures (25)+resolve (14) | partial | check_batch |
 | diff_compiler_check_modules.sh | C+D | compiler modules (~14)+check_module_fixtures | **yes (.expected)** | check_modules_main |
-| diff_compiler_check_modules_batch.sh | C+D | compiler modules (~14) | no (corpus must-pass) | check_all_main |
 | diff_compiler_check_match.sh | C+D | check_match_fixtures (11) | **yes (.expected)** | check_match_main |
 | diff_compiler_exhaust.sh | C+D | exhaust_fixtures (5) | **yes (.expected)** | exhaust_main |
 
