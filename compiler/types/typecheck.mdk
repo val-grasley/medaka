@@ -1080,6 +1080,21 @@ public export data RecordInfo = RecordInfo (List Int) Mono (List (String, Mono))
 recordsRef : Ref (List (String, RecordInfo))
 recordsRef = Ref []
 
+-- Keyed indices over `recordsRef`, maintained in lockstep at every registration
+-- (registerRecordInfoKeyed) and cleared with it (resetState) — so the hot
+-- per-field-access read paths never walk the full registry (issue #149).
+--   recordByNameRef : registry KEY → RecordInfo.  omInsert is last-write-wins and
+--     the register site inserts in registration order, so it reproduces the old
+--     prepend-list first-match (latest-registered wins) for lookupRecordByName.
+--   fieldOwnersRef  : field name → the registry keys whose RecordInfo declares it
+--     (a multimap).  fieldOwnerNames still `sortUniqS`es this so the owner-list
+--     order that feeds ambiguousFieldMsg/headL stays byte-identical.
+recordByNameRef : Ref (OrdMap RecordInfo)
+recordByNameRef = Ref omEmpty
+
+fieldOwnersRef : Ref (OrdMap (List String))
+fieldOwnersRef = Ref omEmpty
+
 -- Kind of a data-type parameter, inferred from usage: KRow iff the param name
 -- appears in a field's effect-tail position (`<e>`), else KType.  Drives
 -- kind-aware type-app elaboration (a KRow arg becomes a TEff row, not a TApp
@@ -2270,6 +2285,8 @@ resetState _ =
   let _ = setRef effvarCounter 0
   let _ = setRef curEffect (EffRow [] None)
   let _ = setRef recordsRef []
+  let _ = setRef recordByNameRef omEmpty
+  let _ = setRef fieldOwnersRef omEmpty
   let _ = setRef dataParamKindsRef []
   let _ = setRef aliasTableRef []
   let _ = setRef pendingSites []
@@ -4041,14 +4058,12 @@ inferFieldOfRecord te rname ri fname =
 -- `List.sort_uniq compare`).  For a plain record the key is its type name; for a
 -- named-field variant it's the constructor name — matching the oracle, whose
 -- field_owners maps to the record's type name and the variant's con_name.
+-- The field→owners multimap (fieldOwnersRef) already holds exactly this set of
+-- keys, maintained at registration; `sortUniqS` canonicalizes it so the rendered
+-- owner-list order (ambiguousFieldMsg / headL) is byte-identical to the old walk.
 fieldOwnerNames : String -> List String
-fieldOwnerNames fname = sortUniqS (fieldOwnerNamesGo fname recordsRef.value)
-
-fieldOwnerNamesGo : String -> List (String, RecordInfo) -> List String
-fieldOwnerNamesGo _ [] = []
-fieldOwnerNamesGo fname ((key, ri)::rest)
-  | recordHasField fname ri = key :: fieldOwnerNamesGo fname rest
-  | otherwise = fieldOwnerNamesGo fname rest
+fieldOwnerNames fname =
+  sortUniqS (fromOption [] (omLookup fname fieldOwnersRef.value))
 
 -- Resolve the record (name + info) that owns `fname` for a receiver of type `te`
 -- (normalized).
@@ -4079,16 +4094,28 @@ resolveFieldRecord te fname = match headTyconMono te
 -- it is UNIQUE (else ambiguous → None, so the caller's owners path keeps today's
 -- behavior).  No-op off the emit path (unmangled key hits the exact lookup).
 lookupRecordByMangledHead : String -> String -> Option (String, RecordInfo)
-lookupRecordByMangledHead head fname = match mangledHeadCandidates head fname recordsRef.value
+lookupRecordByMangledHead head fname = match mangledHeadCandidates head fname
   [pair] => Some pair
   _ => None
 
-mangledHeadCandidates : String -> String -> List (String, RecordInfo) -> List (String, RecordInfo)
-mangledHeadCandidates _ _ [] = []
-mangledHeadCandidates head fname ((key, ri)::rest)
-  | endsWith ("__" ++ head) key && recordHasField fname ri =
-    (key, ri) :: mangledHeadCandidates head fname rest
-  | otherwise = mangledHeadCandidates head fname rest
+-- Candidates are the keys that already OWN `fname` (from the field→owners
+-- multimap, which is the "declares this field" filter precomputed) whose key
+-- suffix matches `__<head>`; each paired with its RecordInfo from
+-- recordByNameRef.  The singleton gate in the caller is unchanged, so the order
+-- here is irrelevant.
+mangledHeadCandidates : String -> String -> List (String, RecordInfo)
+mangledHeadCandidates head fname =
+  mangledHeadCandidatesGo
+    head
+    (fromOption [] (omLookup fname fieldOwnersRef.value))
+
+mangledHeadCandidatesGo : String -> List String -> List (String, RecordInfo)
+mangledHeadCandidatesGo _ [] = []
+mangledHeadCandidatesGo head (key::rest)
+  | endsWith ("__" ++ head) key = match lookupRecordByName key
+    Some ri => (key, ri) :: mangledHeadCandidatesGo head rest
+    None => mangledHeadCandidatesGo head rest
+  | otherwise = mangledHeadCandidatesGo head rest
 
 resolveFieldByOwners : Mono -> String -> Option (String, RecordInfo)
 resolveFieldByOwners te fname = match fieldOwnerNames fname
@@ -6471,18 +6498,26 @@ registerRecordInfoKeyed key typeName params fields =
   let tvs = zipL params paramVars
   let result = applyParams (TCon typeName) paramVars
   let fieldMonos = map (recFieldMono tvs) fields
+  let ri = RecordInfo (map monoTyvarId paramVars) result fieldMonos
+  let _ = setRef recordsRef ((key, ri)::recordsRef.value)
+  let _ = setRef recordByNameRef (omInsert key ri recordByNameRef.value)
   setRef
-    recordsRef
-    ((key, RecordInfo (map monoTyvarId paramVars) result fieldMonos)::recordsRef.value)
+    fieldOwnersRef
+    (addFieldOwners key (map fst fieldMonos) fieldOwnersRef.value)
+
+-- Add `key` as an owner of each of its field names in the field→owners multimap.
+-- Order/dedup is not maintained here — fieldOwnerNames `sortUniqS`es the value on
+-- read — so this only needs to preserve the SET of owner keys per field.
+addFieldOwners : String -> List String -> OrdMap (List String) -> OrdMap (List String)
+addFieldOwners _ [] m = m
+addFieldOwners key (fn::rest) m =
+  addFieldOwners key rest (omInsert fn (key :: fromOption [] (omLookup fn m)) m)
 
 recFieldMono : List (String, Mono) -> Field -> (String, Mono)
 recFieldMono tvs (Field fn ty) = (fn, fromAstType tvs ty)
 
 lookupRecordByName : String -> Option RecordInfo
-lookupRecordByName name = lookupAssoc name recordsRef.value
-
-recordHasField : String -> RecordInfo -> Bool
-recordHasField fname (RecordInfo _ _ fields) = isSome (lookupAssoc fname fields)
+lookupRecordByName name = omLookup name recordByNameRef.value
 
 -- instantiate a record's quantified params with fresh vars
 instantiateRecord : RecordInfo -> (Mono, List (String, Mono))

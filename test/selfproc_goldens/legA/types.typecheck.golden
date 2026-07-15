@@ -5,6 +5,7 @@ activeDictVarOf : Mono -> Option String
 activeDictVarOfEncl : Mono -> String -> Option String
 activeDictVars : Ref (List (Int, String))
 addCtor : TcEnv -> String -> Scheme -> TcEnv
+addFieldOwners : String -> List String -> Map String (List String) -> Map String (List String)
 addVariants : TcEnv -> List (String, Mono) -> List (String, Ref Effvar) -> List Int -> List Int -> Mono -> List Variant -> TcEnv
 aliasArityMsg : String -> Int -> Int -> String
 aliasConstraintEntries : List Decl -> List ((String, String), List a) -> List (String, List a)
@@ -410,7 +411,7 @@ fieldAssignEVars : FieldAssign -> List String
 fieldAssignSites : FieldAssign -> List (Ref Route)
 fieldFixFrom : Option Loc -> String -> Option (Loc, String)
 fieldOwnerNames : String -> List String
-fieldOwnerNamesGo : String -> List (String, RecordInfo) -> List String
+fieldOwnersRef : Ref (Map String (List String))
 fieldTyOf : Field -> Ty
 fieldTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Field -> Mono
 fillHoleAtom : List (String, Expr) -> Option Expr -> Atom -> Atom
@@ -728,7 +729,8 @@ mainSchemeRef : Ref (Option Scheme)
 mainTypeIsAsync : Unit -> Bool
 mainTypeIsFloat : Unit -> Bool
 mainTypeIsUnit : Unit -> Bool
-mangledHeadCandidates : String -> String -> List (String, RecordInfo) -> List (String, RecordInfo)
+mangledHeadCandidates : String -> String -> List (String, RecordInfo)
+mangledHeadCandidatesGo : String -> List String -> List (String, RecordInfo)
 mangledShadowMapRef : Ref (List (String, String))
 mapLocalSchemes : List (String, Mono) -> List (String, Scheme)
 markModules : List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
@@ -958,9 +960,9 @@ recordArgSiteFn : String -> Int -> Mono -> Unit
 recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> Unit
 recordArithSite : String -> Ref Route -> Mono -> Unit
 recordBinopSite : String -> Ref Route -> Mono -> Unit
+recordByNameRef : Ref (Map String RecordInfo)
 recordCallObligations : List String -> List Mono -> Unit
 recordDoMonadError : Loc -> Unit
-recordHasField : String -> RecordInfo -> Bool
 recordIfaceObligation : String -> Mono -> Unit
 recordImplObligation : String -> Mono -> Mono
 recordImporterShadowDicts : TcEnv -> String -> List (Ref Route) -> Mono -> Unit
