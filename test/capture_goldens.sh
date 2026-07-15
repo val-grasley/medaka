@@ -607,10 +607,35 @@ fi
 # with an up-to-date native binary if LSP responses change.
 
 echo
+# A run that examined/wrote NOTHING must never look like a pass. This is how an
+# unknown corpus/tag name (falling into the bare `*) FILTER="$1"` arm above,
+# which becomes a suffix-prefix filter that matches zero rows) used to silently
+# "bless" zero goldens and still exit 0 — you'd believe you captured a corpus
+# when the run touched nothing. Read the count back, always: a filtered run
+# prints WHY it matched nothing; an unfiltered run with zero output is just as
+# wrong and gets the same refusal.
 if [ "$CHECK" -eq 1 ]; then
+  if [ "$fixtures" -eq 0 ]; then
+    if [ -n "$FILTER" ]; then
+      echo "ERROR: filter '$FILTER' matched ZERO fixtures — 0 checked, this is NOT a pass." >&2
+    else
+      echo "ERROR: 0 fixtures checked — this run examined nothing, this is NOT a pass." >&2
+    fi
+    echo "(Filters match a ROWS suffix/tag by PREFIX — see the ROWS table and want() near the top of this file.)" >&2
+    exit 2
+  fi
   printf 'CHECK: %d rows, %d fixtures, %d mismatch(es)\n' "$total" "$fixtures" "$mism"
   [ "$mism" -eq 0 ]
 else
-  printf 'CAPTURED: %d rows, %d goldens written (%d oracle failures)\n' "$total" "$wrote" "$mism"
+  if [ "$wrote" -eq 0 ]; then
+    if [ -n "$FILTER" ]; then
+      echo "ERROR: filter '$FILTER' matched ZERO fixtures — 0 goldens written, this is NOT a bless." >&2
+    else
+      echo "ERROR: 0 goldens written — this run blessed nothing, this is NOT a bless." >&2
+    fi
+    echo "(Filters match a ROWS suffix/tag by PREFIX — see the ROWS table and want() near the top of this file.)" >&2
+    exit 2
+  fi
+  printf 'CAPTURED: %d rows, blessed %d goldens (%d oracle failures)\n' "$total" "$wrote" "$mism"
   [ "$mism" -eq 0 ]
 fi
