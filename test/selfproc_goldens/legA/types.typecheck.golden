@@ -1033,6 +1033,7 @@ reqRouteD : List ImplEntry -> String -> List (String, Mono) -> List Ty -> Int ->
 reqToObligation : List (String, Mono) -> Require -> (String, List Mono)
 reqTyToMono : List (String, Mono) -> Ty -> Mono
 requiredMethodNames : List IfaceMethod -> List String
+resetCrossModuleState : Unit -> Unit
 resetState : Unit -> Unit
 resetTypeErrorsSticky : Unit -> Unit
 resolveArgStamp : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> Unit
