@@ -255,12 +255,24 @@ offsetGo : Array Char -> Int -> Int -> Int -> Int -> Int -> Int -> Option Int
 offsetGo arr len i curLine lineStart line col
   | curLine == line =
     let pos = lineStart + col
-    if pos >= 0 && pos < len then Some pos else None
+    let lineEnd = lineEndFrom arr len lineStart
+    if pos >= 0 && pos < len && pos < lineEnd then Some pos else None
   | i >= len = None
   | arrayGetUnsafe i arr == '\n' =
     offsetGo arr len (i + 1) (curLine + 1) (i + 1) line col
   | otherwise = offsetGo arr len (i + 1) curLine lineStart line col
 -- ran out before reaching `line`
+
+-- The exclusive end offset of the line starting at `i`: the index of its
+-- terminating '\n', or `len` if it is the file's last (unterminated) line.
+-- Used to clamp `col` to THIS line's own length rather than the whole file's
+-- (#286 — an out-of-range col was walking arithmetic-coincidentally into a
+-- later line and returning a confident wrong symbol instead of no-symbol).
+lineEndFrom : Array Char -> Int -> Int -> Int
+lineEndFrom arr len i
+  | i >= len = len
+  | arrayGetUnsafe i arr == '\n' = i
+  | otherwise = lineEndFrom arr len (i + 1)
 
 -- Expand left/right from `pos` over identifier chars; returns (start, stopExcl).
 identStart : Array Char -> Int -> Int

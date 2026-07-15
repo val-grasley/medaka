@@ -1,0 +1,2 @@
+alpha : Int -> Int
+alpha n = n + 1
