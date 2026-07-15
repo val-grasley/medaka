@@ -21,6 +21,18 @@ name: Nightly
 #                              infra rot, not a fuzz finding — "didn't run" must
 #                              never look like "passed").
 #
+#   playground_e2e             the browser e2e gate for the web playground (#72 pt.4).
+#                              Was UNOWNED (test/CI-COVERAGE-EXCEPTIONS.txt: "status in
+#                              CI genuinely unknown") — a stock runner has neither a
+#                              built playground/dist/playground.wasm (gitignored) nor
+#                              Google Chrome, both of which playground/e2e/run.sh needs.
+#                              This job builds the wasm artifact, installs system Chrome,
+#                              and runs the harness by its literal path so the coverage
+#                              gate counts it "named". PLAIN pass/fail (the
+#                              check_removed_constructs shape, not fuzz_diff's): there is
+#                              no sampling to distinguish "ran zero" from "found
+#                              nothing", so the harness's own exit code is the signal.
+#
 # Mirrors ci.yml's bootstrap (checkout -> install clang/libgc -> cache/cold-build
 # `make medaka` -> build only the oracles the gate needs) — see that file for the
 # full rationale on caching and the oracle `--for` derivation. This workflow is
@@ -219,3 +231,108 @@ jobs:
             gh issue create --title "$TITLE" --body-file "$BODY_FILE"
             echo "opened a new tracking issue"
           fi
+
+  playground-e2e:
+    name: "playground_e2e (Playwright vs the built CM6 playground — #72 pt.4)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # Same pinned release ci.yml's `wasm` job uses (see its "Install wasm-tools"
+      # step): build_playground_wasm.sh's own wasm-tools parse/validate step (below)
+      # needs it on PATH, and pinning keeps CI and the dev box byte-identical.
+      WASM_TOOLS_VERSION: 1.219.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+
+      # node >= 24: build_playground_wasm.sh's own wasm emitter oracle build needs it
+      # (finalized WasmGC), and so does playground/e2e/run.sh itself (README: node v20
+      # can't run the WasmGC playground module).
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # wasm-tools parses + validates the emitted WAT inside build_playground_wasm.sh
+      # ("[2/2] compiling ... to WasmGC"). Same install recipe as ci.yml's `wasm` job.
+      - name: Install wasm-tools
+        run: |
+          set -eu
+          v="$WASM_TOOLS_VERSION"
+          url="https://github.com/bytecodealliance/wasm-tools/releases/download/v${v}/wasm-tools-${v}-x86_64-linux.tar.gz"
+          curl -sSfL "$url" | tar xz
+          sudo mv "wasm-tools-${v}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          wasm-tools --version
+
+      # playground/e2e/tests/playground.spec.mjs launches
+      # `chromium.launch({channel:'chrome'})` — the SYSTEM Google Chrome, never a
+      # Playwright-managed download (README: `npx playwright install chromium`
+      # TLS-fails behind the dev box's DLP interception, and AGENTS.md forbids working
+      # around that by disabling TLS verification — so the harness uses system Chrome
+      # unconditionally, not just on that one machine). Installing it explicitly here
+      # keeps CI and the dev box on the IDENTICAL launch path with no test-code change;
+      # relying on "ubuntu-latest probably ships Chrome" would make an image change
+      # someone else's silent infra rot.
+      - name: Install system Google Chrome
+        run: |
+          curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -qq
+          sudo apt-get install -y google-chrome-stable
+          google-chrome-stable --version
+
+      # Same cache as this workflow's other two jobs and ci.yml's gates/wasm/inlang
+      # jobs (identical key -> shared cache hits across workflows). build_playground_wasm.sh
+      # calls `make medaka` itself (step "[1/2]"), so a warm cache just makes that a no-op.
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+      - name: Build medaka (cold bootstrap from seed)
+        if: steps.medaka-cache.outputs.cache-hit != 'true'
+        run: make medaka
+
+      # The real, documented build command (playground/e2e/README.md "How to run":
+      # run.sh "tells you to run bash playground/build_playground_wasm.sh first if
+      # not [built]"). It is `set -euo pipefail` and FAILs loudly at each of its own
+      # checks (missing wasm-tools, empty WAT, failed wasm-tools validate) — a broken
+      # build cannot look like a skip. Classified as a TOOL, not a gate, in
+      # test/CI-COVERAGE-TOOLS.txt, so it needs no coverage row of its own.
+      - name: Build the playground WasmGC artifact
+        run: bash playground/build_playground_wasm.sh
+
+      # playground/e2e/run.sh is itself `set -euo pipefail` and ends with `exit
+      # "$STATUS"` (its own pass/fail, propagated) — a plain run step is correct, no
+      # wrapper needed to keep a real e2e failure from reading as green. Invoked by its
+      # literal repo-relative path (not `cd` + `./run.sh`) so
+      # diff_compiler_ci_shard_coverage.sh's "named" mechanism picks it up — see the
+      # updated test/CI-COVERAGE-EXCEPTIONS.txt entry this job retires.
+      #
+      # PLAIN pass/fail job (the check-removed-constructs shape, not fuzz-diff's):
+      # there is no sampling here to distinguish "ran zero cases" from "found
+      # nothing", so the harness's own step failure IS the loud infra-vs-finding
+      # signal (a toolchain problem fails one of the steps ABOVE this one; a real e2e
+      # regression fails THIS one). Nightly, not the PR path, so a red run here is
+      # reported but never blocks a merge.
+      - name: playground e2e (Playwright vs system Chrome)
+        run: bash playground/e2e/run.sh
+
+      # Debug aid: the harness screenshots every check into playground/e2e/screenshots/
+      # (gitignored). On failure, ship them as a build artifact instead of making
+      # someone reproduce locally to see what the browser actually rendered.
+      - name: Upload screenshots (debug aid on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playground-e2e-screenshots-${{ github.run_id }}
+          path: playground/e2e/screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 14

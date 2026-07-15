@@ -45,25 +45,24 @@
 # If a wasm gate ever goes red, pin it known-bad IN the wasm job (an XFAIL ledger, like
 # test/native_fixtures/run), NOT by re-excluding it here — a red gate belongs in CI.
 
-# ── playground browser e2e ────────────────────────────────────────────────────
-# A real gate (Playwright drives a real browser against the built CM6 playground and
-# asserts on run output + inline type-error squiggles; it exits with the harness's
-# status). It cannot run on a stock hosted runner as written for TWO independent
-# reasons, and BOTH must be solved before it can be un-ledgered:
+# ── playground browser e2e — NOW IN CI (nightly, #72 pt.4, 2026-07-15) ─────────
+# The two reasons this was unowned are both solved by the `playground-e2e` job in
+# .github/workflows/nightly.yml, without touching the harness itself:
 #
-#   1. It launches `chromium.launch({channel:'chrome'})` — the SYSTEM Google Chrome —
-#      because `npx playwright install` TLS-fails on the dev box (AGENTS.md is explicit:
-#      do not bypass TLS verification to fix that). A hosted runner would want the
-#      normal Playwright-managed browser, so the launch path needs a switch.
-#   2. It refuses to build its own input: it needs playground/dist/playground.wasm
-#      (~2.6 MB) already built, and playground/dist/ is NOT committed (only a
-#      .gitignore). So CI must run playground/build_playground_wasm.sh first, which is
-#      minutes of extra work on the PR path.
+#   1. It launches `chromium.launch({channel:'chrome'})` — the SYSTEM Google Chrome.
+#      Rather than switch the launch path to a Playwright-managed download, the job
+#      installs Google Chrome stable via apt, so CI uses the exact same launch path
+#      the dev box does (see playground/e2e/README.md's "System Chrome" gotcha).
+#   2. It needs playground/dist/playground.wasm (~2.6 MB, gitignored) already built.
+#      The job runs `bash playground/build_playground_wasm.sh` first — the real,
+#      documented build command (see that script's own header and
+#      playground/e2e/README.md "How to run").
 #
-# NO OWNING TASK YET — this is honestly unowned, and saying so is the point. It is NOT
-# known-red: it has simply never been run in CI, and nobody knows its true status there.
-# Do not delete this line by making the gate skip; delete it by making it run.
-playground/e2e/run  needs system Chrome + an un-committed 2.6MB playground/dist build. UNOWNED — status in CI genuinely unknown.
+# It runs on the nightly schedule only, not the PR path (a real browser + a wasm
+# self-compile is minutes of extra work), invoked by its literal repo-relative path
+# (`playground/e2e/run.sh`) in that job — the same "named" mechanism
+# check_removed_constructs/fuzz_diff already use, which is what makes
+# diff_compiler_ci_shard_coverage.sh classify it as covered. So it needs NO row here.
 
 # ── the long tail found when the gate was widened to enumerate EVERYTHING (2026-07-13) ──
 #
