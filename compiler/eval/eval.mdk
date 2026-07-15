@@ -60,6 +60,21 @@ import support.util.{
 -- pipeline and does not import eval.mdk (no cycle) — verified by grep before
 -- adding this import.
 import driver.diagnostics.{Diag(..), Severity(..), cjAllToJson}
+-- The uint64 limb library the RNG/hash externs are built on lives in stdlib
+-- (`bits64`) now — the compiler is a first-class consumer of it (issue #223).
+-- It exports only a `U64` type ALIAS over a tuple, so the import drags no new
+-- instance surface (near-free per AGENTS.md) and DCE trims to the fns used here.
+import bits64.{
+  add64,
+  sub64,
+  mulLow64,
+  xor64,
+  shr64,
+  mod64,
+  ofInt,
+  isZero,
+  limbAt,
+}
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
 -- B2 (RUN-EFFECTS): `Value` is EFFECT-POLYMORPHIC — `e` is the row its stored
@@ -1842,88 +1857,9 @@ u64FnvBasis = (8997, 33826, 40164, 52210)  -- 2325 8422 9CE4 CBF2
 u64FnvPrime : (Int, Int, Int, Int)
 u64FnvPrime = (435, 0, 256, 0)  -- 01B3 0000 0100 0000
 
--- Untagged Int -> uint64. The eval Int is a native two's-complement long long,
--- so masking successive 16-bit windows reproduces C's `(unsigned long long)n`
--- for negatives too. This is correct regardless of whether `shiftRight` sign- or
--- zero-extends the vacated high bits, because each window is immediately masked
--- to exactly 16 bits — only bits [16k, 16k+15] of the two's-complement value
--- survive, which are the same in either shift convention.
-intToU64 : Int -> (Int, Int, Int, Int)
-intToU64 n = (
-  bitAnd n 65535,
-  bitAnd (shiftRight n 16) 65535,
-  bitAnd (shiftRight n 32) 65535,
-  bitAnd (shiftRight n 48) 65535,
-)
-
-add64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
-add64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
-  let s0 = a0 + b0
-  let s1 = a1 + b1 + shiftRight s0 16
-  let s2 = a2 + b2 + shiftRight s1 16
-  let s3 = a3 + b3 + shiftRight s2 16
-  (bitAnd s0 65535, bitAnd s1 65535, bitAnd s2 65535, bitAnd s3 65535)
-
--- Schoolbook multiply keeping only the low 64 bits.
-mulLow64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
-mulLow64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
-  let c0 = a0 * b0
-  let c1 = a0 * b1 + a1 * b0 + shiftRight c0 16
-  let c2 = a0 * b2 + a1 * b1 + a2 * b0 + shiftRight c1 16
-  let c3 = a0 * b3 + a1 * b2 + a2 * b1 + a3 * b0 + shiftRight c2 16
-  (bitAnd c0 65535, bitAnd c1 65535, bitAnd c2 65535, bitAnd c3 65535)
-
-xor64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
-xor64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
-  (bitXor a0 b0, bitXor a1 b1, bitXor a2 b2, bitXor a3 b3)
-
--- Limb i of a uint64 (0 past the top).
-u64Limb : (Int, Int, Int, Int) -> Int -> Int
-u64Limb (a0, a1, a2, a3) i =
-  if i == 0 then
-    a0
-  else if i == 1 then
-    a1
-  else if i == 2 then
-    a2
-  else if i == 3 then
-    a3
-  else
-    0
-
--- Whole-limb offset for a right shift of `n` bits (n in [0, 63]).
-shrWords : Int -> Int
-shrWords n =
-  if n >= 48 then
-    3
-  else if n >= 32 then
-    2
-  else if n >= 16 then
-    1
-  else
-    0
-
--- One output limb of a logical right shift: low bits of limb (i+ws) plus the
--- carried-in low bits of limb (i+ws+1).
-shr64Limb : (Int, Int, Int, Int) -> Int -> Int -> Int -> Int
-shr64Limb u ws bs i =
-  bitAnd
-    (bitOr
-      (shiftRight (u64Limb u (i + ws)) bs)
-      (shiftLeft (u64Limb u (i + ws + 1)) (16 - bs)))
-    65535
-
--- Logical right shift by `n` bits (n in [0, 63]).
-shr64 : (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
-shr64 u n =
-  let ws = shrWords n
-  let bs = n - ws * 16
-  (
-    shr64Limb u ws bs 0,
-    shr64Limb u ws bs 1,
-    shr64Limb u ws bs 2,
-    shr64Limb u ws bs 3,
-  )
+-- `ofInt`/`add64`/`mulLow64`/`xor64`/`limbAt`/`shr64` (plus the `shiftWords`
+-- helper `shr64` needs) are imported from stdlib `bits64` above — the compiler
+-- shares the one proven limb library rather than re-deriving it here (#223).
 
 -- SplitMix64 finalizer, then `mix64 x = finalize (x + golden)` — identical to
 -- mdk_hash_mix64, and one SplitMix64 step (state += golden; finalize).
@@ -1947,57 +1883,10 @@ u64ToInt : (Int, Int, Int, Int) -> Int
 u64ToInt (a0, a1, a2, a3) =
   bitOr (bitOr a0 (shiftLeft a1 16)) (bitOr (shiftLeft a2 32) (shiftLeft a3 48))
 
--- Compare two uint64 limb tuples: -1 if a < b, 0 if equal, 1 if a > b.
-cmp64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> Int
-cmp64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
-  if a3 == b3 then
-    if a2 == b2 then if a1 == b1 then if a0 == b0 then 0 else if a0 > b0 then 1 else 0 - 1 else if a1 > b1 then 1 else 0 - 1 else if a2 > b2 then 1 else 0 - 1
-  else if a3 > b3 then
-    1
-  else
-    0 - 1
-
--- uint64 subtraction a - b (assumes a >= b), with borrow propagation. A negative
--- limb difference masks to its low 16 bits (== +65536), which IS the borrow.
-sub64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
-sub64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
-  let d0 = a0 - b0
-  let d1 = a1 - b1 - (if d0 < 0 then 1 else 0)
-  let d2 = a2 - b2 - (if d1 < 0 then 1 else 0)
-  let d3 = a3 - b3 - (if d2 < 0 then 1 else 0)
-  (bitAnd d0 65535, bitAnd d1 65535, bitAnd d2 65535, bitAnd d3 65535)
-
--- Bit `i` (0 = LSB) of a uint64.
-u64BitAt : (Int, Int, Int, Int) -> Int -> Int
-u64BitAt u i = bitAnd (u64Limb (shr64 u i) 0) 1
-
--- EXACT uint64 `%` a nonzero uint64 divisor (any value up to 2^64 - 1) —
--- schoolbook bit-by-bit long division, MSB first, kept entirely inside the limb
--- rep so nothing overflows a bare 63-bit Int. Faithful to C's
--- `mdk_next_u64() % (unsigned long long)range` (medaka_rt.c) for every range,
--- not just small ones (issue #98 — a running-remainder shortcut here re-opened
--- the very run != build divergence this fix exists to kill).
-u64ModExactGo : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
-u64ModExactGo dividend divisor rem i =
-  if i < 0 then rem
-  else
-    let shifted = add64 rem rem
-    let bit = u64BitAt dividend i
-    let rem2 = (
-      bitOr (u64Limb shifted 0) bit,
-      u64Limb shifted 1,
-      u64Limb shifted 2,
-      u64Limb shifted 3,
-    )
-    let rem3 = if cmp64 rem2 divisor >= 0 then sub64 rem2 divisor else rem2
-    u64ModExactGo dividend divisor rem3 (i - 1)
-
--- dividend `%` divisor, both uint64, exact for any divisor up to 2^64 - 1.
-u64Mod : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
-u64Mod dividend divisor = u64ModExactGo dividend divisor (0, 0, 0, 0) 63
-
-u64IsZero : (Int, Int, Int, Int) -> Bool
-u64IsZero (a0, a1, a2, a3) = a0 == 0 && a1 == 0 && a2 == 0 && a3 == 0
+-- `sub64` (borrow-propagating subtraction) and `mod64` (exact long division —
+-- eval's old `u64Mod`/`u64ModExactGo`/`u64BitAt`/`cmp64` collapse into it, the
+-- zero-divisor guard being a harmless superset the RNG never triggers) and
+-- `isZero` are imported from stdlib `bits64` above (#223).
 
 -- Bit 63 — the sign bit under a two's-complement (signed long long) reading.
 u64Bit63 : (Int, Int, Int, Int) -> Int
@@ -2042,16 +1931,16 @@ rngDraw _ =
 -- so no bare 63-bit Int op is ever asked to hold a value it cannot (issue #98).
 pRandomInt : Value e -> Value e -> <e> Value e
 pRandomInt (VInt lo) (VInt hi) =
-  let loU = intToU64 lo
-  let rangeU = add64 (sub64 (intToU64 hi) loU) (intToU64 1)
-  if u64IsZero rangeU || u64Bit63 rangeU == 1 then VInt lo
+  let loU = ofInt lo
+  let rangeU = add64 (sub64 (ofInt hi) loU) (ofInt 1)
+  if isZero rangeU || u64Bit63 rangeU == 1 then VInt lo
   else
-    let rem = u64Mod (rngDraw ()) rangeU
+    let rem = mod64 (rngDraw ()) rangeU
     VInt (u64ToSignedInt (add64 loU rem))
 pRandomInt _ _ = panic "randomInt: expected Int Int"
 
 pRandomBool : Value e -> <e> Value e
-pRandomBool _ = VBool (bitAnd (u64Limb (rngDraw ()) 0) 1 == 1)
+pRandomBool _ = VBool (bitAnd (limbAt (rngDraw ()) 0) 1 == 1)
 
 pRandomFloat : Value e -> <e> Value e
 pRandomFloat _ =
@@ -2063,7 +1952,7 @@ pRandomFloat _ =
 pRandomChar : Value e -> <e> Value e
 pRandomChar _ =
   VChar (charToStr (charFromCodeUnsafe
-    (32 + u64ToInt (u64Mod (rngDraw ()) (intToU64 95)))))
+    (32 + u64ToInt (mod64 (rngDraw ()) (ofInt 95)))))
 
 charFromCodeUnsafe : Int -> Char
 -- Intentional cross-file duplicate of the same helper in prop_runner.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
@@ -2074,7 +1963,7 @@ charFromCodeUnsafe n = match charFromCode n
 
 pSetSeed : Value e -> <e> Value e
 pSetSeed (VInt seed) =
-  let _ = setRef rngU64Ref (intToU64 seed)
+  let _ = setRef rngU64Ref (ofInt seed)
   VUnit
 pSetSeed _ = panic "setSeed: expected Int"
 
@@ -2302,7 +2191,7 @@ pFloatToBytes64 _ = panic "floatToBytes64: not a Float"
 -- mixer made `medaka run` and `medaka build` disagree on hash values, both silent).
 -- hashInt/hashChar/hashFloat = mix64 then mask to [0, 2^30); hashString = 64-bit
 -- FNV-1a; hashBool = 0/1. `n`/codepoint arrive as the untagged native Int, so a
--- negative Int's two's-complement 64-bit value flows straight into intToU64.
+-- negative Int's two's-complement 64-bit value flows straight into `ofInt`.
 
 -- One 64-bit FNV-1a step: h = (h XOR byte) * prime (low 64 bits).
 fnvStep64 : (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
@@ -2323,12 +2212,12 @@ bytesBEToU64 bs = (
 )
 
 pHashInt : Value e -> <e> Value e
-pHashInt (VInt n) = VInt (u64Low30 (u64Mix (intToU64 n)))
+pHashInt (VInt n) = VInt (u64Low30 (u64Mix (ofInt n)))
 pHashInt _ = panic "hashInt: not an Int"
 
 pHashChar : Value e -> <e> Value e
 pHashChar (VChar s) =
-  VInt (u64Low30 (u64Mix (intToU64 (charCode (arrayGetUnsafe
+  VInt (u64Low30 (u64Mix (ofInt (charCode (arrayGetUnsafe
     0
     (stringToChars s))))))
 pHashChar _ = panic "hashChar: not a Char"
