@@ -165,9 +165,16 @@ export inc : Int -> Int
 inc n = n + 1
 EOF
 out="$("$MEDAKA" test "$TMP/b8.mdk" 2>&1)"
+# NOTE: a plain `*"parse error"*` substring match is no longer the right
+# signal — a FIXED compiler still legitimately prints the words "parse
+# error" as prose inside a per-example located ERROR line (issue #55's
+# accepted minimum fix: isolate the bad example, don't abort the file).
+# The real invariant is: no uncatchable panic, and the file's OTHER
+# (valid) doctest still ran.
 case "$out" in
-  *"parse error"*) report B8 OPEN "prose blockquote parsed as a doctest -> unlocated E-PANIC, aborts the file" ;;
-  *) report B8 FIXED "prose blockquotes are not treated as doctests" ;;
+  *"E-PANIC"*) report B8 OPEN "prose blockquote crashes the whole file with an uncatchable panic" ;;
+  *"  ok   "*"inc 1"*) report B8 FIXED "prose blockquote no longer aborts the file; the valid example still ran" ;;
+  *) report B8 OPEN "prose blockquote parsed as a doctest -> aborts the file (valid example did not run)" ;;
 esac
 
 # --- B10: `fmt --write` CORRUPTS source (float literal >= 1e15) -------------

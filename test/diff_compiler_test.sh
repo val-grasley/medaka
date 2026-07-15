@@ -21,6 +21,9 @@
 #   stdlib/list.mdk   multi-module doctests + passing props
 #   stdlib/set.mdk    single-file doctests + props (Set literal, EHeadAnnot)
 #   test/compiler_test_fixtures/mixed.mdk  passing + FAILING doctest + prop
+#   test/compiler_test_fixtures/blockquote_and_valid.mdk  GH #55: a malformed
+#     example (Markdown blockquote) does not abort the file — the valid
+#     examples before AND after it still run
 #
 # DEFERRED (pre-existing compiler/native gaps, NOT gate-rerooting regressions):
 #   stdlib/string.mdk  — full Unicode case-folding: native toUpper "Straße" yields
@@ -81,7 +84,8 @@ else
          $ROOT/test/compiler_test_fixtures/mixed.mdk \
          $ROOT/test/compiler_test_fixtures/sum_dict.mdk \
          $ROOT/test/compiler_test_fixtures/mappable_not_foldable.mdk \
-         $ROOT/test/compiler_test_fixtures/shadow_impl_tolist.mdk"
+         $ROOT/test/compiler_test_fixtures/shadow_impl_tolist.mdk \
+         $ROOT/test/compiler_test_fixtures/blockquote_and_valid.mdk"
 fi
 
 pass=0

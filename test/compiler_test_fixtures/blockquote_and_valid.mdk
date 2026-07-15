@@ -1,0 +1,22 @@
+-- Regression for GH issue #55: a Markdown blockquote inside a doc comment
+-- ("-- > prose, not an expression") extracts as a doctest "input line" the
+-- same as a real example ("-- > expr"), and the synthesized snippet fails to
+-- parse.  Before the fix, `buildSynthDecls` ran every example's `parse`
+-- through the compiler's PANICKING entry and concatenated the results before
+-- running any of them, so ONE malformed example uncatchably aborted the
+-- WHOLE file's doctest run — a file with real, valid doctests reported none
+-- of them.  The fix routes each example through the non-panicking
+-- `parseResult` entry individually: a malformed example becomes a single
+-- located `ERROR`, and every OTHER example in the file still runs.
+--
+-- > inc 1
+-- 2
+--
+-- Note:
+--
+-- > This is prose in a Markdown blockquote, not a doctest.
+--
+-- > inc 4
+-- 5
+export inc : Int -> Int
+inc n = n + 1

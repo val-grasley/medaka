@@ -20,7 +20,7 @@
 
 import frontend.lexer.{Comment, collectComments, commentLine, commentText}
 import frontend.ast.{Decl, DUse}
-import frontend.parser.{parse}
+import frontend.parser.{parseResult, parseErrorMessage}
 import frontend.desugar.{desugar}
 import eval.eval.{Value(..), lookupBinding, force, ppValue}
 import support.util.{listLen, reverseL, joinNl, startsWith, stringTrim}
@@ -251,37 +251,67 @@ synthSrc i ex =
     None => exampleInput ex
   "\{synthName i} = \{rhs}"
 
--- All synth decls, parsed + desugared, concatenated.  (compiler `parse` panics
--- on a malformed snippet rather than per-example Error, but stdlib doctests
--- parse cleanly; see report.)
-export buildSynthDecls : List Example -> List Decl
-buildSynthDecls examples = buildSynthGo 0 examples
+-- Per-example synth outcome (issue #55): the compiler's panicking `parse`
+-- would abort every doctest in the file the moment ONE example is malformed
+-- (a Markdown blockquote in a doc comment, for instance, extracts as a
+-- "smoke" example and then fails to parse as Medaka source).  Route each
+-- example through `parseResult` (the LSP's non-panicking parse entry,
+-- `frontend/parser.mdk`) individually, so one bad example becomes a single
+-- located `Errored` result (see `oneResult` below) instead of zeroing the
+-- whole file's coverage.
+export buildSynthResults : List Example -> List (Result String (List Decl))
+buildSynthResults examples = buildSynthResultsGo 0 examples
 
-buildSynthGo : Int -> List Example -> List Decl
-buildSynthGo _ [] = []
-buildSynthGo i (ex::rest) = desugar (parse (synthSrc i ex))
-  ++ buildSynthGo (i + 1) rest
+buildSynthResultsGo : Int -> List Example -> List (Result String (List Decl))
+buildSynthResultsGo _ [] = []
+buildSynthResultsGo i (ex::rest) =
+  synthOne i ex :: buildSynthResultsGo (i + 1) rest
+
+synthOne : Int -> Example -> Result String (List Decl)
+synthOne i ex = match parseResult (synthSrc i ex)
+  Ok ds => Ok (desugar ds)
+  Err e => Err (parseErrorMessage e)
+
+-- The decls to actually elaborate/run: every example that parsed, concatenated
+-- in order.  A failed example contributes NO decl (and so no `__dt_i__`
+-- binding) — its outcome is reported straight from `synthResults` in
+-- `oneResult`, without ever reaching `lookupBinding`.
+export buildSynthDecls : List (Result String (List Decl)) -> List Decl
+buildSynthDecls synthResults = concatOkDecls synthResults
+
+concatOkDecls : List (Result String (List Decl)) -> List Decl
+concatOkDecls [] = []
+concatOkDecls ((Ok ds)::rest) = ds ++ concatOkDecls rest
+concatOkDecls ((Err _)::rest) = concatOkDecls rest
 
 -- ── Compare evaluated bindings against expected ──────────────────────────────
 -- env is the post-run binding environment (Ok env) or a single whole-program
 -- error (Err msg) applying to every example.
 
-export buildDetails : Result String (List (String, Value e)) -> List Example -> <e> RunResult
-buildDetails envResult examples =
-  let details = detailsGo envResult 0 examples
+export buildDetails : Result String (List (String, Value e)) -> List (Result String (List Decl)) -> List Example -> <e> RunResult
+buildDetails envResult synthResults examples =
+  let details = detailsGo envResult synthResults 0 examples
   let passed = countResult isPass details
   let failed = countResult isFail details
   let errors = countResult isErr details
   RunResult (listLen examples) passed failed errors details
 
-detailsGo : Result String (List (String, Value e)) -> Int -> List Example -> <e> List (Example, ExResult)
-detailsGo _ _ [] = []
-detailsGo envResult i (ex::rest) =
-  (ex, oneResult envResult i ex) :: detailsGo envResult (i + 1) rest
+detailsGo : Result String (List (String, Value e)) -> List (Result String (List Decl)) -> Int -> List Example -> <e> List (Example, ExResult)
+detailsGo _ _ _ [] = []
+detailsGo envResult (sr::srRest) i (ex::rest) =
+  (ex, oneResult envResult sr i ex) :: detailsGo envResult srRest (i + 1) rest
+detailsGo _ [] _ (_::_) = []
+-- (the [] / (_::_) fallback only fires if synthResults and examples somehow
+-- desync in length — buildSynthResults always produces one entry per
+-- example, so this is unreachable in practice; kept for exhaustiveness.)
 
-oneResult : Result String (List (String, Value e)) -> Int -> Example -> <e> ExResult
-oneResult (Err msg) i ex = Errored msg
-oneResult (Ok env) i ex = match lookupBinding (synthName i) env
+-- A per-example parse failure (`Err msg` from `synthOne`) is reported
+-- directly at this example's own location — it never reaches `lookupBinding`,
+-- so it can't be conflated with "evaluated but produced no binding".
+oneResult : Result String (List (String, Value e)) -> Result String (List Decl) -> Int -> Example -> <e> ExResult
+oneResult _ (Err msg) i ex = Errored ("parse error: " ++ msg)
+oneResult (Err msg) (Ok _) i ex = Errored msg
+oneResult (Ok env) (Ok _) i ex = match lookupBinding (synthName i) env
   None => Errored ("could not evaluate: " ++ exampleInput ex)
   Some v => compareValue ex (ppValue (force v))
 

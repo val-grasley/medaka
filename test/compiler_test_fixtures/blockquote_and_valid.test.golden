@@ -1,0 +1,7 @@
+running doctests in test/compiler_test_fixtures/blockquote_and_valid.mdk
+  ok   test/compiler_test_fixtures/blockquote_and_valid.mdk:12: inc 1
+  ERROR test/compiler_test_fixtures/blockquote_and_valid.mdk:17: This is prose in a Markdown blockquote, not a doctest.
+        parse error: unexpected `in`
+  ok   test/compiler_test_fixtures/blockquote_and_valid.mdk:19: inc 4
+
+test/compiler_test_fixtures/blockquote_and_valid.mdk: 2/3 passed (0 failed, 1 errors)
