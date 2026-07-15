@@ -1,0 +1,3 @@
+-- Imported sibling module for the medaka mcp import-bearing type-at fixture.
+export greet : String -> String
+greet name = stringConcat ["Hello, ", name]

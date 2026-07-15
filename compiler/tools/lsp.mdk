@@ -555,6 +555,40 @@ hoverFor runtimeSrc coreSrc uri src params docs = match (positionLine params, po
           jHover name (stringConcat [pfx, ppSchemeNamed name sch])
   _ => JNull
 
+-- Stateless type-at-point for the `medaka mcp` `medaka_type_at` tool (#251) — and
+-- the shared query substrate #255 reuses.  It is `hoverFor` with two differences:
+-- it takes the (0-based, LSP-style) line/col as plain Ints rather than fishing
+-- them out of a synthetic params Json, and it returns the rendered `<name> :
+-- <type>` as PLAIN TEXT (no markdown/JSON wrapper) so the MCP layer drops it
+-- straight into a tool-result content block.  The ORDER is load-bearing and
+-- mirrors hoverFor exactly: resolve the identifier first (cheap), THEN build the
+-- env — `hoverEnvFor` both returns the entry schemes AND populates the typecheck
+-- hover side-channel Refs (currentLocalSchemes/currentSeedSchemes) that
+-- `hoverScheme` reads next; reading them before the env build would silently lose
+-- locals' and imported names' types.  The buffer is seeded into `docs` under its
+-- own uri so the import-bearing project load (projectEntryEnv) sees exactly this
+-- text as the entry module; imported siblings resolve from disk through the
+-- loader's read/disk fallback (readModuleProgF).  None ⇒ off any identifier or
+-- not in scope — the caller maps that to a clean "no symbol" result, never a
+-- crash.
+export typeAtPoint : String -> String -> String -> String -> Int -> Int -> <IO> Option String
+-- Not a single-monad passthrough bind: identifierAt/hoverScheme are pure Option
+-- while hoverEnvFor is <IO> Option, and the nesting deliberately mirrors hoverFor's
+-- load-bearing order — a `do` block cannot express the mixed pure/IO steps.
+-- lint-disable-next-line rule-bind-chain-to-do
+typeAtPoint runtimeSrc coreSrc filePath src line col = match identifierAt src line col
+  None => None
+  Some name =>
+    let uri = uriOfPath filePath
+    let docs = docsPut uri src emptyDocs
+    match hoverEnvFor runtimeSrc coreSrc uri src docs
+      None => None
+      Some env => match hoverScheme name env
+        None => None
+        Some sch =>
+          let pfx = sigLeadingEff name (unwrapDecls (parseResult src))
+          Some (stringConcat [name, " : ", pfx, ppSchemeNamed name sch])
+
 -- The hover lookup env for the buffer.  A buffer with a non-core sibling import
 -- goes through the multi-module project pipeline (loads the import graph; the
 -- entry's own schemes are returned and its locals + import-scoped seed land in the

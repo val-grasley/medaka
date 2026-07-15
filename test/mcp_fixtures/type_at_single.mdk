@@ -1,0 +1,8 @@
+-- Single-file type-at-point sample for the medaka mcp golden gate (#251).
+-- The `medaka_type_at` fixture queries `double` (a known top-level binding) and a
+-- whitespace column (the clean no-symbol case).  Line/col in the request are
+-- 0-based (LSP-style): the `double` signature is line 4, its definition line 5.
+double : Int -> Int
+double n = n * 2
+
+main = println (double 21)

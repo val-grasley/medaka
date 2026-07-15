@@ -1,0 +1,6 @@
+-- Import-bearing entry for the medaka mcp type-at fixture: `medaka_type_at` on
+-- the imported name `greet` must resolve its type from the sibling module on
+-- disk (the loader's read/disk fallback), proving the project path works.
+import lib.{greet}
+
+main = println (greet "world")

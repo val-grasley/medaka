@@ -42,6 +42,13 @@ FIXDIR="$ROOT/test/mcp_fixtures"
 
 export MEDAKA_ROOT="$ROOT"
 
+# Run the server with a FIXED cwd = repo root so a fixture request carrying a
+# repo-relative `file` path (e.g. medaka_type_at's test/mcp_fixtures/...) resolves
+# deterministically no matter where this gate was invoked from (run_gates.sh's
+# worker inherits the caller's cwd and never cd's).  The tool responses stay
+# path-free, so this only affects request-path resolution, not golden stability.
+cd "$ROOT" || { echo "FAIL: cannot cd to $ROOT"; exit 1; }
+
 pass=0; fail=0
 
 for req in "$FIXDIR"/*.jsonl; do

@@ -36,9 +36,11 @@ import json.{
   parse,
   lookup,
   asString,
+  asInt,
 }
 import io.{stripCR}
 import driver.diagnostics.{checkJsonSingle, checkJsonFile}
+import tools.lsp.{typeAtPoint}
 
 -- ── protocol / server identity ──────────────────────────────────────────────
 
@@ -88,6 +90,13 @@ fieldStr key j = match lookup key j
 
 methodOf : Json -> Option String
 methodOf msg = fieldStr "method" msg
+
+-- Integer field accessor (for tool args like `line`/`col`).  None when absent or
+-- not a JInt — the caller reports the missing/invalid argument as an isError result.
+fieldInt : String -> Json -> Option Int
+fieldInt key j = match lookup key j
+  Some v => asInt v
+  None => None
 
 -- ── stdio transport ──────────────────────────────────────────────────────────
 
@@ -142,7 +151,8 @@ data McpTool =
 
 mcpTools : List McpTool
 mcpTools = [
-  McpTool "medaka_check" "Type-check Medaka source and return structured diagnostics — the same JSON `medaka check --json` emits (stable `code`, `range`, `severity`, `help`, and a machine-applicable `fix` where available). Provide exactly one of `file` or `source`." medakaCheckSchema runCheckTool
+  McpTool "medaka_check" "Type-check Medaka source and return structured diagnostics — the same JSON `medaka check --json` emits (stable `code`, `range`, `severity`, `help`, and a machine-applicable `fix` where available). Provide exactly one of `file` or `source`." medakaCheckSchema runCheckTool,
+  McpTool "medaka_type_at" "Infer the type/scheme at a position — the LSP hover, driven statelessly. Give a `file` path plus a 0-based `line` and `col` (LSP-style); returns the `<name> : <type>` at that point, resolving imported names against the project on disk. A position off any identifier returns a clean \"no symbol\" note, not an error." medakaTypeAtSchema runTypeAtTool,
 ]
 
 -- The `tools/list` descriptor for one tool: { name, description, inputSchema }.
@@ -233,6 +243,64 @@ runCheckTool runtimeSrc coreSrc stdlibDir args = match (fieldStr "file" args, fi
   (None, Some src) =>
     let (json, hasErr) = checkJsonSingle False runtimeSrc coreSrc syntheticSourceName src
     toolTextResult json hasErr
+
+-- ── medaka_type_at tool ───────────────────────────────────────────────────────
+
+-- inputSchema: `file` (path) plus `line`/`col`, the 0-based LSP-style position.
+-- All three are required.
+medakaTypeAtSchema : Json
+medakaTypeAtSchema = jObject
+  [
+    ("type", JString "object"),
+    (
+      "properties",
+      jObject [
+        (
+          "file",
+          jObject [
+            ("type", JString "string"),
+            ("description", JString "Path to the .mdk file to query."),
+          ],
+        ),
+        (
+          "line",
+          jObject [
+            ("type", JString "integer"),
+            (
+              "description",
+              JString "0-based line of the position (LSP-style, first line is 0).",
+            ),
+          ],
+        ),
+        (
+          "col",
+          jObject [
+            ("type", JString "integer"),
+            (
+              "description",
+              JString "0-based column of the position (LSP-style, first column is 0).",
+            ),
+          ],
+        ),
+      ],
+    ),
+    ("required", jArray [JString "file", JString "line", JString "col"]),
+  ]
+
+-- medaka_type_at handler: read `file` from disk and infer the type at (line, col)
+-- via the stateless hover harness (tools.lsp.typeAtPoint), returning the
+-- `<name> : <type>` text.  Off any identifier / not in scope ⇒ a CLEAN "no symbol"
+-- result (isError=false, never a crash).  A missing file or bad arguments ⇒ an
+-- isError result (the arguments were malformed, not the call).  The response text
+-- is the type only (path-free), so a transcript golden over it is portable.
+runTypeAtTool : String -> String -> String -> Json -> <IO> Json
+runTypeAtTool runtimeSrc coreSrc _stdlibDir args = match (fieldStr "file" args, fieldInt "line" args, fieldInt "col" args)
+  (Some path, Some line, Some col) => match readFile path
+    Err e => toolArgError (stringConcat ["medaka_type_at: cannot read file '", path, "': ", e])
+    Ok src => match typeAtPoint runtimeSrc coreSrc path src line col
+      None => toolTextResult "no symbol at this position" False
+      Some ty => toolTextResult ty False
+  _ => toolArgError "medaka_type_at: missing or invalid argument — require 'file' (string), 'line' (integer), and 'col' (integer)"
 
 -- ── tools/call handler ───────────────────────────────────────────────────────
 
