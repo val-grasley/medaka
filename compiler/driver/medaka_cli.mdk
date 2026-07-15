@@ -125,6 +125,7 @@ import eval.eval.{
 import tools.test_cmd.{runTest}
 import tools.repl.{initSession, replLoop}
 import tools.lsp.{runServer}
+import tools.mcp.{runMcpServer}
 import tools.doc.{runDoc}
 import tools.lint.{
   allRules,
@@ -247,6 +248,7 @@ runCli _ = match args ()
   "manifest"::rest => runManifestCmd rest
   "repl"::rest => runReplCmd rest
   "lsp"::rest => runLspCmd rest
+  "mcp"::rest => runMcpCmd rest
   sub::_ => notYet sub
 
 -- ── usage (mirrors bin/main.ml print_usage) ───────────────────────────────
@@ -271,6 +273,7 @@ usage _ = putStrLn (stringConcat
     "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n",
     "  medaka new <name>         Scaffold a new project directory\n",
     "  medaka lsp                Run the language server over stdio\n",
+    "  medaka mcp                Run the MCP server over stdio (JSON-RPC for agents)\n",
     "  medaka help               Show this message\n",
     "  medaka --version          Show the compiler version\n",
   ])
@@ -2096,3 +2099,24 @@ runLspCmd _ =
         let _ = ePutStrLn msg
         exit 1
       Ok csrc => runServer rsrc csrc
+
+-- `medaka mcp`: the MCP (Model Context Protocol) stdio server.  Mirrors
+-- runLspCmd exactly — load MEDAKA_ROOT/stdlib/{runtime,core}.mdk and hand the
+-- prelude sources to the tools.mcp entry point (they're threaded through so the
+-- tools added by later issues can run the compiler pipeline).  Same `<IO>`
+-- effect row as runLspCmd (the `Mut`/`Panic` class the issue cited was cut
+-- 2026-07-14 — effects are capabilities only).
+runMcpCmd : List String -> <IO> Unit
+runMcpCmd _ =
+  let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
+  let rtPath = root ++ "/stdlib/runtime.mdk"
+  let corePath = root ++ "/stdlib/core.mdk"
+  match readPreludeFile rtPath
+    Err msg =>
+      let _ = ePutStrLn msg
+      exit 1
+    Ok rsrc => match readPreludeFile corePath
+      Err msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      Ok csrc => runMcpServer rsrc csrc
