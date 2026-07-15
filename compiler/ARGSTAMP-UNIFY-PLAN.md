@@ -8,6 +8,14 @@ free-fn over a typeclass receiver), tracked in `../docs/design/GAP3-SLICE7-DESIG
 doc-index table currently (mis)describes this plan as "IN PROGRESS" / "is being
 retired" — that is stale; this doc's own record is correct.
 
+**Status:** IMPLEMENTED / COMPLETE — the flag itself is now GONE. #157 (2026-07-15,
+PR #231) retired `emitArgStampPasses` entirely: elaboration is single-mode across emit,
+eval, and the golden drivers, so the "vestigiality noted for follow-up" residual below
+is fully closed. The Phase-0 temp parity probe (`compiler/entries/argstamp_parity_probe.mdk`
++ `test/argstamp_parity_probe.sh`) has been DELETED per this plan's own "delete at
+unification end" instruction — it compared two now-identical modes. This doc is retained as
+history only; the sections below describe the retired flag and are no longer live.
+
 Status: **COMPLETE 2026-06-14.** All phases (0/1/2+3/4/5) DONE. Eval and emit now run
 ONE elaboration mode (full static dict-threading); arg-tag (`filterByTag`) survives only
 for the irreducible primitive `Eq Int`/`Ord Int` + genuinely-`RNone` residual — parity
