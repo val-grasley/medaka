@@ -29,6 +29,11 @@
 #     CANONICAL native LSP through an initialize/didOpen/documentSymbol/hover
 #     session and diffs the decoded responses against a committed native golden
 #     (test/native_cli_goldens/lsp/session.ndjson).  OCaml-free.
+#   test/dir — `medaka test <dir>` (#82 row 2) post-dates OCaml removal
+#     entirely (OCaml `medaka test` was always single-file), so this leg is
+#     OCaml-free by construction: it diffs native `./medaka test
+#     test/native_cli_fixtures/test_dir` against a committed native golden
+#     (test/native_cli_goldens/test/dir.golden).
 #
 # The native runtime auto-prints main's Unit value as a trailing "0"; strip it
 # (strip_unit) before comparing.  Every invocation is bounded by perl alarm.
@@ -215,6 +220,55 @@ if [ "$TEST_WIRED" = 1 ]; then
     else fail=$((fail+1)); printf 'FAIL test/%s\n' "$base"
       printf '  want: [%s]\n  got:  [%s]\n' "$want" "$got"; fi
   done
+
+  # #82 row 2 (dir/project support, this branch): `medaka test <dir>` walks
+  # EVERY .mdk file under it (same expandLintTarget/collectMdkFiles walk
+  # lint/fmt use) and aggregates. DOCUMENTED EXCEPTION (like repl/lsp above):
+  # this capability post-dates the OCaml oracle's removal, so its golden is
+  # captured from the current CANONICAL native binary, not an OCaml reference.
+  # test_dir/ has fail.mdk (failing doctest) + ok.mdk (passing doctest, but
+  # the DIRECTORY run must still exit nonzero because its sibling failed) —
+  # this is also the #212 regression check for the directory route: a bad
+  # target used to print an error and still exit 0.
+  dir_golden="$GOLD/test/dir.golden"
+  if [ -f "$dir_golden" ]; then
+    dir_want="$(cat "$dir_golden")"
+    dir_got="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" test "$FIX/test_dir" 2>/dev/null | sed "s#$ROOT/##g" | strip_unit)"
+    if [ "$dir_got" = "$dir_want" ]; then pass=$((pass+1)); printf 'ok   test/dir (multi-file directory report)\n'
+    else fail=$((fail+1)); printf 'FAIL test/dir\n'
+      printf '  want: [%s]\n  got:  [%s]\n' "$dir_want" "$dir_got"; fi
+  else
+    fail=$((fail+1)); printf 'FAIL test/dir (no golden)\n'
+  fi
+  MEDAKA_ROOT="$ROOT" bound "$MEDAKA" test "$FIX/test_dir" >/dev/null 2>&1
+  dir_code=$?
+  if [ "$dir_code" -ne 0 ]; then
+    pass=$((pass+1)); printf 'ok   test/dir exit code (%d != 0, fail.mdk has a FAILing doctest)\n' "$dir_code"
+  else
+    fail=$((fail+1)); printf 'FAIL test/dir exit code: expected nonzero, got 0\n'
+  fi
+
+  # Empty dir: "no .mdk files" is reported, and — since nothing ran and
+  # nothing failed — this is a vacuous pass (exit 0), mirroring runTest's own
+  # zero-doctest-file convention. Uses a throwaway tmp dir (not a committed
+  # fixture — nothing to walk means nothing to bless).
+  empty_dir="$(mktemp -d)"
+  empty_got="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" test "$empty_dir" 2>&1)"
+  empty_code=0
+  MEDAKA_ROOT="$ROOT" bound "$MEDAKA" test "$empty_dir" >/dev/null 2>&1 || empty_code=$?
+  rmdir "$empty_dir"
+  case "$empty_got" in
+    *"no .mdk files found"*)
+      if [ "$empty_code" -eq 0 ]; then
+        pass=$((pass+1)); printf 'ok   test/empty-dir (message + exit 0)\n'
+      else
+        fail=$((fail+1)); printf 'FAIL test/empty-dir: expected exit 0, got %d\n' "$empty_code"
+      fi
+      ;;
+    *)
+      fail=$((fail+1)); printf 'FAIL test/empty-dir: expected "no .mdk files found", got [%s]\n' "$empty_got"
+      ;;
+  esac
 else
   printf 'skip test/* (native test not yet wired)\n'
 fi

@@ -1,0 +1,7 @@
+-- #82 row 2 regression fixture: `medaka test <dir>` must walk this whole
+-- directory (fail.mdk + ok.mdk) and aggregate a nonzero exit code because
+-- this file's doctest fails.
+
+-- > sub 5 2
+-- 99
+sub x y = x - y

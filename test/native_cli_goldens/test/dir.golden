@@ -1,0 +1,10 @@
+running doctests in test/native_cli_fixtures/test_dir/fail.mdk
+  FAIL test/native_cli_fixtures/test_dir/fail.mdk:5: sub 5 2
+       expected: 99
+         actual: 3
+
+test/native_cli_fixtures/test_dir/fail.mdk: 0/1 passed (1 failed, 0 errors)
+running doctests in test/native_cli_fixtures/test_dir/ok.mdk
+  ok   test/native_cli_fixtures/test_dir/ok.mdk:5: add 1 2
+
+test/native_cli_fixtures/test_dir/ok.mdk: 1/1 passed

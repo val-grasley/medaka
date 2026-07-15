@@ -72,23 +72,25 @@ export rootsOrDefault : String -> List String -> List String
 rootsOrDefault target [] = [dirOf target]
 rootsOrDefault _ roots = roots
 
--- Returns True iff every doctest AND every prop passed (a read error, or a
--- file with zero tests, also returns True — vacuous/IO-error pass mirrors the
--- pre-existing printed behaviour; callers gate `exit 1` on this Bool rather
--- than on the printed report, since the report is prose, not a signal).
+-- Returns True iff every doctest AND every prop passed.  A file that parses
+-- clean with zero doctests/props is vacuously True (nothing ran, nothing
+-- failed).  A read error — on either prelude source OR the target itself —
+-- returns False (P0-212): a file that couldn't even be opened is a FAILURE,
+-- not a vacuous pass, so callers that gate `exit 1` on this Bool (rather than
+-- on the printed report, since the report is prose, not a signal) see it.
 export runTest : String -> String -> String -> List String -> <IO> Bool
 runTest runtimeP coreP target roots = match readPreludeFile runtimeP
   Err e =>
     let _ = ePutStrLn e
-    True
+    False
   Ok rsrc => match readPreludeFile coreP
     Err e =>
       let _ = ePutStrLn e
-      True
+      False
     Ok csrc => match readFile target
       Err e =>
         let _ = ePutStrLn e
-        True
+        False
       Ok tsrc => driveAll (desugar (parse rsrc)) (desugar (parse csrc)) target tsrc roots
 
 driveAll : List Decl -> List Decl -> String -> String -> List String -> <IO> Bool

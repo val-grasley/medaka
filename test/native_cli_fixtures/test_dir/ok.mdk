@@ -1,0 +1,7 @@
+-- #82 row 2 regression fixture: sibling of fail.mdk. Its doctest passes on
+-- its own, but the DIRECTORY run must still exit nonzero overall because
+-- fail.mdk (in the same dir) fails.
+
+-- > add 1 2
+-- 3
+add x y = x + y
