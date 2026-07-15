@@ -51,6 +51,18 @@ import core.{Eq, Ord, Debug, Foldable, Mappable, Option, Ordering}
 -- escaped, round-trippable literal — `debug "hi"` is `"hi"`, `debug 'a'` is `'a'`
 -- — distinct from `println`, which emits the raw characters.
 
+{- | Render a `Bool` without typeclass dispatch — the sibling `intToString`
+   and `floatToString` are already externs (see `docs`/#79 L-2); `Bool` had
+   none.  Matches the `Debug`/`Display Bool` convention (`core.mdk`) exactly:
+   `"True"`/`"False"`, capitalized.
+
+   > boolToString True
+   "True"
+   > boolToString False
+   "False" -}
+export boolToString : Bool -> String
+boolToString b = if b then "True" else "False"
+
 -- ── Char operations ─────────────────────────────────────────────────────────
 -- ASCII-exact predicates (isDigit/digitToInt/intToDigit) compute on the
 -- codepoint directly; the Unicode-aware ones wrap the uucp-backed externs.
@@ -220,7 +232,23 @@ export toFloat : String -> Option Float
 toFloat s = stringToFloat s
 
 -- ── Inspection ──────────────────────────────────────────────────────────────
--- `length`/`isEmpty` intentionally omitted (see header) — use `stringLength`.
+-- `length`/`isEmpty` intentionally omitted (see header) — use `stringLength`
+-- (global extern) or the `strLength` alias below (#79 L-3).
+
+{- | Ergonomic alias for the global `stringLength` extern (`runtime.mdk`,
+   already in scope with no import — see the module header).  `length` isn't
+   used here because it would clash with `Foldable`'s method of the same name
+   (see header); re-exporting under the exact name `stringLength` instead of
+   a new name typechecks but SELF-SHADOWS at runtime (the local definition
+   recurses on itself rather than reaching the extern, overflowing the
+   evaluator stack) — verified during #79, hence the distinct name here.
+
+   > strLength "hello"
+   5
+   > strLength ""
+   0 -}
+export strLength : String -> Int
+strLength s = stringLength s
 
 {- | True when `s` begins with `prefix`.  Tier 1: a slice + compare, no char
    decoding.

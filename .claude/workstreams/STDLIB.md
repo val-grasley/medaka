@@ -74,9 +74,10 @@ ergonomic layer over the `runtime.mdk` IO externs.
 
 ## Two traps that make silent bugs
 
-- **`boolToString` does not exist** (#79). `intToString`/`floatToString` are both externs; `Bool` has no
-  sibling. This is not cosmetic: a shadow bug surfaced as the panic `intToString: not an Int`. **A
-  `boolToString` would have made that bug LOUDER, not silent.**
+- ✅ **`boolToString : Bool -> String` now exists** (`stdlib/string.mdk`, #79 L-2 — closed). It renders
+  `"True"`/`"False"` (matching `Debug`/`Display Bool`) without typeclass dispatch, so it's usable for
+  compiler-internal instrumentation. (Historical note: it was missing before this; the gap meant a
+  shadow bug surfaced as the panic `intToString: not an Int` instead of something louder.)
 - **Two `startsWith`s with OPPOSITE argument orders** (#79) — `util.startsWith pre s` vs
   `wasm_emit.startsWithStr s p`. **Both are `String -> String -> Bool`, so the typechecker cannot help
   you.** An agent wrote them in the wrong order, got a silent `False`, and found out four minutes into

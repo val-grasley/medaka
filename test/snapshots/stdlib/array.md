@@ -1,5 +1,5 @@
 # META
-source_lines=530
+source_lines=537
 stages=DESUGAR,MARK
 # SOURCE
 {- array.mdk — operations on Array a
@@ -86,6 +86,13 @@ replicate n x = arrayMake n x
 -- | Build an array from a list, preserving order.
 export fromList : List a -> Array a
 fromList xs = arrayFromList xs
+
+{- | Alias for `fromList`, included for symmetry with `toList` (#221).
+
+   > toList (listToArray [1, 2, 3])
+   [1, 2, 3] -}
+export listToArray : List a -> Array a
+listToArray xs = fromList xs
 
 {- | Half-open `[lo, hi)`.  Empty when `hi <= lo`.
 
@@ -546,6 +553,8 @@ prop "makeWith element at index 0" (n : Int) =
 (DFunDef false "replicate" ((PVar "n") (PVar "x")) (EApp (EApp (EVar "arrayMake") (EVar "n")) (EVar "x")))
 (DTypeSig true "fromList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "fromList" ((PVar "xs")) (EApp (EVar "arrayFromList") (EVar "xs")))
+(DTypeSig true "listToArray" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
+(DFunDef false "listToArray" ((PVar "xs")) (EApp (EVar "fromList") (EVar "xs")))
 (DTypeSig true "range" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Array") (TyCon "Int")))))
 (DFunDef false "range" ((PVar "lo") (PVar "hi")) (EApp (EApp (EVar "arrayMakeWith") (EIf (EBinOp ">" (EVar "hi") (EVar "lo")) (EBinOp "-" (EVar "hi") (EVar "lo")) (ELit (LInt 0)))) (ELam ((PVar "_s")) (EBinOp "+" (EVar "lo") (EVar "_s")))))
 (DTypeSig true "copy" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
@@ -653,6 +662,8 @@ prop "makeWith element at index 0" (n : Int) =
 (DFunDef false "replicate" ((PVar "n") (PVar "x")) (EApp (EApp (EVar "arrayMake") (EVar "n")) (EVar "x")))
 (DTypeSig true "fromList" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "fromList" ((PVar "xs")) (EApp (EVar "arrayFromList") (EVar "xs")))
+(DTypeSig true "listToArray" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
+(DFunDef false "listToArray" ((PVar "xs")) (EApp (EVar "fromList") (EVar "xs")))
 (DTypeSig true "range" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Array") (TyCon "Int")))))
 (DFunDef false "range" ((PVar "lo") (PVar "hi")) (EApp (EApp (EVar "arrayMakeWith") (EIf (EBinOp ">" (EVar "hi") (EVar "lo")) (EBinOp "-" (EVar "hi") (EVar "lo")) (ELit (LInt 0)))) (ELam ((PVar "_s")) (EBinOp "+" (EVar "lo") (EVar "_s")))))
 (DTypeSig true "copy" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))

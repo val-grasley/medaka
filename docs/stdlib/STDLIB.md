@@ -500,10 +500,12 @@ Already present and reused: `charToStr` (= `fromChar`), `showStringLit`,
 - ✅ `toFloat : String -> Option Float` — wraps `stringToFloat`; `None` on any failure
 - ⛔ `fromInt : Int -> String` — **intentionally not provided**: would collide with `Num.fromInt`; use the global `intToString` (already an extern)
 - ⛔ `fromFloat : Float -> String` — **intentionally not provided** for symmetry with `fromInt`; use the global `floatToString`
+- ✅ `boolToString : Bool -> String` — `"True"`/`"False"`, matching the `Debug`/`Display Bool` convention exactly; no typeclass dispatch, so it's usable for compiler-internal instrumentation (#79 L-2)
 
 ### Inspection
 
 - ⛔ `length`/`isEmpty` — **intentionally not provided**: would clash with the `Foldable` methods of the same name. Use the global `stringLength`, or `s == ""`. A `Sized`/`HasLength` interface is the right lever if this is ever revisited, but is out of scope for now
+- ✅ `strLength : String -> Int` — ergonomic alias for the global `stringLength` extern, for discoverability (#79 L-3). NOTE: re-exporting under the exact name `stringLength` typechecks but self-shadows at runtime (the local binding recurses on itself instead of reaching the extern) — verified during #79, hence the distinct name
 - ✅ `startsWith : String -> String -> Bool` — `startsWith prefix s` — true when `s` begins with `prefix`
 - ✅ `endsWith : String -> String -> Bool` — `endsWith suffix s` — true when `s` ends with `suffix`
 - ✅ `contains : String -> String -> Bool` — `contains needle haystack`
@@ -614,6 +616,7 @@ typechecked as if it had no declared effect, then errored on the
 - ✅ `make : Int -> a -> Array a` — array of length N filled with the value
 - ✅ `makeWith : Int -> (Int -> a) -> Array a` — generate element at each index via the function
 - ✅ `fromList : List a -> Array a` — copy list contents into a new array
+- ✅ `listToArray : List a -> Array a` — alias for `fromList`, for discoverability/symmetry with `toList` (#221)
 - ✅ `singleton : a -> Array a` — one-element array
 - ✅ `empty : Array a` — the empty array
 - ✅ `range : Int -> Int -> Array Int` — `[lo, hi)` as an array

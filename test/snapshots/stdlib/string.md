@@ -1,5 +1,5 @@
 # META
-source_lines=594
+source_lines=622
 stages=DESUGAR,MARK
 # SOURCE
 -- string.mdk — operations on String and Char
@@ -54,6 +54,18 @@ import core.{Eq, Ord, Debug, Foldable, Mappable, Option, Ordering}
 -- resolves without importing `string` (Phase 92).  Both render a quoted,
 -- escaped, round-trippable literal — `debug "hi"` is `"hi"`, `debug 'a'` is `'a'`
 -- — distinct from `println`, which emits the raw characters.
+
+{- | Render a `Bool` without typeclass dispatch — the sibling `intToString`
+   and `floatToString` are already externs (see `docs`/#79 L-2); `Bool` had
+   none.  Matches the `Debug`/`Display Bool` convention (`core.mdk`) exactly:
+   `"True"`/`"False"`, capitalized.
+
+   > boolToString True
+   "True"
+   > boolToString False
+   "False" -}
+export boolToString : Bool -> String
+boolToString b = if b then "True" else "False"
 
 -- ── Char operations ─────────────────────────────────────────────────────────
 -- ASCII-exact predicates (isDigit/digitToInt/intToDigit) compute on the
@@ -224,7 +236,23 @@ export toFloat : String -> Option Float
 toFloat s = stringToFloat s
 
 -- ── Inspection ──────────────────────────────────────────────────────────────
--- `length`/`isEmpty` intentionally omitted (see header) — use `stringLength`.
+-- `length`/`isEmpty` intentionally omitted (see header) — use `stringLength`
+-- (global extern) or the `strLength` alias below (#79 L-3).
+
+{- | Ergonomic alias for the global `stringLength` extern (`runtime.mdk`,
+   already in scope with no import — see the module header).  `length` isn't
+   used here because it would clash with `Foldable`'s method of the same name
+   (see header); re-exporting under the exact name `stringLength` instead of
+   a new name typechecks but SELF-SHADOWS at runtime (the local definition
+   recurses on itself rather than reaching the extern, overflowing the
+   evaluator stack) — verified during #79, hence the distinct name here.
+
+   > strLength "hello"
+   5
+   > strLength ""
+   0 -}
+export strLength : String -> Int
+strLength s = stringLength s
 
 {- | True when `s` begins with `prefix`.  Tier 1: a slice + compare, no char
    decoding.
@@ -598,6 +626,8 @@ half : Int -> Int
 half k = if k <= 1 then 0 else 1 + half (k - 2)
 # DESUGAR
 (DUse false (UseGroup ("core") ((mem "Eq" false) (mem "Ord" false) (mem "Debug" false) (mem "Foldable" false) (mem "Mappable" false) (mem "Option" false) (mem "Ordering" false))))
+(DTypeSig true "boolToString" (TyFun (TyCon "Bool") (TyCon "String")))
+(DFunDef false "boolToString" ((PVar "b")) (EIf (EVar "b") (ELit (LString "True")) (ELit (LString "False"))))
 (DTypeSig true "isDigit" (TyFun (TyCon "Char") (TyCon "Bool")))
 (DFunDef false "isDigit" ((PVar "c")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48))) (EBinOp "<=" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 57)))))
 (DTypeSig true "isAlpha" (TyFun (TyCon "Char") (TyCon "Bool")))
@@ -647,6 +677,8 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DFunDef false "negOpt" ((PCon "Some" (PVar "n"))) (EApp (EVar "Some") (EBinOp "-" (ELit (LInt 0)) (EVar "n"))))
 (DTypeSig true "toFloat" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Float"))))
 (DFunDef false "toFloat" ((PVar "s")) (EApp (EVar "stringToFloat") (EVar "s")))
+(DTypeSig true "strLength" (TyFun (TyCon "String") (TyCon "Int")))
+(DFunDef false "strLength" ((PVar "s")) (EApp (EVar "stringLength") (EVar "s")))
 (DTypeSig true "startsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "startsWith" ((PVar "prefix") (PVar "s")) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "prefix"))) (EVar "s")) (EVar "prefix")))
 (DTypeSig true "endsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
@@ -751,6 +783,8 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DFunDef false "half" ((PVar "k")) (EIf (EBinOp "<=" (EVar "k") (ELit (LInt 1))) (ELit (LInt 0)) (EBinOp "+" (ELit (LInt 1)) (EApp (EVar "half") (EBinOp "-" (EVar "k") (ELit (LInt 2)))))))
 # MARK
 (DUse false (UseGroup ("core") ((mem "Eq" false) (mem "Ord" false) (mem "Debug" false) (mem "Foldable" false) (mem "Mappable" false) (mem "Option" false) (mem "Ordering" false))))
+(DTypeSig true "boolToString" (TyFun (TyCon "Bool") (TyCon "String")))
+(DFunDef false "boolToString" ((PVar "b")) (EIf (EVar "b") (ELit (LString "True")) (ELit (LString "False"))))
 (DTypeSig true "isDigit" (TyFun (TyCon "Char") (TyCon "Bool")))
 (DFunDef false "isDigit" ((PVar "c")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48))) (EBinOp "<=" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 57)))))
 (DTypeSig true "isAlpha" (TyFun (TyCon "Char") (TyCon "Bool")))
@@ -800,6 +834,8 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DFunDef false "negOpt" ((PCon "Some" (PVar "n"))) (EApp (EVar "Some") (EBinOp "-" (ELit (LInt 0)) (EVar "n"))))
 (DTypeSig true "toFloat" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Float"))))
 (DFunDef false "toFloat" ((PVar "s")) (EApp (EVar "stringToFloat") (EVar "s")))
+(DTypeSig true "strLength" (TyFun (TyCon "String") (TyCon "Int")))
+(DFunDef false "strLength" ((PVar "s")) (EApp (EVar "stringLength") (EVar "s")))
 (DTypeSig true "startsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "startsWith" ((PVar "prefix") (PVar "s")) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "prefix"))) (EVar "s")) (EVar "prefix")))
 (DTypeSig true "endsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))

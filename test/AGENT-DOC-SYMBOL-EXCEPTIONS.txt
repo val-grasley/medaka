@@ -109,9 +109,6 @@ SYM	runST	ORCHESTRATING.md quotes "An agent reported 'we need `runST`'" as a cau
 # ── SYM: proposed rename target, doesn't exist yet by design ───────────────
 SYM	singleTyparamIfaceMethod	COMPILER-SOUNDNESS.md workstream: "**Rename it `singleTyparamIfaceMethod`** as part of this" — a proposed rename of the real (and correctly-cited) `singleParamIfaceMethod`; the new name is not expected to exist until that workstream item lands
 
-# ── FILE: backlog doc whose STATED PURPOSE is to name missing functions ────
-FILE	.claude/workstreams/STDLIB.md	header states "Owns: missing stdlib/support functions" — the file's L-1..L-5 items propose functions that do not exist yet by design (currently dead: foldlMut, zipWithMut, boolToString, strLen, dropSuffix); that is the doc's entire point, not fabrication. (Siblings it mentions in passing — mapMut, dropPrefix, stripPrefix, startsWith, endsWith — already exist and resolve fine on their own, no exception needed for those.)
-
 # ── Names QUOTED AS KNOWN FABRICATIONS (2026-07-14) ──────────────────────────────
 # ORCHESTRATING.md's "an AUDIT is not evidence" lesson names the exact symbols an Opus
 # auditor INVENTED and swore existed, and the exact fabrication a skill taught. They MUST

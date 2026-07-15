@@ -83,6 +83,13 @@ replicate n x = arrayMake n x
 export fromList : List a -> Array a
 fromList xs = arrayFromList xs
 
+{- | Alias for `fromList`, included for symmetry with `toList` (#221).
+
+   > toList (listToArray [1, 2, 3])
+   [1, 2, 3] -}
+export listToArray : List a -> Array a
+listToArray xs = fromList xs
+
 {- | Half-open `[lo, hi)`.  Empty when `hi <= lo`.
 
    > toList (range 0 4)
