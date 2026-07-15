@@ -17,6 +17,7 @@ bumpFrame : List Int -> List Int
 canEndExpr : Token -> Bool
 canStartAtom : Token -> Bool
 charClose : Array Char -> Int -> Int -> Int
+cleanDigits : Array Char -> Int -> Int -> String
 closeAll : List Int -> Int -> List (Token, Int)
 closeAllPairs : List Int -> Int -> List (Token, Int, Int)
 closeBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
@@ -34,12 +35,16 @@ digitVal : Char -> Int
 digitsEnd : Array Char -> Int -> Int -> Int
 dropCharsToStr : Array Char -> Int -> Int -> String
 dropFrame : List Int -> List Int
+dropZerosL : List Char -> List Char
 elseFilter : List (Token, Int) -> List (Token, Int)
 elseFilterPairs : List (Token, Int, Int) -> List (Token, Int, Int)
 emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List RawTok
 escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
+expEnd : Array Char -> Int -> Int -> Int
 firstNl : Bool -> String -> Bool
+floatIsFinite : Float -> Bool
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
+floatTokEnd : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 flushClose : Token -> Int -> List RawTok -> List Int -> List Int -> Bool -> List (Token, Int)
 flushCloseGo : Token -> Int -> List RawTok -> List Int -> Int -> List Int -> Bool -> List (Token, Int)
 flushClosePairs : Token -> Int -> Int -> List RawTok -> List Int -> List Int -> Bool -> List (Token, Int, Int)
@@ -52,9 +57,11 @@ identToken : Array Char -> Int -> Int -> Token
 indentOf : String -> Int
 indentOfGo : Array Char -> Int -> Int -> Int
 indentSentinel : Int
+intLitOverflows : Array Char -> Int -> Int -> Bool
 is2 : Array Char -> Int -> Int -> Char -> Char -> Bool
 is3 : Array Char -> Int -> Int -> Char -> Char -> Char -> Bool
 isContinuation : Array Char -> Int -> Int -> Bool
+isExpMarker : Char -> Bool
 isExprEnd : Char -> Bool
 isFloatAt : Array Char -> Int -> Int -> Bool
 isOpener : Token -> Bool

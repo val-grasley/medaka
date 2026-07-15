@@ -1,0 +1,6 @@
+-- Lexer error: a float literal whose magnitude overflows the IEEE-754 double
+-- range parses to `inf`, which the native backend cannot emit (`store double
+-- inf` is invalid LLVM IR). #51's exponent syntax makes this reachable in 6
+-- characters, so the lexer rejects it at the source.
+-- Self-hosted reference: float literal out of range (overflows to infinity)
+x = 2e308
