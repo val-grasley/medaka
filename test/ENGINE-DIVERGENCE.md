@@ -84,7 +84,18 @@ visible once the wasm arm became the shipping compiler.
 
 ## 3. The 22 disagreements
 
-### 3.1 `eval:rng-hash-lcg` — 15 fixtures. The interpreter's `random*`/`hash*` are wrong.
+### 3.1 `eval:rng-hash-lcg` — RESOLVED (issue #98). 15 fixtures, now all `eq` across engines.
+
+**Fixed 2026-07-15.** `compiler/eval/eval.mdk` now emulates a full uint64 over four
+16-bit limbs (`add64`/`mulLow64`/`xor64`/`shr64`) and implements the SAME SplitMix64
+RNG and SplitMix64/FNV-1a hashers as `runtime/medaka_rt.c`, byte-for-byte. `setSeed 42;
+randomInt 1 6` now returns `2` under both `medaka run` and `medaka build`; `hashInt 42`
+is `803958421` on every engine. All 15 rows below were promoted out of the ledger. (A
+16th, `w8b_rng_float_determinism`, was promoted at the same time: rewriting the mantissa
+scale as `intToFloat 9007199254740992` — the exact double 2^53 — instead of a `>= 1e15`
+float literal both dodged the `medaka fmt` #51 corruption AND removed a 1-ulp
+literal-parse discrepancy that had made the float draw render `…073` under eval vs
+`…074` native.) The original analysis is retained below for the record.
 
 `llvm/{hash_int, hash_string, rng_bool, rng_char, rng_float, rng_int, rng_seq}`,
 `wasm/{w8_hash_char, w8_hash_int, w8_hash_string, w8b_hash_float, w8_rng_bool,
@@ -363,9 +374,9 @@ neighbours.
 1. **§4.1, the 17 missing I/O externs** — biggest user-visible hole; `medaka run` is
    unusable for any real program. Either implement them in `eval.mdk` or make the
    compiler reject the program with a real diagnostic instead of an `E-PANIC`.
-2. **§3.1, the RNG/hash LCG** — a two-line-scope fix (install the real SplitMix64 for
-   the user-facing externs, keep whatever prop generation wants) that closes 15
-   fixtures and a silent `run ≠ build` divergence.
+2. ~~**§3.1, the RNG/hash LCG**~~ — DONE (issue #98, 2026-07-15). eval.mdk now runs the
+   real SplitMix64/FNV-1a over a 4-limb uint64 emulation, byte-identical to native/wasm;
+   prop generation keeps its own LCG. Closed 16 fixtures and the silent `run ≠ build`.
 3. **§3.2, the wasm i31 tag leak and the unsignatured-float trap** — two real codegen
    bugs with sharp, verified repros.
 4. Everything else is a gap, not a soundness hole, and can wait.

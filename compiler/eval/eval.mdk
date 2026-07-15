@@ -1810,46 +1810,188 @@ optionToValue : Option (Value e) -> Value e
 optionToValue None = VCon "None" []
 optionToValue (Some v) = VCon "Some" [v]
 
--- ── deterministic RNG for prop tests ──────────────────────────────────────
--- The compiler eval oracle ports a value computation, so it has no <Rand>
--- effect; the reference's `randomInt`/… externs (SplitMix64) are absent.  Prop
--- generation (prop_runner.mdk) needs *some* RNG, so we install a self-contained
--- linear-congruential generator over a process-global `Ref Int`.  The sequence
--- need NOT match the reference: `medaka test`'s prop runner uses OCaml's own
--- `Random` module (a third, unrelated algorithm), and a PASSING prop prints
--- `OK (100 tests)` regardless of which values were drawn.  Only a FAILING prop's
--- shrunk counterexample depends on the draw — and those diverge across all three
--- RNGs anyway (documented in test/diff_compiler_test.sh).
+-- ── uint64 emulation over four 16-bit limbs ────────────────────────────────
+-- Medaka's Int is a 63-bit fixnum, so the SplitMix64 RNG and the SplitMix64/
+-- FNV-1a hashers in runtime/medaka_rt.c — which are pure uint64 arithmetic —
+-- cannot be reproduced with native `*`/`shiftRight` (their products and left
+-- shifts overflow 64 bits, and Medaka has no wider integer). We instead emulate
+-- a uint64 as a 4-tuple of 16-bit limbs `(l0, l1, l2, l3)`, least-significant
+-- first, and hand-roll add / multiply-low / xor / shift-right over that rep.
+-- Every intermediate stays well under the 63-bit range: a limb < 2^16, a 16×16
+-- partial product < 2^32, and a column sum of four such products plus a carry
+-- < 2^35 — so no native op ever overflows. The results are byte-identical to
+-- the C runtime (self-checked: mix64(42)&mask == 803958421, first SplitMix64
+-- draw from state 42 gives `%6+1 == 2`), which is exactly what closes the
+-- eval-vs-native RNG/hash divergence (issue #98).
+
+-- Golden ratio increment 0x9E3779B97F4A7C15 as limbs.
+u64Golden : (Int, Int, Int, Int)
+u64Golden = (31765, 32586, 31161, 40503)  -- 7C15 7F4A 79B9 9E37
+
+-- SplitMix64 finalizer multipliers.
+u64Const1 : (Int, Int, Int, Int)
+u64Const1 = (58809, 7396, 18285, 48984)  -- 0xBF58476D1CE4E5B9: E5B9 1CE4 476D BF58
+
+u64Const2 : (Int, Int, Int, Int)
+u64Const2 = (4587, 4913, 18875, 38096)  -- 0x94D049BB133111EB: 11EB 1331 49BB 94D0
+
+-- FNV-1a 64-bit offset basis 0xCBF29CE484222325 and prime 0x100000001B3.
+u64FnvBasis : (Int, Int, Int, Int)
+u64FnvBasis = (8997, 33826, 40164, 52210)  -- 2325 8422 9CE4 CBF2
+
+u64FnvPrime : (Int, Int, Int, Int)
+u64FnvPrime = (435, 0, 256, 0)  -- 01B3 0000 0100 0000
+
+-- Untagged Int -> uint64. The eval Int is a native two's-complement long long,
+-- so masking successive 16-bit windows reproduces C's `(unsigned long long)n`
+-- for negatives too (sign-extension is already baked into `shiftRight`).
+intToU64 : Int -> (Int, Int, Int, Int)
+intToU64 n = (
+  bitAnd n 65535,
+  bitAnd (shiftRight n 16) 65535,
+  bitAnd (shiftRight n 32) 65535,
+  bitAnd (shiftRight n 48) 65535,
+)
+
+add64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+add64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
+  let s0 = a0 + b0
+  let s1 = a1 + b1 + shiftRight s0 16
+  let s2 = a2 + b2 + shiftRight s1 16
+  let s3 = a3 + b3 + shiftRight s2 16
+  (bitAnd s0 65535, bitAnd s1 65535, bitAnd s2 65535, bitAnd s3 65535)
+
+-- Schoolbook multiply keeping only the low 64 bits.
+mulLow64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+mulLow64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
+  let c0 = a0 * b0
+  let c1 = a0 * b1 + a1 * b0 + shiftRight c0 16
+  let c2 = a0 * b2 + a1 * b1 + a2 * b0 + shiftRight c1 16
+  let c3 = a0 * b3 + a1 * b2 + a2 * b1 + a3 * b0 + shiftRight c2 16
+  (bitAnd c0 65535, bitAnd c1 65535, bitAnd c2 65535, bitAnd c3 65535)
+
+xor64 : (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+xor64 (a0, a1, a2, a3) (b0, b1, b2, b3) =
+  (bitXor a0 b0, bitXor a1 b1, bitXor a2 b2, bitXor a3 b3)
+
+-- Limb i of a uint64 (0 past the top).
+u64Limb : (Int, Int, Int, Int) -> Int -> Int
+u64Limb (a0, a1, a2, a3) i =
+  if i == 0 then
+    a0
+  else if i == 1 then
+    a1
+  else if i == 2 then
+    a2
+  else if i == 3 then
+    a3
+  else
+    0
+
+-- Whole-limb offset for a right shift of `n` bits (n in [0, 63]).
+shrWords : Int -> Int
+shrWords n =
+  if n >= 48 then
+    3
+  else if n >= 32 then
+    2
+  else if n >= 16 then
+    1
+  else
+    0
+
+-- One output limb of a logical right shift: low bits of limb (i+ws) plus the
+-- carried-in low bits of limb (i+ws+1).
+shr64Limb : (Int, Int, Int, Int) -> Int -> Int -> Int -> Int
+shr64Limb u ws bs i =
+  bitAnd
+    (bitOr
+      (shiftRight (u64Limb u (i + ws)) bs)
+      (shiftLeft (u64Limb u (i + ws + 1)) (16 - bs)))
+    65535
+
+-- Logical right shift by `n` bits (n in [0, 63]).
+shr64 : (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
+shr64 u n =
+  let ws = shrWords n
+  let bs = n - ws * 16
+  (
+    shr64Limb u ws bs 0,
+    shr64Limb u ws bs 1,
+    shr64Limb u ws bs 2,
+    shr64Limb u ws bs 3,
+  )
+
+-- SplitMix64 finalizer, then `mix64 x = finalize (x + golden)` — identical to
+-- mdk_hash_mix64, and one SplitMix64 step (state += golden; finalize).
+u64Finalize : (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+u64Finalize z =
+  let z1 = mulLow64 (xor64 z (shr64 z 30)) u64Const1
+  let z2 = mulLow64 (xor64 z1 (shr64 z1 27)) u64Const2
+  xor64 z2 (shr64 z2 31)
+
+u64Mix : (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+u64Mix x = u64Finalize (add64 x u64Golden)
+
+-- Low 30 bits (the native MDK_HASH_MASK = 2^30 - 1) as a non-negative Int.
+u64Low30 : (Int, Int, Int, Int) -> Int
+u64Low30 (a0, a1, _, _) = bitAnd (bitOr a0 (shiftLeft a1 16)) 1073741823
+
+-- uint64 -> Int for a value known to fit in 53 bits (randomFloat mantissa).
+u64ToInt53 : (Int, Int, Int, Int) -> Int
+u64ToInt53 (a0, a1, a2, a3) =
+  bitOr (bitOr a0 (shiftLeft a1 16)) (bitOr (shiftLeft a2 32) (shiftLeft a3 48))
+
+-- uint64 `%` a positive `r` (< 2^46 so the running remainder never overflows),
+-- reducing most-significant limb first. Faithful to C's `next % (u64)range` for
+-- the realistic randomInt/randomChar ranges.
+u64ModRange : (Int, Int, Int, Int) -> Int -> Int
+u64ModRange (a0, a1, a2, a3) r =
+  let m3 = a3 % r
+  let m2 = (shiftLeft m3 16 + a2) % r
+  let m1 = (shiftLeft m2 16 + a1) % r
+  (shiftLeft m1 16 + a0) % r
+
+-- ── deterministic SplitMix64 RNG — byte-identical to runtime/medaka_rt.c ─────
+-- State is a uint64 (limb tuple), default 0; `setSeed n` sets state = n. Each
+-- draw advances state += golden then finalizes, so the eval draws match the
+-- native binary's for every seed (this is what makes `medaka run` == `medaka
+-- build` for random* — issue #98). prop_runner.mdk keeps its OWN independent LCG
+-- over `rngStateRef` for property-value generation (deliberately unrelated: a
+-- passing prop prints `OK (100 tests)` regardless of the draws, and a failing
+-- prop's shrunk counterexample is engine-specific — see test/diff_compiler_test.sh).
 export rngStateRef : Ref Int
 rngStateRef = Ref 123456789
 
--- Knuth/POSIX LCG over a 2^31 modulus.  Constants chosen so the product
--- `state * 1103515245` stays under the 63-bit OCaml int max (no overflow), and
--- the result is always non-negative — compiler exposes no bitwise externs.
-rngNext : Unit -> Int
--- Intentional cross-file duplicate of the same helper in prop_runner.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
--- lint-disable-next-line rule-duplicate-body
-rngNext _ =
-  let s = (rngStateRef.value * 1103515245 + 12345) % 2147483648
-  let _ = setRef rngStateRef s
-  s
+rngU64Ref : Ref (Int, Int, Int, Int)
+rngU64Ref = Ref (0, 0, 0, 0)
+
+-- One SplitMix64 step: advance the global state and return the finalized draw.
+rngDraw : Unit -> (Int, Int, Int, Int)
+rngDraw _ =
+  let s = add64 rngU64Ref.value u64Golden
+  let _ = setRef rngU64Ref s
+  u64Finalize s
 
 pRandomInt : Value e -> Value e -> <e> Value e
 pRandomInt (VInt lo) (VInt hi) =
   let range = hi - lo + 1
-  if range <= 0 then VInt lo else VInt (lo + rngNext () % range)
+  if range <= 0 then VInt lo else VInt (lo + u64ModRange (rngDraw ()) range)
 pRandomInt _ _ = panic "randomInt: expected Int Int"
 
 pRandomBool : Value e -> <e> Value e
-pRandomBool _ = VBool (rngNext () % 2 == 1)
+pRandomBool _ = VBool (bitAnd (u64Limb (rngDraw ()) 0) 1 == 1)
 
 pRandomFloat : Value e -> <e> Value e
 pRandomFloat _ =
-  let r = rngNext () % 2000001
-  VFloat (intToFloat r * (1.0 / 1000000.0) - 1.0)
+  -- `intToFloat 9007199254740992` is the double 2^53 (the mantissa scale); written
+  -- via an Int literal because `medaka fmt` corrupts a >= 1e15 float literal (#51).
+  let bits = u64ToInt53 (shr64 (rngDraw ()) 11)
+  VFloat (intToFloat bits * (1.0 / intToFloat 9007199254740992) * 2.0 - 1.0)
 
 pRandomChar : Value e -> <e> Value e
-pRandomChar _ = VChar (charToStr (charFromCodeUnsafe (32 + rngNext () % 95)))
+pRandomChar _ =
+  VChar (charToStr (charFromCodeUnsafe (32 + u64ModRange (rngDraw ()) 95)))
 
 charFromCodeUnsafe : Int -> Char
 -- Intentional cross-file duplicate of the same helper in prop_runner.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
@@ -1860,7 +2002,7 @@ charFromCodeUnsafe n = match charFromCode n
 
 pSetSeed : Value e -> <e> Value e
 pSetSeed (VInt seed) =
-  let _ = setRef rngStateRef seed
+  let _ = setRef rngU64Ref (intToU64 seed)
   VUnit
 pSetSeed _ = panic "setSeed: expected Int"
 
@@ -2072,50 +2214,41 @@ pFloatToBytes64 (VFloat f) =
   VArray (arrayMakeWith 8 (i => VInt (arrayGetUnsafe i bs)))
 pFloatToBytes64 _ = panic "floatToBytes64: not a Float"
 
--- ── Interpreter-local Hashable hashers (P0-10) ──────────────────────────────
--- The native backend's mdk_hash_* (runtime/medaka_rt.c) are a byte-exact
--- SplitMix64/FNV-1a spec that the interpreter can't reproduce faithfully
--- (Medaka's Int is a 63-bit fixnum, not the C runtime's raw uint64), and it
--- doesn't need to: hash_map/hash_set only require `hash key % cap` to be
--- INTRA-engine consistent (same engine, same key -> same bucket every time),
--- never cross-engine byte-identical. So these are a separate, simpler,
--- deterministic, well-distributed mixer -- masked into [0, 2^30) to match the
--- native MDK_HASH_MASK range so bucket-count math behaves the same way.
-hashMask30 : Int
-hashMask30 = 1073741823  -- 0x3FFFFFFF, 2^30 - 1
+-- ── Interpreter Hashable hashers — byte-identical to runtime/medaka_rt.c ─────
+-- The native mdk_hash_* are a SplitMix64/FNV-1a spec over uint64. We reproduce
+-- them faithfully on the 4-limb uint64 emulation above (issue #98: an approximate
+-- mixer made `medaka run` and `medaka build` disagree on hash values, both silent).
+-- hashInt/hashChar/hashFloat = mix64 then mask to [0, 2^30); hashString = 64-bit
+-- FNV-1a; hashBool = 0/1. `n`/codepoint arrive as the untagged native Int, so a
+-- negative Int's two's-complement 64-bit value flows straight into intToU64.
 
--- xorshift-style integer mixer: deterministic, no multiplication (so no
--- reliance on Int overflow/wrap semantics), decent avalanche for hash_map
--- bucket distribution.
-mixInt30 : Int -> Int
-mixInt30 x =
-  let a = bitXor x (shiftRight x 13)
-  let b = bitXor a (shiftLeft a 17)
-  let c = bitXor b (shiftRight b 5)
-  bitAnd c hashMask30
+-- One 64-bit FNV-1a step: h = (h XOR byte) * prime (low 64 bits).
+fnvStep64 : (Int, Int, Int, Int) -> Int -> (Int, Int, Int, Int)
+fnvStep64 (h0, h1, h2, h3) byte =
+  mulLow64 (bitXor h0 byte, h1, h2, h3) u64FnvPrime
 
-fnvOffset30 : Int
-fnvOffset30 = 2166136261  -- FNV-1a 32-bit offset basis
+fnvFold64 : List Int -> (Int, Int, Int, Int) -> (Int, Int, Int, Int)
+fnvFold64 [] h = h
+fnvFold64 (x::xs) h = fnvFold64 xs (fnvStep64 h x)
 
-fnvPrime30 : Int
-fnvPrime30 = 16777619  -- FNV-1a 32-bit prime
-
--- One FNV-1a step, kept within 32 bits between steps so the `* fnvPrime30`
--- multiply never approaches Int's 63-bit range (no overflow risk).
-fnvStep30 : Int -> Int -> Int
-fnvStep30 h byte = bitAnd (bitXor h byte * fnvPrime30) 4294967295
-
-fnvFoldList30 : List Int -> Int -> Int
-fnvFoldList30 [] h = h
-fnvFoldList30 (x::xs) h = fnvFoldList30 xs (fnvStep30 h x)
+-- 8 big-endian bytes (bs[0] = MSB, as floatToBytes64 emits) -> uint64 limbs.
+bytesBEToU64 : Array Int -> (Int, Int, Int, Int)
+bytesBEToU64 bs = (
+  bitOr (arrayGetUnsafe 7 bs) (shiftLeft (arrayGetUnsafe 6 bs) 8),
+  bitOr (arrayGetUnsafe 5 bs) (shiftLeft (arrayGetUnsafe 4 bs) 8),
+  bitOr (arrayGetUnsafe 3 bs) (shiftLeft (arrayGetUnsafe 2 bs) 8),
+  bitOr (arrayGetUnsafe 1 bs) (shiftLeft (arrayGetUnsafe 0 bs) 8),
+)
 
 pHashInt : Value e -> <e> Value e
-pHashInt (VInt n) = VInt (mixInt30 n)
+pHashInt (VInt n) = VInt (u64Low30 (u64Mix (intToU64 n)))
 pHashInt _ = panic "hashInt: not an Int"
 
 pHashChar : Value e -> <e> Value e
 pHashChar (VChar s) =
-  VInt (mixInt30 (charCode (arrayGetUnsafe 0 (stringToChars s))))
+  VInt (u64Low30 (u64Mix (intToU64 (charCode (arrayGetUnsafe
+    0
+    (stringToChars s))))))
 pHashChar _ = panic "hashChar: not a Char"
 
 pHashBool : Value e -> <e> Value e
@@ -2124,15 +2257,12 @@ pHashBool _ = panic "hashBool: not a Bool"
 
 pHashFloat : Value e -> <e> Value e
 pHashFloat (VFloat f) =
-  let bs = floatToBytes64 f
-  VInt (bitAnd (fnvFoldList30 (arrayToListG bs) fnvOffset30) hashMask30)
+  VInt (u64Low30 (u64Mix (bytesBEToU64 (floatToBytes64 f))))
 pHashFloat _ = panic "hashFloat: not a Float"
 
 pHashString : Value e -> <e> Value e
 pHashString (VString s) =
-  VInt (bitAnd
-    (fnvFoldList30 (arrayToListG (stringToUtf8Bytes s)) fnvOffset30)
-    hashMask30)
+  VInt (u64Low30 (fnvFold64 (arrayToListG (stringToUtf8Bytes s)) u64FnvBasis))
 pHashString _ = panic "hashString: not a String"
 
 pFloatToString : Value e -> <e> Value e
