@@ -1733,6 +1733,28 @@ crossModuleMethodConstraintsRef = Ref []
 crossModuleMethodConstraintsQualRef : Ref (List ((String, String), List Int))
 crossModuleMethodConstraintsQualRef = Ref []
 
+-- ── the ONE lifecycle owner for the six cross-module accumulators (#143/#144) ──
+-- These six deliberately SURVIVE the per-module `resetState` (so dict arities/ifaces
+-- cross module boundaries within one graph — see the declaration comments above), but
+-- they must NOT survive a whole multi-module RUN: a long-lived process (LSP, playground,
+-- snapshot runner) drives the analyze/elaborate path repeatedly, and without a per-run
+-- reset run K+1 seeds `funConstraintsRef`/`funConstraintIfacesRef` from run K's residue
+-- (checkModuleFullImpl reads them for the FIRST module before any fresh snapshot lands),
+-- while the `*Qual` mirrors are prepend-appended and never truncated → unbounded growth.
+-- Give them exactly ONE reset owner, called at the top of EVERY multi-module entry
+-- (`checkModules`, `checkModulesDiags`, `checkModulesEntryFull`, `elaborateModules`), so
+-- the next entry added cannot silently miss one — and so all six are cleared symmetrically
+-- (the pre-#144 elaborateModules clear block omitted `crossModuleFunConstraintIfacesRef`).
+-- Scoped to exactly these six; do NOT fold into `resetState` (they must survive THAT).
+resetCrossModuleState : Unit -> Unit
+resetCrossModuleState _ =
+  let _ = setRef crossModuleFunConstraintsRef []
+  let _ = setRef crossModuleFunConstraintsQualRef []
+  let _ = setRef crossModuleFunConstraintIfacesRef []
+  let _ = setRef crossModuleFunConstraintIfacesQualRef []
+  let _ = setRef crossModuleMethodConstraintsRef []
+  setRef crossModuleMethodConstraintsQualRef []
+
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
 
@@ -12990,6 +13012,7 @@ checkModulesGo baseSeed coreV depEnv accData ((mid, prog)::rest) =
 -- modules = (moduleId, desugared program) in dependency-first order.
 export checkModules : List Decl -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
 checkModules runtimeDecls coreDecls modules =
+  let _ = resetCrossModuleState ()
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
@@ -13076,6 +13099,7 @@ checkModulesDiagsGo baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
 
 export checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List (String, String, Option Loc), List (String, Option Loc)))
 checkModulesDiags runtimeDecls coreDecls modules =
+  let _ = resetCrossModuleState ()
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
@@ -13112,6 +13136,7 @@ entryOwnSchemes (_::rest) = entryOwnSchemes rest
 -- more than one module.
 checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, String, Option Loc), List (String, Option Loc))
 checkModulesEntryFull runtimeDecls coreDecls modules =
+  let _ = resetCrossModuleState ()
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
@@ -13227,11 +13252,7 @@ elaborateModules runtimeDecls coreDecls modulesIn =
   -- SPELLING, not a second binding.
   let modules = renameAliasedMethods coreDecls modulesIn
   let _ = setRef mainSchemeRef None
-  let _ = setRef crossModuleFunConstraintsRef []
-  let _ = setRef crossModuleFunConstraintsQualRef []
-  let _ = setRef crossModuleFunConstraintIfacesQualRef []
-  let _ = setRef crossModuleMethodConstraintsRef []
-  let _ = setRef crossModuleMethodConstraintsQualRef []
+  let _ = resetCrossModuleState ()
   let allDecls = coreDecls ++ flatMap snd modules
   -- P0-18: recover the definer-shadow map from the (already-mangled on the emit path)
   -- decls BEFORE marking/typecheck reads it.  Empty on the un-mangled path.  Set once
