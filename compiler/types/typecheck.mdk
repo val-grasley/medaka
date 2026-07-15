@@ -8420,6 +8420,20 @@ checkInterfaceCycles allDecls =
   let done = Ref []
   foreachUnit (checkOneIfaceCycle allDecls done) ifaceNames
 
+-- #152: the whole-program final-checks tail, shared by all five entry points
+-- (checkToLines / checkToLinesWithRuntime / checkErrorsWithRuntime /
+-- checkProgramDiags / checkModuleFullDiags).  [cohDecls] feeds coherence AND
+-- phantom-methods; [cycDecls] feeds interface-cycles AND checkSuperImpls's second
+-- (whole-universe) argument.  ⚠️ trap #5: coherence must see USER decls only, so
+-- this helper has NO access to `prog` — the caller decides [cohDecls] explicitly
+-- (never a `prog` fallback).  Call ORDER is load-bearing (all push into typeErrors).
+runFinalChecks : List Decl -> List Decl -> Unit
+runFinalChecks cohDecls cycDecls =
+  let _ = checkCoherence cohDecls
+  let _ = checkInterfaceCycles cycDecls
+  let _ = checkPhantomMethods cohDecls
+  checkSuperImpls cohDecls cycDecls
+
 checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> Unit
 checkOneIfaceCycle allDecls done ifaceName =
   if not (contains ifaceName done.value) then
@@ -12132,10 +12146,7 @@ typeErrorLines (e::rest) = "TYPE ERROR: " ++ e :: typeErrorLines rest
 export checkToLines : List Decl -> String
 checkToLines prog =
   let schemes = checkProgramSchemes [] prog
-  let _ = checkCoherence prog
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods prog
-  let _ = checkSuperImpls prog prog
+  let _ = runFinalChecks prog prog
   let errs = reverseL typeErrors.value
   match errs
     [] => joinNl (schemeLines schemes)
@@ -12155,10 +12166,7 @@ checkToLinesWithRuntime runtimeDecls coreProg userProg =
   let _ = setRef matchWarnings []
   let _ = setRef matchOracle (buildOracle prog)
   let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = checkCoherence coherenceUserDecls.value
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods coherenceUserDecls.value
-  let _ = checkSuperImpls coherenceUserDecls.value prog
+  let _ = runFinalChecks coherenceUserDecls.value prog
   let errs = reverseL typeErrors.value
   let warns = reverseL matchWarnings.value
   match errs
@@ -12184,10 +12192,7 @@ checkErrorsWithRuntime runtimeDecls coreProg userProg =
   let _ = setRef matchWarnings []
   let _ = setRef matchOracle (buildOracle prog)
   let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = checkCoherence coherenceUserDecls.value
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods coherenceUserDecls.value
-  let _ = checkSuperImpls coherenceUserDecls.value prog
+  let _ = runFinalChecks coherenceUserDecls.value prog
   match typeErrors.value
     [] => False
     _ => True
@@ -12219,10 +12224,7 @@ checkProgramDiags runtimeDecls coreProg userProg =
   let _ = setRef matchWarningLocs []
   let _ = setRef matchOracle (buildOracle prog)
   let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = checkCoherence coherenceUserDecls.value
-  let _ = checkInterfaceCycles prog
-  let _ = checkPhantomMethods coherenceUserDecls.value
-  let _ = checkSuperImpls coherenceUserDecls.value prog
+  let _ = runFinalChecks coherenceUserDecls.value prog
   (
     reverseL typeErrors.value,
     zipL (reverseL matchWarnings.value) (reverseL matchWarningLocs.value),
@@ -13131,10 +13133,7 @@ checkModuleFullDiags seedVars accData accAll prog =
   -- only feeds the shadow/dispatch-index/key tables, matching the eval path's
   -- elabModuleStamp (which passes accAll ++ prog too).
   let schemes = checkModuleFullImpl "" seedVars accData accAll prog
-  let _ = checkCoherence prog
-  let _ = checkInterfaceCycles (accAll ++ accData ++ prog)
-  let _ = checkPhantomMethods prog
-  let _ = checkSuperImpls prog (accAll ++ accData ++ prog)
+  let _ = runFinalChecks prog (accAll ++ accData ++ prog)
   (
     schemes,
     reverseL typeErrors.value,

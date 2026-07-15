@@ -1088,6 +1088,7 @@ rowArgNames : Ty -> List String
 rowArgNamesApp : String -> List Ty -> List String -> List String
 rowArgOf : List (String, Ref Effvar) -> Ty -> EffRow
 rowFreeEffvars : EffRow -> List Int
+runFinalChecks : List Decl -> List Decl -> Unit
 sameRootId : Int -> Mono -> Bool
 scEdge : String -> String -> Map String (List String) -> Unit
 scEdges : String -> List String -> Map String (List String) -> Unit
