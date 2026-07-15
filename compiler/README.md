@@ -670,9 +670,9 @@ to the AST tree-walker:
 **Stage 2 §2.1 — Core IR serializer + round-trip (2026-06-05).** A canonical
 S-expression serializer (`core_ir_sexp.mdk` / `cprogramToSexp`) + deserializer
 (`core_ir_sexp_parse.mdk` / `parseCProgram`) + two new gates:
-- **snapshot** (`diff_compiler_core_ir_sexp.sh`, 18) — dumps the Core IR for
+- **snapshot** (`diff_compiler_snapshot_core_ir.sh`, 18) — dumps the Core IR for
   each engine-corpus fixture and diffs against committed goldens in
-  `test/core_ir_sexp_fixtures/`; catches accidental lowering or serializer drift.
+  `test/snapshots/eval_fixtures/`; catches accidental lowering or serializer drift.
   Goldens are regenerable when an intentional IR change is made.
 - **round-trip** (`diff_compiler_core_ir_roundtrip.sh`, 18) — the real "frozen IR
   is faithful" gate: lower → `cprogramToSexp` → `parseCProgram` → `cevalMain` →

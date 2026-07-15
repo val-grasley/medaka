@@ -63,7 +63,6 @@ fi
 #   eval_run_main     — diff_compiler_eval_run.sh        (=== EVAL === goldens)
 #   eval_run_batch    — diff_compiler_eval_run_batch.sh  (=== EVAL === goldens)
 #   core_ir_run_main  — diff_compiler_core_ir_run.sh     (=== EVAL === goldens)
-#   — diff_compiler_core_ir_sexp.sh    (.sexp snapshot goldens)
 #   ── Phase 2 §2a value gates (eval / core-ir / llvm), goldens = .eval.golden ──
 #   eval_main             — diff_compiler_eval.sh
 #   eval_prelude_main     — diff_compiler_eval_prelude.sh + diff_compiler_eval_list.sh
