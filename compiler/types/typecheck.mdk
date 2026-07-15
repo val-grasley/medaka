@@ -9874,83 +9874,187 @@ checkProgramSeeded seed prog = checkProgramSeededSplit seed [] prog
 -- elaborateDict, and probe-entry path).
 checkProgramSeededSplit : List (String, Scheme) -> List Decl -> List Decl -> List (String, Scheme)
 checkProgramSeededSplit seed coreProg userProg =
-  let prog = coreProg ++ userProg
+  checkBodyImpl seed (Flat coreProg) userProg
+
+-- #80: the SINGLE whole-program typecheck body, shared by the flat/single-file path
+-- (checkProgramSeededSplit, `Flat coreProg`) and the per-module path
+-- (checkModuleFullImpl, `Module mid accData implDecls`).  Institutionalizes
+-- DICT-SEMANTICS §7's single-evaluator law: one elaboration ⇒ `check` and `emit`
+-- cannot silently disagree on a dispatch decision.  Everything is shared EXCEPT the
+-- SIX load-bearing divergences, each a `match mode` branch below:
+--   (1) decl universe (prog / dataUniverse / fullUniverse / groundUniverse)
+--   (2) inference plan — flat's TWO-PHASE prelude-then-user vs module's single pass
+--   (3) cross-module dict-threading restore + snapshot (module only; flat SKIPS)
+--   (4) importer/definer shadows + the shadowMethodSchemes env layer
+--   (5) the implInferEnabled obligation gate (INVERTED between the two emit paths)
+--   (6) superDeclsRef ownership (set from the mode)
+-- The mode carries the inputs each path adds on top of `seed` + `prog0`:
+--   Flat   coreProg               — the prelude prefix (empty ⇒ prelude-free program)
+--   Module mid accData implDecls  — module id, prior modules' public data, impl universe
+data CheckMode = Flat (List Decl) | Module String (List Decl) (List Decl)
+
+checkBodyImpl : List (String, Scheme) -> CheckMode -> List Decl -> List (String, Scheme)
+checkBodyImpl seed mode prog0 =
   let _ = resetState ()
-  -- seed the interface decls for super-closure (the flat path skips elaborateDict/
-  -- elabModuleStamp which set this elsewhere); read-only during inference, so the
-  -- signature-constraint check's superclass closure works single-file too.
-  let _ = setRef superDeclsRef prog
-  let _ = populateEffectDomains prog
+  -- (#1) decl universes, derived from the mode.  On Flat, prog = coreProg ++ userProg
+  -- and every universe collapses to it; on Module they fan out over accData/implDecls.
+  let prog = match mode
+    Flat coreProg => coreProg ++ prog0
+    Module _ _ _ => prog0
+  -- the full visible universe (shadows / key table / iface-param registration /
+  -- completeness / obligations): Flat = whole flattened program; Module = imported
+  -- data + impl universe + this module.
+  let fullUniverse = match mode
+    Flat _ => prog
+    Module _ accData implDecls => accData ++ implDecls ++ prog0
+  -- registerAllData universe: Module re-registers prior modules' public data (NOT the
+  -- impl universe); Flat has everything in prog already.
+  let dataUniverse = match mode
+    Flat _ => prog
+    Module _ accData _ => accData ++ prog0
+  -- groundMultiParamObligations universe: Flat grounds over prog; Module over implDecls.
+  let groundUniverse = match mode
+    Flat _ => prog
+    Module _ _ implDecls => implDecls
+  -- (#6) superDeclsRef: unified body OWNS it — Flat = coreProg ++ userProg, Module =
+  -- implDecls.  On the emit path elabModuleStamp already sets the same implDecls; on the
+  -- multi-module CHECK path this closes the latent stale/empty-ref gap (behavior change).
+  let superDecls = match mode
+    Flat _ => prog
+    Module _ _ implDecls => implDecls
+  let _ = setRef superDeclsRef superDecls
+  -- (BREAK #3) effect domains: FLAT populates inline; MODULE relies on the driver
+  -- preamble (checkModulesPreamble / elaborateModules) populating ONCE over the whole
+  -- import graph — a per-module populate would wipe another module's domains.
+  let _ = match mode
+    Flat _ =>
+      let _ = populateEffectDomains prog
+      ()
+    Module _ _ _ => ()
   let _ = checkEffectParams prog
   let _ = checkLetRecDecls prog
-  let dataEnv = registerAllData initialEnv prog
+  -- (#4) shadows.  definerShadows uses the SHARED form — buildDefinerShadows over the
+  -- full visible universe, scoped to THIS module's decls (prog0).  On Flat, prog0 =
+  -- userProg and fullUniverse = prog, so this is exactly the old flat `buildDefinerShadows
+  -- prog userProg`.  importerShadows exist only across a module boundary.
+  let definerShadows = buildDefinerShadows fullUniverse prog0
+  let importerShadows = match mode
+    Flat _ => []
+    Module _ _ implDecls => buildStandaloneShadows implDecls prog
+  let sigs = sigsOf prog
+  let _ = setRef definerShadowNamesRef definerShadows
+  let _ = setRef definerShadowSigsRef sigs
+  let _ = setRef shadowKeyTableRef (buildKeyTable fullUniverse)
+  -- (#4 + #3-restore) mode-specific pre-inference ref setup (all pure/independent of the
+  -- register+globalS block below, so order-safe).  Flat arms the per-body shadow-scoping
+  -- toggles; Module installs importer-shadow state and restores the cross-module dict
+  -- accumulators resetState just wiped.
+  let _ = match mode
+    Flat coreProg =>
+      let _ = setRef flatShadowScopingRef (declsNonEmpty coreProg)
+      let _ = setRef flatUserShadowNamesRef definerShadows
+      let _ = setRef flatCoreFnNamesRef (namesToSet (map fst (funDefs coreProg)) omEmpty)
+      ()
+    Module _ _ implDecls =>
+      let _ = setRef standaloneValuesRef (dedup (importerShadows ++ definerShadows))
+      let _ = setRef shadowStandaloneSchemesRef (pickStandaloneSchemes importerShadows seed)
+      let _ = setRef methodDispatchIdxRef (argDispatchIndices implDecls)
+      let _ = setRef funConstraintsRef crossModuleFunConstraintsRef.value
+      let _ = setRef funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
+      let _ = setRef funConstraintsRef (aliasConstraintEntries prog crossModuleFunConstraintsQualRef.value
+        ++ funConstraintsRef.value)
+      let _ = setRef funConstraintIfacesRef (aliasConstraintEntries prog crossModuleFunConstraintIfacesQualRef.value
+        ++ funConstraintIfacesRef.value)
+      let _ = setRef currentImportDefinersRef (importDefinersOf prog)
+      ()
+  let _ = registerMethodIfaceParamsAll fullUniverse
+  let dataEnv = registerAllData initialEnv dataUniverse
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
-  let _ = registerMethodIfaceParamsAll prog
-  let env1 = extendVars (extendVars dataEnv seed) globalS
+  -- methodNames: FLAT's SECOND ifaceMethodSchemes call over prog — dedup-skipped by
+  -- registerMethodConstraints so globalS's registered (first-call) ids stay authoritative.
+  -- Module checks core in isolation and never needs it, so NO extra call there.
+  let methodNames = match mode
+    Flat _ => map fst (ifaceMethodSchemes prog)
+    Module _ _ _ => []
+  -- (#4 cont) post-globalS mode setup.  Module: shadowMethodSchemes env layer (rebinding
+  -- imported method names to the interface-method scheme) + the method-constraint cross
+  -- seed (AFTER globalS's ifaceMethodSchemes registration, per registerMethodConstraints).
+  -- Flat: record the interface-method names for processSCC's method-shadow scoping.
+  let shadowLayer = match mode
+    Flat _ =>
+      let _ = setRef methodShadowNamesRef methodNames
+      []
+    Module _ _ implDecls =>
+      let sm = pickSchemes importerShadows (ifaceMethodSchemes implDecls)
+      let _ = setRef methodConstraintsRef (methodConstraintsRef.value ++ crossModuleMethodConstraintsRef.value)
+      sm
+  let env1 = extendVars (extendVars (extendVars dataEnv seed) globalS) shadowLayer
   let defs = funDefs prog
-  let sigs = sigsOf prog
-  -- FLAT-PATH SHADOW FIX (facet 1): record interface-method names so processSCC
-  -- keeps a method-shadowing USER fn out of the env it threads forward (so a later
-  -- prelude binding like `neq x y = not (eq x y)` resolves `eq` to the METHOD, not
-  -- the user's `eq`).  See methodShadowNamesRef.  Empty on the multi-module path.
-  let methodNames = map fst (ifaceMethodSchemes prog)
-  let _ = setRef methodShadowNamesRef methodNames
-  -- DEFINER-shadow set (facet 2): a USER top-level funDef reusing an interface-method
-  -- name (a single-file program with its own `orElse`) resolves in-scope to the user's
-  -- def, so recordImplObligation must NOT raise a spurious `No impl of <Iface> for <T>`
-  -- at its occurrences.  Mirrors checkModuleFullImpl exactly: the METHOD universe is the
-  -- whole flattened [prog] (core's interfaces are visible everywhere), but the STANDALONE
-  -- side — and the local-binder exclusion — is scoped to the module that defines it
-  -- ([userProg]), so this is the USER module's shadow set and nobody else's.
-  let userShadows = buildDefinerShadows prog userProg
-  let _ = setRef definerShadowNamesRef userShadows
-  -- FLAT-PATH SHADOW SCOPING (S1): arm the per-group/per-body toggle, but ONLY when a
-  -- prelude was actually prepended.  A prelude-free program has no other module to leak
-  -- into, so the refs stay at their resetState values and every consumer behaves as before.
-  let _ = setRef flatShadowScopingRef (declsNonEmpty coreProg)
-  let _ = setRef flatUserShadowNamesRef userShadows
-  let _ = setRef flatCoreFnNamesRef (namesToSet (map fst (funDefs coreProg)) omEmpty)
-  -- P0-19: stash the standalone signatures + the impl key table so
-  -- inferDefinerShadowApp can enforce a definer-shadow standalone's declared domain on
-  -- a no-impl / ungrounded receiver (single-file check AND single-file run/build, which
-  -- both flow through here).  shadowKeyTableRef distinguishes dispatch (impl exists →
-  -- leave permissive) from standalone (no impl → enforce domain).
-  let _ = setRef definerShadowSigsRef sigs
-  let _ = setRef shadowKeyTableRef (buildKeyTable prog)
   let topSchemes = processTopGroups env1 sigs defs (groupNames defs omEmpty)
-  -- FLAT-PATH SHADOW FIX (cont.): when a USER top-level fn shares a name with an
-  -- interface method (e.g. user `eq : List Int -> List Int -> Bool` vs core's
-  -- `Eq.eq`), the prelude's OWN prop/default/impl bodies still reference that name
-  -- as the METHOD (core.mdk:1089 `prop … = … gt x y …`).  The multi-module path
-  -- checks core in ISOLATION, so its bodies always see the method scheme; the
-  -- single-file FLAT path flattens core+user and would let the user's scheme shadow
-  -- the method here, unifying the user's applied param type against the prop's
-  -- element → spurious "List Int vs Int".  The oracle avoids this by method-MARKING
-  -- (the prop's `gt` becomes EMethodRef); we lack that arm, so for the prelude-body
-  -- passes we drop any user scheme whose name is an interface method, leaving the
-  -- method scheme (in env1/globalS) visible — the isolation the multi-module path gives.
-  let preludeBodyEnv = extendVars env1 (dropSchemesNamed methodNames topSchemes)
-  -- FLAT-PATH SHADOW SCOPING (S1): the prelude's OWN impl/default/prop/test bodies are
-  -- inferred with the user's shadow set OFF — the isolation checkModuleFullImpl gets for
-  -- free by checking core as its own module.  [coreProg] is [] on every prelude-free path,
-  -- so these four calls are no-ops there and the user pair walks the whole program, exactly
-  -- as the single pre-split call did (prog = coreProg ++ userProg preserves decl order too).
-  let _ = scopeShadowsCore ()
-  let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog coreProg
-  let _ = inferDefaultBodiesIfEnabled preludeBodyEnv coreProg
-  let _ = inferPropBodies preludeBodyEnv coreProg
-  let _ = inferTestBodies preludeBodyEnv coreProg
-  let _ = scopeShadowsUser ()
-  let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog userProg
-  let _ = inferDefaultBodiesIfEnabled preludeBodyEnv userProg
-  let _ = inferPropBodies preludeBodyEnv userProg
-  let _ = inferTestBodies preludeBodyEnv userProg
-  let _ = groundMultiParamObligations prog pendingImplObligations.value
-  let _ = checkImplCompleteness prog prog   -- P0-17: impl missing a required method
-  let _ = checkImplObligations prog pendingImplObligations.value
-  let _ = checkCallObligations prog pendingCallObligations.value
-  let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
+  -- (#2 / BREAK #1) inference plan.  FLAT runs the TWO-PHASE prelude-then-user scoped
+  -- inference (dropSchemesNamed drops user schemes shadowing an interface method so the
+  -- prelude's own bodies see the METHOD; scopeShadowsCore/User gate the per-body shadow
+  -- set) — reproducing the isolation the module path gets by checking core as its own
+  -- invocation.  Collapsing this to one pass reintroduces the prelude-method-shadow
+  -- miscompile (List Int vs Int).  MODULE runs the single pass.
+  let _ = match mode
+    Flat coreProg =>
+      let preludeBodyEnv = extendVars env1 (dropSchemesNamed methodNames topSchemes)
+      let _ = scopeShadowsCore ()
+      let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog coreProg
+      let _ = inferDefaultBodiesIfEnabled preludeBodyEnv coreProg
+      let _ = inferPropBodies preludeBodyEnv coreProg
+      let _ = inferTestBodies preludeBodyEnv coreProg
+      let _ = scopeShadowsUser ()
+      let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog prog0
+      let _ = inferDefaultBodiesIfEnabled preludeBodyEnv prog0
+      let _ = inferPropBodies preludeBodyEnv prog0
+      let _ = inferTestBodies preludeBodyEnv prog0
+      ()
+    Module _ _ implDecls =>
+      let bodyEnv = extendVars env1 topSchemes
+      let _ = inferModuleImplBodiesIfEnabled bodyEnv implDecls prog
+      let _ = inferDefaultBodiesIfEnabled bodyEnv prog
+      let _ = inferPropBodies bodyEnv prog
+      let _ = inferTestBodies bodyEnv prog
+      ()
+  -- (#3) cross-module dict-threading SNAPSHOT — MODULE ONLY (flat SKIPS: running it would
+  -- pollute the cross-module accumulators with a phantom single-file attribution).
+  let _ = match mode
+    Flat _ => ()
+    Module mid _ _ =>
+      let _ = expandSupersTable superDeclsRef.value
+      let _ = setRef crossModuleFunConstraintsRef funConstraintsRef.value
+      let _ = setRef crossModuleFunConstraintsQualRef
+        (attributeModuleArities mid prog funConstraintsRef.value ++ crossModuleFunConstraintsQualRef.value)
+      let _ = setRef crossModuleFunConstraintIfacesQualRef
+        (attributeModuleArrIfaces mid prog funConstraintIfacesRef.value ++ crossModuleFunConstraintIfacesQualRef.value)
+      let _ = setRef crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
+      let _ = setRef crossModuleMethodConstraintsRef methodConstraintsRef.value
+      let _ = setRef crossModuleMethodConstraintsQualRef
+        (attributeMethodModuleArities mid prog methodConstraintsRef.value ++ crossModuleMethodConstraintsQualRef.value)
+      ()
+  let _ = groundMultiParamObligations groundUniverse pendingImplObligations.value
+  let _ = checkImplCompleteness fullUniverse prog   -- P0-17: impl missing a required method
+  -- (#5 / BREAK #2) obligation gate.  FLAT runs checkImplObligations + setNumlitFloats
+  -- UNCONDITIONALLY (flat-emit via elaborateDict needs the Float int-literal stamp — its
+  -- resolve chain doesn't redo it).  MODULE runs them iff `not implInferEnabled` (the emit
+  -- path stamps AFTER arg-stamp resolution; calling here would double-stamp).  The
+  -- setNumlitFloats-vs-checkCallObligations ordering also differs per path — preserved.
+  let _ = match mode
+    Flat _ =>
+      let _ = checkImplObligations fullUniverse pendingImplObligations.value
+      let _ = checkCallObligations fullUniverse pendingCallObligations.value
+      let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
+      ()
+    Module _ _ _ =>
+      let _ = if not implInferEnabled.value then
+                let _ = checkImplObligations fullUniverse pendingImplObligations.value
+                setNumlitFloats ()
+              else ()
+      let _ = checkCallObligations fullUniverse pendingCallObligations.value
+      ()
   let _ = setRef localSchemesOut (mapLocalSchemes localBindRefs.value)
   let _ = setRef seedSchemesOut seed
   globalS ++ topSchemes
@@ -12266,159 +12370,7 @@ checkModuleFull seedVars accData prog =
 -- implInferEnabled is False → no inference, no extra stamping, byte-identical.
 checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> List (String, Scheme)
 checkModuleFullImpl mid seedVars accData implDecls prog =
-  let _ = resetState ()
-  -- #201: the two stateless pre-inference validation passes the flat path
-  -- (checkProgramSeededSplit) runs, previously ABSENT from the module body so a
-  -- top-level `let rec` non-function OR a malformed/atomic effect param was
-  -- silently accepted when the offending decl lived in an imported module.  Both
-  -- are per-decl structural scans (per-module ≡ once-over-flat), pushing into
-  -- typeErrors.  The THIRD flat-path pass (populateEffectDomains) canNOT be hoisted
-  -- here — a per-module re-seed would wipe cross-module effect domains — it lives in
-  -- the driver preamble instead (checkModulesPreamble / elaborateModules); this pass
-  -- reads the domains that preamble established (dtopFor over effectDomains).
-  let _ = checkEffectParams prog
-  let _ = checkLetRecDecls prog
-  let importerShadows = buildStandaloneShadows implDecls prog
-  -- Scan the FULL visible universe (accData carries core's interfaces + earlier
-  -- modules' PUBLIC ones, prog this module) for interface-method names, NOT just
-  -- [implDecls] — the check path passes implDecls=[] (checkModuleFull), so a bare
-  -- `allIfaceMethodNames implDecls` left this EMPTY there and a local funDef
-  -- shadowing a prelude method (parser.mdk's own `orElse`, a plain
-  -- `Parser a -> Parser a -> Parser a`) was NOT recognised as a definer shadow →
-  -- recordImplObligation fired a spurious `No impl of Alternative for Parser`.
-  let definerShadows = buildDefinerShadows (accData ++ implDecls ++ prog) prog
-  let _ = setRef standaloneValuesRef (dedup (importerShadows ++ definerShadows))
-  let _ = setRef definerShadowNamesRef definerShadows
-  -- P0-19: stash this module's standalone signatures so inferDefinerShadowApp can
-  -- enforce a definer-shadow standalone's declared domain on a no-impl / ungrounded
-  -- receiver (shadowKeyTableRef, set just below, gates dispatch-vs-standalone).
-  let _ = setRef definerShadowSigsRef (sigsOf prog)
-  -- Bug C: stash each importer shadow's IMPORTED STANDALONE scheme (e.g. `toList` →
-  -- `Map k v -> List (k, v)`) BEFORE env1 rebinds the name to the interface-method
-  -- scheme, so inferAppExpr can recover the standalone result type for a no-impl
-  -- receiver.  seedVars carries BOTH core's method scheme (`t a -> List a`) and map's
-  -- standalone — pickStandaloneSchemes selects the one whose receiver (first arrow
-  -- domain) has a CONCRETE head tycon (the standalone), never the polymorphic method
-  -- scheme (which would unify `t a ~ Map String Int` → `a ↦ Int`, giving the wrong
-  -- `List Int` result element type).
-  let _ = setRef shadowStandaloneSchemesRef (pickStandaloneSchemes importerShadows seedVars)
-  -- P0-18 (importer residual): include THIS module's own impls so inferShadowApp's
-  -- `implExistsForHead` sees a LOCAL impl of the shadowed interface (the `impl
-  -- Sizeable Box` lives in `prog`, not the imported [implDecls]).  Without it an
-  -- importer shadow applied to a live-impl receiver (`size (Box 3)`) found no impl,
-  -- fell through to the standalone (`Int -> Int`), and mis-typed `Box vs Int`.  Emit
-  -- is unaffected (the importer path is unreachable there — standaloneValues empty).
-  -- P0-19 d8 (S6): ALSO scan `accData` (prior modules' PUBLIC decls, incl. exported
-  -- `DImpl`) so a DEFINER shadow whose interface + receiver impl are IMPORTED
-  -- (`import prov.{Sizeable, Box(..)}`, local `size : Int -> Int`) dispatches to the
-  -- imported impl for `size (Box 3)` and falls to the standalone for `size 3`.  The
-  -- impl universe is GLOBAL (local ∪ imported ∪ prelude) — mirrors buildDefinerShadows
-  -- / registerMethodIfaceParamsAll above, which already scan `accData ++ implDecls ++
-  -- prog`.  Without this, batch-1's enforceStandaloneDomain saw no impl for `Box` and
-  -- forced the standalone domain `Int` onto it → the row-14 `Int vs Box` reject.
-  let _ = setRef shadowKeyTableRef (buildKeyTable (accData ++ implDecls ++ prog))
-  let _ = setRef methodDispatchIdxRef (argDispatchIndices implDecls)
-  let _ = setRef funConstraintsRef crossModuleFunConstraintsRef.value
-  let _ = setRef funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
-  -- IMPORT ALIASING: both tables above are keyed by the name AT THE CALL SITE, but an
-  -- alias makes that name differ from the DEFINITION's.  Re-key each aliased origin's
-  -- entry under the LOCAL name this module actually writes, or a constrained callee
-  -- reached through an alias finds NO entry → zero dict routes → a silently
-  -- under-applied partial closure (the Phase-134 failure mode: `check` green, `run`
-  -- dies with "putStrLn: not a String").  Prepended so it wins the first-match.
-  --
-  -- Driven off the (definerMid, name) QUALIFIED tables, so only the ALIASED module's
-  -- own entries are ever copied — a same-named constrained fn in some other module can
-  -- never be picked up by mistake.
-  let _ = setRef funConstraintsRef (aliasConstraintEntries prog crossModuleFunConstraintsQualRef.value
-    ++ funConstraintsRef.value)
-  let _ = setRef funConstraintIfacesRef (aliasConstraintEntries prog crossModuleFunConstraintIfacesQualRef.value
-    ++ funConstraintIfacesRef.value)
-  -- WS-2/D2: map THIS module's imported value names to their import-source module id,
-  -- so inferDictAtFound can route a cross-module constrained callee's dict arity by
-  -- module identity (the qual tables) rather than the collision-prone bare first-match.
-  let _ = setRef currentImportDefinersRef (importDefinersOf prog)
-  -- #11 soundness: register the interface method→iface-param map over the FULL
-  -- visible universe (accData carries core's + earlier modules' PUBLIC interfaces,
-  -- implDecls the emit-path impl universe, prog this module).  The check path passes
-  -- implDecls=[] (checkModuleFull), so registering only [implDecls] left
-  -- methodIfaceParamsRef EMPTY → `Num`/`fromInt` unregistered → a numeric literal's
-  -- Num obligation (recordImplObligation) was silently dropped and the reject
-  -- suppressed (ifaceRegistered False) → cross-module `g [1,2] 5` over-accepted.
-  let _ = registerMethodIfaceParamsAll (accData ++ implDecls ++ prog)
-  let dataEnv = registerAllData initialEnv (accData ++ prog)
-  let _ = rejectCyclicAliases ()
-  let globalS = ifaceMethodSchemes prog ++ externSchemes prog
-  let shadowMethodSchemes = pickSchemes importerShadows (ifaceMethodSchemes implDecls)
-  let _ = setRef methodConstraintsRef (methodConstraintsRef.value ++ crossModuleMethodConstraintsRef.value)
-  let env1 = extendVars (extendVars (extendVars dataEnv seedVars) globalS) shadowMethodSchemes
-  let defs = funDefs prog
-  let sigs = sigsOf prog
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs omEmpty)
-  let _ = inferModuleImplBodiesIfEnabled (extendVars env1 topSchemes) implDecls prog
-  let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
-  let _ = inferPropBodies (extendVars env1 topSchemes) prog
-  let _ = inferTestBodies (extendVars env1 topSchemes) prog
-  -- WS-1b: append each constrained fn's transitive super slots to funConstraintsRef/
-  -- funConstraintIfacesRef NOW (after this module's inference, before the cross-module
-  -- + qualified mirrors snapshot it below) so every downstream reader — the qual ref
-  -- seed, dictArityOf (define side), and elabModuleStamp's route resolution (call side)
-  -- — sees identical expanded entries.  superDeclsRef carries the in-scope interfaces.
-  let _ = expandSupersTable superDeclsRef.value
-  let _ = setRef crossModuleFunConstraintsRef funConstraintsRef.value
-  -- WS-2/D2: attribute THIS module's constrained-fn arities to mid in the qualified
-  -- mirror.  Every fn DEFINED in [prog] that carries an entry in the (now this-module-
-  -- accumulated) funConstraintsRef is owned by [mid]; record ((mid,name),ids) so the
-  -- final scopeAritiesQual keeps only the in-scope module's arity (dissolves the
-  -- bare-name cross-module collision).  PREPEND so the per-module-current entry wins
-  -- the first-match if a name recurs across the graph.
-  let _ = setRef crossModuleFunConstraintsQualRef
-            (attributeModuleArities mid prog funConstraintsRef.value ++ crossModuleFunConstraintsQualRef.value)
-  -- WS-2/D2: the slot-parallel ifaces analog of the qual arity snapshot above, keyed by
-  -- the same (mid,name), so inferDictAtFound reads a cross-module callee's ids AND ifaces
-  -- from one definer-aligned source.  funConstraintIfacesRef here is this module's
-  -- super-EXPANDED ifaces (expandSupersTable ran above), matching the expanded ids.
-  let _ = setRef crossModuleFunConstraintIfacesQualRef
-            (attributeModuleArrIfaces mid prog funConstraintIfacesRef.value ++ crossModuleFunConstraintIfacesQualRef.value)
-  let _ = setRef crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
-  let _ = setRef crossModuleMethodConstraintsRef methodConstraintsRef.value
-  -- WS-2/D2 (method analog of the qual snapshot above): attribute each method whose
-  -- INTERFACE is declared in [prog] to [mid], so scopeMethodArities can keep only the
-  -- in-scope module's arity for a bare method name shared across modules.  PREPEND so
-  -- the per-module-current entry wins first-match.  The prog-filter is essential: an
-  -- IMPORTING module's methodConstraintsRef carries the cross seed (line above), so
-  -- without it the method would be re-attributed to every importer's mid → false twins.
-  let _ = setRef crossModuleMethodConstraintsQualRef
-            (attributeMethodModuleArities mid prog methodConstraintsRef.value ++ crossModuleMethodConstraintsQualRef.value)
-  let _ = groundMultiParamObligations implDecls pendingImplObligations.value
-  -- P0-17: reject an impl missing a required (non-defaulted) method.  UNGATED (runs
-  -- on BOTH the check path AND the emit/eval path, unlike checkImplObligations
-  -- below): a purely structural interface-method-set vs impl-method-set comparison,
-  -- so run/build reject the impl cleanly here instead of deferring to a runtime
-  -- `unbound identifier` panic.  Iterate THIS module's own decls; resolve the
-  -- interface (possibly imported) in the full accumulated universe.
-  let _ = checkImplCompleteness (accData ++ implDecls ++ prog) prog
-  -- #11 soundness: on the TYPECHECK path (implInferEnabled OFF — `medaka check`,
-  -- the diagnostics/golden drivers) validate each call site's instantiated impl
-  -- obligations (incl. a numeric literal's `Num` obligation forced to a non-Num
-  -- type) and stamp Float-typed literals, mirroring the single-file checkProgramSeeded
-  -- and the oracle's typecheck_module finalize.  Without this the cross-module check
-  -- path silently dropped a literal's `Num` obligation (`g [1,2] 5` forcing
-  -- `5 : List (List Int)`).  Gated OFF on the EMIT path: elabModuleStamp runs its own
-  -- setNumlitFloats AFTER arg-stamp resolution (calling it here would double-stamp),
-  -- and checkImplObligations is a check-only diagnostic the emit driver doesn't want.
-  let _ = if not implInferEnabled.value then
-            let _ = checkImplObligations (accData ++ implDecls ++ prog) pendingImplObligations.value
-            setNumlitFloats ()
-          else ()
-  let _ = checkCallObligations (accData ++ implDecls ++ prog) pendingCallObligations.value
-  -- LSP hover: leave THIS module's locals + seed (runtime+core+imports) in the
-  -- side-channels, mirroring checkProgramSeeded.  The entry module is checked
-  -- LAST in the multi-module path, so the channels end holding ITS values, which
-  -- is what project-aware hover reads (imported names live in seedVars).
-  let _ = setRef localSchemesOut (mapLocalSchemes localBindRefs.value)
-  let _ = setRef seedSchemesOut seedVars
-  globalS ++ topSchemes
+  checkBodyImpl seedVars (Module mid accData implDecls) prog
 -- C5: compute this module's standalone-shadow set BEFORE inference, so the
 -- inferMethodAt arg-position record can gate on it (resetState cleared it via
 -- pendingRLocalSites, but standaloneValuesRef is set fresh here per module).

@@ -128,6 +128,7 @@ censusSuperClose : List Decl -> List (String, Int) -> List (String, Int)
 censusSuperCloseFix : List Decl -> List (String, Int) -> List (String, Int) -> List (String, Int)
 censusSuperSlotsOf : List Decl -> (String, Int) -> List (String, Int)
 checkAnnotTooGeneral : Ty -> List Mono -> Unit
+checkBodyImpl : List (String, Scheme) -> CheckMode -> List Decl -> List (String, Scheme)
 checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> Unit
 checkCallObligationsGo : List (String, List Ty, List Require) -> List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> Unit
 checkCoherence : List Decl -> Unit
