@@ -63,7 +63,6 @@ fi
 #   eval_run_main     — diff_compiler_eval_run.sh        (=== EVAL === goldens)
 #   eval_run_batch    — diff_compiler_eval_run_batch.sh  (=== EVAL === goldens)
 #   core_ir_run_main  — diff_compiler_core_ir_run.sh     (=== EVAL === goldens)
-#   core_ir_dump_main — diff_compiler_core_ir_sexp.sh    (.sexp snapshot goldens)
 #   ── Phase 2 §2a value gates (eval / core-ir / llvm), goldens = .eval.golden ──
 #   eval_main             — diff_compiler_eval.sh
 #   eval_prelude_main     — diff_compiler_eval_prelude.sh + diff_compiler_eval_list.sh
@@ -129,7 +128,7 @@ fi
 #   (lsp_main is NOT a build target: `medaka build lsp_main.mdk` fails the native G1
 #    typecheck gate — tools.lsp imports don't resolve under the build path's roots.
 #    The 3 lsp gates stay on the OCaml oracle.  See REROOT-PLAN STOP guardrail.)
-ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main \
+ENTRIES="eval_run_main eval_run_batch core_ir_run_main \
 eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
 eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
 eval_typed_modules_main eval_modules_main eval_autoprint_main \

@@ -85,7 +85,7 @@ diff with `lib/`:
 | `core_ir_modules_main.mdk` | Multi-module Core IR entry (the loader-driven Core-IR path — analog of `eval_modules_main`): `medaka run compiler/entries/core_ir_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, desugars + annotates each, LOWERS them per-module to Core IR and evaluates them in per-module frames over the shared prelude (`core_ir_eval.cevalModules`), printing the root module's `main` stdout. Diffs against `medaka run <entry>` (`test/diff_compiler_core_ir_modules.sh`, 4) — the SAME oracle `eval_modules_main` uses. |
 | `core_ir_sexp.mdk` | **Stage 2 §2.1 Core IR serializer** — `cprogramToSexp : CProgram -> String` (and all sub-serializers: `cexprSexp`, `cbindSexp`, `carmSexp`, `ctreeSexp`, `cheadSexp`, `cimplEntrySexp`, etc.). Lossless structural S-expression dump mirroring `sexp.mdk`'s style: every node tagged by constructor name, `CVar` carries its `Addr`, `CMethod`/`CDict` carry their `Route`s. The canonical frozen-IR serialization format — the LLVM contract input and future `medaka build` artifact cache basis. |
 | `core_ir_sexp_parse.mdk` | **Stage 2 §2.1 Core IR deserializer** — `parseCProgram : String -> CProgram`. Tokenizes the S-expression (quoted strings, parens, bare atoms), builds an `SExp` tree, then pattern-matches each tag back to the typed `CProgram`/`CExpr`/... ADTs. All 18 engine-corpus fixtures round-trip faithfully. |
-| `core_ir_dump_main.mdk` | Runnable entry for the Core IR serializer: `medaka run compiler/entries/core_ir_dump_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers → `cprogramToSexp`. Snapshot goldens live in `test/core_ir_sexp_fixtures/`; `test/diff_compiler_core_ir_sexp.sh` diffs fresh dumps against them (catches accidental lowering/serializer drift). |
+| `core_ir_dump_main.mdk` | Runnable entry for the Core IR serializer: `medaka run compiler/entries/core_ir_dump_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers → `cprogramToSexp`. The `# CORE_IR` section of `test/diff_compiler_snapshot_core_ir.sh` snapshots fresh dumps (catches accidental lowering/serializer drift). |
 | `core_ir_roundtrip_main.mdk` | Runnable entry for the round-trip gate: `medaka run compiler/entries/core_ir_roundtrip_main.mdk <src.mdk>` lowers → serializes → parses back → evaluates (`cevalMain`) → prints `pp_value`. Diffs against `dev/eval_probe.exe` (`test/diff_compiler_core_ir_roundtrip.sh`, all 18 engine fixtures). A passing result proves the serialization is semantics-faithful. |
 | ~~`bytecode.mdk`~~ | **REMOVED 2026-06-10** (commit `ef651fb`) — bytecode compiler + stack VM (§2.2, slices 1–6) was removed as confirmed off the canonical path after the LLVM backend self-hosted. Historical record in the §2.2 sections below and `STAGE2-DESIGN.md`. |
 | ~~`eval_bytecode_main.mdk`~~ | **REMOVED 2026-06-10** — bytecode VM runnable entries removed with `bytecode.mdk`. |
@@ -132,7 +132,7 @@ sh test/diff_compiler_core_ir_list.sh         #   …with core.mdk + list.mdk (2
 sh test/diff_compiler_core_ir_typed.sh        #   …typed return-position dispatch / CMethod (2)
 sh test/diff_compiler_core_ir_run.sh          #   …true-execution stdout / === EVAL === goldens (18)
 sh test/diff_compiler_core_ir_modules.sh      #   …loader-driven per-module frames (4)
-sh test/diff_compiler_core_ir_sexp.sh         #   …serializer snapshot gate / cprogramToSexp goldens (18)
+sh test/diff_compiler_snapshot_core_ir.sh         #   …serializer snapshot gate / cprogramToSexp goldens (18)
 sh test/diff_compiler_core_ir_roundtrip.sh    #   …round-trip: lower→sexp→parse→eval == oracle (18, proves lossless)
 # §2.2 bytecode VM gates REMOVED 2026-06-10 (bytecode.mdk removed — off canonical path):
 #   diff_compiler_eval_bytecode.sh, diff_compiler_eval_bytecode_modules.sh,
@@ -670,9 +670,9 @@ to the AST tree-walker:
 **Stage 2 §2.1 — Core IR serializer + round-trip (2026-06-05).** A canonical
 S-expression serializer (`core_ir_sexp.mdk` / `cprogramToSexp`) + deserializer
 (`core_ir_sexp_parse.mdk` / `parseCProgram`) + two new gates:
-- **snapshot** (`diff_compiler_core_ir_sexp.sh`, 18) — dumps the Core IR for
+- **snapshot** (`diff_compiler_snapshot_core_ir.sh`, 18) — dumps the Core IR for
   each engine-corpus fixture and diffs against committed goldens in
-  `test/core_ir_sexp_fixtures/`; catches accidental lowering or serializer drift.
+  `test/snapshots/eval_fixtures/`; catches accidental lowering or serializer drift.
   Goldens are regenerable when an intentional IR change is made.
 - **round-trip** (`diff_compiler_core_ir_roundtrip.sh`, 18) — the real "frozen IR
   is faithful" gate: lower → `cprogramToSexp` → `parseCProgram` → `cevalMain` →

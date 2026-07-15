@@ -320,7 +320,7 @@ for f in $changed; do
       add 'diff_compiler_ported'; add 'diff_compiler_test'; add 'diff_compiler_capability_matrix' ;;
 
     compiler/ir/*)
-      add 'diff_compiler_core_ir*'; add 'diff_compiler_llvm*' ;;
+      add 'diff_compiler_core_ir*'; add 'diff_compiler_llvm*'; add 'diff_compiler_snapshot*' ;;
 
     # ── backend: the FIXPOINT is the decisive gate; do not defer it to CI ──
     compiler/backend/*)
