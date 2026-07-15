@@ -89,7 +89,8 @@ monomorphic `||`/`&&` loops or keyed lookups.
 ~37 Refs deliberately survive `resetState` (cross-module accumulators, per-module reseed tables,
 driver mode flags). Clearing one "for hygiene" reproduces the Phase-134 dropped-dict mode. The
 cross-module six get exactly ONE lifecycle owner via #143; everything else waits for #158's
-two-record split (`PerRun` vs `CrossRun`), where survive-vs-clear becomes type structure.
+two-record split (a per-run record vs a cross-run record — #158 mints the actual names; they do
+not exist yet, so don't grep for them), where survive-vs-clear becomes type structure.
 `typeErrorsSticky` stays OUTSIDE any bundle, permanently — it is sound *because* it lives outside
 resets (ARCH-REVIEW hazard #1).
 
