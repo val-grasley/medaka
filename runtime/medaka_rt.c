@@ -382,18 +382,28 @@ long long mdk_string_eq(long long a, long long b) {
 }
 
 /* Polymorphic `==`/`!=` for operands whose static LTy the emitter could not
- * recover (both default to LTInt — e.g. two String-typed function parameters
- * whose only use is `n == name`).  Distinguishes at runtime exactly like
- * mdk_append: a boxed String cell (even pointer, header == MDK_STR_TAG) routes to
- * byte-content equality; anything else (tagged immediates — Int/Bool/Char/Char,
- * nullary-ctor words, or unequal-kind operands) compares by value word.  Returns a
- * TAGGED Bool (3 = True, 1 = False), matching mdk_string_eq.  Two boxed cells of
- * DIFFERENT kinds (one String, one not) fall to the word compare and so are
- * unequal, which is correct for the bootstrap's homogeneous `==` sites. */
+ * recover (both default to LTInt — e.g. a `feq a b = a == b` over inferred-Float
+ * params, or two String-typed params whose only use is `n == name`).
+ * Discriminates at run time on the low bit / header tag, the EXACT peer of
+ * mdk_value_cmp_raw's Ord discriminator (they MUST stay in lockstep):
+ *   - boxed String cell (even pointer, header == MDK_STR_TAG) -> byte compare;
+ *   - boxed Float cell  (even pointer, header == 2)           -> double compare
+ *     (issue #181: without this arm two independently-boxed floats compared as
+ *     value words — i.e. by POINTER — so `feq 0.5 0.5` was False in native);
+ *   - otherwise (tagged immediates — Int/Bool/Char, nullary-ctor words) compares
+ *     by value word.  Well-typed operands share a type, so testing the LEFT
+ *     operand suffices (matching mdk_value_cmp_raw).  Returns a TAGGED Bool
+ *     (3 = True, 1 = False), matching mdk_string_eq.  `da == db` gives IEEE
+ *     semantics (NaN != NaN, -0.0 == 0.0), matching the inline `fcmp oeq` path. */
 long long mdk_value_eq(long long a, long long b) {
   int a_str = ((a & 1) == 0) && ((const long long *)a)[0] == MDK_STR_TAG;
   int b_str = ((b & 1) == 0) && ((const long long *)b)[0] == MDK_STR_TAG;
   if (a_str && b_str) return mdk_string_eq(a, b);
+  int a_flt = ((a & 1) == 0) && ((const long long *)a)[0] == 2;
+  if (a_flt) {
+    double da = ((const double *)a)[1], db = ((const double *)b)[1];
+    return da == db ? 3 : 1;
+  }
   return a == b ? 3 : 1;
 }
 
@@ -1185,8 +1195,9 @@ long long mdk_string_compare_raw(long long a, long long b) {
  *   - otherwise (tagged immediate: Int/Bool/Char, or a ctor word) -> word compare
  *     of the untagged (>>1) immediates, matching the inline Int icmp path.
  * At a CONCRETE Int/Float/String type the emitter keeps its specialized inline
- * IR (mirroring the mdk_value_eq precedent for `==`), so this is reached only at
- * a genuinely type-unknown ordering site. */
+ * IR (the `==` peer is mdk_value_eq, which carries the same String/Float/word
+ * arms — keep the two in lockstep), so this is reached only at a genuinely
+ * type-unknown ordering site. */
 long long mdk_value_cmp_raw(long long a, long long b) {
   int a_str = ((a & 1) == 0) && ((const long long *)a)[0] == MDK_STR_TAG;
   if (a_str) return mdk_string_compare_raw(a, b);

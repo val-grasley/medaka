@@ -1,0 +1,21 @@
+-- Regression for #181 (S0 silent wrongness): inferred-Float `==`/`!=` was
+-- miscompiled in native.  The type-lost dispatch path routes through the runtime
+-- discriminator mdk_value_eq, which special-cased String then compared everything
+-- else by VALUE WORD -- so two independently-boxed floats compared by POINTER and
+-- `feq 0.5 0.5` printed False under `build` while `run` (eval) gave True.  Its Ord
+-- sibling mdk_value_cmp_raw already carried the boxed-Float arm (which is why
+-- inferred `<` was correct), so the two had silently diverged.  Fixed by adding the
+-- matching Float arm to mdk_value_eq (runtime/medaka_rt.c).  Pins run==build==value
+-- across `==`, `!=`, and a COMPUTED (non-literal) float, all through the type-lost
+-- path -- an explicit `: Float -> Float -> Bool` annotation takes the inline fcmp
+-- path instead and was never affected.
+
+feq a b = a == b
+fne a b = a != b
+
+main =
+  println (debug (feq 0.5 0.5))
+  println (debug (feq 0.5 0.6))
+  println (debug (feq (1.0 / 3.0) (1.0 / 3.0)))
+  println (debug (fne 0.5 0.5))
+  println (debug (fne 0.5 0.6))
