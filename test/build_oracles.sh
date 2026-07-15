@@ -107,10 +107,14 @@ fi
 #   resolve_batch         — diff_compiler_resolve_batch.sh
 #   resolve_modules_main  — diff_compiler_resolve_modules.sh
 #   ── Phase 2 §2b typecheck/check/error gates ──
-#   typecheck_main          — diff_compiler_typecheck_errors.sh / _golden
+#   typecheck_main          — diff_compiler_typecheck_errors.sh
 #                             (was also _typecheck.sh + _panic_errors.sh — migrated to the
-#                              TYPES snapshot family diff_compiler_snapshot_types.sh, #81 R5)
-#   typecheck_golden_batch  — diff_compiler_typecheck_golden_batch.sh
+#                              TYPES snapshot family diff_compiler_snapshot_types.sh, #81 R5;
+#                              and _golden/_golden_batch — RETIRED #81 Stage B1: the
+#                              whole-prelude-inference invariant moved to the single
+#                              diff_compiler_snapshot_prelude.sh dump, per-fixture user
+#                              schemes to # TYPES_USER; typecheck_golden_batch had no other
+#                              consumer, so its oracle + entry source went with them)
 #   check_main              — diff_compiler_typecheck_errors.sh (driver B) / diff_compiler_check.sh
 #   check_batch             — diff_compiler_check_batch.sh
 #   check_modules_main      — diff_compiler_check_modules.sh
@@ -137,7 +141,7 @@ llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 llvm_bootstrap_lex_main \
 lex_main parse_main parse_result_main \
 resolve_main resolve_batch resolve_modules_main \
-typecheck_main typecheck_golden_batch check_main check_batch \
+typecheck_main check_main check_batch \
 check_modules_main check_all_main check_match_main exhaust_main lint_main lint_fix_main \
 diagnostics_main diagnostics_project_main \
 fmt_main new_main test_main repl_main fuzz_gen_main \
