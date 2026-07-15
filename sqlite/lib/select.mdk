@@ -43,43 +43,7 @@ public export data Literal =
   | LFloat Float
   | LBlob (Array Int)
   | LNull
-deriving (Debug)
-
--- `Eq Literal` is HAND-WRITTEN, not derived, and that is deliberate: `deriving
--- (Eq)` on a type with an `Array` field type-checks and RUNS (the interpreter's
--- arg-tag fallback finds something) but the native emitter then dies with
--- `no impl of method 'eq' for type 'Array'` — there is no `Eq (Array a)` impl.
--- See findings/query-engine-unify.md F1.  Blobs compare element-wise here.
---
--- `rule-hand-rolled-derivable` fires here and its advice is WRONG: taking it
--- (swapping this for `deriving (Eq)`) produces a binary that cannot be built.
--- The rule is blind to whether the field types actually have an `Eq` impl.
--- WORKAROUND(B5): hand-written, not derived — `deriving (Eq)` over the `Array` field
--- type-checks and RUNS but cannot be BUILT. Replace with `deriving (Eq)` when B5 closes.
--- lint-disable-next-line rule-hand-rolled-derivable
-export impl Eq Literal where
-  eq (LInt a) (LInt b) = a == b
-  eq (LText a) (LText b) = a == b
-  eq (LFloat a) (LFloat b) = a == b
-  eq (LBlob a) (LBlob b) = arrayEqInt a b
-  eq LNull LNull = True
-  eq _ _ = False
-
-arrayEqInt : Array Int -> Array Int -> Bool
-arrayEqInt a b =
-  if arrayLength a != arrayLength b then
-    False
-  else
-    arrayEqGo a b 0 (arrayLength a)
-
-arrayEqGo : Array Int -> Array Int -> Int -> Int -> Bool
-arrayEqGo a b i n =
-  if i >= n then
-    True
-  else if a[i] != b[i] then
-    False
-  else
-    arrayEqGo a b (i + 1) n
+deriving (Debug, Eq)
 
 -- | A comparison operator.
 public export data CmpOp =
