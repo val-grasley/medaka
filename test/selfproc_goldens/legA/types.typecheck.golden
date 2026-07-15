@@ -382,6 +382,11 @@ enclDictVarOf : Mono -> String -> Option String
 enclSlot : String -> Mono -> Option Int
 endsWithStr : String -> String -> Bool
 enforceStandaloneDomain : TcEnv -> String -> Mono -> Option Loc -> Unit
+entail : Map String (List ImplEntry) -> String -> Mono -> String -> EntailKind -> (Route, List Route)
+entailAssumRoute : String -> EntailKind -> Route
+entailAssumVar : Mono -> String -> EntailKind -> Option String
+entailFallback : Map String (List ImplEntry) -> EntailKind -> Route
+entailInst : Map String (List ImplEntry) -> String -> Mono -> String -> String -> EntailKind -> (Route, List Route)
 enterLevel : Unit -> Unit
 entryCovers : KeyEntry -> KeyEntry -> Bool
 entryCoversAllOthers : KeyEntry -> List KeyEntry -> Bool
