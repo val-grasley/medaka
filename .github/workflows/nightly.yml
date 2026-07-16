@@ -88,6 +88,53 @@ jobs:
           MEDAKA_ROOT: ${{ github.workspace }}
         run: bash test/check_removed_constructs.sh
 
+  perf-scaling-deep:
+    name: "perf_scaling DEEP (the N=16000 bands ci.yml cannot afford)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+
+      - name: Build medaka (cold bootstrap from seed)
+        if: steps.medaka-cache.outputs.cache-hit != 'true'
+        run: make medaka
+
+      - name: Build the oracles perf_scaling needs
+        run: FORCE=1 sh test/build_oracles.sh --for 'diff_compiler_perf_scaling'
+
+      # ⚠️ THIS JOB IS THE OTHER HALF OF A REQUIRED GATE, NOT AN EXTRA.
+      #
+      # ci.yml's `gates (types)` runs this gate in QUICK mode (PERF_DEEP unset), which
+      # keeps every backend row but drops the two bands sized for a single slow-to-clear
+      # stage: xref @ 16000 (`resolve`, the #78 detector) and manydefs @ 16000 (`lint`).
+      # Those bands cost ~476 s at K=5 and made `gates (types)` the CI critical path at
+      # 12 min. They are irreducible — you cannot hold N=16000 at K=5 and be fast — so
+      # they run here instead of not at all.
+      #
+      # UNLIKE fuzz-diff below, this job FAILS the nightly rather than filing: it is a
+      # ratchet with a calibrated ledger, and its PROMOTE arm fires when a bug is fixed.
+      # A red here means a resolve/lint quadratic landed (or was fixed and needs
+      # promoting out) — read the failing row's N band before touching any ceiling.
+      - name: perf_scaling, deep bands
+        env:
+          MEDAKA_ROOT: ${{ github.workspace }}
+          PERF_DEEP: "1"
+        run: sh test/diff_compiler_perf_scaling.sh
+
   fuzz-diff:
     name: fuzz_diff (bounded nightly sweep; findings are FILED, not failed)
     runs-on: ubuntu-latest

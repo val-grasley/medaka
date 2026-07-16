@@ -129,7 +129,38 @@ N="${PERF_N:-250}"
 # could not see the very bug it exists to catch. The alternative, lowering the
 # floor to 100ms, weakens the one guard that keeps a ratio from being computed
 # out of noise. So: raise N, keep the floor honest.
-XREF_N="${PERF_XREF_N:-4000}"
+# ── QUICK (default, per-PR) vs DEEP (nightly) ────────────────────────────────
+#
+# PERF_DEEP=0 (default) drops the two shapes whose N band exists ONLY to lift a single
+# slow-to-clear stage over the 200ms floor, and which together were ~80% of this gate:
+#
+#     xref @ 4000/8000/16000   sized for `resolve` (0.29 s at 16000)   ~376 s
+#     manydefs @ 4000/8000/16000  sized for `lint` (0.62 s at 16000)   ~100 s
+#
+# QUICK still runs `xref`, at 2000/4000/8000 — it does NOT drop the shape, and that is
+# the point of the split. The BACKEND rows survive: `emit` reads 2.74 s and `wasm-emit`
+# 10.4 s at 8000, both far over the floor and both still ledgered and graded, so
+# backend_graded stays 1 and #359's arm keeps running on every PR. Only `resolve` falls
+# under the floor (~0.145 s at 8000) and SKIPs — loudly — so the #78 resolve detector is
+# what DEEP is really for.
+#
+# ⚠️ WHY THIS SPLIT AND NOT "MOVE perf_scaling TO NIGHTLY": jobs run in parallel, so CI
+# wall-clock is the SLOWEST shard. At 12 min this gate WAS `gates (types)` and was the
+# critical path, 3x `gates (engines)` (3.7 min) — the shard the ci.yml header still
+# names as the pole. Deleting the gate from PRs would fix the clock and cost all per-PR
+# perf coverage; this keeps the arm that catches emitter quadratics where the bug lands
+# and banishes only the two N=16000 bands, which no amount of restructuring can afford:
+# at K=5 they are irreducible. (Measured: routing every stage to its own band still only
+# reaches ~400 s. You cannot hold N=16000 at K=5 and get under 4 min.)
+#
+# DEEP is not optional coverage — nightly.yml runs it, and the skips print loudly rather
+# than silently narrowing the gate. Run it locally with PERF_DEEP=1.
+PERF_DEEP="${PERF_DEEP:-0}"
+
+# xref's band follows the mode: DEEP keeps resolve's 4000 (-> 16000 at 4N), QUICK uses
+# 2000 (-> 8000), which is also XREF_WASM_N — so in QUICK the wasm row rides the main
+# pass and costs no extra invocation at all (see grade_wasm_row).
+if [ "$PERF_DEEP" = "1" ]; then XREF_N="${PERF_XREF_N:-4000}"; else XREF_N="${PERF_XREF_N:-2000}"; fi
 
 # `comments` samples at its own N so the `fmt` stage clears the 200ms TIME_FLOOR at
 # the largest size (4N): at base 1000 → 4000, fmt is ~0.46s on a correct compiler,
@@ -143,6 +174,19 @@ COMMENTS_N="${PERF_COMMENTS_N:-1000}"
 # so a faster runner could drop it UNDER and the floor would silently SKIP the one
 # stage this shape exists to grade. Sized for ~3x floor headroom instead.
 MANYDEFS_N="${PERF_MANYDEFS_N:-4000}"
+
+# `xref` samples the WASM arm at its OWN, SMALLER band — 2000/4000/8000 rather than
+# the shape's 4000/8000/16000. This is a COST fix and it is the reason this gate is
+# not the CI critical path; read the wasm-band note by KNOWN_TCEIL_xref_wasm_emit
+# before changing it, because the ledger's ceiling is calibrated to THIS band and
+# means nothing against another one.
+#
+# Why the band can move at all: xref's N is sized for `resolve`, the only stage that
+# needs N=16000 to clear the 200ms floor. wasm_emit is ~10x llvm_emit and was being
+# dragged to resolve's N — 42 s per run, x K=5 = ~211 s of one CI shard for ONE row.
+# At 8000 it still reads ~10 s, 50x the floor, and still reads r2=3.82. The signal
+# does not need N=16000; only `resolve` did.
+XREF_WASM_N="${PERF_XREF_WASM_N:-2000}"
 
 # min-of-K sample count for the TIME signal. K>=5 required (see file header);
 # allocation needs no such thing — it is deterministic, one run suffices.
@@ -489,10 +533,20 @@ gen_modules() {
 }
 
 # ── Measure ──────────────────────────────────────────────────────────────────
+# ⚠️ THE ALLOCATION RUNS DO NOT RUN wasm-emit (env -u MEDAKA_PERF_WASM), and that is
+# deliberate — it RESTORES this column to what it was calibrated on. #481 added the
+# wasm stage to this driver, which silently folded wasm's ~242 MB prelude constant (and
+# on rooted shapes its 519->1353 MB scaling term) into every `total` this column reads.
+# It cost nothing to remove because ALLOC WAS ALREADY BLIND TO IT: #481's own finding
+# was that this column reads a flat 2.02x "ok" for a wasm stage taking 38 SECONDS. So
+# the wasm arm's coverage is, and always was, the TIME signal alone (grade_wasm_row) —
+# excluding it here loses no signal, un-dilutes the numbers, and drops 3 wasm runs per
+# shape. `env -u` because an empty-but-SET var reads as present (see stage_times_min).
+#
 # Returns TOTAL allocated MB for one fixture. Allocation is deterministic, so ONE
 # run suffices — no min-of-K needed, and no noise to average away.
 alloc_of() {
-  MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$1" 2>&1 \
+  env -u MEDAKA_PERF_WASM MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$1" 2>&1 \
     | awk '/^\[perf\] total/ { gsub(/MB/,"",$4); print $4; exit }'
 }
 
@@ -529,13 +583,31 @@ esac
 # with the heap PINNED and keeps, per stage, the MINIMUM observed time.
 #
 # Output: one "<stage> <min-seconds>" line per stage, on stdout.
+# Arg 3 (`wasm`, 0/1) sets MEDAKA_PERF_WASM, which makes profile_main RUN the
+# wasm-emit stage at all — it is opt-in there, not merely unprinted. At 0 the profiler
+# emits no `wasm-emit` line and does no WAT rendering; the caller must not then ask for
+# that row (grade_time_stage would correctly call the absence a harness bug).
+#
+# ⚠️ OFF MUST *UNSET* THE VAR, NOT SET IT EMPTY. `getEnv` is C `getenv` and an empty
+# var is still SET, so `MEDAKA_PERF_WASM=` reads as present. Spelling `off` as
+# `MEDAKA_PERF_WASM="$wenv"` with an empty $wenv therefore leaves the stage ON, this
+# gate silently pays the ~277 s it exists to save, and NOTHING fails — the rows still
+# print, the shard is just slow again. (Measured; timer.mdk's perfWasmEnabled now also
+# reads empty as OFF, so this is belt-and-braces. Keep both: the two halves fail open
+# independently.) `env -u` also strips an AMBIENT value from the caller's shell, which
+# is what stops a developer's exported MEDAKA_PERF_WASM from quietly re-pricing CI.
 stage_times_min() {
-  fixture="$1"; k="$2"
+  fixture="$1"; k="$2"; wasm="${3:-0}"
   i=0
   while [ "$i" -lt "$k" ]; do
-    GC_INITIAL_HEAP_SIZE="$TIME_HEAP" MEDAKA_PERF=1 \
-      "$PROFILE" "$RUNTIME" "$CORE" "$fixture" 2>&1 \
-      | awk '/^\[perf\] / { t = $3; gsub(/s$/, "", t); printf "%s %s\n", $2, t }'
+    if [ "$wasm" = "1" ]; then
+      GC_INITIAL_HEAP_SIZE="$TIME_HEAP" MEDAKA_PERF=1 MEDAKA_PERF_WASM=1 \
+        "$PROFILE" "$RUNTIME" "$CORE" "$fixture" 2>&1
+    else
+      env -u MEDAKA_PERF_WASM \
+        GC_INITIAL_HEAP_SIZE="$TIME_HEAP" MEDAKA_PERF=1 \
+        "$PROFILE" "$RUNTIME" "$CORE" "$fixture" 2>&1
+    fi | awk '/^\[perf\] / { t = $3; gsub(/s$/, "", t); printf "%s %s\n", $2, t }'
     i=$((i+1))
   done | awk '
       { if (!($1 in m) || $2 + 0 < m[$1] + 0) m[$1] = $2 }
@@ -649,7 +721,14 @@ stage_times_min_modules() {
 #   * On the ROOTED shapes (xref/match) the same constant DILUTES the ratio downward
 #     harder than it does `emit`: at match N=1000 it is 79% of the reading. Under-
 #     threshold here is even weaker evidence of linearity than it is for `emit`.
-TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower emit wasm-emit"
+#
+# ⚠️ `wasm-emit` IS NOT IN THIS LIST — it is graded by grade_wasm_row instead, on the
+# shapes and the N band where it means something. It is NOT ungraded, and removing it
+# from here does not weaken the deletion guard: grade_wasm_row routes through the same
+# grade_time_stage, so a profiler that stops emitting the row still hard-fails with
+# "NO MEASUREMENT". This list is "stages graded at the shape's own band"; wasm-emit is
+# the one stage that is not, because it cannot afford resolve's N.
+TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower emit"
 
 # ── KNOWN SLOW (TIME) — a ledger, NOT a skip-list ────────────────────────────
 #
@@ -823,6 +902,18 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 KNOWN_SLOW_TIME="xref:emit xref:wasm-emit"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
+# ⚠️ THIS ROW IS MEASURED AT TWO DIFFERENT BANDS depending on PERF_DEEP, and the entry
+# below has to hold for BOTH:
+#     DEEP  (nightly)  xref @ 4000->8000->16000   observed r2 3.85-4.15  (r1 3.57-3.82)
+#     QUICK (per-PR)   xref @ 2000->4000->8000    observed r2 3.64       (r1 3.05), min-of-5
+# They are not in tension: QUICK's r2 IS DEEP's r1 — the same 4000->8000 doubling of the
+# same curve — which is why one ceiling covers both, and is also the cross-check that the
+# quick band resamples the curve rather than losing it. It holds on the numbers: QUICK's
+# r2=3.64 against DEEP's r1=3.57 (same tree, same day). (Same relation as xref:wasm-emit;
+# see its note.) Ceiling 5.6 clears DEEP's top (4.15) by 1.45 and QUICK's (3.64) by 1.54;
+# TFIXED 2.60 sits 1.40 under QUICK's r2. If you re-derive either number, state WHICH
+# BAND you measured — a bare ratio here is unfalsifiable.
+#
 # Observed r2 3.85-4.15 across four DCE-realistic batches (incl. the merged tree with
 # the `lint` stage present, which does not perturb emit). Ceiling 5.6 matches the
 # modules:typecheck precedent, whose observed band (4.1-4.3) is the same one, rather
@@ -831,13 +922,32 @@ KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # file-wide convention): drop under it and #349/#350/#352 are fixed and this entry
 # must be promoted out.
 KNOWN_TCEIL_xref_emit="5.6";          KNOWN_TFIXED_xref_emit="2.60"
-# Observed r2 band 3.87-4.15 (r1 3.60-3.82) at N=4000->8000->16000 across FIVE batches —
-# see the band warning above; the ceiling means nothing without that N band. Ceiling 5.6
-# and TFIXED 2.60 re-derived against THIS backend's own readings, not copied from
-# xref:emit because the numbers look alike: the band tops out at 4.15, and 5.6 clears it
-# by 1.45 — the same headroom convention as the modules:typecheck precedent (1.3) and
-# xref:emit (1.45). That the two backends land on the same ceiling is a fact about the
-# shared quadratic, not an assumption carried across them.
+# ⚠️ THIS ROW IS MEASURED AT N=2000->4000->8000 (XREF_WASM_N), *NOT* at the shape's
+# 4000->8000->16000 like every other xref row. It is the one stage that could not afford
+# resolve's N — 42 s x K=5 = ~211 s of a required CI shard for one row. Read the
+# XREF_WASM_N note and grade_wasm_row's xref arm before touching either number.
+#
+# Observed at THIS band: r2 3.51-3.79, r1 2.68-2.75 (min-of-5 gate batch: 2.75/3.51;
+# min-of-3 and min-of-1 spot batches: 3.72/3.79).
+#
+# ⚠️ THE OLD BAND'S NUMBERS DO NOT TRANSFER, AND THE RESAMPLE IS CROSS-CHECKED BY THAT:
+# the previous entry recorded r2 3.87-4.15 / r1 3.60-3.82 at 4000->8000->16000. Those are
+# NOT this row's numbers and must not be compared to them — but they are not unrelated
+# either, and the relation is the check. This band's r2 IS the old band's r1: both are the
+# SAME 4000->8000 doubling of the SAME curve. Old r1 3.60-3.82 vs new r2 3.51-3.79 — they
+# agree, which is what says the smaller band resampled the curve rather than lost it. (Had
+# they disagreed, the resample would be measuring something else and this entry would be
+# junk.) Sampling LOWER still, at 1000->2000->4000, DOES lose it: measured r1=1.93 r2=2.68,
+# i.e. UNDER TFIXED — the ~0.215 s prelude constant dominates at small N and the gate would
+# have fired PROMOTE and declared #349/#350/#352 fixed. That is why the band is 2000, not
+# lower, and it is a measured floor, not a preference.
+#
+# Ceiling 5.6 RETAINED, not re-derived: it clears this band's top (3.79) by 1.48, the same
+# headroom convention as xref:emit (1.45) and the modules:typecheck precedent (1.3). TFIXED
+# 2.60 (the file-wide convention) sits 1.35 under this band's floor (3.51) — a tighter
+# margin than the old band's 1.57, so if this row ever starts flapping PROMOTE on a loaded
+# runner, that margin is the first suspect. It should not: per the band warning above, a
+# BUSY box reads this row LOWER... which is the direction of TFIXED. Watch it.
 KNOWN_TCEIL_xref_wasm_emit="5.6";     KNOWN_TFIXED_xref_wasm_emit="2.60"
 
 is_known_time() {
@@ -873,6 +983,171 @@ pass=0
 #     wasm arm's real coverage is provably graded on every green run, or the gate is red.
 backend_graded=0
 
+# Grade ONE stage's three timings. Args: shape st s1 s2 s3 n1 n2 n3.
+#
+# Extracted from the shape loop so the WASM row can be graded on a DIFFERENT N BAND
+# from the rest of its shape (see grade_wasm_row). That is the whole reason this is a
+# function: the band is an argument, not the ambient $n1/$n2/$n3, because
+# `xref:wasm-emit` is measured at 2000/4000/8000 while `xref:resolve` needs
+# 4000/8000/16000.
+#
+# ⚠️ THE BAND IS PRINTED WITH EVERY RATIO, and that is not decoration. The ledger's
+# ceilings are calibrated per-band ("a scaling ratio is not a constant" — see the
+# KNOWN_TCEIL_xref_wasm_emit note), and two workstreams once appeared to disagree about
+# one curve purely because each quoted a ratio without its band. A row that states
+# r2=3.82 and not the N it came from is unfalsifiable.
+#
+# Mutates the caller's fail/known/backend_graded/time_bad/time_lines. Must be called
+# directly, NEVER in a subshell or a pipe — the counters would vanish and every verdict
+# would silently read zero.
+grade_time_stage() {
+  shape="$1"; st="$2"; s1="$3"; s2="$4"; s3="$5"; gn1="$6"; gn2="$7"; gn3="$8"
+  band="N=${gn1}->${gn2}->${gn3}"
+
+  # A stage the profiler never emitted is a HARNESS bug, not a pass.
+  if [ -z "$s1" ] || [ -z "$s2" ] || [ -z "$s3" ]; then
+    time_lines="${time_lines}           time ${st}: NO MEASUREMENT from the profiler (harness bug)
+"
+    fail=$((fail+1))
+    return
+  fi
+
+  # RULE 4 — the per-stage floor. Under it, the ratio is noise: SKIP, loudly.
+  #
+  # ⚠️ BUT A LEDGERED STAGE MAY NOT SKIP. Dropping below the floor is not an
+  # absence of signal for a KNOWN_SLOW_TIME entry — it IS the signal: the stage
+  # got so fast it is no longer measurable, which is exactly what "fixed" looks
+  # like. Skipping here would let a stale ledger entry rot behind a green gate,
+  # and "a ledger that cannot notice the bug is fixed" is a skip-list — the very
+  # thing this ratchet exists to not be. (Caught for real: #115's fix took
+  # `match:typecheck` from 6.0 s to 75 ms, under the floor, and the first cut of
+  # this gate reported "0 known-superlinear, 0 regressed" and exited 0.)
+  below="$(awk -v v="$s3" -v f="$TIME_FLOOR" 'BEGIN{print (v + 0 < f + 0) ? 1 : 0}')"
+  if [ "$below" = "1" ]; then
+    ms3="$(awk -v v="$s3" 'BEGIN{printf "%.0f", v*1000}')"
+    msf="$(awk -v f="$TIME_FLOOR" 'BEGIN{printf "%.0f", f*1000}')"
+    if is_known_time "${shape}:${st}"; then
+      fail=$((fail+1))
+      time_lines="${time_lines}           time ${st}: ** PROMOTE: now too FAST to time-gate ** ${ms3} ms at N=${gn3} < ${msf} ms floor
+           Remove \"${shape}:${st}\" from KNOWN_SLOW_TIME — the bug is FIXED.
+"
+      return
+    fi
+    time_lines="${time_lines}           time ${st}: SKIP — too small to time-gate: ${ms3} ms at N=${gn3} < ${msf} ms floor
+"
+    return
+  fi
+
+  # Past the floor: this stage gets a real ratio. Record that the backend arm ran.
+  case "$st" in lower|emit) backend_graded=$((backend_graded+1)) ;; esac
+
+  tr1="$(awk -v a="$s1" -v b="$s2" 'BEGIN{printf "%.2f", b/a}')"
+  tr2="$(awk -v a="$s2" -v b="$s3" 'BEGIN{printf "%.2f", b/a}')"
+  # SUSTAINED signal only: both doublings over threshold.
+  bad="$(awk -v r1="$tr1" -v r2="$tr2" -v th="$THRESH" 'BEGIN{print (r1 > th && r2 > th) ? 1 : 0}')"
+
+  if is_known_time "${shape}:${st}"; then
+    lk="$(printf '%s_%s' "$shape" "$st" | tr -c 'a-zA-Z0-9_' '_')"
+    eval "tceil=\${KNOWN_TCEIL_$lk}"
+    eval "tfixed=\${KNOWN_TFIXED_$lk}"
+    tworse="$(awk -v r="$tr2" -v c="$tceil" 'BEGIN{print (r > c) ? 1 : 0}')"
+    tbetter="$(awk -v r="$tr2" -v f="$tfixed" 'BEGIN{print (r < f) ? 1 : 0}')"
+    if [ "$tworse" = "1" ]; then
+      fail=$((fail+1))
+      time_lines="${time_lines}           time ${st}: ** KNOWN-SLOW, AND GOT WORSE ** r1=${tr1} r2=${tr2} (ceiling ${tceil}, ${band})
+"
+    elif [ "$tbetter" = "1" ]; then
+      fail=$((fail+1))
+      time_lines="${time_lines}           time ${st}: ** PROMOTE: now scales LINEARLY ** r2=${tr2} (< ${tfixed}, ${band})
+           Remove \"${shape}:${st}\" from KNOWN_SLOW_TIME — the bug is FIXED.
+"
+    else
+      known=$((known+1))
+      time_lines="${time_lines}           time ${st}: known-slow (TIME) r1=${tr1} r2=${tr2} ${band} — ledgered, alloc is blind to it
+"
+    fi
+  elif [ "$bad" = "1" ]; then
+    time_bad=1
+    time_lines="${time_lines}           time ${st}: ** SUPERLINEAR (TIME) ** ${s1}s -> ${s2}s -> ${s3}s  r1=${tr1} r2=${tr2} (> ${THRESH}x, ${band})
+"
+  else
+    time_lines="${time_lines}           time ${st}: ok  r1=${tr1} r2=${tr2} ${band} (min-of-${PERF_K}, heap pinned)
+"
+  fi
+}
+
+# Grade the `wasm-emit` row for the shapes where it MEANS something, and only those.
+# Args: shape n1 n2 n3 (the shape's own band, for the shapes that ride the main pass).
+#
+# ⚠️ WHICH SHAPES, AND WHY IT IS NOT "ALL OF THEM": wasm_emit renders the whole live
+# prelude to WAT at ~0.24 s / ~242 MB no matter how small the target. On the dead-`main`
+# shapes (bindings/listlit/nesting/comments/manydefs) DCE prunes every synthetic decl, so
+# the stage times THE PRELUDE AND NOTHING ELSE and prints a flat `ok r1≈1.0 r2≈1.0` —
+# measured 1.09/1.01, 0.98/1.17, 1.01/0.96. THAT "ok" IS NOT BACKEND COVERAGE; it is a
+# constant being constant, and it cost 27% of every run's wall and 38% of its allocation
+# to learn nothing. Those shapes now never run the stage at all (MEDAKA_PERF_WASM unset).
+#
+# The two that carry real signal:
+#   match — the #381 CUBIC's exact shape (ctor-switch emission). #401 fixed it 53x; this
+#           row reading r2≈1.05-1.09 is what keeps the fix fixed. Rides the main pass:
+#           its band IS the shape's band, and at N<=1000 the stage is ~0.3 s.
+#   xref  — the ledgered quadratic, on its OWN SMALLER BAND. See below.
+grade_wasm_row() {
+  shape="$1"; n1="$2"; n2="$3"; n3="$4"
+  case "$shape" in
+    match)
+      # Rode the main pass (main_wasm=1), so the rows are already in TF1/TF2/TF3.
+      grade_time_stage "$shape" wasm-emit \
+        "$(awk '$1=="wasm-emit"{print $2}' "$TF1")" \
+        "$(awk '$1=="wasm-emit"{print $2}' "$TF2")" \
+        "$(awk '$1=="wasm-emit"{print $2}' "$TF3")" \
+        "$n1" "$n2" "$n3"
+      ;;
+    xref)
+      # QUICK: the shape's band already IS the wasm band, so the row rode the main pass
+      # (main_wasm=1) and there is nothing extra to run. This is why QUICK is cheap: the
+      # dedicated pass below exists only to spare DEEP the N=16000 wasm sample.
+      if [ "$XREF_N" = "$XREF_WASM_N" ]; then
+        grade_time_stage "$shape" wasm-emit \
+          "$(awk '$1=="wasm-emit"{print $2}' "$TF1")" \
+          "$(awk '$1=="wasm-emit"{print $2}' "$TF2")" \
+          "$(awk '$1=="wasm-emit"{print $2}' "$TF3")" \
+          "$n1" "$n2" "$n3"
+        return
+      fi
+      # DEEP: A DEDICATED PASS AT A SMALLER BAND — the single biggest cost lever here.
+      #
+      # xref's band is sized for `resolve`, which only clears the 200ms floor at
+      # N=16000. wasm_emit is ~10x llvm_emit, so riding that band cost 42 s per run x
+      # K=5 = ~211 s for ONE row, and made `gates (types)` the CI critical path at 12
+      # min against engines' 3.7. At 2000/4000/8000 the same curve reads ~1.0/2.8/10.4 s
+      # — the largest still 50x the floor — for ~14 s per round instead of ~55 s.
+      #
+      # ⚠️ THE LEDGER'S CEILING BELONGS TO THIS BAND. r2 here is the OLD band's r1 (both
+      # are the 4000->8000 doubling), which is why the recorded band moved 3.87-4.15 ->
+      # ~3.7-3.8 rather than collapsing: it is the same curve, resampled. Re-derive
+      # KNOWN_TCEIL/TFIXED_xref_wasm_emit against THIS band if you move XREF_WASM_N, and
+      # do not compare a number from here to one from the old band.
+      wn1="$XREF_WASM_N"; wn2=$((wn1 * 2)); wn3=$((wn1 * 4))
+      wf1="$WORK/${shape}_$wn1.mdk"; wf2="$WORK/${shape}_$wn2.mdk"; wf3="$WORK/${shape}_$wn3.mdk"
+      # 4000/8000 already exist from the main pass (same generator, same deterministic
+      # name); only the 2000 fixture is new. Regenerating is harmless, just wasted.
+      [ -f "$wf1" ] || "gen_$shape" "$wn1" "$wf1"
+      [ -f "$wf2" ] || "gen_$shape" "$wn2" "$wf2"
+      [ -f "$wf3" ] || "gen_$shape" "$wn3" "$wf3"
+      WW1="$WORK/${shape}_w1"; WW2="$WORK/${shape}_w2"; WW3="$WORK/${shape}_w3"
+      stage_times_min "$wf1" "$PERF_K" 1 | sort > "$WW1"
+      stage_times_min "$wf2" "$PERF_K" 1 | sort > "$WW2"
+      stage_times_min "$wf3" "$PERF_K" 1 | sort > "$WW3"
+      grade_time_stage "$shape" wasm-emit \
+        "$(awk '$1=="wasm-emit"{print $2}' "$WW1")" \
+        "$(awk '$1=="wasm-emit"{print $2}' "$WW2")" \
+        "$(awk '$1=="wasm-emit"{print $2}' "$WW3")" \
+        "$wn1" "$wn2" "$wn3"
+      ;;
+  esac
+}
+
 printf '%-10s %8s %10s %10s %10s  %6s %6s  %s\n' \
   shape N 'net-N' 'net-2N' 'net-4N' 'r1' 'r2' verdict
 printf -- '-------------------------------------------------------------------------------\n'
@@ -894,7 +1169,23 @@ printf -- '---------------------------------------------------------------------
 # contaminated by the constant term. Also flag a CLIMBING trend (r2 meaningfully above
 # r1) even when r2 is still under the ceiling, because that is a quadratic caught early,
 # while it is small.
-for shape in bindings match listlit nesting xref comments manydefs; do
+# `manydefs` is DEEP-only: its band exists solely to lift `lint` over the floor (0.62 s
+# at 16000), and nothing else in the shape needs 16000. QUICK announces the omission
+# rather than quietly running a smaller set — a gate that narrows its own scope in
+# silence reads as full coverage, which is the failure this suite is built against.
+SHAPES="bindings match listlit nesting xref comments"
+if [ "$PERF_DEEP" = "1" ]; then
+  SHAPES="$SHAPES manydefs"
+else
+  echo "NOTE: QUICK mode (PERF_DEEP=0). Reduced scope, on purpose:"
+  echo "  * manydefs SKIPPED entirely — the per-file lint tier's O(defs^2) detector."
+  echo "  * xref at N=${XREF_N} (-> $((XREF_N * 4))) instead of 4000 (-> 16000):"
+  echo "      emit + wasm-emit still graded and ledgered (both >> the floor at 4N);"
+  echo "      resolve drops under the 200ms floor and SKIPs — the #78 detector."
+  echo "  These run in nightly.yml. Locally: PERF_DEEP=1 sh test/diff_compiler_perf_scaling.sh"
+fi
+
+for shape in $SHAPES; do
   case "$shape" in
     xref)     base_n="$XREF_N" ;;
     comments) base_n="$COMMENTS_N" ;;
@@ -923,87 +1214,33 @@ for shape in bindings match listlit nesting xref comments manydefs; do
   # These are written to files rather than shell vars because there is one line
   # per stage per size and sh has no arrays.
   TF1="$WORK/${shape}_t1"; TF2="$WORK/${shape}_t2"; TF3="$WORK/${shape}_t3"
-  stage_times_min "$f1" "$PERF_K" | sort > "$TF1"
-  stage_times_min "$f2" "$PERF_K" | sort > "$TF2"
-  stage_times_min "$f3" "$PERF_K" | sort > "$TF3"
+  # `match` is the ONLY shape whose wasm row rides the main pass — its band is the
+  # shape's band and the stage is ~0.3 s there. Every other shape runs the main pass
+  # with wasm OFF: xref grades it on its own smaller band (grade_wasm_row), and the
+  # rest do not grade it at all because on them it only ever times the prelude.
+  # A shape's wasm row rides the main pass when its own band IS the wasm band —
+  # `match` always (250/500/1000), and `xref` in QUICK, where XREF_N == XREF_WASM_N.
+  # In DEEP, xref's band is resolve's, so its wasm row needs the separate smaller-band
+  # pass instead (grade_wasm_row).
+  case "$shape" in
+    match) main_wasm=1 ;;
+    xref)  [ "$XREF_N" = "$XREF_WASM_N" ] && main_wasm=1 || main_wasm=0 ;;
+    *)     main_wasm=0 ;;
+  esac
+  stage_times_min "$f1" "$PERF_K" "$main_wasm" | sort > "$TF1"
+  stage_times_min "$f2" "$PERF_K" "$main_wasm" | sort > "$TF2"
+  stage_times_min "$f3" "$PERF_K" "$main_wasm" | sort > "$TF3"
 
   time_bad=0
   time_lines=""
   for st in $TIME_STAGES; do
-    s1="$(awk -v s="$st" '$1==s{print $2}' "$TF1")"
-    s2="$(awk -v s="$st" '$1==s{print $2}' "$TF2")"
-    s3="$(awk -v s="$st" '$1==s{print $2}' "$TF3")"
-    # A stage the profiler never emitted is a HARNESS bug, not a pass.
-    if [ -z "$s1" ] || [ -z "$s2" ] || [ -z "$s3" ]; then
-      time_lines="${time_lines}           time ${st}: NO MEASUREMENT from the profiler (harness bug)
-"
-      fail=$((fail+1))
-      continue
-    fi
-
-    # RULE 4 — the per-stage floor. Under it, the ratio is noise: SKIP, loudly.
-    #
-    # ⚠️ BUT A LEDGERED STAGE MAY NOT SKIP. Dropping below the floor is not an
-    # absence of signal for a KNOWN_SLOW_TIME entry — it IS the signal: the stage
-    # got so fast it is no longer measurable, which is exactly what "fixed" looks
-    # like. Skipping here would let a stale ledger entry rot behind a green gate,
-    # and "a ledger that cannot notice the bug is fixed" is a skip-list — the very
-    # thing this ratchet exists to not be. (Caught for real: #115's fix took
-    # `match:typecheck` from 6.0 s to 75 ms, under the floor, and the first cut of
-    # this gate reported "0 known-superlinear, 0 regressed" and exited 0.)
-    below="$(awk -v v="$s3" -v f="$TIME_FLOOR" 'BEGIN{print (v + 0 < f + 0) ? 1 : 0}')"
-    if [ "$below" = "1" ]; then
-      ms3="$(awk -v v="$s3" 'BEGIN{printf "%.0f", v*1000}')"
-      msf="$(awk -v f="$TIME_FLOOR" 'BEGIN{printf "%.0f", f*1000}')"
-      if is_known_time "${shape}:${st}"; then
-        fail=$((fail+1))
-        time_lines="${time_lines}           time ${st}: ** PROMOTE: now too FAST to time-gate ** ${ms3} ms at N=${n3} < ${msf} ms floor
-           Remove \"${shape}:${st}\" from KNOWN_SLOW_TIME — the bug is FIXED.
-"
-        continue
-      fi
-      time_lines="${time_lines}           time ${st}: SKIP — too small to time-gate: ${ms3} ms at N=${n3} < ${msf} ms floor
-"
-      continue
-    fi
-
-    # Past the floor: this stage gets a real ratio. Record that the backend arm ran.
-    case "$st" in lower|emit) backend_graded=$((backend_graded+1)) ;; esac
-
-    tr1="$(awk -v a="$s1" -v b="$s2" 'BEGIN{printf "%.2f", b/a}')"
-    tr2="$(awk -v a="$s2" -v b="$s3" 'BEGIN{printf "%.2f", b/a}')"
-    # SUSTAINED signal only: both doublings over threshold.
-    bad="$(awk -v r1="$tr1" -v r2="$tr2" -v th="$THRESH" 'BEGIN{print (r1 > th && r2 > th) ? 1 : 0}')"
-
-    if is_known_time "${shape}:${st}"; then
-      lk="$(printf '%s_%s' "$shape" "$st" | tr -c 'a-zA-Z0-9_' '_')"
-      eval "tceil=\${KNOWN_TCEIL_$lk}"
-      eval "tfixed=\${KNOWN_TFIXED_$lk}"
-      tworse="$(awk -v r="$tr2" -v c="$tceil" 'BEGIN{print (r > c) ? 1 : 0}')"
-      tbetter="$(awk -v r="$tr2" -v f="$tfixed" 'BEGIN{print (r < f) ? 1 : 0}')"
-      if [ "$tworse" = "1" ]; then
-        fail=$((fail+1))
-        time_lines="${time_lines}           time ${st}: ** KNOWN-SLOW, AND GOT WORSE ** r1=${tr1} r2=${tr2} (ceiling ${tceil})
-"
-      elif [ "$tbetter" = "1" ]; then
-        fail=$((fail+1))
-        time_lines="${time_lines}           time ${st}: ** PROMOTE: now scales LINEARLY ** r2=${tr2} (< ${tfixed})
-           Remove \"${shape}:${st}\" from KNOWN_SLOW_TIME — the bug is FIXED.
-"
-      else
-        known=$((known+1))
-        time_lines="${time_lines}           time ${st}: known-slow (TIME) r1=${tr1} r2=${tr2} — ledgered, alloc is blind to it
-"
-      fi
-    elif [ "$bad" = "1" ]; then
-      time_bad=1
-      time_lines="${time_lines}           time ${st}: ** SUPERLINEAR (TIME) ** ${s1}s -> ${s2}s -> ${s3}s  r1=${tr1} r2=${tr2} (> ${THRESH}x)
-"
-    else
-      time_lines="${time_lines}           time ${st}: ok  r1=${tr1} r2=${tr2}  (min-of-${PERF_K}, heap pinned)
-"
-    fi
+    grade_time_stage "$shape" "$st" \
+      "$(awk -v s="$st" '$1==s{print $2}' "$TF1")" \
+      "$(awk -v s="$st" '$1==s{print $2}' "$TF2")" \
+      "$(awk -v s="$st" '$1==s{print $2}' "$TF3")" \
+      "$n1" "$n2" "$n3"
   done
+  grade_wasm_row "$shape" "$n1" "$n2" "$n3"
 
   # Subtract the fixed prelude cost — see the BASELINE note above. Without this the
   # gate is blind.
