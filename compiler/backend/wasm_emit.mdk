@@ -3404,7 +3404,7 @@ emitDictRef prog env d name routes args =
 -- is a plain value — keep the immediate saturated dispatch.
 emitMethodValueRef : Prog -> List String -> Int -> String -> Route -> List Route -> List Route -> List String
 emitMethodValueRef prog env d name route implRoutes methRoutes =
-  let arity = methodValArity prog name
+  let arity = methodValArity prog name route
   if arity <= 0 then emitMethodRef prog env d name route implRoutes methRoutes []
   else
     let names = etaValNames arity
@@ -3412,13 +3412,35 @@ emitMethodValueRef prog env d name route implRoutes methRoutes =
     let body = applyArgsC (CMethod name route implRoutes methRoutes) (map (n => CVar n AGlobal) names)
     emitClosure prog env d ps body
 
--- the method's USER arity for an eta-value closure.  Prefer the installed iface table
--- (methodArityOf, the modules path); when absent (the prelude-free W5/typed path never
--- installs it → methodArityOf 0) fall back to the method's impl clause arity (these
--- prelude-free fixtures define simple `requires`-free impls, so the clause arity IS the
--- user arity — no leading requires-dict params to subtract).
-methodValArity : Prog -> String -> Int
-methodValArity prog name =
+-- the method's USER arity for an eta-value closure.
+--
+-- #410 (wasm peer of llvm_emit's `methValArity`): an RLocal route is NOT a method
+-- dispatch — it is a definer SHADOW forwarding to a standalone top-level (see
+-- `emitMethodRef`'s RLocal arm), so the closure must expose the STANDALONE's value
+-- arity.  Deriving it from the method NAME instead is a lie whenever the two arities
+-- differ: the closure advertises N args but its body calls an M-arg function, so a HOF
+-- applying M args gets a PARTIAL APPLICATION back instead of a value (LLVM's symptom
+-- was a list of PAP heap pointers printed as Ints at exit 0 — silent wrongness).
+-- `progFnArity` is dict-INCLUSIVE (the dict-pass widened it with the leading dict
+-- params), so subtract the route's dicts to get the VALUE arity — exactly as the
+-- sibling `emitDictValueRef` already does for a CDict value.
+--
+-- Every non-RLocal route really is dispatching the method, so it keeps the name-derived
+-- arity: prefer the installed iface table (methodArityOf, the modules path); when absent
+-- (the prelude-free W5/typed path never installs it → methodArityOf 0) fall back to the
+-- method's impl clause arity (these prelude-free fixtures define simple `requires`-free
+-- impls, so the clause arity IS the user arity — no leading requires-dict params to
+-- subtract).
+methodValArity : Prog -> String -> Route -> Int
+methodValArity prog name (RLocal sym dicts) =
+  let target = if sym == "" then name else sym
+  let a = progFnArity prog target - listLen dicts
+  if a <= 0 then methodValArityByName prog name else a
+methodValArity prog name _ = methodValArityByName prog name
+
+-- the name-derived (non-shadow) method arity — the pre-#410 behaviour, unchanged.
+methodValArityByName : Prog -> String -> Int
+methodValArityByName prog name =
   let viaTable = methodArityOf name
   if viaTable > 0 then viaTable
   else match methodImpls prog name

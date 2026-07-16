@@ -1393,6 +1393,68 @@ IDENT "arr"
 RPAREN
 RPAREN
 NEWLINE
+IDENT "isHighSurrogate"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "isHighSurrogate"
+IDENT "k"
+EQUAL
+IDENT "k"
+GEQ
+INT 55296
+AND
+IDENT "k"
+LEQ
+INT 56319
+NEWLINE
+IDENT "isLowSurrogate"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "isLowSurrogate"
+IDENT "k"
+EQUAL
+IDENT "k"
+GEQ
+INT 56320
+AND
+IDENT "k"
+LEQ
+INT 57343
+NEWLINE
+IDENT "combineSurrogates"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "combineSurrogates"
+IDENT "hi"
+IDENT "lo"
+EQUAL
+INT 65536
+PLUS
+LPAREN
+IDENT "hi"
+MINUS
+INT 55296
+RPAREN
+STAR
+INT 1024
+PLUS
+LPAREN
+IDENT "lo"
+MINUS
+INT 56320
+RPAREN
+NEWLINE
 IDENT "parseUnicode"
 COLON
 UPPER "Array"
@@ -1480,20 +1542,231 @@ LPAREN
 UPPER "Some"
 IDENT "k"
 RPAREN
+INDENT
+PIPE
+IDENT "isHighSurrogate"
+IDENT "k"
 EQUAL
-IDENT "parseStr"
+IDENT "parseLowSurrogate"
+IDENT "arr"
+IDENT "i"
+IDENT "acc"
+IDENT "k"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "parseUnicodeScalar"
 IDENT "arr"
 LPAREN
 IDENT "i"
 PLUS
 INT 4
 RPAREN
-LPAREN
-IDENT "charOfCode"
+IDENT "acc"
 IDENT "k"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "parseLowSurrogate"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Result"
+UPPER "String"
+LPAREN
+UPPER "String"
+COMMA
+UPPER "Int"
+RPAREN
+NEWLINE
+IDENT "parseLowSurrogate"
+IDENT "arr"
+IDENT "i"
+IDENT "acc"
+IDENT "hi"
+INDENT
+PIPE
+IDENT "i"
+PLUS
+INT 10
+GT
+IDENT "arrayLength"
+IDENT "arr"
+EQUAL
+UPPER "Err"
+STRING "invalid \\u escape"
+NEWLINE
+PIPE
+IDENT "arrayGetUnsafe"
+LPAREN
+IDENT "i"
+PLUS
+INT 4
+RPAREN
+IDENT "arr"
+NEQ
+CHAR "\\"
+EQUAL
+UPPER "Err"
+STRING "invalid \\u escape"
+NEWLINE
+PIPE
+IDENT "arrayGetUnsafe"
+LPAREN
+IDENT "i"
+PLUS
+INT 5
+RPAREN
+IDENT "arr"
+NEQ
+CHAR "u"
+EQUAL
+UPPER "Err"
+STRING "invalid \\u escape"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "parseLowSurrogateAt"
+IDENT "arr"
+IDENT "i"
+IDENT "acc"
+IDENT "hi"
+LPAREN
+IDENT "hex4"
+IDENT "arr"
+LPAREN
+IDENT "i"
+PLUS
+INT 6
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "parseLowSurrogateAt"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Option"
+UPPER "Int"
+ARROW
+UPPER "Result"
+UPPER "String"
+LPAREN
+UPPER "String"
+COMMA
+UPPER "Int"
+RPAREN
+NEWLINE
+IDENT "parseLowSurrogateAt"
+IDENT "arr"
+IDENT "i"
+IDENT "acc"
+IDENT "hi"
+LPAREN
+UPPER "Some"
+IDENT "lo"
+RPAREN
+INDENT
+PIPE
+IDENT "isLowSurrogate"
+IDENT "lo"
+EQUAL
+INDENT
+IDENT "parseUnicodeScalar"
+IDENT "arr"
+LPAREN
+IDENT "i"
+PLUS
+INT 10
+RPAREN
+IDENT "acc"
+LPAREN
+IDENT "combineSurrogates"
+IDENT "hi"
+IDENT "lo"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "parseLowSurrogateAt"
+IDENT "arr"
+IDENT "i"
+IDENT "acc"
+IDENT "hi"
+UNDERSCORE
+EQUAL
+UPPER "Err"
+STRING "invalid \\u escape"
+NEWLINE
+IDENT "parseUnicodeScalar"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Result"
+UPPER "String"
+LPAREN
+UPPER "String"
+COMMA
+UPPER "Int"
+RPAREN
+NEWLINE
+IDENT "parseUnicodeScalar"
+IDENT "arr"
+IDENT "j"
+IDENT "acc"
+IDENT "k"
+EQUAL
+MATCH
+IDENT "charFromCode"
+IDENT "k"
+INDENT
+UPPER "Some"
+IDENT "c"
+FAT_ARROW
+IDENT "parseStr"
+IDENT "arr"
+IDENT "j"
+LPAREN
+IDENT "c"
 CONS
 IDENT "acc"
 RPAREN
+NEWLINE
+UPPER "None"
+FAT_ARROW
+UPPER "Err"
+STRING "invalid \\u escape"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "skipSign"
 COLON

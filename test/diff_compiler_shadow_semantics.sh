@@ -141,6 +141,10 @@ pass=0; fail=0; asserts=0
 #                         (used when run is expected to REJECT but build is
 #                         expected to ACCEPT with a specific, deterministic
 #                         value -- a check/build-agree-run-diverges split)
+#     BUILD_CRASH      -- KNOWN-BAD ledger: build exits 0 but the SHIPPED BINARY
+#                         crashes (non-zero exit) while run prints `value`
+#                         correctly. Pins BOTH the crash and run's value, so the
+#                         row self-drains (goes RED) the day the bug is fixed.
 #     BUILD_NOTEQ_INT  -- build's stdout must be a bare integer (digits only)
 #                         that is NOT equal to `value` (used for a
 #                         non-deterministic garbage-pointer miscompile, where
@@ -166,7 +170,16 @@ i4_importer_prelude_iface/main.mdk|I4 importer shadow of a PRELUDE method (S2, s
 d10_definer_constrained.mdk|D10 definer, CONSTRAINED standalone dict-passed via RLocal (S9, was the S-1 bug)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
 d11_definer_multityparam_iface.mdk|D11 KNOWN-BAD: multi-typaram interface bypasses shadow machinery (S-3, doc residual)|ACCEPT|REJECT|ACCEPT|BUILD_EXACT|4\n3
 d12_definer_ungrounded_literal.mdk|D12 definer, UNGROUNDED numeric-literal receiver whose grounded head HAS a live prelude impl (S2+S5; the P0-20 cell, now inverted: the standalone wins, 3 not False)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n30
-i5_importer_ungrounded_literal/main.mdk|I5 importer, UNGROUNDED numeric-literal receiver (S2+S5; regression for S1-RESIDUAL-B, closed 2026-07-14) + the FORK-1 control in the same fixture (isEmpty [1,2] must still reach Foldable)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue'
+i5_importer_ungrounded_literal/main.mdk|I5 importer, UNGROUNDED numeric-literal receiver (S2+S5; regression for S1-RESIDUAL-B, closed 2026-07-14) + the FORK-1 control in the same fixture (isEmpty [1,2] must still reach Foldable)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue
+i6_importer_value_pos/main.mdk|I6 importer, value position over no-impl elements (S4, matrix row 21a; #411 -- was check+run ACCEPT [2,3,4] but BUILD died `no impl of method size for type Int`, a loud S7 split on a valid program). The importer twin of d4: expected IDENTICAL to row 9|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
+i7_importer_value_pos_liveimpl/main.mdk|I7 importer, value position over LIVE-impl elements (S4, matrix row 21b; #411 -- was the SILENT half: check zero diags and run AND build both printed [1, 2], all three engines agreeing on the forbidden answer). The importer twin of d4b: expected IDENTICAL to row 10|REJECT|REJECT|REJECT|NONE|
+i8_importer_nway/main.mdk|I8 importer, N-way multi-impl (S3, matrix row 22): per-receiver, UNCHANGED for importer shadows -- the FORK-1 control at N-way width, which must NOT follow row 6`s definer flip to REJECT. Probed conformant while fixing #411|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n30\n4
+i9_importer_return_pos/main.mdk|I9 importer, RETURN-POSITION method shadow (S4, matrix row 23): `mk : Int -> a` has no receiver param, so the value-position rule gives the standalone. Probed conformant while fixing #411|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
+d13_definer_return_pos.mdk|D13 definer, RETURN-POSITION method shadow (S4, matrix row 23, definer half): the d-twin of I9. Probed conformant while fixing #411|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
+d17_definer_value_pos_arity_differ.mdk|D17 definer, value position where METHOD arity (2) DIFFERS from STANDALONE arity (1) (S4; S1-RESIDUAL-A, #410). The emitter lift built a 2-arity closure over a 1-arity body, so map got PAPs back and build printed heap pointers as Ints at exit 0 -- SILENT WRONGNESS. Fixed by methValArity (route-derived, not name-derived). D4/D4b are arity-EQUAL, which is why the corpus was blind to this|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
+d19_definer_value_pos_arity_differ_zeroimpls.mdk|D19 definer, arity-differ value position with ZERO impls (S2+S4, #410) -- shadow-hood + arity mismatch + value position suffice; the impl universe is irrelevant|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
+d20_definer_value_pos_arity_differ_opposite.mdk|D20 definer, OPPOSITE arity direction to d17: METHOD arity 1 < STANDALONE arity 2 (S4, #410). Pins the other side of the route-derived arity -- the closure must be arity 2 so `f 1 2` is a saturated direct call|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3
+d18_definer_value_pos_arity_differ_unannot.mdk|D18 KNOWN-BAD: d17 WITHOUT the List Int annotation (#410 headline repro). println`s Display requirement gets a NULL element dict (RNone route) so the shipped binary SEGFAULTs while run is correct. The element TYPE resolves to Int -- this is the requirement ROUTE, stamped in types/typecheck.mdk, NOT an emitter bug|ACCEPT|ACCEPT|ACCEPT|BUILD_CRASH|[2, 3, 4]'
 
 # --- Coverage self-audit: every top-level fixture unit (a .mdk file, or a
 # directory) in FIXDIR must appear in TABLE, or this gate silently re-creates
@@ -223,9 +236,11 @@ printf '%s\n' "$TABLE" | while IFS='|' read -r entry label exp_check exp_run exp
   if [ "$build_code" -eq 0 ] && [ -x "$TMP/$base.bin" ]; then
     build_v='ACCEPT'
     bound "$TMP/$base.bin" >"$TMP/$base.build.out" 2>"$TMP/$base.build.runerr"
+    bin_code=$?
   else
     build_v='REJECT'
     : >"$TMP/$base.build.out"
+    bin_code=0
   fi
 
   row_ok=1
@@ -256,6 +271,28 @@ printf '%s\n' "$TABLE" | while IFS='|' read -r entry label exp_check exp_run exp
           value_v='ok'
         else
           value_v='WRONG'
+          row_ok=0
+        fi
+      else
+        value_v='n/a'
+      fi
+      ;;
+    BUILD_CRASH)
+      # KNOWN-BAD ledger cell, NOT a skip: `build` exits 0 and ships a binary
+      # that CRASHES (non-zero exit), while `run` prints the correct `value`.
+      # Asserting BOTH halves is what makes this self-draining: the day the
+      # underlying bug is fixed the binary stops crashing, this row goes RED,
+      # and whoever fixed it MUST come here and re-pin the cell to ALL_EXACT.
+      # A `NONE` row would have silently absorbed the fix and taught nobody.
+      if [ "$build_v" = 'ACCEPT' ]; then
+        printf '%b\n' "$value" > "$TMP/$base.expected"
+        if [ "$bin_code" -eq 0 ]; then
+          value_v='NO-CRASH-FIXED'   # <-- the drain fired: re-pin this row
+          row_ok=0
+        elif cmp -s "$TMP/$base.run.out" "$TMP/$base.expected"; then
+          value_v="ok(crash:$bin_code)"
+        else
+          value_v='RUN-DIFF'
           row_ok=0
         fi
       else

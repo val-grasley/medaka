@@ -1,0 +1,18 @@
+-- SHADOW-SEMANTICS cell D13 (matrix row 23, DEFINER half): the definer twin of I9 --
+-- a shadow of a RETURN-POSITION method (`mk : Int -> a`, dispatched by RESULT type,
+-- no receiver parameter).  S4's value-position rule governs: no receiver to dispatch
+-- on, so the module's own standalone wins.
+-- Probed conformant while fixing #411 (row 23 was UNTESTED-NO-FIXTURE).
+-- Expected: check accepts; run/build print 4 (the standalone), NOT a Box.
+interface Mk a where
+  mk : Int -> a
+
+data Box = Box Int
+
+impl Mk Box where
+  mk n = Box n
+
+mk : Int -> Int
+mk n = n + 1
+
+main = println (mk 3)

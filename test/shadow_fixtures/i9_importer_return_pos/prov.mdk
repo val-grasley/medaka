@@ -1,0 +1,4 @@
+-- SHADOW-SEMANTICS row-23 provider: the imported standalone that shadows a
+-- RETURN-POSITION interface method (dispatch is by RESULT type, not a receiver).
+export mk : Int -> Int
+mk n = n + 1

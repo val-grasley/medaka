@@ -1,0 +1,23 @@
+-- SHADOW-SEMANTICS cell I6 (matrix row 21a): IMPORTER shadow in VALUE position over
+-- NO-IMPL elements.  S4 is not keyed on where the standalone lives, so this is the
+-- importer twin of d4 and its expectation is IDENTICAL (row 21 "expected = row 9"):
+-- the bare `size` denotes the imported STANDALONE, so `map size [1, 2, 3]` = [2, 3, 4].
+--
+-- #411: was a LOUD S7 split -- check accepted and run printed [2, 3, 4], but BUILD
+-- died `no impl of method 'size' for type 'Int' (slice 6)` with no binary, because the
+-- importer shadow set did not survive mangling (standaloneShadowsFromSet had no
+-- mangled-recovery arm), so resolveArgStamp's RKey Int clobbered the mark pass's
+-- correct RLocal seed.  Pin the VALUE, not the exit code: all three paths agreeing is
+-- exactly what this cell cannot rely on (S7).
+-- Expected: check accepts; run/build print [2, 3, 4].
+import prov.{size}
+
+data Box = Box Int
+
+interface Sizeable a where
+  size : a -> Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+main = println (map size [1, 2, 3])
