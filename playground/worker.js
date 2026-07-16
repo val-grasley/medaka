@@ -10,8 +10,9 @@
 // half-way tie). We take its digits + decimal exponent and re-derive the layout with
 // the same fixed threshold as C (scientific iff exp<-4 || exp>=12). Kept byte-identical
 // to test/wasm/run.js.
-// --- BEGIN SHARED SHIM fmt12g --- (byte-identical in test/wasm/run.js and
-// playground/worker.js — WASM-SEMANTICS WH3; enforced by test/diff_compiler_wasm_shim_parity.sh)
+// --- BEGIN SHARED SHIM fmt12g --- (byte-identical in test/wasm/run.js,
+// playground/worker.js and playground/compile.mjs — WASM-SEMANTICS WH3; enforced by
+// test/diff_compiler_wasm_shim_parity.sh)
 function fmt12g(d) {
   if (Number.isNaN(d)) return 'nan';
   if (d === Infinity) return 'inf';
@@ -59,8 +60,9 @@ let pathBuf = [];
 const takePath = () => { const s = new TextDecoder('utf-8').decode(new Uint8Array(pathBuf)); pathBuf = []; return s; };
 let strToFloatOk = 0;   // #370: latched by mdk_str_to_float, read by mdk_str_to_float_ok
 
-// --- BEGIN SHARED SHIM mdkStrToFloat --- (byte-identical in test/wasm/run.js and
-// playground/worker.js — WASM-SEMANTICS WH2/WH3; enforced by test/diff_compiler_wasm_shim_parity.sh)
+// --- BEGIN SHARED SHIM mdkStrToFloat --- (byte-identical in test/wasm/run.js,
+// playground/worker.js and playground/compile.mjs — WASM-SEMANTICS WH2/WH3; enforced
+// by test/diff_compiler_wasm_shim_parity.sh)
 // #370 stringToFloat host seam. The C runtime is the oracle (WH2): medaka_rt.c
 // mdk_string_to_float is `strtod` + an endptr FULL-CONSUMPTION check + an empty-string
 // reject. JS Number() is NOT strtod: Number("") === 0, Number("1.5 ") trims,
