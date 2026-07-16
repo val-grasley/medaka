@@ -1,5 +1,5 @@
 # META
-source_lines=260
+source_lines=262
 stages=DESUGAR,MARK
 # SOURCE
 {- hash_map.mdk — a mutable hash table (Module 6).
@@ -14,10 +14,12 @@ stages=DESUGAR,MARK
    returning a fresh map. Reach for `Map` when you want persistence/ordering;
    reach for `HashMap` when you want raw speed and a single owner.
 
-   Keys hash via the `Hashable` typeclass method `hash` (structural by default via
-   `deriving (Hashable)`). It must agree with the key's `Eq`, which holds for every
-   structural `Eq` impl (all the built-ins) — a *custom* `Eq` that isn't structural
-   would break it, so don't key a HashMap on such a type. Iteration order is
+   Keys hash via the `Hashable` typeclass method `hash`. It must agree with the
+   key's `Eq`, which holds for every structural `Eq` impl (all the built-ins) —
+   a *custom* `Eq` that isn't structural would break it, so don't key a
+   HashMap on such a type. ⛔ `deriving (Hashable)` does NOT exist yet (issue
+   #422) — a custom key type needs a hand-written `impl Hashable T` (see the
+   compound impls in `core.mdk` for the djb2-fold pattern). Iteration order is
    unspecified (hash order).
 
    The mutating ops sequence mutation statements in block bodies. A conditional

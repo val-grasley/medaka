@@ -1,5 +1,5 @@
 # META
-source_lines=257
+source_lines=258
 stages=DESUGAR,MARK
 # SOURCE
 -- Built-in extern declarations.
@@ -223,8 +223,8 @@ extern arrayFromList : List a -> Array a
 -- String/Char kernel (Phase 75).  String is a sequence of Unicode codepoints,
 -- UTF-8 backed; Char is one codepoint.  The bridge to Array Char + the few
 -- codepoint-aware perf externs below are the minimal host surface; the bulk of
--- stdlib/string.mdk is written in Medaka on top.  Unicode classification/case
--- folding (charIs*/charTo*, needs a Unicode database) lands separately.
+-- stdlib/string.mdk is written in Medaka on top.  Char classification/case
+-- folding (charIs*/charTo*, below) is ASCII-only, not Unicode (issue #417).
 extern stringToChars : String -> Array Char
 extern stringFromChars : Array Char -> String
 -- UTF-8 codec (BOTH directions).  stringToUtf8Bytes exposes the String's raw
@@ -244,12 +244,13 @@ extern stringIndexOf : String -> String -> Option Int
 extern stringCompare : String -> String -> Ordering
 extern stringToFloat : String -> Option Float
 
--- Unicode classification & case folding (Phase 75).  Backed by the Unicode
--- character database (uucp) in the host; this is part of the runtime contract
--- every self-hosting host must re-provide, like floatToString.  charToUpper/
--- charToLower are Char -> Char and are the *identity* where a Unicode case
--- mapping would expand to several codepoints (e.g. ß); full-fidelity case
--- folding lives in stringToUpper/stringToLower, which expand 1 -> N.
+-- Char classification & case folding (Phase 75).  **ASCII-only** (issue
+-- #417) — plain 'a'..'z'/'A'..'Z' byte tests in runtime/medaka_rt.c, no
+-- Unicode character database.  A non-ASCII byte (UTF-8 lead/continuation,
+-- >= 0x80) passes through every one of these unchanged: charToUpper/
+-- charToLower are Char -> Char and are the identity outside 'a'..'z'/
+-- 'A'..'Z'; stringToUpper/stringToLower are the same byte-wise ASCII map
+-- over a String (NOT full Unicode case folding, and no 1 -> N expansion).
 extern charIsAlpha : Char -> Bool
 extern charIsSpace : Char -> Bool
 extern charIsUpper : Char -> Bool
