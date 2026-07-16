@@ -51,7 +51,10 @@ RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
 for b in "$EMITTER" "$LLVM_ONE" "$WASM_ONE" "$WASM_MODS"; do
-  [ -x "$b" ] || { echo "missing $b (make medaka; sh test/build_oracles.sh; sh test/wasm/build_wasm_oracle.sh)"; exit 2; }
+  # These four binaries come from THREE different builders, so the hint lists all three —
+  # but the build_oracles one names the TARGETED form (#527): bare build_oracles.sh spawns
+  # the xargs -P pool AGENTS.md documents as having killed several agents.
+  [ -x "$b" ] || { echo "missing $b — try: make medaka | FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$b") | sh test/wasm/build_wasm_oracle.sh"; exit 2; }
 done
 
 OUT="${1:-$(mktemp -d /tmp/tmc_census.XXXXXX)}"

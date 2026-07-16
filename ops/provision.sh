@@ -121,7 +121,10 @@ OUT="$(./medaka run /tmp/smoke.mdk 2>&1)"; echo "  -> $OUT"
 
 # 6. Gate suite. Build the oracle probe binaries FIRST — without them most
 #    diff_compiler_* gates exit 2 (SKIP), yielding a hollow "pass".
-log "building oracles (FORCE=1 test/build_oracles.sh)"
+# Narrates its own action WITHOUT printing the bare command — a reader could copy that
+# into a context where build-all is the wrong, pool-spawning thing to run (#527).
+# Provisioning a fresh box IS the legitimate build-all case, so the invocation below stays.
+log "building ALL oracles (correct here: provisioning a fresh box from scratch)"
 FORCE=1 sh test/build_oracles.sh || echo "  (build_oracles reported errors; gates below will SKIP)"
 log "gate suite: sh test/run_gates.sh"
 if sh test/run_gates.sh; then GATES=PASS; else GATES=FAIL; fi
