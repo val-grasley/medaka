@@ -289,10 +289,16 @@ gen_match() {
   done >> "$f"
   printf 'toInt : T%s -> Int\ntoInt v = match v\n' "$n" >> "$f"
   i=0; while [ "$i" -lt "$n" ]; do printf '  C%s => %s\n' "$i" "$i"; i=$((i+1)); done >> "$f"
-  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
-  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
-  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
-  printf 'main = println 1\n' >> "$f"
+  # ⚠️ `main` CALLS `toInt`, and that is load-bearing — do not "simplify" it.
+  #
+  # This shape is the OPPOSITE of xref and the more dangerous one: its whole cost is
+  # concentrated in a SINGLE decl (`toInt`, N arms over N ctors) rather than spread
+  # across N decls. `main = println 1` roots nothing, so dceFilter prunes `toInt`
+  # outright and the backend stages time an empty program — this shape read a
+  # meaningless 22 ms at N=1000 and SKIPped, i.e. it silently graded NOTHING.
+  # Rooting `toInt` puts that one big decl on the live path, where DCE cannot touch
+  # it, which is exactly where a per-decl blowup in the emitter would show.
+  printf 'main = println (toInt C0)\n' >> "$f"
 }
 
 gen_listlit() {
@@ -360,10 +366,22 @@ gen_xref() {
     printf 'f%s : Int -> Int\nf%s x = f%s x + %s\n' "$i" "$i" "$prev" "$i"
     i=$((i+1))
   done >> "$f"
-  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
-  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
-  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
-  printf 'main = println 1\n' >> "$f"
+  # ⚠️ `main` CALLS THE HEAD OF THE CHAIN, and that is load-bearing — do not
+  # "simplify" it to `println 1`.
+  #
+  # An emit-able program must have a `main` at all (emitProgram panics "no `main`
+  # binding" without one). But a `main` that reaches NOTHING is worse than useless
+  # here: profile_main runs `dceFilter` exactly as the real build driver does, whose
+  # roots are `main` + impl/interface bodies. With `main = println 1` every f0..fN is
+  # DEAD, gets pruned before lowering, and the backend stages would time the prelude
+  # and nothing else -- a ratio describing a scenario no real build performs.
+  #
+  # f%s calls f%s-1, so calling the LAST one transitively retains the WHOLE chain
+  # through DCE. This is what makes the `xref:emit` quadratic a claim about
+  # `medaka build` rather than about an artifact of the harness.
+  # NB: f$((n-1)), not $prev — $prev leaves the loop at n-2, which would strand the
+  # last function as the one dead decl.
+  printf 'main = println (f%s 0)\n' "$((n - 1))" >> "$f"
 }
 
 # gen_modules — the ONLY multi-module generator (issue #153). Writes N separate
@@ -525,6 +543,24 @@ stage_times_min_modules() {
 # 2026-07-16 emitter audit (#349-#352) filed findings that sit entirely behind it, and
 # most are PURE SCANS, so they need exactly this TIME arm: allocation cannot see them.
 #
+# ⚠️ THE BACKEND STAGES RUN BEHIND DCE, AND THAT DECIDES WHICH SHAPES CAN GRADE THEM.
+# profile_main runs `dceFilter` before lowering, exactly as the real build driver does
+# (llvm_emit_modules_main.mdk, half == 0). Its roots are `main` + impl/interface
+# bodies, so a shape whose synthetic decls `main` never calls has them ALL pruned
+# before the backend sees them: its `lower`/`emit` then time the prelude alone, come
+# in far under TIME_FLOOR, and SKIP.
+#
+# That is CORRECT, not a malfunction — it is what `medaka build` does to those
+# programs — and it is why only `xref` threads its decls into `main` (its chain makes
+# one call retain all N). bindings/match/listlit/nesting/comments keep an unreachable
+# `main = println 1`: they are FRONT-END shapes (DCE runs after typecheck, so parse/
+# resolve/typecheck/fmt still see every decl and their rows are unaffected), and their
+# backend stages were already under the floor even before DCE existed here.
+#
+# So do NOT read "lower/emit: SKIP" on those shapes as backend coverage. Backend
+# coverage is `xref`, and the backend_graded counter below is what enforces that it
+# did not silently become zero.
+#
 # ⚠️ These two stages carry a LARGE FIXED PRELUDE COST that the front-end stages do
 # not: `lower`/`emit` run over `livePrelude ++ target`, so core.mdk is lowered and
 # emitted on EVERY run (~13 MB / ~28 ms at N=1). The per-stage TIME arm does NOT
@@ -595,16 +631,23 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lower emit"
 #     top-level declarations, and ALLOCATION IS BLIND TO IT.
 #
 #         xref, emit stage            TIME              ALLOC (whole-run net)
-#           N=4000                    0.694s            1128.7 MB
-#           N=8000                    2.511s  (3.62x)   2297.2 MB  (2.04x)
-#           N=16000                   9.946s  (3.96x)   4681.3 MB  (2.04x)
+#           N=4000                    0.643s            1136.3 MB
+#           N=8000                    2.392s  (3.72x)   2312.6 MB  (2.04x)
+#           N=16000                   9.917s  (4.15x)   4711.9 MB  (2.04x)
 #
 #     Allocation reads a clean, flat, LINEAR 2.04x/2.04x — "ok" — while emit takes
-#     TEN SECONDS to emit 16000 functions. Reproduced on THREE independent quiet-box
-#     batches (r1 3.60/3.62/3.66, r2 3.94/3.96/3.96 — the tightest spread in this
-#     file), heap pinned, min-of-5. It is NOT a GC heap-resize step: a step COLLAPSES one
-#     doubling later, and this ratio CLIMBS (3.62 -> 3.96) toward the pure-quadratic
-#     4.0 while the heap is pinned at 2 GB.
+#     TEN SECONDS to emit 16000 functions. Heap pinned, min-of-5, quiet box (load
+#     <4). It is NOT a GC heap-resize step: a step COLLAPSES one doubling later, and
+#     this ratio CLIMBS (3.72 -> 4.15) PAST the pure-quadratic 4.0 with the heap
+#     pinned at 2 GB.
+#
+#     ⚠️ THESE ARE THE *DCE-REALISTIC* NUMBERS, and that distinction is the whole
+#     reason to trust them. The first cut of this entry measured a fixture whose
+#     `main = println 1` rooted NONE of the N functions — work `dceFilter` (which the
+#     real build driver runs, and which profile_main now runs too) would have pruned
+#     entirely. That ratio described a scenario no real build performs. With `main`
+#     rooting the chain the quadratic SURVIVES DCE essentially unmoved (r2 3.96 ->
+#     4.11/4.15), so this is now a claim about `medaka build`, not about the harness.
 #
 #     This is the EMPIRICAL CONFIRMATION of the 2026-07-16 emitter perf audit
 #     (#349/#350/#352), which found the quadratics by reading the source. #349
@@ -612,7 +655,27 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lower emit"
 #     scans over accumulated per-decl state, which is what a flat alloc ratio beside
 #     a 3.96x time ratio looks like. Fix those and this entry PROMOTES OUT.
 #
-#     ⚠️ 3.96x is a LOWER BOUND on the true exponent, not an estimate of it. Unlike
+#     THE OTHER ROOTED SHAPE, AND WHY IT IS NOT LEDGERED (measured 2026-07-16):
+#     `xref` spreads its cost over N decls; `match` concentrates it in ONE rooted
+#     decl (`toInt`, N arms). Both are now DCE-reachable, so "pruned" and "survived"
+#     are distinguishable outcomes rather than one ambiguous number. Rooted
+#     `match:emit`, net of the ~0.028s prelude constant, on a quiet box (load 1.9):
+#
+#           N=1000   0.099s      N=2000  0.366s (3.71x)     N=4000  1.366s (3.73x)
+#
+#     So the native LLVM emitter is QUADRATIC on this shape too (~3.7x), NOT cubic.
+#     Worth stating plainly because the ws:wasm workstream measured ~7.9-8.4x per
+#     doubling (≈2^3, CUBIC) on the SAME shape through `wasm_emit_modules_main`. That
+#     is a wasm_emit finding; it does NOT reproduce on llvm_emit. Do not carry the
+#     cubic claim across backends.
+#
+#     It is NOT in KNOWN_SLOW_TIME because at this gate's match sizes (250/500/1000)
+#     emit peaks at 122 ms — under TIME_FLOOR, so it SKIPs and there is nothing to
+#     ledger. Grading it would need its own base-N knob (~1000, where emit is 1.4s);
+#     that is a deliberate follow-up, not an oversight — raising match's N also moves
+#     its alloc rows and the T17 alloc ledger, which must be re-derived, not assumed.
+#
+#     ⚠️ 4.15x is a LOWER BOUND on the true exponent, not an estimate of it. Unlike
 #     the front-end stages, `emit` pays a large FIXED prelude cost (core.mdk is
 #     emitted on every run, ~0.03s/~13 MB) that the per-stage TIME arm does not
 #     subtract, so the constant term DILUTES the measured ratio downward.
@@ -620,11 +683,12 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lower emit"
 KNOWN_SLOW_TIME="xref:emit"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
-# Observed r2 3.94-3.96 across three batches; ceiling 5.2 gives the same ~1.2 absolute
-# headroom the match/listlit/modules entries use, while still catching a real
-# worsening. TFIXED 2.60 (the file-wide convention): drop under it and #349/#350/#352
-# are fixed and this entry must be promoted out.
-KNOWN_TCEIL_xref_emit="5.2";          KNOWN_TFIXED_xref_emit="2.60"
+# Observed r2 4.15/4.13 on the DCE-realistic fixture; ceiling 5.6 matches the
+# modules:typecheck precedent, whose observed band (4.1-4.3) is the same one, rather
+# than the tighter match/listlit ceilings set on a ~3.3 band. TFIXED 2.60 (the
+# file-wide convention): drop under it and #349/#350/#352 are fixed and this entry
+# must be promoted out.
+KNOWN_TCEIL_xref_emit="5.6";          KNOWN_TFIXED_xref_emit="2.60"
 
 is_known_time() {
   for k in $KNOWN_SLOW_TIME; do [ "$k" = "$1" ] && return 0; done

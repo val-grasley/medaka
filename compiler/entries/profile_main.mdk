@@ -46,6 +46,7 @@ import ir.core_ir_lower.{
   ctorFieldTypeNames,
   declSigTypeNames,
 }
+import ir.dce.{dceFilter}
 import backend.llvm_emit.{
   emitProgram,
   installReturnsSelf,
@@ -149,6 +150,26 @@ runStaged on rsrc csrc tsrc =
   -- stamps dict routes, lowerProgramEmit produces Core IR, emitProgram renders the
   -- textual LLVM IR. The elaboration is deliberately OUTSIDE both timers — it is
   -- typecheck-side work, and rule 1 of the gate says grade a stage, never a sum.
+  --
+  -- ⚠️ WHAT THESE STAGES DO AND DO NOT SHARE WITH `medaka build`. Read this before
+  -- quoting a `lower`/`emit` number as a statement about a real build:
+  --
+  --   * DCE IS EXERCISED. `dceFilter` runs here exactly as the real build driver
+  --     runs it (entries/llvm_emit_modules_main.mdk, `half == 0` — every ordinary
+  --     build), and for the same reason: it decides WHAT REACHES THE BACKEND. Its
+  --     roots are `main` + impl/interface bodies, so a fixture whose synthetic
+  --     decls `main` never calls is PRUNED HERE and the backend stages measure
+  --     nothing but the prelude. That is not a gate malfunction — it is what a real
+  --     build of that program does. A fixture meant to exercise the backend must
+  --     thread its decls into `main` (see gen_xref in the perf_scaling gate).
+  --     Without this call the profiler would time decl-processing that no real
+  --     build ever performs, and any ratio drawn from it would describe a scenario
+  --     that cannot occur.
+  --   * The PRELUDE CONSTANT IS NOT SUBTRACTED. core.mdk is lowered and emitted on
+  --     every run (~13 MB / ~28 ms), and the gate's per-stage TIME arm subtracts no
+  --     baseline, so that fixed cost dilutes a `lower`/`emit` ratio DOWNWARD.
+  --   * Single-file only: no loader, no multi-module link, no clang. `medaka build`
+  --     also links (and `--gc-sections` prunes again at the object level).
   let userNames = funNamesOf desugared
   let livePrelude = dropShadowedExp userNames cDecls
   let combined = livePrelude ++ desugared
@@ -164,9 +185,11 @@ runStaged on rsrc csrc tsrc =
   let _ = installMainIsUnitHint (mainTypeIsUnit ())
   let _ = installMainIsFloatHint (mainTypeIsFloat ())
   let elaborated = elaborateDict rDecls dictNames userNames combined
+  -- Source DCE, as the real build driver does it in default (whole-module) mode.
+  let live = dceFilter elaborated
   let tL0 = now ()
   let aL0 = allocSnap ()
-  let cprog = lowerProgramEmit elaborated
+  let cprog = lowerProgramEmit live
   let tL1 = now ()
   let _ = emitPhaseA on "lower" (tL1 - tL0) (allocSnap () - aL0) declsOp
   let tE0 = now ()
