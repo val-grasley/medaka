@@ -8,6 +8,7 @@ applyClosureF : EvalEnv (Value a) -> List Pat -> (EvalEnv (Value a) -> Value a) 
 applyDicts : EvalEnv (Value a) -> Value a -> List Route -> Value a
 applyDispatch : Value a -> Value a -> Value a
 applyFieldUpdate : List (String, Value a) -> String -> Value a -> Value a
+applyMethodDicts : EvalEnv (Value a) -> String -> Route -> Value a -> List (Value a) -> List Route -> List Route -> Value a
 applyOpt : Value a -> Value a -> Option (Value a)
 applyTyped : String -> String -> List Int -> Int -> Value a -> Value a -> Option (Value a)
 applyValue : Value a -> Value a -> Value a
@@ -145,6 +146,7 @@ ifaceMethodArity : IfaceMethod -> (String, Int)
 ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
 ifaceMethodNmE : IfaceMethod -> String
 implDeclNames : Decl -> List String
+implDictRoutes : String -> String -> List Route -> List Route -> List Route
 implKeyOf : String -> List Ty -> Option String -> String
 implMethodEntry : EvalEnv (Value a) -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value a))
 implMethodName : ImplMethod -> String
@@ -185,8 +187,9 @@ lookupFrames : List (List (String, Ref (Value a))) -> String -> Value a
 lookupMethod : EvalEnv (Value a) -> String -> Value a
 lookupMethodFrames : List (List (String, Ref (Value a))) -> List (List (String, Ref (Value a))) -> String -> Value a
 lookupMethodReqCount : String -> String -> Int
+lookupMethodReqCountOpt : String -> String -> Option Int
 lookupPositions : String -> String -> List ((String, String), List Int) -> List Int
-lookupReqCount : String -> String -> List ((String, String), Int) -> Int
+lookupReqCount : String -> String -> List ((String, String), Int) -> Option Int
 makeCtor : String -> Int -> Value a
 makeCtorGo : String -> Int -> List (Value a) -> Value a
 mapResultOk : (a -> b) -> Result String a -> Result String b

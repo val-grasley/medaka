@@ -79,6 +79,7 @@ import eval.eval.{
   narrowMethod,
   routeTag,
   applyDicts,
+  applyMethodDicts,
   coalesceImpls,
   buildCtorToType,
   collectCtors,
@@ -145,11 +146,14 @@ ceval env (CRangeArray lo hi incl) =
 -- resolve to the installed `VMulti` and dispatch by arg-tag in `applyValue`.  The
 -- arms mirror eval.mdk's `EMethodAt`/`EDictAt` exactly (Routes already read out
 -- into the immutable `CMethod`/`CDict` at lowering time).
+-- #413 LOCKSTEP: "mirror exactly" was aspirational — this arm had drifted, missing
+-- both eval.mdk's `awaitsArgs` guard and its `fwdReqs` truncation, and (with
+-- eval.mdk) applied the call site's impl dicts even to an impl method that declares
+-- none.  It now calls eval.mdk's `applyMethodDicts`, the SINGLE shared
+-- implementation, so the two interpreters cannot silently diverge again.
 ceval env (CMethod name route implRoutes methRoutes) =
   let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) route
-  let v1 = applyDicts env narrowed methRoutes
-  let v2 = applyDicts env v1 implRoutes
-  applyValues v2 fwdReqs
+  applyMethodDicts env name route narrowed fwdReqs implRoutes methRoutes
 ceval env (CDict name routes) = applyDicts env (lookupEnv env name) routes
 ceval _ _ = panic "core_ir ceval: unsupported node"
 
