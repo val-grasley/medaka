@@ -7,8 +7,8 @@
 # The existing `# TYPES` snapshot (diff_compiler_snapshot_types.sh) is prelude-FREE —
 # correct for the minimal typecheck_fixtures, which test errors WITHOUT a prelude in
 # scope. test/diff_fixtures/ are REAL programs that reference prelude types, so they must
-# be typechecked with core.mdk in scope. The probe gates that cover them today
-# (typecheck_main / check_main via diff_compiler_typecheck_golden.sh + check.sh) diff the
+# be typechecked with core.mdk in scope. The probe gates that USED to cover them
+# (diff_compiler_typecheck_golden.sh + _batch.sh, RETIRED #81 Stage B1) diffed the
 # FULL prelude+user scheme dump — ~120 lines/fixture, ~117 of them the SAME prelude table
 # repeated across all 57 fixtures (6,810 lines, ~90% redundant). Snapshotting that
 # verbatim is the anti-pattern the snapshot design rejects.
@@ -17,18 +17,18 @@
 # ONLY the user program's own scheme lines (name-filtered by funNamesOf — see snapshot.mdk
 # for why name-filtering beats full−baseline: context-sensitive prelude inference like
 # `abs` leaks otherwise). The whole-prelude-inference invariant those probe gates also
-# carried is NOT this gate's job — it moves to a single full-prelude dump (#81 Stage B,
-# which also retires the probe gates). Until then this is an ADDITIONAL check; nothing is
-# deleted here.
+# carried is NOT this gate's job — it moved (#81 Stage B1) to a single full-prelude dump,
+# diff_compiler_snapshot_prelude.sh (a `# TYPES` snapshot of stdlib/core.mdk).
 #
 # Proven at introduction: every `# TYPES_USER` line appears verbatim in the frozen
 # diff_fixtures/*.golden `=== TYPES ===` section — 57/57, zero prelude leakage — so the
 # user schemes are byte-correct AND prelude-aware.
 #
 # ── SHARED CORPUS ────────────────────────────────────────────────────────────
-# test/diff_fixtures/ is now read by this gate ALSO (previously: the frontend snapshot
-# gate's diff_fixtures family + the typecheck_golden/check probe gates). Adding, moving,
-# or deleting a fixture there enrolls/de-enrolls it here too.
+# test/diff_fixtures/ is now read by this gate ALSO (also: the frontend snapshot gate's
+# diff_fixtures family + the diff_compiler_check.sh / check_batch.sh probe gates, which
+# read the frozen `=== TYPES ===`/`=== EVAL ===` goldens). Adding, moving, or deleting a
+# fixture there enrolls/de-enrolls it here too.
 #
 # ── RE-CUTTING ───────────────────────────────────────────────────────────────
 # match_nonexhaustive renders a diagnostic `# TYPES_USER` (a non-exhaustive-match
