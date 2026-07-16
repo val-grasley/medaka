@@ -11799,6 +11799,10 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- compare so there was no collision; universal default specialization exposes it.
     let _ = setRef perRun.value.currentFn mname
     let _ = setRef perRun.value.currentImplBody True
+    -- #518: window this body's newly-added obligations, exactly as processLetGroup /
+    -- checkProgramSeeded do for a let-group, so the Num defaulting below is scoped to
+    -- THIS method and can never touch an already-generalized outer var.
+    let oblN0 = perRun.value.pendingImplObligationsN.value
     -- build the method type's tv map explicitly (instead of expectedMethodType,
     -- which hides it) so the impl method's OWN method-level constraint vars
     -- (`Thenable m => …`) can be registered into activeDictVars below.
@@ -11807,6 +11811,24 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     let expected = fromAstType (baseMap ++ extraMap) mty
     let actual = inferClauses env [(pats, body)]
     let _ = unify expected actual
+    -- #518 (S0, silent wrongness): PLAN.md #11 Num defaulting NEVER RAN over an impl
+    -- method body — this path is not a let-group, so nothing grounded its ambiguous
+    -- Num vars.  A literal consumed entirely inside the body (`t _ = s [1, 2]`) left
+    -- its element var UNBOUND, so the receiver the route resolver saw was `List _a`,
+    -- not `List Int` — and `List _a` matches only the GENERAL `impl S (List a)`, never
+    -- the specific `impl S (List Int)`.  The min⊑ selector was never at fault: with one
+    -- match there is nothing to select between.  It resolved to the general impl and
+    -- routed its `requires S a` to RNone (a null dict) — hence `build` silently printing
+    -- the general instance's answer and `run` panicking E-NOT-A-FUNCTION.
+    -- The same expression at TOP LEVEL was always correct precisely because
+    -- checkProgramSeeded's group defaulting grounded the var to Int first.
+    -- defaultGroupNum (not defaultAmbiguousNum) is the right primitive: it does NOT
+    -- require the var to appear in the member's type, which is exactly this shape —
+    -- the var surfaces nowhere in `t : Option2 Int -> Int`.  [expected] is the member
+    -- mono, so a var reachable from an ARGUMENT position of the method's own type
+    -- (a genuinely polymorphic element a caller fixes) is still left alone.
+    let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+    let _ = defaultGroupNum addedObls [expected]
     -- Eval-path method-dict threading (parity with inferDefaultMethod's
     -- registerMethodDictSlots): an impl method with its OWN method-level constraint
     -- (`wrap : Thenable m => … -> m (List b)`) whose body returns a constraint-var
