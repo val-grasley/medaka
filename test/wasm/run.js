@@ -78,7 +78,7 @@ const takePath = () => { const s = Buffer.from(pathBuf).toString('utf8'); pathBu
 let strToFloatOk = 0;   // #370: latched by mdk_str_to_float, read by mdk_str_to_float_ok
 
 // --- BEGIN SHARED SHIM mdkStrToFloat --- (byte-identical in test/wasm/run.js and
-// playground/worker.js — WASM-SEMANTICS WH2/WH3; enforced by test/wasm/shim_parity.sh)
+// playground/worker.js — WASM-SEMANTICS WH2/WH3; enforced by test/diff_compiler_wasm_shim_parity.sh)
 // #370 stringToFloat host seam. The C runtime is the oracle (WH2): medaka_rt.c
 // mdk_string_to_float is `strtod` + an endptr FULL-CONSUMPTION check + an empty-string
 // reject. JS Number() is NOT strtod: Number("") === 0, Number("1.5 ") trims,
@@ -88,7 +88,7 @@ let strToFloatOk = 0;   // #370: latched by mdk_str_to_float, read by mdk_str_to
 // consumption, longest-match is unnecessary — the whole post-whitespace string must
 // match the grammar, or the endptr check would reject it anyway.
 // Returns { ok, value }; ok === 0 means None. Verified case-for-case against the
-// native C oracle over a 621-case battery (test/wasm/fixtures/str_to_float.mdk).
+// native C oracle over a 621-case battery (test/llvm_fixtures/str_to_float_frontier.mdk).
 function mdkStrToFloat(s) {
   if (s.length === 0) return { ok: 0, value: 0 };   // medaka_rt.c: bl == 0 -> None
   const b = s.replace(/^[ \t\n\v\f\r]+/, '');       // strtod skips leading isspace
