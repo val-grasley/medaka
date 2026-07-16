@@ -1,4 +1,4 @@
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
 {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"files\":[{\"file\":\"<source>\",\"diagnostics\":[{\"code\":\"T-TYPE-MISMATCH\",\"kind\":\"type\",\"message\":\"Type mismatch: Int vs String\",\"range\":{\"end\":{\"character\":11,\"line\":1},\"start\":{\"character\":4,\"line\":1}},\"severity\":1,\"source\":\"medaka\"}]}]}"}],"isError":true}}
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"files\":[{\"file\":\"<source>\",\"diagnostics\":[]}]}"}],"isError":false}}
 {"jsonrpc":"2.0","id":4,"result":{}}

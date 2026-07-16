@@ -1,3 +1,3 @@
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
 {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"[{\"name\":\"double\",\"kind\":12,\"range\":{\"start\":{\"line\":3,\"character\":0},\"end\":{\"line\":4,\"character\":0}},\"selectionRange\":{\"start\":{\"line\":3,\"character\":0},\"end\":{\"line\":4,\"character\":0}},\"children\":[]},{\"name\":\"double\",\"kind\":12,\"range\":{\"start\":{\"line\":6,\"character\":0},\"end\":{\"line\":6,\"character\":0}},\"selectionRange\":{\"start\":{\"line\":6,\"character\":0},\"end\":{\"line\":6,\"character\":0}},\"children\":[]}]"}],"isError":false}}
 {"jsonrpc":"2.0","id":3,"result":{}}
