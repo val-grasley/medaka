@@ -173,6 +173,14 @@ import ir.core_ir.{
   CField(..),
 }
 import list.{replicate}
+import support.ordmap.{
+  OrdMap,
+  omInsert,
+  omLookup,
+  omHasKey,
+  omFromPairs,
+  omEmpty,
+}
 import support.util.{
   joinNl,
   joinWith,
@@ -849,6 +857,7 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
     || useRngRef.value || useHashRef.value || useFloatRef.value || useStrSearchRef.value
     || useCharClassRef.value || useIORef.value
   let typeNames = distinctTypeNames ctorTypes
+  let _ = installCtorTablesW ctorArs ctorTypes
   let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames fnArs useClos impls
   if useRef then emitRefProgram prog groups
   else emitScalarProgram fnNames valNames groups
@@ -908,6 +917,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let useClos = programUsesClosures groups ctorArs
   -- force the ref path: the census measures the full (ref eq) emitter surface.
   let typeNames = distinctTypeNames ctorTypes
+  let _ = installCtorTablesW ctorArs ctorTypes
   let prog = Prog ctorArs ctorTypes typeNames True fnNames valNames fnArs useClos impls
   let _ = resetGapsW ()
   let _ = enableGapRecordW ()
@@ -3223,7 +3233,7 @@ emitMethodDispatchRef prog env d name dpar args =
   -- the dict tag is read repeatedly; stash it in the scratch local for this depth.
   let tagRead = readDictParam prog env dpar
   let blk = "$disp_\{name}_\{intToString d}"
-  let chain = emitDispatchChain prog name impls blk tagRead dpar argInstrs (listLen args)
+  let chain = emitDispatchChain prog name impls blk tagRead dpar argInstrs (listLen args) 0
   ["block " ++ blk ++ " (result (ref eq))"]
     ++ indent chain
     ++ ["unreachable", "end"]
@@ -3235,9 +3245,10 @@ emitMethodDispatchRef prog env d name dpar args =
 -- branch exits via `br $blk` (which supplies the block's value), the else branch falls
 -- through to the next comparison; after the whole chain an `unreachable` (a well-typed
 -- dict always names a candidate) satisfies the block's (ref eq) fallthrough requirement.
-emitDispatchChain : Prog -> String -> List (String, String) -> String -> List String -> String -> List String -> Int -> List String
-emitDispatchChain _ _ [] _ _ _ _ _ = []
-emitDispatchChain prog name ((tag, key)::rest) blk tagRead dpar argInstrs nArgs =
+-- `idt` (trailing) is the chain's own INDENT depth — see emitLitSwitchRef (#381).
+emitDispatchChain : Prog -> String -> List (String, String) -> String -> List String -> String -> List String -> Int -> Int -> List String
+emitDispatchChain _ _ [] _ _ _ _ _ _ = []
+emitDispatchChain prog name ((tag, key)::rest) blk tagRead dpar argInstrs nArgs idt =
   -- W5: a `requires`-bearing impl (e.g. `Debug (a,b) requires Debug a, Debug b`) compiles
   -- to a fn whose leading params are the forwarded `requires` dicts BEFORE the method args.
   -- The dispatch site holds the dict param ($dpar): when this impl is constrained, the dict
@@ -3246,12 +3257,12 @@ emitDispatchChain prog name ((tag, key)::rest) blk tagRead dpar argInstrs nArgs 
   -- leading dict args, mirroring llvm_emit's loadReqDicts (fields 1..n of the boxed cell).
   let reqDicts = implReqDictCount prog name tag nArgs
   let reqLoads = flatMap (loadReqDict dpar) (rangeList 0 reqDicts)
-  tagRead
-    ++ ["i32.const " ++ intToString (dictTag key), "i32.eq", "if"]
-    ++ indent (reqLoads ++ argInstrs ++ ["call $" ++ implFnSym tag name, "br " ++ blk])
-    ++ ["else"]
-    ++ indent (emitDispatchChain prog name rest blk tagRead dpar argInstrs nArgs)
-    ++ ["end"]
+  indentBy idt (tagRead
+    ++ ["i32.const " ++ intToString (dictTag key), "i32.eq", "if"])
+    ++ indentBy (idt + 1) (reqLoads ++ argInstrs ++ ["call $" ++ implFnSym tag name, "br " ++ blk])
+    ++ indentBy idt ["else"]
+    ++ emitDispatchChain prog name rest blk tagRead dpar argInstrs nArgs (idt + 1)
+    ++ indentBy idt ["end"]
 
 -- load nested req dict `i` from the dict param $dpar's $dictcell (field 1 = $dictarr).
 -- Only reached for a constrained impl arm, where the in-scope dict IS a $dictcell.
@@ -6424,7 +6435,7 @@ emitSwitchTail prog env arity d root [] arms branches dft =
   emitTreeTail prog env arity d root [] arms dft
 emitSwitchTail prog env arity d root (foc::rest) arms [] dft =
   emitTreeTail prog env arity d root rest arms dft
-emitSwitchTail prog env arity d root (foc::rest) arms (branches@((CTBranch (HLit _) _)::_)) dft = emitLitSwitchTail prog env arity d root foc rest arms branches dft
+emitSwitchTail prog env arity d root (foc::rest) arms (branches@((CTBranch (HLit _) _)::_)) dft = emitLitSwitchTail prog env arity d root foc rest arms branches dft 0
 emitSwitchTail prog env arity d root (foc::rest) arms ((CTBranch HUnit sub)::_) dft = emitTreeTail prog env arity d root rest arms sub
 emitSwitchTail prog env arity d root (foc::rest) arms (branches@((CTBranch h _)::_)) dft = match conHeadInfo h
   Some _ => emitConSwitchTail prog env arity d root foc rest arms branches dft
@@ -6440,13 +6451,13 @@ emitConSwitchTail prog env arity d root foc rest arms branches dft =
   let svRead = ["local.get $" ++ sv]
   foc
     ++ ["local.set $" ++ sv]
-    ++ emitBrTableTowerTail prog env arity (d + 1) root svRead rest arms branches dft ty d nOrd
+    ++ emitBrTableTowerTail prog env arity (d + 1) root svRead rest arms (branchOrdMapW prog branches) dft ty d nOrd
 
 -- the br_table tower in tail position: no `$swd` result block — each ordinal slot's
 -- body tail-emits its arm (return_call / return), and the default subtree follows the
 -- innermost `end`.  The table targets `$sw<sd>_k` slots; the default slot is the last
 -- `end`'s fall-through into the default subtree.
-emitBrTableTowerTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> List String
+emitBrTableTowerTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> CTree -> String -> Int -> Int -> List String
 emitBrTableTowerTail prog env arity d root svRead rest arms branches dft ty sd nOrd =
   let sfx = intToString sd
   let labels = map (k => "$swt\{sfx}_\{intToString k}") (rangeList 0 nOrd)
@@ -6458,15 +6469,15 @@ emitBrTableTowerTail prog env arity d root svRead rest arms branches dft ty sd n
     ++ pick
     ++ towerBodiesTail prog env arity d root svRead rest arms branches dft ty sd (nOrd - 1)
 
-towerBodiesTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> List String
+towerBodiesTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> CTree -> String -> Int -> Int -> List String
 towerBodiesTail prog env arity d root svRead rest arms branches dft ty sd k =
   if k < 0 then
     ["end"] ++ emitTreeTail prog env arity d root rest arms dft
   else
     ["end"] ++ emitOrdinalSlotTail prog env arity d root svRead rest arms branches ty sd k ++ towerBodiesTail prog env arity d root svRead rest arms branches dft ty sd (k - 1)
 
-emitOrdinalSlotTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> String -> Int -> Int -> List String
-emitOrdinalSlotTail prog env arity d root svRead rest arms branches ty sd k = match branchForOrdinal prog branches ty k
+emitOrdinalSlotTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> String -> Int -> Int -> List String
+emitOrdinalSlotTail prog env arity d root svRead rest arms branches ty sd k = match branchForOrdinal branches k
   Some (CTBranch h sub) =>
     let (c, a) = conHeadInfoUnsafe h
     let fieldOccs = map (i => svRead ++ [
@@ -6476,35 +6487,32 @@ emitOrdinalSlotTail prog env arity d root svRead rest arms branches ty sd k = ma
     emitTreeTail prog env arity d root (fieldOccs ++ rest) arms sub
   None => ["br $swdt" ++ intToString sd]
 
-emitLitSwitchTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> List String
-emitLitSwitchTail prog env arity d root foc rest arms [] dft =
-  emitTreeTail prog env arity d root rest arms dft
-emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft = foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"] ++ ["if"] ++ indent (emitTreeTail prog env arity d root rest arms sub) ++ ["else"] ++ indent (emitLitSwitchTail prog env arity d root foc rest arms more dft) ++ ["end", "unreachable"]
+-- `idt` (trailing) is the chain's own INDENT depth — see emitLitSwitchRef (#381).
+emitLitSwitchTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> Int -> List String
+emitLitSwitchTail prog env arity d root foc rest arms [] dft idt =
+  indentBy idt (emitTreeTail prog env arity d root rest arms dft)
+emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft idt = indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeTail prog env arity d root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchTail prog env arity d root foc rest arms more dft (idt + 1) ++ indentBy idt ["end", "unreachable"]
 -- W6: Char-literal switch head — a Char is an i31 codepoint immediate (cf.
 -- `PLit (LChar)`); compare the i31 against the codepoint constant.
-emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft = foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"] ++ ["if"] ++ indent (emitTreeTail prog env arity d root rest arms sub) ++ ["else"] ++ indent (emitLitSwitchTail prog env arity d root foc rest arms more dft) ++ ["end", "unreachable"]
+emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft idt = indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeTail prog env arity d root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchTail prog env arity d root foc rest arms more dft (idt + 1) ++ indentBy idt ["end", "unreachable"]
 -- W6: String-literal switch head — compare the focus $str against each literal via
 -- `$mdk_str_compare` (returns the i31 1 on equal), reusing the `PLit (LString)` logic.
-emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LString s)) sub)::more) dft =
+emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LString s)) sub)::more) dft idt =
   let _ = setRef useStrSearchRef True
   let _ = setRef useStrLeafRef True
   let _ = setRef useStrRef True
-  foc
-    ++ ["ref.cast (ref $str)"]
-    ++ emitLitRef (LString s)
-    ++ [
+  indentBy idt (foc ++ ["ref.cast (ref $str)"] ++ emitLitRef (LString s) ++ [
       "call $mdk_str_compare",
       "ref.cast (ref i31)",
       "i31.get_u",
       "i32.const 1",
       "i32.eq",
-    ]
-    ++ ["if"]
-    ++ indent (emitTreeTail prog env arity d root rest arms sub)
-    ++ ["else"]
-    ++ indent (emitLitSwitchTail prog env arity d root foc rest arms more dft)
-    ++ ["end", "unreachable"]
-emitLitSwitchTail _ _ _ _ _ _ _ _ _ _ =
+    ] ++ ["if"])
+    ++ indentBy (idt + 1) (emitTreeTail prog env arity d root rest arms sub)
+    ++ indentBy idt ["else"]
+    ++ emitLitSwitchTail prog env arity d root foc rest arms more dft (idt + 1)
+    ++ indentBy idt ["end", "unreachable"]
+emitLitSwitchTail _ _ _ _ _ _ _ _ _ _ _ =
   gapL "ref-mode: non-Int literal tail switch head"
 
 -- ── §4 closure (CLam) lowering — lambda-lift + arity-in-struct ───────────────
@@ -7253,7 +7261,7 @@ emitSwitchRef prog env d decLabel root [] arms branches dft =
   emitTreeRef prog env d decLabel root [] arms dft
 emitSwitchRef prog env d decLabel root (foc::rest) arms [] dft =
   emitTreeRef prog env d decLabel root rest arms dft
-emitSwitchRef prog env d decLabel root (foc::rest) arms (branches@((CTBranch (HLit _) _)::_)) dft = emitLitSwitchRef prog env d decLabel root foc rest arms branches dft
+emitSwitchRef prog env d decLabel root (foc::rest) arms (branches@((CTBranch (HLit _) _)::_)) dft = emitLitSwitchRef prog env d decLabel root foc rest arms branches dft 0
 emitSwitchRef prog env d decLabel root (foc::rest) arms ((CTBranch HUnit sub)::_) dft = emitTreeRef prog env d decLabel root rest arms sub
 emitSwitchRef prog env d decLabel root (foc::rest) arms (branches@((CTBranch h _)::_)) dft = match conHeadInfo h
   Some _ => emitConSwitchRef prog env d decLabel root foc rest arms branches dft
@@ -7270,7 +7278,7 @@ emitConSwitchRef prog env d decLabel root foc rest arms branches dft =
   let svRead = ["local.get $" ++ sv]
   foc
     ++ ["local.set $" ++ sv]
-    ++ emitBrTableTower prog env (d + 1) decLabel root svRead rest arms branches dft ty d nOrd
+    ++ emitBrTableTower prog env (d + 1) decLabel root svRead rest arms (branchOrdMapW prog branches) dft ty d nOrd
 
 -- the discriminant: from a value that is EITHER an i31 nullary (its per-type ordinal,
 -- set at construction) OR a payload struct (the per-type ordinal in field 0).
@@ -7300,7 +7308,7 @@ discrimReadOf svRead ty =
 --     …
 --   end             ;; end $swd<sd>
 --   <default subtree>          (falls through with its value on the stack)
-emitBrTableTower : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> List String
+emitBrTableTower : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> CTree -> String -> Int -> Int -> List String
 emitBrTableTower prog env d decLabel root svRead rest arms branches dft ty sd nOrd =
   let sfx = intToString sd
   let labels = map (k => "$sw\{sfx}_\{intToString k}") (rangeList 0 nOrd)
@@ -7313,7 +7321,7 @@ emitBrTableTower prog env d decLabel root svRead rest arms branches dft ty sd nO
 
 -- emit, innermost-first (ordinal n-1 down to 0): `end` of $sw<sd>_k then ordinal k's
 -- arm; finally `end` of $swd<sd> then the default subtree (yields the block value).
-towerBodies : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> String -> Int -> Int -> List String
+towerBodies : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> CTree -> String -> Int -> Int -> List String
 towerBodies prog env d decLabel root svRead rest arms branches dft ty sd k =
   if k < 0 then
     ["end"] ++ emitTreeRef prog env d decLabel root rest arms dft
@@ -7323,8 +7331,8 @@ towerBodies prog env d decLabel root svRead rest arms branches dft ty sd k =
 -- ordinal k's arm: the branch whose head has ordinal k.  Present → extract its
 -- fields (ref.cast to the ctor struct + struct.get i+1) as new leading occurrences,
 -- emit its subtree.  Absent → fall to $swd<sd> (the default).
-emitOrdinalSlot : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> String -> Int -> Int -> List String
-emitOrdinalSlot prog env d decLabel root svRead rest arms branches ty sd k = match branchForOrdinal prog branches ty k
+emitOrdinalSlot : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> String -> Int -> Int -> List String
+emitOrdinalSlot prog env d decLabel root svRead rest arms branches ty sd k = match branchForOrdinal branches k
   Some (CTBranch h sub) =>
     let (c, a) = conHeadInfoUnsafe h
     let fieldOccs = map (i => svRead ++ [
@@ -7336,10 +7344,14 @@ emitOrdinalSlot prog env d decLabel root svRead rest arms branches ty sd k = mat
 
 -- the literal switch: compare the focus i31 Int against each branch's constant via
 -- an if/else chain.  The focus is re-read per comparison through `foc`.
-emitLitSwitchRef : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> List String
-emitLitSwitchRef prog env d decLabel root foc rest arms [] dft =
-  emitTreeRef prog env d decLabel root rest arms dft
-emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft =
+-- `idt` (trailing) is the chain's own INDENT depth — distinct from the switch depth
+-- `d`.  Each level renders itself at `idt` and its arm at `idt + 1`, then hands the
+-- else-chain `idt + 1`, instead of wrapping the recursion in `indent` and re-copying
+-- every line below it once per level (#381).  Callers start the chain at 0.
+emitLitSwitchRef : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> Int -> List String
+emitLitSwitchRef prog env d decLabel root foc rest arms [] dft idt =
+  indentBy idt (emitTreeRef prog env d decLabel root rest arms dft)
+emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft idt =
   -- W6 (validate fix): a NO-RESULT `if`.  Every decision-tree path is `br`-terminated
   -- (leaves `br decLabel`, CTFail → unreachable, the else-chain recurses to another
   -- br-terminated `if` or the br-terminated `dft`), so the `if` never falls through
@@ -7347,37 +7359,32 @@ emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k
   -- when this switch is NESTED inside a con-tower slot — at the slot's untyped `end`
   -- that strands the value ("values remaining on stack at end of block").  No result
   -- type ⇒ nothing stranded.
-  (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"])
-    ++ ["if"]
-    ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
-    ++ ["else"]
-    ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)
-    ++ ["end"]
+  indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"] ++ ["if"])
+    ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub)
+    ++ indentBy idt ["else"]
+    ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1)
+    ++ indentBy idt ["end"]
 -- W6: Char-literal switch head — a Char is an i31 codepoint immediate (cf.
 -- `PLit (LChar)`); compare the i31 against the codepoint constant.
-emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft = foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"] ++ ["if"] ++ indent (emitTreeRef prog env d decLabel root rest arms sub) ++ ["else"] ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft) ++ ["end"]
+emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft idt = indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1) ++ indentBy idt ["end"]
 -- W6: String-literal switch head — compare the focus $str against each literal via
 -- `$mdk_str_compare` (returns the i31 1 on equal), reusing the `PLit (LString)` logic.
-emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LString s)) sub)::more) dft =
+emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LString s)) sub)::more) dft idt =
   let _ = setRef useStrSearchRef True
   let _ = setRef useStrLeafRef True
   let _ = setRef useStrRef True
-  foc
-    ++ ["ref.cast (ref $str)"]
-    ++ emitLitRef (LString s)
-    ++ [
+  indentBy idt (foc ++ ["ref.cast (ref $str)"] ++ emitLitRef (LString s) ++ [
       "call $mdk_str_compare",
       "ref.cast (ref i31)",
       "i31.get_u",
       "i32.const 1",
       "i32.eq",
-    ]
-    ++ ["if"]
-    ++ indent (emitTreeRef prog env d decLabel root rest arms sub)
-    ++ ["else"]
-    ++ indent (emitLitSwitchRef prog env d decLabel root foc rest arms more dft)
-    ++ ["end"]
-emitLitSwitchRef _ _ _ _ _ _ _ _ _ _ =
+    ] ++ ["if"])
+    ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub)
+    ++ indentBy idt ["else"]
+    ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1)
+    ++ indentBy idt ["end"]
+emitLitSwitchRef _ _ _ _ _ _ _ _ _ _ _ =
   gapL "ref-mode: non-Int literal switch head (Char/String literals are W6)"
 
 -- ── pattern binding (leaf re-match) ──────────────────────────────────────────
@@ -7644,7 +7651,7 @@ binOpTy op =
 -- ── ctor / type info (ref mode) ──────────────────────────────────────────────
 
 isCtor : Prog -> String -> Bool
-isCtor (Prog ctorArs _ _ _ _ _ _ _ _) name = isSome (lookupAssoc name ctorArs)
+isCtor (Prog ctorArs _ _ _ _ _ _ _ _) name = isSome (ctorArLookupW ctorArs name)
   || isReservedCtor name
   || isSyntheticCtor name
 
@@ -7697,8 +7704,103 @@ syntheticCtorArity "True" = 0
 syntheticCtorArity "False" = 0
 syntheticCtorArity name = trailingIntOf name
 
+-- ── ctor-table indices (#381) ────────────────────────────────────────────────
+-- `Prog`'s `ctorArs` / `ctorTypes` are assoc LISTS built once at Prog construction
+-- and never mutated, so the per-call `lookupAssoc` / `filterList` scans below are
+-- pure functions of two CONSTANT tables — memoizable.  Without the memo a ctor
+-- switch costs O(slots × branches × ctors): `branchForOrdinal` calls `ctorOrdinal`
+-- per (slot, branch) and each call re-filtered the whole ctor table (measured:
+-- 1.27 s to emit ONE 400-arm match, 39× the LLVM backend on the same input).
+--
+-- Mirrors llvm_emit's `ctorMapRef` / `installCtorMap` (backend/llvm_emit.mdk
+-- §"ctor-arity table index"), including its `omFromPairs (reverseL t)` idiom: the
+-- list is inserted REVERSED so the FIRST entry wins on a duplicate key, matching
+-- `lookupAssoc`'s first-match.  FOR CONSTANT TABLES ONLY.
+ctorArMapW : Ref (Option (OrdMap Int))
+ctorArMapW = Ref None
+
+ctorTyMapW : Ref (Option (OrdMap String))
+ctorTyMapW = Ref None
+
+ctorOrdMapW : Ref (Option (OrdMap Int))
+ctorOrdMapW = Ref None
+
+typeCtorsMapW : Ref (Option (OrdMap (List String)))
+typeCtorsMapW = Ref None
+
+-- install all four indices from the two constant tables.  Called from emitProgram /
+-- emitProgramGaps right before the `Prog` is built.
+installCtorTablesW : List (String, Int) -> List (String, String) -> Unit
+installCtorTablesW ctorArs ctorTypes =
+  let tym = omFromPairs (reverseL ctorTypes) omEmpty
+  let tcm = typeCtorsOfW (reverseL ctorTypes) omEmpty
+  let _ = setRef ctorArMapW (Some (omFromPairs (reverseL ctorArs) omEmpty))
+  let _ = setRef ctorTyMapW (Some tym)
+  let _ = setRef typeCtorsMapW (Some tcm)
+  setRef
+    ctorOrdMapW
+    (Some (ctorOrdsOfW (distinctTypeNames ctorTypes) tym tcm omEmpty))
+
+-- typeName → its ctor list in DECLARATION order.  Walks the ctor→type table
+-- REVERSED and PREPENDS, so each type's list comes out in forward declaration
+-- order — the same order `ctorsOfTypeUser`'s filter+map produced, duplicates and
+-- all.
+typeCtorsOfW : List (String, String) -> OrdMap (List String) -> OrdMap (List String)
+typeCtorsOfW [] m = m
+typeCtorsOfW ((c, t)::rest) m =
+  typeCtorsOfW rest (omInsert t (c :: orEmptyCtors (omLookup t m)) m)
+
+orEmptyCtors : Option (List String) -> List String
+orEmptyCtors (Some cs) = cs
+orEmptyCtors None = []
+
+-- ctorName → dense per-type ordinal, for the USER path of `ctorOrdinal` only.
+-- Reproduces that path's formula
+--   orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
+-- exactly, but in O(ctors · log ctors) instead of O(ctors) per call:
+--   * types are walked in DECLARATION order (`distinctTypeNames`);
+--   * a ctor is indexed only under the type `ctorTypeName` would name for it (its
+--     FIRST type, per `tym`) — so a name shared by two types still takes its
+--     ordinal from the first one, as `lookupAssoc` + `indexOfL` did;
+--   * the `omHasKey` guard keeps the FIRST index on a name repeated within one
+--     type, matching `indexOfL`'s first-match.
+-- A ctor absent from the map yields 0 at the call site, matching `orZeroIdx (-1)`.
+ctorOrdsOfW : List String -> OrdMap String -> OrdMap (List String) -> OrdMap Int -> OrdMap Int
+ctorOrdsOfW [] _ _ m = m
+ctorOrdsOfW (ty::rest) tym tcm m =
+  ctorOrdsOfW rest tym tcm (indexCtorsW tym ty (ctorsOfTypeIxW tcm ty) 0 m)
+
+indexCtorsW : OrdMap String -> String -> List String -> Int -> OrdMap Int -> OrdMap Int
+indexCtorsW _ _ [] _ m = m
+indexCtorsW tym ty (c::cs) i m = indexCtorsW
+  tym
+  ty
+  cs
+  (i + 1)
+  (if omHasKey c m then m else if firstTyIsW tym c ty then omInsert c i m else m)
+
+firstTyIsW : OrdMap String -> String -> String -> Bool
+firstTyIsW tym c ty = match omLookup c tym
+  Some t => eqStr t ty
+  None => False
+
+-- `ctorsOfType`'s dispatch, off the memo and without a `Prog` (the indices are built
+-- before the Prog exists).  Keep in lockstep with `ctorsOfType`.
+ctorsOfTypeIxW : OrdMap (List String) -> String -> List String
+ctorsOfTypeIxW tcm ty =
+  if isReservedType ty then
+    reservedCtorsOfType ty
+  else if ty == "List" then
+    ["Cons", "Nil"]
+  else if ty == "Bool" then
+    ["False", "True"]
+  else if isTupleType ty then
+    [tupleCtorName (tupleTypeArity ty)]
+  else
+    orEmptyCtors (omLookup ty tcm)
+
 ctorArity : Prog -> String -> Int
-ctorArity (Prog ctorArs _ _ _ _ _ _ _ _) name = match lookupAssoc name ctorArs
+ctorArity (Prog ctorArs _ _ _ _ _ _ _ _) name = match ctorArLookupW ctorArs name
   Some a => a
   None =>
     if isSyntheticCtor name then
@@ -7706,16 +7808,26 @@ ctorArity (Prog ctorArs _ _ _ _ _ _ _ _) name = match lookupAssoc name ctorArs
     else
       reservedCtorArity name
 
+ctorArLookupW : List (String, Int) -> String -> Option Int
+ctorArLookupW ctorArs name = match ctorArMapW.value
+  Some m => omLookup name m
+  None => lookupAssoc name ctorArs
+
 -- a ctor's owning type name (user types via the ctor→type map; reserved ctors map
 -- to their fixed type names; W7 synthetic ctors to their synthetic types).
 ctorTypeName : Prog -> String -> String
-ctorTypeName (Prog _ ctorTypes _ _ _ _ _ _ _) name = match lookupAssoc name ctorTypes
+ctorTypeName (Prog _ ctorTypes _ _ _ _ _ _ _) name = match ctorTyLookupW ctorTypes name
   Some ty => ty
   None =>
     if isSyntheticCtor name then
       syntheticCtorType name
     else
       reservedTypeOf name
+
+ctorTyLookupW : List (String, String) -> String -> Option String
+ctorTyLookupW ctorTypes name = match ctorTyMapW.value
+  Some m => omLookup name m
+  None => lookupAssoc name ctorTypes
 
 -- the per-type dense ordinal of a ctor (0-based index in its type's declaration
 -- order).  Reserved + synthetic ctors have fixed ordinals.
@@ -7725,8 +7837,14 @@ ctorOrdinal prog name = match reservedCtorOrdinal name
   None =>
     if isSyntheticCtor name then
       syntheticCtorOrdinal name
-    else
-      orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
+    else match ctorOrdMapW.value
+      -- absent → 0, exactly what `orZeroIdx (indexOfL … = -1)` returned.
+      Some m => orZeroIdx (orNeg1Ord (omLookup name m))
+      None => orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
+
+orNeg1Ord : Option Int -> Int
+orNeg1Ord (Some o) = o
+orNeg1Ord None = -1
 
 -- the declaration-ordered ctor list of a user type (the ctor→type map lists each
 -- type's ctors consecutively in declaration order — filter to this type).
@@ -7751,8 +7869,9 @@ tupleTypeArity : String -> Int
 tupleTypeArity ty = trailingIntOf ty
 
 ctorsOfTypeUser : Prog -> String -> List String
-ctorsOfTypeUser (Prog _ ctorTypes _ _ _ _ _ _ _) ty =
-  map fstPair (filterList (e => eqStr (sndPair e) ty) ctorTypes)
+ctorsOfTypeUser (Prog _ ctorTypes _ _ _ _ _ _ _) ty = match typeCtorsMapW.value
+  Some m => orEmptyCtors (omLookup ty m)
+  None => map fstPair (filterList (e => eqStr (sndPair e) ty) ctorTypes)
 
 -- the number of ctors a type has (the br_table's slot count).
 typeCtorCount : Prog -> String -> Int
@@ -7766,16 +7885,29 @@ switchTypeName prog ((CTBranch h _)::rest) = match conHeadInfo h
   Some (c, _) => ctorTypeName prog c
   None => switchTypeName prog rest
 
--- the branch whose head's ordinal is k (for the br_table slot).
-branchForOrdinal : Prog -> List CTBranch -> String -> Int -> Option CTBranch
-branchForOrdinal _ [] _ _ = None
-branchForOrdinal prog ((CTBranch h sub)::rest) ty k = match conHeadInfo h
+-- ordinal → the branch that fills that br_table slot, built ONCE per switch (#381).
+-- The tower walks every ordinal slot 0..n-1 and each slot used to re-scan the whole
+-- branch list (`branchForOrdinal`) calling `ctorOrdinal` per branch — O(slots ×
+-- branches) even with `ctorOrdinal` memoized.  Keyed by the ordinal rendered as a
+-- string (`OrdMap` is String-keyed).  The `omHasKey` guard keeps the FIRST branch on
+-- a duplicate ordinal, matching the old left-to-right `branchForOrdinal` scan.
+branchOrdMapW : Prog -> List CTBranch -> OrdMap CTBranch
+branchOrdMapW prog bs = branchOrdMapGoW prog bs omEmpty
+
+branchOrdMapGoW : Prog -> List CTBranch -> OrdMap CTBranch -> OrdMap CTBranch
+branchOrdMapGoW _ [] m = m
+branchOrdMapGoW prog ((CTBranch h sub)::rest) m = match conHeadInfo h
   Some (c, _) =>
-    if ctorOrdinal prog c == k then
-      Some (CTBranch h sub)
-    else
-      branchForOrdinal prog rest ty k
-  None => branchForOrdinal prog rest ty k
+    let k = intToString (ctorOrdinal prog c)
+    branchOrdMapGoW
+      prog
+      rest
+      (if omHasKey k m then m else omInsert k (CTBranch h sub) m)
+  None => branchOrdMapGoW prog rest m
+
+-- the branch whose head's ordinal is k (for the br_table slot).
+branchForOrdinal : OrdMap CTBranch -> Int -> Option CTBranch
+branchForOrdinal bmap k = omLookup (intToString k) bmap
 
 -- the name + arity a constructor-LIKE head tests against.  W7 maps the built-in
 -- heads to synthetic ctor names so the SAME ctor machinery (ordinal / struct /
@@ -8031,6 +8163,21 @@ flattenApp hd acc = (hd, acc)
 
 indent : List String -> List String
 indent lines = map ("    " ++ _) lines
+
+-- `indent` applied `d` times, but in ONE pass (#381).  The if/else CHAIN emitters
+-- (emitLitSwitch{Ref,Tail}, emitDispatchChain) nest their own recursion inside
+-- `indent`, so the k-th arm's text used to be re-mapped — and every line
+-- re-allocated — once per level above it: O(arms²) line copies for one chain.
+-- Threading the depth and padding ONCE collapses that to one copy per line.  The
+-- emitted text is unchanged: `indentBy d` is by construction `indent` iterated d
+-- times, and `indentBy 0` is the identity.
+indentBy : Int -> List String -> List String
+indentBy d lines =
+  let pad = indentPad d
+  map (pad ++ _) lines
+
+indentPad : Int -> String
+indentPad d = joinWith "" (replicate d "    ")
 
 gname : String -> String
 -- A user identifier that is LITERALLY one of the codety ABI param names (`$self` /
