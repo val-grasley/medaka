@@ -1,5 +1,5 @@
 # META
-source_lines=1502
+source_lines=1520
 stages=DESUGAR,MARK
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -348,6 +348,24 @@ debugArrayItems arr i n
    True -}
 export impl Debug (Array a) requires Debug a where
   debug arr = "[|\{debugArrayItems arr 0 (arrayLength arr)}|]"
+
+-- Lives in `core.mdk` (not `array.mdk`) alongside `Debug`/`Index` so
+-- `deriving (Eq)` over a field of array type builds without an `import array`.
+export impl Eq (Array a) requires Eq a where
+  eq a b =
+    if arrayLength a != arrayLength b then
+      False
+    else
+      eqGo a b 0 (arrayLength a)
+
+eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
+eqGo a b i n =
+  if i >= n then
+    True
+  else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then
+    eqGo a b (i + 1) n
+  else
+    False
 
 export impl Debug (Option a) requires Debug a where
   debug None = "None"
@@ -1569,6 +1587,9 @@ prop "foldThen with Some agrees with a pure fold" (xs : List Int) = eq
 (DTypeSig false "debugArrayItems" (TyConstrained ((cstr "Debug" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String"))))))
 (DFunDef false "debugArrayItems" ((PVar "arr") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (ELit (LString "")) (EIf (EBinOp "==" (EVar "i") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EApp (EVar "debug") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EIf (EVar "otherwise") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EApp (EVar "debug") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))))) (ELit (LString ", "))) (EApp (EVar "display") (EApp (EApp (EApp (EVar "debugArrayItems") (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")))) (ELit (LString ""))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DImpl true "Debug" ((TyApp (TyCon "Array") (TyVar "a"))) ((req "Debug" ((TyVar "a")))) ((im "debug" ((PVar "arr")) (EBinOp "++" (EBinOp "++" (ELit (LString "[|")) (EApp (EVar "display") (EApp (EApp (EApp (EVar "debugArrayItems") (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))))) (ELit (LString "|]"))))))
+(DImpl true "Eq" ((TyApp (TyCon "Array") (TyVar "a"))) ((req "Eq" ((TyVar "a")))) ((im "eq" ((PVar "a") (PVar "b")) (EIf (EBinOp "!=" (EApp (EVar "arrayLength") (EVar "a")) (EApp (EVar "arrayLength") (EVar "b"))) (EVar "False") (EApp (EApp (EApp (EApp (EVar "eqGo") (EVar "a")) (EVar "b")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "a")))))))
+(DTypeSig false "eqGo" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))))
+(DFunDef false "eqGo" ((PVar "a") (PVar "b") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "True") (EIf (EApp (EApp (EVar "eq") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "b"))) (EApp (EApp (EApp (EApp (EVar "eqGo") (EVar "a")) (EVar "b")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EVar "False"))))
 (DImpl true "Debug" ((TyApp (TyCon "Option") (TyVar "a"))) ((req "Debug" ((TyVar "a")))) ((im "debug" ((PCon "None")) (ELit (LString "None"))) (im "debug" ((PCon "Some" (PVar "x"))) (EBinOp "++" (ELit (LString "Some ")) (EApp (EVar "debug") (EVar "x"))))))
 (DImpl true "Debug" ((TyApp (TyApp (TyCon "Result") (TyVar "e")) (TyVar "a"))) ((req "Debug" ((TyVar "e"))) (req "Debug" ((TyVar "a")))) ((im "debug" ((PCon "Ok" (PVar "x"))) (EBinOp "++" (ELit (LString "Ok ")) (EApp (EVar "debug") (EVar "x")))) (im "debug" ((PCon "Err" (PVar "e"))) (EBinOp "++" (ELit (LString "Err ")) (EApp (EVar "debug") (EVar "e"))))))
 (DImpl true "Debug" ((TyTuple (TyVar "a") (TyVar "b"))) ((req "Debug" ((TyVar "a"))) (req "Debug" ((TyVar "b")))) ((im "debug" ((PTuple (PVar "a") (PVar "b"))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "(")) (EApp (EVar "display") (EApp (EVar "debug") (EVar "a")))) (ELit (LString ", "))) (EApp (EVar "display") (EApp (EVar "debug") (EVar "b")))) (ELit (LString ")"))))))
@@ -1884,6 +1905,9 @@ prop "foldThen with Some agrees with a pure fold" (xs : List Int) = eq
 (DTypeSig false "debugArrayItems" (TyConstrained ((cstr "Debug" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String"))))))
 (DFunDef false "debugArrayItems" ((PVar "arr") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (ELit (LString "")) (EIf (EBinOp "==" (EVar "i") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EApp (EMethodRef "debug") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EIf (EVar "otherwise") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EApp (EMethodRef "debug") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EApp (EApp (EApp (EDictApp "debugArrayItems") (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")))) (ELit (LString ""))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DImpl true "Debug" ((TyApp (TyCon "Array") (TyVar "a"))) ((req "Debug" ((TyVar "a")))) ((im "debug" ((PVar "arr")) (EBinOp "++" (EBinOp "++" (ELit (LString "[|")) (EApp (EMethodRef "display") (EApp (EApp (EApp (EDictApp "debugArrayItems") (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))))) (ELit (LString "|]"))))))
+(DImpl true "Eq" ((TyApp (TyCon "Array") (TyVar "a"))) ((req "Eq" ((TyVar "a")))) ((im "eq" ((PVar "a") (PVar "b")) (EIf (EBinOp "!=" (EApp (EVar "arrayLength") (EVar "a")) (EApp (EVar "arrayLength") (EVar "b"))) (EVar "False") (EApp (EApp (EApp (EApp (EDictApp "eqGo") (EVar "a")) (EVar "b")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "a")))))))
+(DTypeSig false "eqGo" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))))
+(DFunDef false "eqGo" ((PVar "a") (PVar "b") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "True") (EIf (EApp (EApp (EMethodRef "eq") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "b"))) (EApp (EApp (EApp (EApp (EDictApp "eqGo") (EVar "a")) (EVar "b")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EVar "False"))))
 (DImpl true "Debug" ((TyApp (TyCon "Option") (TyVar "a"))) ((req "Debug" ((TyVar "a")))) ((im "debug" ((PCon "None")) (ELit (LString "None"))) (im "debug" ((PCon "Some" (PVar "x"))) (EBinOp "++" (ELit (LString "Some ")) (EApp (EMethodRef "debug") (EVar "x"))))))
 (DImpl true "Debug" ((TyApp (TyApp (TyCon "Result") (TyVar "e")) (TyVar "a"))) ((req "Debug" ((TyVar "e"))) (req "Debug" ((TyVar "a")))) ((im "debug" ((PCon "Ok" (PVar "x"))) (EBinOp "++" (ELit (LString "Ok ")) (EApp (EMethodRef "debug") (EVar "x")))) (im "debug" ((PCon "Err" (PVar "e"))) (EBinOp "++" (ELit (LString "Err ")) (EApp (EMethodRef "debug") (EVar "e"))))))
 (DImpl true "Debug" ((TyTuple (TyVar "a") (TyVar "b"))) ((req "Debug" ((TyVar "a"))) (req "Debug" ((TyVar "b")))) ((im "debug" ((PTuple (PVar "a") (PVar "b"))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "(")) (EApp (EMethodRef "display") (EApp (EMethodRef "debug") (EVar "a")))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EApp (EMethodRef "debug") (EVar "b")))) (ELit (LString ")"))))))

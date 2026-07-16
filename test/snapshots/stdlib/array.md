@@ -1,5 +1,5 @@
 # META
-source_lines=530
+source_lines=518
 stages=DESUGAR,MARK
 # SOURCE
 {- array.mdk — operations on Array a
@@ -481,21 +481,9 @@ export impl Semigroup (Array a) where
 export impl Monoid (Array a) where
   empty = [||]
 
-export impl Eq (Array a) requires Eq a where
-  eq a b =
-    if arrayLength a != arrayLength b then
-      False
-    else
-      eqGo a b 0 (arrayLength a)
-
-eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
-eqGo a b i n =
-  if i >= n then
-    True
-  else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then
-    eqGo a b (i + 1) n
-  else
-    False
+-- `impl Eq (Array a)` lives in `stdlib/core.mdk` (the prelude), alongside
+-- `Debug`/`Index`, so `deriving (Eq)` over an array field builds without an
+-- `import array`.
 
 -- ── Properties (executed by `medaka test`) ──────────────────────────────
 
@@ -627,9 +615,6 @@ prop "makeWith element at index 0" (n : Int) =
 (DImpl true "Foldable" ((TyCon "Array")) () ((im "fold" ((PVar "f") (PVar "z") (PVar "arr")) (EApp (EApp (EApp (EApp (EApp (EVar "foldGo") (EVar "f")) (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))) (EVar "z"))) (im "foldRight" ((PVar "f") (PVar "z") (PVar "arr")) (EApp (EApp (EApp (EApp (EVar "foldRightGo") (EVar "f")) (EVar "arr")) (EBinOp "-" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 1)))) (EVar "z"))) (im "toList" ((PVar "arr")) (EApp (EApp (EApp (EVar "toListGo") (EVar "arr")) (EBinOp "-" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 1)))) (EListLit))) (im "isEmpty" ((PVar "arr")) (EBinOp "==" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 0)))) (im "length" ((PVar "arr")) (EApp (EVar "arrayLength") (EVar "arr")))))
 (DImpl true "Semigroup" ((TyApp (TyCon "Array") (TyVar "a"))) () ((im "append" ((PVar "a") (PVar "b")) (EApp (EApp (EVar "arrayMakeWith") (EBinOp "+" (EApp (EVar "arrayLength") (EVar "a")) (EApp (EVar "arrayLength") (EVar "b")))) (ELam ((PVar "i")) (EIf (EBinOp "<" (EVar "i") (EApp (EVar "arrayLength") (EVar "a"))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "-" (EVar "i") (EApp (EVar "arrayLength") (EVar "a")))) (EVar "b"))))))))
 (DImpl true "Monoid" ((TyApp (TyCon "Array") (TyVar "a"))) () ((im "empty" () (EArrayLit))))
-(DImpl true "Eq" ((TyApp (TyCon "Array") (TyVar "a"))) ((req "Eq" ((TyVar "a")))) ((im "eq" ((PVar "a") (PVar "b")) (EIf (EBinOp "!=" (EApp (EVar "arrayLength") (EVar "a")) (EApp (EVar "arrayLength") (EVar "b"))) (EVar "False") (EApp (EApp (EApp (EApp (EVar "eqGo") (EVar "a")) (EVar "b")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "a")))))))
-(DTypeSig false "eqGo" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))))
-(DFunDef false "eqGo" ((PVar "a") (PVar "b") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "True") (EIf (EApp (EApp (EVar "eq") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "b"))) (EApp (EApp (EApp (EApp (EVar "eqGo") (EVar "a")) (EVar "b")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EVar "False"))))
 (DTypeSig false "isSortedArr" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Bool"))))
 (DFunDef false "isSortedArr" ((PVar "arr")) (EApp (EApp (EApp (EVar "isSortedArrGo") (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))))
 (DTypeSig false "isSortedArrGo" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool"))))))
@@ -734,9 +719,6 @@ prop "makeWith element at index 0" (n : Int) =
 (DImpl true "Foldable" ((TyCon "Array")) () ((im "fold" ((PVar "f") (PVar "z") (PVar "arr")) (EApp (EApp (EApp (EApp (EApp (EVar "foldGo") (EVar "f")) (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))) (EVar "z"))) (im "foldRight" ((PVar "f") (PVar "z") (PVar "arr")) (EApp (EApp (EApp (EApp (EVar "foldRightGo") (EVar "f")) (EVar "arr")) (EBinOp "-" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 1)))) (EVar "z"))) (im "toList" ((PVar "arr")) (EApp (EApp (EApp (EVar "toListGo") (EVar "arr")) (EBinOp "-" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 1)))) (EListLit))) (im "isEmpty" ((PVar "arr")) (EBinOp "==" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 0)))) (im "length" ((PVar "arr")) (EApp (EVar "arrayLength") (EVar "arr")))))
 (DImpl true "Semigroup" ((TyApp (TyCon "Array") (TyVar "a"))) () ((im "append" ((PVar "a") (PVar "b")) (EApp (EApp (EVar "arrayMakeWith") (EBinOp "+" (EApp (EVar "arrayLength") (EVar "a")) (EApp (EVar "arrayLength") (EVar "b")))) (ELam ((PVar "i")) (EIf (EBinOp "<" (EVar "i") (EApp (EVar "arrayLength") (EVar "a"))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "-" (EVar "i") (EApp (EVar "arrayLength") (EVar "a")))) (EVar "b"))))))))
 (DImpl true "Monoid" ((TyApp (TyCon "Array") (TyVar "a"))) () ((im "empty" () (EArrayLit))))
-(DImpl true "Eq" ((TyApp (TyCon "Array") (TyVar "a"))) ((req "Eq" ((TyVar "a")))) ((im "eq" ((PVar "a") (PVar "b")) (EIf (EBinOp "!=" (EApp (EVar "arrayLength") (EVar "a")) (EApp (EVar "arrayLength") (EVar "b"))) (EVar "False") (EApp (EApp (EApp (EApp (EDictApp "eqGo") (EVar "a")) (EVar "b")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "a")))))))
-(DTypeSig false "eqGo" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))))
-(DFunDef false "eqGo" ((PVar "a") (PVar "b") (PVar "i") (PVar "n")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "True") (EIf (EApp (EApp (EMethodRef "eq") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "b"))) (EApp (EApp (EApp (EApp (EDictApp "eqGo") (EVar "a")) (EVar "b")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "n")) (EVar "False"))))
 (DTypeSig false "isSortedArr" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyCon "Bool"))))
 (DFunDef false "isSortedArr" ((PVar "arr")) (EApp (EApp (EApp (EDictApp "isSortedArrGo") (EVar "arr")) (ELit (LInt 0))) (EApp (EVar "arrayLength") (EVar "arr"))))
 (DTypeSig false "isSortedArrGo" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool"))))))

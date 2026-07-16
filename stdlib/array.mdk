@@ -477,21 +477,9 @@ export impl Semigroup (Array a) where
 export impl Monoid (Array a) where
   empty = [||]
 
-export impl Eq (Array a) requires Eq a where
-  eq a b =
-    if arrayLength a != arrayLength b then
-      False
-    else
-      eqGo a b 0 (arrayLength a)
-
-eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
-eqGo a b i n =
-  if i >= n then
-    True
-  else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then
-    eqGo a b (i + 1) n
-  else
-    False
+-- `impl Eq (Array a)` lives in `stdlib/core.mdk` (the prelude), alongside
+-- `Debug`/`Index`, so `deriving (Eq)` over an array field builds without an
+-- `import array`.
 
 -- ── Properties (executed by `medaka test`) ──────────────────────────────
 

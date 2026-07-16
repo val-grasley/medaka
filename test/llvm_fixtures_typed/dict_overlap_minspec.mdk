@@ -1,0 +1,31 @@
+-- #203 (S0 spec-conformance): most-specific-wins dispatch of OVERLAPPING instances
+-- across EVERY resolution position (DICT-SEMANTICS §3 `inst` = min⊑, §6 uniform
+-- resolution).  `Default (Box a) requires Default a` overlaps `Default (Box Int)`.
+-- For `theVal : Box (Box Int) = def` the OUTER goal `Default (Box (Box Int))` matches
+-- only `Box a` (a := Box Int) → `Box def`; the NESTED requires obligation
+-- `Default (Box Int)` matches BOTH and MUST select the more-specific `Box Int` (→ 42),
+-- with its OWN (empty) requires — not borrow `Box a`'s `Default a` context (→ 7).
+-- Before the fix the return-position dispatch bypassed the min⊑ selector: eval crashed
+-- (E-NOT-A-FUNCTION on the ambiguous bare-tag return-position dispatch) and native
+-- silently answered 7.  All engines must now agree on 42.
+interface Default a where
+  def : a
+
+impl Default Int where
+  def = 7
+
+data Box a = Box a
+
+impl Default (Box a) requires Default a where
+  def = Box def
+
+impl Default (Box Int) where
+  def = Box 42
+
+unbox : Box a -> a
+unbox (Box x) = x
+
+theVal : Box (Box Int)
+theVal = def
+
+main = unbox (unbox theVal)

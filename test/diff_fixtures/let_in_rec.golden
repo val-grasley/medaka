@@ -100,6 +100,7 @@ div : a -> a -> a
 elem : (Eq a, Foldable b) => a -> b a -> Bool
 empty : a
 eq : a -> a -> Bool
+eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
 filter : (a -> Bool) -> b a -> b a
 filterMap : (a -> Option b) -> c a -> c b
 filterThen : (Applicative b, Thenable b) => (a -> b Bool) -> List a -> b (List a)

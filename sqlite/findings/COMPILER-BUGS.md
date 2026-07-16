@@ -18,7 +18,8 @@
 > Snapshot **re-derived 2026-07-14 on `e34e2b46` by running the script: 7 open, 4 fixed.**
 > (Was "10 open, 1 fixed". **B2, B3 and B4 had all been fixed and nobody had noticed** — including
 > BOTH of the "silent build miscompile" P0s that `PLAN.md` was still advertising as open. This is the
-> reason the header above exists. The still-open rows are **B1w, B5, B6, B7, B8, B10**. The two
+> reason the header above exists. The still-open rows are **B1w, B6, B7, B8, B10** (B5 closed
+> 2026-07-16, #316). The two
 **MUT** workaround rows were reverted 2026-07-15 (#140 btree gather, #141 recordenc encoder).)
 >
 > **The backlog now lives in GitHub Issues** (`gh issue list --label "S0: silent wrongness"`), because
@@ -57,7 +58,7 @@ no longer exists, which is how workarounds quietly become permanent architecture
 |-----|------|---------------------------|
 | **B1w** | `sqlite/lib/sqlparse.mdk` (×2) | ⚠️ **STILL NEEDED — for WasmGC only.** `main`'s `ced6342d` fixed this in the LLVM emitter; the **WasmGC emitter still fails to emit** a partially-applied constructor. Revert the eta-expansions only when B1 is fixed in **both** backends. |
 | **B2** | `sqlite/lib/aggregate.mdk` | ⭐ **B2 IS NOW CLOSED — this revert is OWED.** `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. |
-| **B5** | `sqlite/lib/select.mdk`, `sqlite/lib/recordfmt.mdk` | `Eq` is hand-written for `Literal` and `Cell` because `deriving (Eq)` over their `Array` field can't be built. Replace with `deriving (Eq)` — and drop the `-- lint-disable-next-line rule-hand-rolled-derivable` that silences the linter's (currently wrong) advice. |
+| ~~**B5**~~ | `sqlite/lib/select.mdk`, `sqlite/lib/recordfmt.mdk` | ✅ **CLOSED (#316, 2026-07-16).** Root cause was prelude asymmetry — `Eq (Array a)` lived in `array.mdk` while `Debug/Display/Index (Array a)` were in the prelude, so `deriving (Eq)` over an `Array` field check-passed but native-build-failed. Fixed by moving `Eq (Array a)` into `stdlib/core.mdk`. The hand-written `Eq` on `Literal`/`Cell` and their `-- lint-disable-next-line rule-hand-rolled-derivable` were reverted to `deriving (Debug, Eq)` in the same PR. (`verify_compiler_bugs.sh` reports FIXED.) |
 | ~~**MUT**~~ | `sqlite/lib/btree.mdk` | ✅ **REVERTED (#140).** The overflow gather now allocates the payload buffer once (`array.make`) and blits each region into place (`array.blit`) — O(bytes), one copy per payload byte. The pure `slice`+`concat` O(chunks × bytes) dodge is gone; no `<Mut>` (removed 2026-07-14) and no `--allow-internal` (uses the safe `array` wrappers, not the raw externs). |
 | ~~**MUT**~~ | `sqlite/lib/recordenc.mdk` | ✅ **REVERTED (#141).** `beSintBytes` now delegates to stdlib `bytebuilder.emitBeSint` (`newBuilder`/`emitBeSint`/`buildArray`); the hand-rolled two's-complement duplicate and its `beUnsignedNBytes`/`beUnsignedNGo` helpers are deleted. `<Mut>` removal (2026-07-14) mooted the signature concern. |
 

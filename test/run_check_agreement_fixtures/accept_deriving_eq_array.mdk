@@ -1,0 +1,11 @@
+-- Issue #56 / B5: `deriving (Eq)` over a field of `Array` type must agree across
+-- check == run == build with NO `import array`.  The `Eq (Array a)` impl lives in
+-- the prelude (`stdlib/core.mdk`) alongside `Debug`/`Index`, so this resolves with
+-- no import.  Before the fix: check ACCEPTED and run returned True, but native
+-- build PANICKED with `no impl of method 'eq' for type 'Array'`.
+data Rec = MkRec (Array Int) deriving (Eq)
+
+main =
+  println (debug (MkRec [|1, 2, 3|] == MkRec [|1, 2, 3|]))
+  println (debug (MkRec [|1, 2, 3|] == MkRec [|1, 9, 3|]))
+  println (debug (MkRec [|1, 2, 3|] == MkRec [|1, 2|]))
