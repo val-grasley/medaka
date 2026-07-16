@@ -1005,7 +1005,7 @@ isStrExternW name = contains name [
   -- reuses $mdk_cp_count + $mdk_char_to_str, both in strLeafRuntimeLines).
   "debugStringLit", "debugCharLit",
   -- layer-6: stringToFloat : String -> Option Float.  Reads the $str, pushes bytes
-  -- via the IO path channel, calls mdk_str_to_float (JS Number()) -> f64 -> $float.
+  -- via the IO path channel, calls mdk_str_to_float (host strtod) -> f64 -> $float.
   "stringToFloat"]
 
 -- ── W8: RNG + hash LEAF externs (no `$str` dependency on their own) ──────────
@@ -1389,7 +1389,7 @@ noteW8Extern name =
   -- floatToString needs the $str rep to build its result string.
   let _ = if name == "floatToString" then setRef useStrRef True else ()
   -- layer-6: stringToFloat : String -> Option Float.  Pushes bytes via the IO path
-  -- channel then calls mdk_str_to_float (JS Number()).  Forces floatStr, float, str,
+  -- channel then calls mdk_str_to_float (host strtod acceptance set, #370).  Forces floatStr, float, str,
   -- and IO (for mdk_path_reset/mdk_path_push).  The $C_Some ctor is in ref-type-section
   -- which is always present when useStrRef/useFloatRef forces ref-mode.
   let _ = if name == "stringToFloat"
@@ -2124,7 +2124,7 @@ emitRefProgram prog groups =
     ++ (if useFloatRef.value then floatFmtImportLines else [])
     -- #101: the libm transcendentals / pow / atan2 / hypot are JS Math.* host imports.
     ++ (if useMathRef.value then mathHostImportLines else [])
-    -- layer-6: stringToFloat is a host import (mdk_str_to_float uses JS Number()).
+    -- layer-6: stringToFloat is a host import (mdk_str_to_float = the host strtod parser).
     ++ (if useFloatStrRef.value then floatStrImportLines else [])
     -- W12: the IO host surface (readFile/fileExists/args/getEnv/exit) host imports.
     ++ (if useIORef.value then ioHostImportLines else [])

@@ -1,0 +1,73 @@
+None
+None
+None
+Some 1.5
+Some 1.5
+Some 1.5
+Some 1.5
+None
+None
+None
+None
+None
+Some nan
+Some nan
+Some nan
+Some nan
+Some nan
+Some nan
+Some nan
+None
+None
+None
+Some inf
+Some inf
+Some -inf
+Some inf
+Some inf
+Some inf
+Some -inf
+None
+None
+None
+Some 8.0
+Some 16.0
+Some 8.0
+Some 3.0
+Some 1.0
+Some 0.5
+Some 2.0
+None
+None
+None
+None
+Some 1.5
+Some 1.5
+Some -1.5
+Some 0.5
+Some 5.0
+Some 10.0
+Some 150.0
+Some 150.0
+Some 0.015
+Some -0.0
+Some inf
+Some 0.0
+Some inf
+None
+None
+None
+None
+None
+None
+None
+None
+None
+None
+nan sign-byte 127
+-nan sign-byte 255
++nan sign-byte 127
+-nan(1) sign-byte 255
+-inf sign-byte 255
+-1.5 sign-byte 191
+
