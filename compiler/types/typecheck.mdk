@@ -13765,13 +13765,24 @@ reexportSeed coreV (_::rest) depEnv = reexportSeed coreV rest depEnv
 -- foldModules owns ONLY the loop and performs NO resetCrossModuleState: the reset
 -- boundary stays in each driver's preamble (a reset leaking in here would hand the
 -- `check*` drivers a reset they must not have).
-foldModules : (String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), e)) -> (Bool -> String -> e -> acc -> acc) -> acc -> List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> acc
-foldModules _ _ base _ _ _ _ _ [] = base
-foldModules worker collect base baseSeed _coreV depEnv accData accAll [(mid, prog)] =
+-- #154 PR-C: `wantData`/`wantAll` are per-worker "needs" signals gating the two
+-- accumulator concats.  The old unconditional `accData ++ publicDataDecls prog` /
+-- `accAll ++ prog` copied a GROWING left operand every iteration → O(modules^2)
+-- allocation across the graph (the residual PR-A left).  Each worker declares which
+-- accumulator it actually reads, and the OTHER is threaded UNCHANGED (`else accData`
+-- — no copy), so a path that consumes neither (the perf-gate `checkModules` path,
+-- where `checkBodyImpl` binds `accData` as `Module _ _ _` and never reads it, and
+-- `accAll` is `cmCheckWorker`'s ignored `_accAll`) does O(|prog|) per module = O(N)
+-- total.  Byte-identity: when `wantX` is False the worker provably ignores that
+-- accumulator, so the value threaded is unobserved; when True the concat is IDENTICAL
+-- to the old append (same operand order), so the elab/diag witnesses are unchanged.
+foldModules : Bool -> Bool -> (String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), e)) -> (Bool -> String -> e -> acc -> acc) -> acc -> List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> acc
+foldModules _ _ _ _ base _ _ _ _ _ [] = base
+foldModules _wantData _wantAll worker collect base baseSeed _coreV depEnv accData accAll [(mid, prog)] =
   let seed = baseSeed ++ importSeed prog depEnv
   let (_, extra) = worker mid seed accData accAll prog
   collect True mid extra base
-foldModules worker collect base baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
+foldModules wantData wantAll worker collect base baseSeed coreV depEnv accData accAll ((mid, prog)::rest) =
   let seed = baseSeed ++ importSeed prog depEnv
   let (schemes, extra) = worker mid seed accData accAll prog
   let pubV = pickSchemes (publicValNames prog) schemes ++ reexportSeed coreV prog depEnv
@@ -13780,14 +13791,16 @@ foldModules worker collect base baseSeed coreV depEnv accData accAll ((mid, prog
     mid
     extra
     (foldModules
+      wantData
+      wantAll
       worker
       collect
       base
       baseSeed
       coreV
       ((mid, pubV)::depEnv)
-      (accData ++ publicDataDecls prog)
-      (accAll ++ prog)
+      (if wantData then accData ++ publicDataDecls prog else accData)
+      (if wantAll then accAll ++ prog else accAll)
       rest)
 
 -- Shared preamble of the three `check*` module drivers (the "three verbatim entry
@@ -13823,15 +13836,22 @@ cmCheckWorker _mid seed accData _accAll prog =
 export checkModules : List Decl -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
 checkModules runtimeDecls coreDecls modules =
   let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
+  -- #154 PR-C: cmCheckWorker reads NEITHER accData (checkModuleFull → Module path, where
+  -- checkBodyImpl binds it `_` and never reads it) NOR accAll (its `_accAll` param), so
+  -- both concats are pure waste here — the residual O(modules^2) the PR-A review found.
+  -- wantData=wantAll=False threads them unchanged (no copy) and the `[] []` initials keep
+  -- the dead values empty → the whole perf-gate `checkModules` path is O(N).
   foldModules
+    False
+    False
     cmCheckWorker
     (_last mid schemes rest => (mid, schemes)::rest)
     []
     (runtimeSeed ++ coreSchemes)
     coreSchemes
     []
-    (publicDataDecls coreDecls)
-    coreDecls
+    []
+    []
     modules
 
 -- ── per-module ISOLATED diagnostics (the analyzeProject typecheck stage) ────
@@ -13917,7 +13937,14 @@ cmDiagsWorker _mid seed accData accAll prog =
 export checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List TcDiag, List TcDiag))
 checkModulesDiags runtimeDecls coreDecls modules =
   let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
+  -- #154 PR-C: cmDiagsWorker reads BOTH accData (buildOracle `prog ++ accData` +
+  -- runFinalChecks) and accAll (checkModuleFullImpl implDecls + runFinalChecks), and both
+  -- are order-observable (oracle first-wins, runFinalChecks scan order), so both concats
+  -- are RETAINED verbatim — this diagnostics path stays byte-identical (not the perf-gate
+  -- path; it is a byte-identity witness).
   let perMod = foldModules
+    True
+    True
     cmDiagsWorker
     (_last mid ew rest => (mid, ew) :: rest)
     []
@@ -13960,7 +13987,12 @@ entryOwnSchemes (_::rest) = entryOwnSchemes rest
 checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModulesEntryFull runtimeDecls coreDecls modules =
   let (runtimeSeed, coreSchemes) = checkModulesPreamble runtimeDecls coreDecls modules
+  -- #154 PR-C: cmEntryWorker also routes through checkModuleFullDiags, reading BOTH
+  -- accData and accAll exactly as cmDiagsWorker does → both concats RETAINED (byte-identity
+  -- witness, not the perf-gate path).
   let (schemes, errs, warns) = foldModules
+    True
+    True
     cmEntryWorker
     cmEntryCollect
     ([], [], [])
@@ -14116,14 +14148,21 @@ elaborateModules runtimeDecls coreDecls modulesIn =
   let modules2a = map (prePassModulePairArg markRpNames dictNames0 argNames mangledShadowMapRef.value) modules
   let _ = setRef promotionHarvestRef []
   let coreSchemesA = elabModuleStamp "" runtimeSeed [] core2a core2a
+  -- #154 PR-C: elabHarvestWorker → elabWorker → elabModuleStamp reads accAll as its
+  -- impl-body universe (`accAll ++ prog`, order-observable through buildImplTable/
+  -- buildKeyTable/resolveSites) but forwards accData only to checkModuleFullImpl's dead
+  -- Module `accData` field.  wantAll=True keeps the impl-universe concat byte-identical;
+  -- wantData=False drops the dead accData concat (`[]` initial).
   let _ = foldModules
+    False
+    True
     elabHarvestWorker
     (_last _mid _extra _rest => ())
     ()
     (runtimeSeed ++ coreSchemesA)
     coreSchemesA
     []
-    (publicDataDecls core2a)
+    []
     core2a
     modules2a
   match promotionHarvestRef.value
@@ -14156,14 +14195,19 @@ elaborateModules runtimeDecls coreDecls modulesIn =
       let core2 = prePassDictArg markRpNames dictNames argNames mangledShadowMapRef.value coreDecls
       let modules2 = map (prePassModulePairArg markRpNames dictNames argNames mangledShadowMapRef.value) modules
       let coreSchemes = elabModuleStamp "" runtimeSeed [] core2 core2
+      -- #154 PR-C: same as the bare sweep above — elabWorker reads accAll (impl universe,
+      -- order-observable) but not accData (dead Module field).  wantAll=True keeps the
+      -- concat byte-identical; wantData=False drops the dead one (`[]` initial).
       let _ = foldModules
+        False
+        True
         elabWorker
         (_last _mid _extra _rest => ())
         ()
         (runtimeSeed ++ coreSchemes)
         coreSchemes
         []
-        (publicDataDecls core2)
+        []
         core2
         modules2
       dictPassModulesIfEnabled dictNames core2 modules2
