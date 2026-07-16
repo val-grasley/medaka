@@ -4258,9 +4258,16 @@ emitVarRefPlain prog env d x =
   else if x == "True" then ["i32.const 1", "ref.i31"]
   else if x == "False" then ["i32.const 0", "ref.i31"]
   else if x == "otherwise" then ["i32.const 1", "ref.i31"]
-  -- W9: builtin Char bounds fit in an i31 → emit directly (codepoints 1 / 0x21FFFF).
-  else if x == "charMinBound" then ["i32.const 1", "ref.i31"]
-  else if x == "charMaxBound" then ["i32.const 2228223", "ref.i31"]
+  -- W9: builtin Char bounds fit in an i31 → emit directly.  These are the RAW
+  -- codepoints (0 / 0x10FFFF), because an i31 payload is UNTAGGED — the same rep as
+  -- `emitLitRef (LChar _)` and the `True`/`False` arms above, and what `charCode`
+  -- (an identity in ref mode) and every `i31.get_u` pattern test read back.
+  -- ⚠️ llvm_emit's peer constants are 1 / 2228223 and are NOT wrong there — native's
+  -- word is TAGGED (`2·cp+1`).  Do NOT copy that table here: pasting the tagged words
+  -- into an untagged i31 leaks the tag out as a value (#373 — `charCode charMaxBound`
+  -- printed 2228223, and range checks against the bounds were silently wrong).
+  else if x == "charMinBound" then ["i32.const 0", "ref.i31"]
+  else if x == "charMaxBound" then ["i32.const 1114111", "ref.i31"]
   -- W8b: the Float math constants pi/e are boxed (struct $float) — the SAME decimal
   -- text the LLVM oracle boxes (3.141592653589793 / 2.718281828459045).
   else if x == "pi" then ["f64.const 3.141592653589793", "struct.new $float"]
