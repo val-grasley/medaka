@@ -146,7 +146,7 @@ ifaceMethodArity : IfaceMethod -> (String, Int)
 ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
 ifaceMethodNmE : IfaceMethod -> String
 implDeclNames : Decl -> List String
-implDictRoutes : String -> String -> List Route -> List Route -> List Route
+implDictRoutes : Option Int -> List Route -> List Route -> List Route
 implKeyOf : String -> List Ty -> Option String -> String
 implMethodEntry : EvalEnv (Value a) -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value a))
 implMethodName : ImplMethod -> String
@@ -186,7 +186,6 @@ lookupFrameCell : List (String, Ref (Value a)) -> String -> Option (Ref (Value a
 lookupFrames : List (List (String, Ref (Value a))) -> String -> Value a
 lookupMethod : EvalEnv (Value a) -> String -> Value a
 lookupMethodFrames : List (List (String, Ref (Value a))) -> List (List (String, Ref (Value a))) -> String -> Value a
-lookupMethodReqCount : String -> String -> Int
 lookupMethodReqCountOpt : String -> String -> Option Int
 lookupPositions : String -> String -> List ((String, String), List Int) -> List Int
 lookupReqCount : String -> String -> List ((String, String), Int) -> Option Int

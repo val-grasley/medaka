@@ -1,5 +1,5 @@
 # META
-source_lines=3223
+source_lines=3226
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -295,16 +295,14 @@ takeN n _
 takeN _ [] = []
 takeN n (x::rest) = x :: takeN (n - 1) rest
 
-lookupMethodReqCount : String -> String -> Int
-lookupMethodReqCount mname tag =
-  fromOption 0 (lookupMethodReqCountOpt mname tag)
-
--- #413: the Option-returning twin.  A MISSING entry (no ImplMethod for this
--- (method, tag) — an interface DEFAULT method, or a tag the route never narrowed)
--- must stay distinguishable from a genuine reqCount of 0: 0 means "this impl
--- method declares NO leading dict params, so drop the call site's", while None
--- means "unknown callee — keep the pre-existing behaviour".  Collapsing the two
--- would silently strip the dicts a default method's lifted body needs.
+-- #413: Option-returning.  A MISSING entry (no ImplMethod for this (method, tag) —
+-- an interface DEFAULT method, or a tag the route never narrowed) must stay
+-- distinguishable from a genuine reqCount of 0: 0 means "this impl method declares
+-- NO leading dict params, so drop the call site's", while None means "unknown callee
+-- — keep the pre-existing behaviour".  Collapsing the two would silently strip the
+-- dicts a default method's lifted body needs.
+-- This scans methodReqCountRef, so it is once-per-dispatch on the hot path: callers
+-- take the Option ONCE and derive every consumer from it (see applyMethodDicts).
 lookupMethodReqCountOpt : String -> String -> Option Int
 lookupMethodReqCountOpt mname tag =
   lookupReqCount mname tag methodReqCountRef.value
@@ -1149,10 +1147,15 @@ evalMethodAt env name route implRoutes methodRoutes =
 export applyMethodDicts : EvalEnv (Value e) -> String -> Route -> Value e -> List (Value e) -> List Route -> List Route -> <e> Value e
 applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes =
   let tag = routeTag env route
-  let fwdReqs = takeN (lookupMethodReqCount name tag) fwdReqs0
+  -- ONE scan of methodReqCountRef per dispatch.  Both consumers below derive from
+  -- this single Option: fwdReqs wants it as a count (absent ⇒ 0), implDictRoutes
+  -- wants the absent/present distinction.  Looking it up twice doubled a
+  -- linear-in-impl-count scan on a runtime dispatch hot path for nothing.
+  let reqCount = lookupMethodReqCountOpt name tag
+  let fwdReqs = takeN (fromOption 0 reqCount) fwdReqs0
   if awaitsArgs narrowed then
     let v1 = applyDicts env narrowed methodRoutes
-    let v2 = applyDicts env v1 (implDictRoutes name tag methodRoutes implRoutes)
+    let v2 = applyDicts env v1 (implDictRoutes reqCount methodRoutes implRoutes)
     applyValues v2 fwdReqs
   else narrowed
 
@@ -1168,12 +1171,12 @@ applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes =
 -- only as many impl dicts as this impl method actually declared, i.e. reqCount
 -- (= impl pats − declared interface arity) minus the method-level dicts already
 -- applied.  None (unknown callee — a default method has no ImplMethod entry) ⇒
--- unchanged.
-implDictRoutes : String -> String -> List Route -> List Route -> List Route
-implDictRoutes name tag methodRoutes implRoutes = match lookupMethodReqCountOpt name tag
-  Some reqCount =>
-    takeN (subClampZero reqCount (listLen methodRoutes)) implRoutes
-  None => implRoutes
+-- unchanged.  Takes the already-looked-up count so the hot path scans the table
+-- once, not once per consumer.
+implDictRoutes : Option Int -> List Route -> List Route -> List Route
+implDictRoutes (Some reqCount) methodRoutes implRoutes =
+  takeN (subClampZero reqCount (listLen methodRoutes)) implRoutes
+implDictRoutes None _ implRoutes = implRoutes
 
 -- Retained for the Core-IR interpreter's CIndex/CStringIndex/CListIndex arms
 -- (see the note on listNthAt above): the EIndex eval arm is gone (desugared to
@@ -3318,8 +3321,6 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "takeN" ((PVar "n") PWild) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit))))
 (DFunDef false "takeN" (PWild (PList)) (EListLit))
 (DFunDef false "takeN" ((PVar "n") (PCons (PVar "x") (PVar "rest"))) (EBinOp "::" (EVar "x") (EApp (EApp (EVar "takeN") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "rest"))))
-(DTypeSig false "lookupMethodReqCount" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Int"))))
-(DFunDef false "lookupMethodReqCount" ((PVar "mname") (PVar "tag")) (EApp (EApp (EVar "fromOption") (ELit (LInt 0))) (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "mname")) (EVar "tag"))))
 (DTypeSig false "lookupMethodReqCountOpt" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int")))))
 (DFunDef false "lookupMethodReqCountOpt" ((PVar "mname") (PVar "tag")) (EApp (EApp (EApp (EVar "lookupReqCount") (EVar "mname")) (EVar "tag")) (EFieldAccess (EVar "methodReqCountRef") "value")))
 (DTypeSig false "lookupReqCount" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyCon "Int"))) (TyApp (TyCon "Option") (TyCon "Int"))))))
@@ -3729,9 +3730,10 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) PWild PWild) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym")))) (EVar "dicts")))
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "lm") (EApp (EApp (EVar "lookupMethod") (EVar "env")) (EVar "name"))) (DoLet false false (PTuple (PVar "narrowed") (PVar "fwdReqs0")) (EApp (EApp (EApp (EVar "methodAtNarrow") (EVar "env")) (EVar "lm")) (EVar "route"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "applyMethodDicts") (EVar "env")) (EVar "name")) (EVar "route")) (EVar "narrowed")) (EVar "fwdReqs0")) (EVar "implRoutes")) (EVar "methodRoutes")))))
 (DTypeSig true "applyMethodDicts" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))))
-(DFunDef false "applyMethodDicts" ((PVar "env") (PVar "name") (PVar "route") (PVar "narrowed") (PVar "fwdReqs0") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "tag") (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "lookupMethodReqCount") (EVar "name")) (EVar "tag"))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EApp (EApp (EApp (EApp (EVar "implDictRoutes") (EVar "name")) (EVar "tag")) (EVar "methodRoutes")) (EVar "implRoutes")))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
-(DTypeSig false "implDictRoutes" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyApp (TyCon "List") (TyCon "Route")))))))
-(DFunDef false "implDictRoutes" ((PVar "name") (PVar "tag") (PVar "methodRoutes") (PVar "implRoutes")) (EMatch (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "name")) (EVar "tag")) (arm (PCon "Some" (PVar "reqCount")) () (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "subClampZero") (EVar "reqCount")) (EApp (EVar "listLen") (EVar "methodRoutes")))) (EVar "implRoutes"))) (arm (PCon "None") () (EVar "implRoutes"))))
+(DFunDef false "applyMethodDicts" ((PVar "env") (PVar "name") (PVar "route") (PVar "narrowed") (PVar "fwdReqs0") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "tag") (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route"))) (DoLet false false (PVar "reqCount") (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "name")) (EVar "tag"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "fromOption") (ELit (LInt 0))) (EVar "reqCount"))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EApp (EApp (EApp (EVar "implDictRoutes") (EVar "reqCount")) (EVar "methodRoutes")) (EVar "implRoutes")))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
+(DTypeSig false "implDictRoutes" (TyFun (TyApp (TyCon "Option") (TyCon "Int")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyApp (TyCon "List") (TyCon "Route"))))))
+(DFunDef false "implDictRoutes" ((PCon "Some" (PVar "reqCount")) (PVar "methodRoutes") (PVar "implRoutes")) (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "subClampZero") (EVar "reqCount")) (EApp (EVar "listLen") (EVar "methodRoutes")))) (EVar "implRoutes")))
+(DFunDef false "implDictRoutes" ((PCon "None") PWild (PVar "implRoutes")) (EVar "implRoutes"))
 (DTypeSig true "evalIndex" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalIndex" ((PVar "container") (PCon "VInt" (PVar "i"))) (EApp (EApp (EVar "evalIndexInt") (EVar "container")) (EVar "i")))
 (DFunDef false "evalIndex" (PWild PWild) (EApp (EVar "panic") (ELit (LString "index is not an Int"))))
@@ -4679,8 +4681,6 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "takeN" ((PVar "n") PWild) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit))))
 (DFunDef false "takeN" (PWild (PList)) (EListLit))
 (DFunDef false "takeN" ((PVar "n") (PCons (PVar "x") (PVar "rest"))) (EBinOp "::" (EVar "x") (EApp (EApp (EVar "takeN") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "rest"))))
-(DTypeSig false "lookupMethodReqCount" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Int"))))
-(DFunDef false "lookupMethodReqCount" ((PVar "mname") (PVar "tag")) (EApp (EApp (EVar "fromOption") (ELit (LInt 0))) (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "mname")) (EVar "tag"))))
 (DTypeSig false "lookupMethodReqCountOpt" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int")))))
 (DFunDef false "lookupMethodReqCountOpt" ((PVar "mname") (PVar "tag")) (EApp (EApp (EApp (EVar "lookupReqCount") (EVar "mname")) (EVar "tag")) (EFieldAccess (EVar "methodReqCountRef") "value")))
 (DTypeSig false "lookupReqCount" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyCon "Int"))) (TyApp (TyCon "Option") (TyCon "Int"))))))
@@ -5090,9 +5090,10 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) PWild PWild) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym")))) (EVar "dicts")))
 (DFunDef false "evalMethodAt" ((PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "lm") (EApp (EApp (EVar "lookupMethod") (EVar "env")) (EVar "name"))) (DoLet false false (PTuple (PVar "narrowed") (PVar "fwdReqs0")) (EApp (EApp (EApp (EVar "methodAtNarrow") (EVar "env")) (EVar "lm")) (EVar "route"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "applyMethodDicts") (EVar "env")) (EVar "name")) (EVar "route")) (EVar "narrowed")) (EVar "fwdReqs0")) (EVar "implRoutes")) (EVar "methodRoutes")))))
 (DTypeSig true "applyMethodDicts" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))))))))
-(DFunDef false "applyMethodDicts" ((PVar "env") (PVar "name") (PVar "route") (PVar "narrowed") (PVar "fwdReqs0") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "tag") (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "lookupMethodReqCount") (EVar "name")) (EVar "tag"))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EApp (EApp (EApp (EApp (EVar "implDictRoutes") (EVar "name")) (EVar "tag")) (EVar "methodRoutes")) (EVar "implRoutes")))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
-(DTypeSig false "implDictRoutes" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyApp (TyCon "List") (TyCon "Route")))))))
-(DFunDef false "implDictRoutes" ((PVar "name") (PVar "tag") (PVar "methodRoutes") (PVar "implRoutes")) (EMatch (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "name")) (EVar "tag")) (arm (PCon "Some" (PVar "reqCount")) () (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "subClampZero") (EVar "reqCount")) (EApp (EVar "listLen") (EVar "methodRoutes")))) (EVar "implRoutes"))) (arm (PCon "None") () (EVar "implRoutes"))))
+(DFunDef false "applyMethodDicts" ((PVar "env") (PVar "name") (PVar "route") (PVar "narrowed") (PVar "fwdReqs0") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "tag") (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route"))) (DoLet false false (PVar "reqCount") (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "name")) (EVar "tag"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "fromOption") (ELit (LInt 0))) (EVar "reqCount"))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EApp (EApp (EApp (EVar "implDictRoutes") (EVar "reqCount")) (EVar "methodRoutes")) (EVar "implRoutes")))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))) (EVar "narrowed")))))
+(DTypeSig false "implDictRoutes" (TyFun (TyApp (TyCon "Option") (TyCon "Int")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyApp (TyCon "List") (TyCon "Route"))))))
+(DFunDef false "implDictRoutes" ((PCon "Some" (PVar "reqCount")) (PVar "methodRoutes") (PVar "implRoutes")) (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "subClampZero") (EVar "reqCount")) (EApp (EVar "listLen") (EVar "methodRoutes")))) (EVar "implRoutes")))
+(DFunDef false "implDictRoutes" ((PCon "None") PWild (PVar "implRoutes")) (EVar "implRoutes"))
 (DTypeSig true "evalIndex" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalIndex" ((PVar "container") (PCon "VInt" (PVar "i"))) (EApp (EApp (EVar "evalIndexInt") (EVar "container")) (EVar "i")))
 (DFunDef false "evalIndex" (PWild PWild) (EApp (EVar "panic") (ELit (LString "index is not an Int"))))

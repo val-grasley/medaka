@@ -291,16 +291,14 @@ takeN n _
 takeN _ [] = []
 takeN n (x::rest) = x :: takeN (n - 1) rest
 
-lookupMethodReqCount : String -> String -> Int
-lookupMethodReqCount mname tag =
-  fromOption 0 (lookupMethodReqCountOpt mname tag)
-
--- #413: the Option-returning twin.  A MISSING entry (no ImplMethod for this
--- (method, tag) — an interface DEFAULT method, or a tag the route never narrowed)
--- must stay distinguishable from a genuine reqCount of 0: 0 means "this impl
--- method declares NO leading dict params, so drop the call site's", while None
--- means "unknown callee — keep the pre-existing behaviour".  Collapsing the two
--- would silently strip the dicts a default method's lifted body needs.
+-- #413: Option-returning.  A MISSING entry (no ImplMethod for this (method, tag) —
+-- an interface DEFAULT method, or a tag the route never narrowed) must stay
+-- distinguishable from a genuine reqCount of 0: 0 means "this impl method declares
+-- NO leading dict params, so drop the call site's", while None means "unknown callee
+-- — keep the pre-existing behaviour".  Collapsing the two would silently strip the
+-- dicts a default method's lifted body needs.
+-- This scans methodReqCountRef, so it is once-per-dispatch on the hot path: callers
+-- take the Option ONCE and derive every consumer from it (see applyMethodDicts).
 lookupMethodReqCountOpt : String -> String -> Option Int
 lookupMethodReqCountOpt mname tag =
   lookupReqCount mname tag methodReqCountRef.value
@@ -1145,10 +1143,15 @@ evalMethodAt env name route implRoutes methodRoutes =
 export applyMethodDicts : EvalEnv (Value e) -> String -> Route -> Value e -> List (Value e) -> List Route -> List Route -> <e> Value e
 applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes =
   let tag = routeTag env route
-  let fwdReqs = takeN (lookupMethodReqCount name tag) fwdReqs0
+  -- ONE scan of methodReqCountRef per dispatch.  Both consumers below derive from
+  -- this single Option: fwdReqs wants it as a count (absent ⇒ 0), implDictRoutes
+  -- wants the absent/present distinction.  Looking it up twice doubled a
+  -- linear-in-impl-count scan on a runtime dispatch hot path for nothing.
+  let reqCount = lookupMethodReqCountOpt name tag
+  let fwdReqs = takeN (fromOption 0 reqCount) fwdReqs0
   if awaitsArgs narrowed then
     let v1 = applyDicts env narrowed methodRoutes
-    let v2 = applyDicts env v1 (implDictRoutes name tag methodRoutes implRoutes)
+    let v2 = applyDicts env v1 (implDictRoutes reqCount methodRoutes implRoutes)
     applyValues v2 fwdReqs
   else narrowed
 
@@ -1164,12 +1167,12 @@ applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes =
 -- only as many impl dicts as this impl method actually declared, i.e. reqCount
 -- (= impl pats − declared interface arity) minus the method-level dicts already
 -- applied.  None (unknown callee — a default method has no ImplMethod entry) ⇒
--- unchanged.
-implDictRoutes : String -> String -> List Route -> List Route -> List Route
-implDictRoutes name tag methodRoutes implRoutes = match lookupMethodReqCountOpt name tag
-  Some reqCount =>
-    takeN (subClampZero reqCount (listLen methodRoutes)) implRoutes
-  None => implRoutes
+-- unchanged.  Takes the already-looked-up count so the hot path scans the table
+-- once, not once per consumer.
+implDictRoutes : Option Int -> List Route -> List Route -> List Route
+implDictRoutes (Some reqCount) methodRoutes implRoutes =
+  takeN (subClampZero reqCount (listLen methodRoutes)) implRoutes
+implDictRoutes None _ implRoutes = implRoutes
 
 -- Retained for the Core-IR interpreter's CIndex/CStringIndex/CListIndex arms
 -- (see the note on listNthAt above): the EIndex eval arm is gone (desugared to
