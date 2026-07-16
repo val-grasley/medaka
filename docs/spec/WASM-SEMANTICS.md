@@ -5,7 +5,8 @@
 contract: (1) the **WasmGC physical encoding** of the abstract value contract
 (`compiler/RUNTIME-DESIGN.md` §8.6, ratified 2026-06-07), stated as laws; and
 (2) the **host-boundary contract** — the part of wasm's semantics that lives in
-JS host imports (`test/wasm/run.js`, `playground/worker.js`), which is wasm's
+JS host imports (`test/wasm/run.js`, `playground/worker.js`, `playground/compile.mjs`),
+which is wasm's
 biggest specification hole. §4 is the wasm arm of EMITTER-SEMANTICS §9: every
 shared law → wasm status → issue.
 
@@ -96,13 +97,97 @@ above Core IR; these laws are the wasm peers of EMITTER-SEMANTICS §2 (V1–V6).
   (`ref.test`), each independently owes the §4 numeric laws, and adding one
   is a spec change. They are enumerated in the §4 V6 row.
 
+- **WP10 — Eager value-global init is ordered by DEPENDENCY, not source.**
+  (Status: ✗ **CONFIRMED BROKEN — #553**; the law is stated here because it was
+  UNWRITTEN until #543 exploited its absence.) A nullary top-level binding is a
+  wasm value **global**, initialized eagerly in `$__init` under `(start $__init)`.
+  A global whose initializer reads another value global must be emitted **after**
+  it, or it reads `ref.null` and `ref.as_non_null` traps *"dereferencing a null
+  pointer"* at instantiate — before a single line of user code runs.
+  `topoSortValBinds` (`backend/wasm_emit.mdk`) exists to enforce exactly this.
+  **It does not, and the gap is precise:** its edges come from `eagerVars`
+  (`backend/emit_support.mdk`), a **direct** free-var scan of the binding's own
+  body that does **not follow calls into a callee**. So `g = Ref (mk ())` yields
+  the single edge `mk` — a *function*, not a value bind, hence **no edge at all** —
+  and any global `mk`'s body reads is invisible. Source order then decides, and
+  #543 is what that costs: `crossRun` read `initialEnv` through `freshCrossRun`,
+  was ordered 97 lines early, and killed the entire playground.
+  ⚠️ **This is NOT a wasm-only law, and NOT playground-only — BOTH BACKENDS ARE
+  BROKEN ON ORDINARY USER CODE.** `llvm_emit.mdk`'s `orderedValBinds` is fed by
+  `bindFreeVars` = the **same shared `eagerVars`**, with the same blind spot, and
+  its own doc comment says an unordered eager forward ref *"captures the still-zero
+  global cell"*. This 12-line program — the minimal shape of the law — was run
+  through all three SHIPPING engines (2026-07-16):
+
+  ```medaka
+  data Env = Env (List Int)
+  mkEnv : Unit -> Env
+  mkEnv _ = base          -- reads the `base` global, but only INSIDE a callee
+  cell : Env
+  cell = mkEnv ()         -- eager global; only eager var is `mkEnv` ⇒ NO edge
+  base : Env
+  base = Env [1, 2, 3]    -- declared after `cell` ⇒ source order loses
+  size : Env -> Int
+  size e = match e
+    Env xs => 7
+  main = println (size cell)
+  ```
+
+  | engine | verdict |
+  |---|---|
+  | eval | `7` ✅ |
+  | **native** | **SIGSEGV — exit 139** |
+  | **wasm** | `instantiate failed: dereferencing a null pointer` |
+
+  **Only eval is correct.** So native is not merely *exposed* — it is
+  **EXPLOITABLE from user code**, and it fails as a **segfault or a silent zero**
+  where wasm traps loudly with a named cause. That asymmetry is the only reason
+  this was ever found: #543 surfaced solely because the playground's arm is the
+  wasm one. The general fix (#553, an eager-reachability closure that follows
+  calls) MUST cover **both** backends — a wasm-only fix would leave the arm that
+  fails SILENTLY live, which is the worse class.
+  ⚠️ An earlier draft of #543 claimed *"native is unaffected — it does not eagerly
+  init these"*. That was **FALSE**, propagated into #553's body, and is corrected
+  here with receipts. It was never grep-proven; the receipts above took ten minutes.
+  Until #553 lands, a value global whose initializer reaches another global
+  through a **call** is unsound on both backends; keep the read in the binding's
+  own body (pass it as an argument) so `eagerVars` can see it.
+  ⚠️ **No gate covers this, and placing one is BLOCKED — the reason is worth
+  recording so it is not rediscovered.** The only artifact that compiles the whole
+  compiler to wasm is the playground build: nightly-only, not required. The
+  12-line reproducer above runs in ~1 s and would be ideal, but it cannot land
+  green while #553 is open, and the two prescribed homes both refuse it:
+  * **`test/wasm/fixtures/`** — `diff_wasm.sh` has **no per-fixture ledger** of any
+    kind (`engine_divergence.txt` is consulted by `diff_compiler_engines.sh` ALONE),
+    so a known-broken fixture there simply turns a gate red.
+  * **`test/llvm_fixtures/`** — `diff_compiler_engines.sh` *does* have the
+    self-draining ledger, and it is the right mechanism. But **every category the
+    ledger offers is a false claim here**: `wasm:codegen-bug` / `wasm:emitter-gap`
+    are wrong (native SIGSEGVs too), and there is **no `native:*` codegen category
+    at all** — the taxonomy has no cell for "one shared emitter helper, both
+    backends wrong". Writing the nearest label would reproduce precisely the
+    failure `engine_divergence.txt`'s own header documents at length (*"THE CATEGORY
+    IS A CLAIM. VERIFY IT — a wrong one launders a bug behind a plausible label"*;
+    17+ rows have already dissolved that way) — and it would re-tell the very
+    "wasm-only" story this law exists to correct.
+  ⇒ **#553 needs a ledger category (e.g. `emitter:shared-eager-init`) before its
+  fixture can land.** That is a taxonomy decision, not a mechanical add.
+
 ---
 
 ## 2. The host-boundary contract (WH-laws)
 
-Native's TCB below the emitted IR is `runtime/medaka_rt.c`. Wasm's is **two
-JS files** — `test/wasm/run.js` (Node runner: gates, CLI users) and
-`playground/worker.js` (the 0.1.0 front door) — plus the engine. Parts of the
+Native's TCB below the emitted IR is `runtime/medaka_rt.c`. Wasm's is **three
+JS files** — `test/wasm/run.js` (Node runner: gates, CLI users),
+`playground/worker.js` (runs the USER's compiled program — the 0.1.0 front door)
+and `playground/compile.mjs` (runs the COMPILER itself, i.e. `playground.wasm`;
+imported by `compiler-worker.js`, `language-worker.js` and the node drivers) —
+plus the engine. ⚠️ This said **two** until 2026-07-16 and the omitted third is
+where #543 landed: believing the TCB was two files is precisely what let #370's
+fix update two copies and leave the third on raw `Number()`, LinkError-ing the
+playground dead. **Derive the set, never trust the count:**
+`grep -rlE '^// --- BEGIN SHARED SHIM' test/ playground/` — which is what
+`test/diff_compiler_wasm_shim_parity.sh` now does, so a fourth host enrols itself. Parts of the
 observable semantics (float formatting, string→float parsing, process exit,
 the entire IO surface) execute **in JS, not in the module**. That makes the
 import surface part of the semantics, with laws:
@@ -110,13 +195,16 @@ import surface part of the semantics, with laws:
 - **WH1 — The import surface is closed and enumerated.** Every `env.*` import
   the emitter can declare is listed in §3 with a pinned contract. A new host
   import is a spec change: it lands with (a) a §3 row, (b) implementations or
-  explicit capability stubs in **both** shims, and (c) a
+  explicit capability stubs in **every** shim — the set is the one
+  `test/diff_compiler_wasm_shim_parity.sh` DERIVES, not a remembered pair; #543
+  shipped because "both" was believed of a set of three — and (c) a
   `test/CAPABILITY-EXCEPTIONS.txt` disposition if any engine withholds it.
 - **WH2 — The C runtime is the behavioral oracle.** Where a host import
   reimplements something `medaka_rt.c` implements natively, the JS copy must
   be **byte-identical on the observable surface**: `mdk_float_fmt` ≡
-  `mdk_float_lexeme` (N9's "one formatter" law quantifies over THREE copies:
-  the C one and the two `fmt12g`s), `mdk_str_to_float` ≡ the `strtod`
+  `mdk_float_lexeme` (N9's "one formatter" law quantifies over FOUR copies:
+  the C one and the THREE `fmt12g`s — it read "the two `fmt12g`s" until #543,
+  and the uncounted third had silently stayed on the pre-#361 `%.12g` formatter), `mdk_str_to_float` ≡ the `strtod`
   acceptance set (spelling set for inf/nan, empty-string rejection, trailing
   garbage, C99 hex floats), `mdk_exit` ≡ flush-then-exit. "Close enough for the
   fixtures" is how the `stringToFloat` divergence shipped (#370 — `Number("")` is
@@ -159,22 +247,22 @@ import surface part of the semantics, with laws:
 > quartet (`mdk_write_byte`, `mdk_write_err_byte`, `mdk_float_fmt`,
 > `mdk_float_fmt_byte`; probe-verified 2026-07-16).
 
-| Import | Declared (`wasm_preamble.mdk`) | Emitted when | `run.js` | `worker.js` | Contract | Law risk |
-|---|---|---|---|---|---|---|
-| `mdk_write_byte` | ~184 | unconditional | real (accumulate, decode at end) | real (accumulate, flush on `\n`) | one stdout byte | — |
-| `mdk_write_err_byte` | ~319 | ePutStr/trap use | real (buffered; **lost on `mdk_exit`** — WH4 ✗) | real (streams + trap-copy) | one stderr byte | T1 |
-| `mdk_float_fmt` / `mdk_float_fmt_byte` | ~922 | any Float use | real (`fmt12g`) | real (byte-identical copy) | float → cached shortest-round-trip lexeme (≡ `mdk_float_lexeme`) | N9 — **verified equivalent by review + probe battery** (the #361 ask); comments still say `%.12g` |
-| 14 unary libm (`mdk_cbrt exp log log2 log10 sin cos tan asin acos atan sinh cosh tanh`) | ~939–952 | math-extern use | real (`Math.*`) | real | transcendental | N4-adjacent: JS `Math.*` vs C libm sub-ULP (ledgered class) |
-| `mdk_pow` / `mdk_atan2` / `mdk_hypot` | ~953–955 | math-extern use | real | real | binary libm | same |
-| `mdk_str_to_float` | ~968 | `stringToFloat` use | real — strtod acceptance set | same | parse path-channel bytes; latch ok | **WH2 ✅ FIXED** (#370) |
-| `mdk_str_to_float_ok` | ~969 | `stringToFloat` use | real — ok flag of the last parse | same | did that parse succeed? | **WH2 ✅** (#370; `Some nan` needs a channel NaN cannot carry) |
-| `mdk_path_reset` / `mdk_path_push` | ~1106–1107 | IO group | real | real | guest→host byte channel | — |
-| `mdk_read_file` / `mdk_file_exists` / `mdk_get_env` | ~1108–1110 | IO group | real (Node fs/env) | capability stub | 1/0 + cached result bytes | capability |
-| `mdk_args_count` / `mdk_arg_len` / `mdk_arg_byte` | ~1111–1113 | IO group | real (`MDK_ARGS`) | capability stub | argv marshaling | capability |
-| `mdk_result_len` / `mdk_result_byte` | ~1114–1115 | IO group | real | capability stub | read cached result | — |
-| `mdk_exit` | ~1116 | IO group | real, **drops buffered stderr** | capability stub (clean `exit 0` reports an error — deliberate, UX-noteworthy) | flush + exit | T1/WH4 ✗ |
-| `mdk_write_file_reset` / `_push` / `_commit` | ~1223–1225 | `writeFileBytes` use | real | **MISSING → LinkError** | streamed file write | **WH3 ✗ CONFIRMED** |
-| `mdk_write_int` / `mdk_write_bool` | ~53–54 | **never** (dead W2 scaffold; verified unreferenced) | absent | absent | legacy | — |
+| Import | Declared (`wasm_preamble.mdk`) | Emitted when | `run.js` | `worker.js` | `compile.mjs` | Contract | Law risk |
+|---|---|---|---|---|---|---|---|
+| `mdk_write_byte` | ~184 | unconditional | real (accumulate, decode at end) | real (accumulate, flush on `\n`) | real (accumulate, decode at end) | one stdout byte | — |
+| `mdk_write_err_byte` | ~319 | ePutStr/trap use | real (buffered; **lost on `mdk_exit`** — WH4 ✗) | real (streams + trap-copy) | real (accumulate; **lost on `mdk_exit`** — same WH4 ✗ as run.js) | one stderr byte | T1 |
+| `mdk_float_fmt` / `mdk_float_fmt_byte` | ~922 | any Float use | real (`fmt12g`) | real (byte-identical copy) | real (shared `fmt12g` block — byte-identical since #543; was the pre-#361 `%.12g` before it) | float → cached shortest-round-trip lexeme (≡ `mdk_float_lexeme`) | N9 — **verified equivalent by review + probe battery** (the #361 ask); comments still say `%.12g` |
+| 14 unary libm (`mdk_cbrt exp log log2 log10 sin cos tan asin acos atan sinh cosh tanh`) | ~939–952 | math-extern use | real (`Math.*`) | real | real (`Math.*`) | transcendental | N4-adjacent: JS `Math.*` vs C libm sub-ULP (ledgered class) |
+| `mdk_pow` / `mdk_atan2` / `mdk_hypot` | ~953–955 | math-extern use | real | real | real | binary libm | same |
+| `mdk_str_to_float` | ~968 | `stringToFloat` use | real — strtod acceptance set | same | same (shared `mdkStrToFloat` block — since #543; was raw `Number()` before it) | parse path-channel bytes; latch ok | **WH2 ✅ FIXED** (#370) |
+| `mdk_str_to_float_ok` | ~969 | `stringToFloat` use | real — ok flag of the last parse | same | same (**absent** until #543 → LinkError at instantiate) | did that parse succeed? | **WH2 ✅** (#370; `Some nan` needs a channel NaN cannot carry) |
+| `mdk_path_reset` / `mdk_path_push` | ~1106–1107 | IO group | real | real | real | guest→host byte channel | — |
+| `mdk_read_file` / `mdk_file_exists` / `mdk_get_env` | ~1108–1110 | IO group | real (Node fs/env) | capability stub | **real vfs** (`read_file`/`file_exists` read the in-memory vfs — this seam FEEDS the compiler its sources); `get_env` → empty | 1/0 + cached result bytes | capability |
+| `mdk_args_count` / `mdk_arg_len` / `mdk_arg_byte` | ~1111–1113 | IO group | real (`MDK_ARGS`) | capability stub | real (guest argv = the `compile`/`hover`/`complete` call) | argv marshaling | capability |
+| `mdk_result_len` / `mdk_result_byte` | ~1114–1115 | IO group | real | capability stub | real | read cached result | — |
+| `mdk_exit` | ~1116 | IO group | real, **drops buffered stderr** | capability stub (clean `exit 0` reports an error — deliberate, UX-noteworthy) | real (`ExitSignal` unwind) | flush + exit | T1/WH4 ✗ |
+| `mdk_write_file_reset` / `_push` / `_commit` | ~1223–1225 | `writeFileBytes` use | real | **MISSING → LinkError** | **missing** — same #375 hole as worker.js | streamed file write | **WH3 ✗ CONFIRMED** |
+| `mdk_write_int` / `mdk_write_bool` | ~53–54 | **never** (dead W2 scaffold; verified unreferenced) | absent | absent | n/a (never emitted in ref mode) | legacy | — |
 
 ---
 
@@ -228,9 +316,13 @@ import surface part of the semantics, with laws:
 | D4 — own-source competence | ⚠ | the D4-analog closure is "what the playground compiler emits for itself"; unaudited beyond the linkage gate |
 | Perf posture | ⚠ | **#381 FIXED** by #401 (`5d82fa48`): `ctorOrdinal`'s per-(slot,branch) whole-table rescan was **CUBIC** — O(N ctors × B branches × C table), measured 7.91×/8.35× per doubling at N=400/800 on the DCE-running probe — now memoized to **1.90× (linear)**, a 53× win at N=400, proven by byte-identical WAT across 200 fixtures. ⚠ It was **never "wasm-specific"**: `llvm_emit`'s `ctorOrdinal` has the **same** scan and a **quadratic** twin (3.71/3.73 at N=1000→4000, **#408**); only the slot×branch nesting was wasm's. `indent` (**#381**'s own second finding — NOT #382) is fixed for the re-copying (8.1×) but **cannot reach linear** — the if/else chain nests arm *k* at depth *k*, so the output is inherently O(arms²) **bytes**. Residual: the #349–#352 sibling census (**#382**); enforcement — the **native** emit stage shipped (#396), and **the wasm arm is now shipped too — #359 FIXED** (2026-07-16: `diff_compiler_perf_scaling` grades the wasm emit stage, closing the O(n²) detector's own wasm gap), grading **TIME** (pure scans allocate nothing) |
 | WH1 — enumerated imports | ✅ | §3 inventory (grep-complete; dead W2 scaffold imports verified never-emitted) |
-| WH2 — C-runtime oracle | ✅ **HELD** | `mdk_str_to_float` was JS `Number()`, not strtod (`""`→`Some 0.0`, `"1.5 "`→`Some 1.5`, `"nan"`/`"inf"`→`None`, `"0x1p4"`→`None`) — **#370 FIXED**: both shims now implement the strtod acceptance set (leading-ws-only, full consumption, inf/nan spellings, C99 hex floats), derived from the C oracle over a 621-case battery and pinned on all three engines by `test/llvm_fixtures/str_to_float_frontier.mdk`; `mdk_float_fmt` ✅ verified (N9 row) |
+| WH2 — C-runtime oracle | ✅ **HELD** | `mdk_str_to_float` was JS `Number()`, not strtod (`""`→`Some 0.0`, `"1.5 "`→`Some 1.5`, `"nan"`/`"inf"`→`None`, `"0x1p4"`→`None`) — **#370 FIXED**: every shim now implements the strtod acceptance set (⚠️ as
+landed, #370 reached only TWO of the three — `playground/compile.mjs` was left on raw
+`Number()` AND missing the new `mdk_str_to_float_ok` import, LinkError-ing the playground
+dead until #543 completed it and made the gate derive its host set) (leading-ws-only, full consumption, inf/nan spellings, C99 hex floats), derived from the C oracle over a 621-case battery and pinned on all three engines by `test/llvm_fixtures/str_to_float_frontier.mdk`; `mdk_float_fmt` ✅ verified (N9 row) |
 | WH3 — shim parity, LinkError ban | ✗ CONFIRMED (env-key half) | `worker.js` missing `mdk_write_file_reset/push/commit` → raw LinkError on `writeFileBytes` programs (node simulation with worker's exact env set) — **#375**, still open. The SHARED-BLOCK half is now mechanised: `test/diff_compiler_wasm_shim_parity.sh` (a required `gates (frontend)` shard) byte-diffs every `--- SHARED SHIM ---` region across all **three** hosts (`run.js`, `worker.js`, `compile.mjs`). ⚠️ It covered only the first TWO until 2026-07-16: `compile.mjs` (the seam that runs the COMPILER) holds its own copy of both blocks, and the gate's blindness to it is precisely how #543 shipped — #370's fix updated the two gated copies, leaving `compile.mjs` on raw `Number()` and missing the new `mdk_str_to_float_ok` import (LinkError → playground dead), while its `fmt12g` sat on the pre-#361 `%.12g` formatter. Fixed in #543. It found `fmt12g` had ALREADY drifted (comments/whitespace only — behaviour unaffected) under the "copied verbatim" comment that was the only prior enforcement. The env-KEY-SET half (#375) is still unchecked by any gate |
 | WH4 — flush discipline | ✗ CONFIRMED | `run.js` `mdk_exit` writes stdout, **drops buffered stderr** — **#376**; trap path flushes both ✅ (probe: pre-trap stdout delivered) |
+| WP10 — eager value-global init ordered by dependency | ✗ **CONFIRMED — #553** | `topoSortValBinds`'s edges come from `eagerVars`, a DIRECT free-var scan that does not follow calls, so a global read reached through a call yields NO edge and source order decides → `ref.null` + *"dereferencing a null pointer"* at instantiate. Exploited by **#543** (`crossRun` → `freshCrossRun` → `initialEnv`, ordered 97 lines early, playground dead). ⚠️ **NOT wasm-only and NOT playground-only**: `llvm_emit`'s `orderedValBinds` uses the SAME shared `eagerVars`. A **12-line user program** (§1 WP10) measured across the three SHIPPING engines gives **eval `7` / native SIGSEGV (exit 139) / wasm `dereferencing a null pointer`** — only eval is right, so native is **EXPLOITABLE from user code**, not merely exposed. In the COMPILER's own graph native escapes only by luck: `resetCrossModuleState ()` overwrites the poisoned bundle before any reader dereferences it (pre-fix IR receipt: `crossRun` stored at prologue line 1693 vs `initialEnv` at 1768; `global i64 0` loaded inside `freshCrossRun`). **Native fails as a segfault/silent zero, wasm as a named trap** — the asymmetry is why only the playground surfaced it — so #553 must fix BOTH arms; a wasm-only fix leaves the silent one live. #543 restored the edge at the one known site (`freshCrossRun` takes the env as an arg) — a point fix, not the law. **Ungated**: only the playground build compiles the whole compiler to wasm, and it is nightly + non-required |
 | WH5 — byte-channel only | ✅ | no GC ref crosses an import signature (inventory) |
 | WH6 — engine baseline | ⚠ | node 24 + wasm-tools pinned in CI; playground WasmGC feature-detect still open (**#75**); the CI wasm job is not a required check (R1 row) |
 

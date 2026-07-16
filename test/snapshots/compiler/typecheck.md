@@ -1,5 +1,5 @@
 # META
-source_lines=14972
+source_lines=14991
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -1905,8 +1905,27 @@ data CrossRun = CrossRun {
 -- all), `crossRun` was emitted before `initialEnv`, and `$__init` read a `ref.null` →
 -- "dereferencing a null pointer" at instantiate, which killed the whole playground (#543).
 -- Taking the env as an ARG puts `initialEnv` back in `crossRun`'s own body, where
--- `eagerVars` can see it and order the two globals correctly.  Native is unaffected either
--- way (it does not eagerly init these), which is exactly why no gate caught it.
+-- `eagerVars` can see it and order the two globals correctly.
+--
+-- ⚠️ NATIVE HAS THE SAME BUG — it is merely not EXPLOITED.  An earlier draft of this
+-- comment claimed "native is unaffected (it does not eagerly init these)"; that was FALSE
+-- and is corrected here with receipts, because it is exactly the kind of unproven claim
+-- that steers a later general fix wrong.  `llvm_emit.mdk`'s `orderedValBinds` is fed by
+-- `bindFreeVars` = the SAME shared `eagerVars`, with the same does-not-follow-calls blind
+-- spot, and its own doc comment says an unordered eager forward ref "captures the
+-- still-zero global cell".  Emitting the PRE-FIX source with the native emitter proves the
+-- inversion was live there too: in the init prologue `crossRun` stored at IR line 1693
+-- (calling `freshCrossRun` at 1687) while `initialEnv` stored at 1768 — 75 lines later —
+-- and `@mdk_g_types_typecheck__initialEnv = global i64 0` with a `load` of it inside
+-- `freshCrossRun`.  Native really did read a ZERO.
+-- It never BIT because the zero is overwritten before anything dereferences it: the only
+-- readers of `universeDataEnv` sit on the `Module` arm (`registerAllData
+-- crossRun.value.universeDataEnv.value`), and every multi-module entry calls
+-- `resetCrossModuleState ()` FIRST (`checkModulesPreamble`, `elaborateModules`), which
+-- replaces the whole poisoned bundle once `initialEnv` is properly set.  That is luck, not
+-- design — native's failure mode is a SILENT zero where wasm traps loudly, which is the
+-- only reason #543 was noticed at all.  The general fix (an emitter-side eager-reachability
+-- closure that follows calls) is #553 and MUST cover both backends.
 freshCrossRun : TcEnv -> CrossRun
 freshCrossRun env = CrossRun {
   universeIfaceMethodsRef = Ref omEmpty,

@@ -27,8 +27,9 @@
 #   * compile.mjs's `fmt12g` silently stayed on the pre-#361 `%.12g` (toExponential(11))
 #     formatter while the gated pair moved to shortest-repr.
 # Both were invisible precisely BECAUSE the gate enumerated a set of two.  A gate that
-# checks a SUBSET of the copies manufactures confidence about the ones it skips.  If a
-# fourth copy of these blocks ever appears, add it to PEERS below in the SAME commit.
+# checks a SUBSET of the copies manufactures confidence about the ones it skips.  So the
+# host set below is DERIVED (grep for the marker), never encoded: a new copy enrols itself
+# the moment it exists, with no edit to this file and no count to go stale.
 #
 # What it proves: each `--- BEGIN SHARED SHIM <name> --- ... --- END SHARED SHIM <name> ---`
 # region is byte-identical across every host. Text, not behaviour — but the block is pure
@@ -44,12 +45,33 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # run.js is the reference: it is the runner every wasm differential already trusts.
 REF="$ROOT/test/wasm/run.js"
-# Every OTHER copy of the shared blocks. Keep in sync with the block header comments.
-PEERS="$ROOT/playground/worker.js $ROOT/playground/compile.mjs"
 
-for f in "$REF" $PEERS; do
-  [ -f "$f" ] || { echo "FAIL: missing host shim $f"; exit 1; }
-done
+# ── DERIVE the host set; do NOT encode it ────────────────────────────────────────
+# The whole point of #543 is that a hardcoded set of hosts silently excluded the one
+# that mattered. An encoded list here would reproduce that defect INSIDE the gate built
+# to prevent it: a fourth host (a Cloudflare Worker variant, an SSR seam, a CLI wrapper)
+# would pass "3/3 ok" forever because the gate never looked at it. So the set is a QUERY,
+# not a constant — any file carrying a BEGIN SHARED SHIM marker is a host, automatically,
+# the moment it exists. Adding a copy enrols it with no edit to this file.
+[ -f "$REF" ] || { echo "FAIL: missing reference host shim $REF"; exit 1; }
+
+# A host is a file that CARRIES a marker line, so anchor on the real thing: `^// --- BEGIN
+# SHARED SHIM <name> ---`. Matching the bare phrase instead would sweep in every file that
+# merely TALKS about the markers — this script (its own sed patterns), the docs, the
+# workstream notes — which is a self-match, not a host.
+PEERS="$(grep -rlE '^// --- BEGIN SHARED SHIM [A-Za-z_]' "$ROOT/test" "$ROOT/playground" 2>/dev/null \
+  | grep -Fxv "$REF" | sort)"
+
+# A derived set that comes back EMPTY is the gate checking nothing — the failure mode this
+# gate's own header calls out ("a skip is not a pass"). We know of at least two peers, so
+# an empty derivation means the query broke (a moved directory, a renamed marker), not that
+# the tree is clean.
+if [ -z "$PEERS" ]; then
+  echo "FAIL: derived ZERO peer host shims besides $REF"
+  echo "      (expected at least playground/worker.js + playground/compile.mjs — the"
+  echo "       marker query broke; a gate that checks nothing must never report green)"
+  exit 1
+fi
 
 # The marker names present in run.js drive the comparison. A block that exists in run.js
 # but NOT in a peer is the failure this gate is for, so enumerate from run.js and
