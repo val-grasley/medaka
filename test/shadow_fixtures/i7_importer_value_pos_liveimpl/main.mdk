@@ -1,0 +1,21 @@
+-- SHADOW-SEMANTICS cell I7 (matrix row 21b): IMPORTER shadow in VALUE position over
+-- LIVE-IMPL elements.  The importer twin of d4b (row 10): a value-position shadow
+-- denotes the standalone ALWAYS, so `Box` elements mistype against the standalone's
+-- domain (`Int -> Int`) and this is a LOCATED REJECT -- never a silent dispatch.
+--
+-- #411: was the SILENT half.  check reported zero diagnostics, and run AND build both
+-- printed [1, 2] -- all three engines agreeing on the answer the spec forbids.  That
+-- is the S7 trap in its purest form: no differential gate could ever have seen it,
+-- which is why this cell is pinned on the located REJECT and not on agreement.
+-- Expected: check/run/build all REJECT with `Type mismatch: Int vs Box`.
+import prov.{size}
+
+data Box = Box Int
+
+interface Sizeable a where
+  size : a -> Int
+
+impl Sizeable Box where
+  size (Box n) = n
+
+main = println (map size [Box 1, Box 2])

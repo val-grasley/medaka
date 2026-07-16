@@ -1,0 +1,4 @@
+-- SHADOW-SEMANTICS row-22 provider: the imported standalone that shadows the
+-- consumer's LOCAL interface method.
+export size : Int -> Int
+size n = n + 1

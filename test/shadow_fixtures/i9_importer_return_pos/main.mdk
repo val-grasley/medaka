@@ -1,0 +1,18 @@
+-- SHADOW-SEMANTICS cell I9 (matrix row 23, IMPORTER half): a shadow of a
+-- RETURN-POSITION method -- `mk : Int -> a` dispatches on its RESULT type and has no
+-- receiver parameter at all.  S4's value-position rule therefore governs: with no
+-- receiver to dispatch on, the bare name denotes the STANDALONE.
+-- Probed conformant while fixing #411 (row 23 was UNTESTED-NO-FIXTURE); pinned so the
+-- corpus can no longer be blind to the return-position axis.
+-- Expected: check accepts; run/build print 4 (the standalone), NOT a Box.
+import prov.{mk}
+
+interface Mk a where
+  mk : Int -> a
+
+data Box = Box Int
+
+impl Mk Box where
+  mk n = Box n
+
+main = println (mk 3)

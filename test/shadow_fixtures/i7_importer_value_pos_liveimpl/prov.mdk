@@ -1,0 +1,4 @@
+-- SHADOW-SEMANTICS row-21 provider: exports the standalone that shadows the
+-- consumer's LOCAL interface method `Sizeable.size`.
+export size : Int -> Int
+size n = n + 1
