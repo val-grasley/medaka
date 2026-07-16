@@ -1,5 +1,5 @@
 # META
-source_lines=1502
+source_lines=1520
 stages=TYPES
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -348,6 +348,24 @@ debugArrayItems arr i n
    True -}
 export impl Debug (Array a) requires Debug a where
   debug arr = "[|\{debugArrayItems arr 0 (arrayLength arr)}|]"
+
+-- Lives in `core.mdk` (not `array.mdk`) alongside `Debug`/`Index` so
+-- `deriving (Eq)` over a field of array type builds without an `import array`.
+export impl Eq (Array a) requires Eq a where
+  eq a b =
+    if arrayLength a != arrayLength b then
+      False
+    else
+      eqGo a b 0 (arrayLength a)
+
+eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
+eqGo a b i n =
+  if i >= n then
+    True
+  else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then
+    eqGo a b (i + 1) n
+  else
+    False
 
 export impl Debug (Option a) requires Debug a where
   debug None = "None"
@@ -1563,6 +1581,7 @@ thenCmp : Ordering -> Ordering -> Ordering
 debugListItems : Debug a => List a -> String
 otherwise : Bool
 debugArrayItems : Debug a => Array a -> Int -> Int -> String
+eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
 displayListItems : Display a => List a -> String
 displayArrayItems : Display a => Array a -> Int -> Int -> String
 derivedIsQuoteChar : Char -> Bool
