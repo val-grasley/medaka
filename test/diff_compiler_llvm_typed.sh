@@ -5,10 +5,21 @@
 # Dispatch needs types: a return-position method resolves by the RESULT type (RKey),
 # which the untyped arg-tag fallback cannot do (eval_probe renders these fixtures
 # WRONG).  So the reference is the TYPED Core IR tree-walker value, captured into
-# <name>.eval.golden from `main.exe run core_ir_dict_pp_main.mdk runtime.mdk <fixture>`
-# (desugar -> elaborateDict: route-stamp + dict_pass -> lower -> ceval, pp_value of
-# `main`) while OCaml was trusted.  The equivalence the slice proves is exactly
-# emit->clang->run == that typed-ceval value, over one typed IR.
+# <name>.eval.golden from the native oracle test/bin/core_ir_dict_pp_main (built by
+# test/build_oracles.sh from compiler/entries/core_ir_dict_pp_main.mdk: desugar ->
+# elaborateDict: route-stamp + dict_pass -> lower -> ceval, pp_value of `main`).
+# The equivalence the slice proves is exactly emit->clang->run == that typed-ceval
+# value, over one typed IR.
+#
+# CAPTURE=1 (re)generates .eval.golden from that SAME oracle (#485: this used to
+# tell you to run `sh test/capture_goldens.sh`, which has no llvm_fixtures_typed
+# row at all and captures nothing).  As a safety net against a KNOWN oracle gap —
+# `core_ir_dict_pp_main` always prints `main`'s pp_value, but a Unit-typed `main`
+# is NOT auto-printed by the compiled/emitted side (STAGE2-DESIGN.md 2.4a-9 (ff),
+# e.g. io_putstrln) — CAPTURE cross-checks the oracle against the compiled `self`
+# output before writing; a fixture where they disagree is SKIPPED and reported
+# loudly rather than silently overwritten with a value the real gate would then
+# fail on.
 #
 # For each prelude-free dispatch fixture in test/llvm_fixtures_typed/:
 #   1. ref  = test/llvm_fixtures_typed/<name>.eval.golden   (the typed-ceval value)
@@ -29,12 +40,17 @@
 # is the committed .eval.golden.
 #
 # Usage:  sh test/diff_compiler_llvm_typed.sh
+#         CAPTURE=1 sh test/diff_compiler_llvm_typed.sh   # (re)capture .eval.golden
+#           files from test/bin/core_ir_dict_pp_main (see above); a fixture whose
+#           oracle output disagrees with the compiled `self` output is skipped and
+#           reported, never silently written.
 # Exit:   0 if every fixture's native stdout matches the golden; 2 if the build is
 #         missing or no C compiler is available (spike is opt-in).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EMITBIN="$ROOT/test/bin/llvm_emit_typed_main"
+DICTPP="$ROOT/test/bin/core_ir_dict_pp_main"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 FIXDIR="$ROOT/test/llvm_fixtures_typed"
@@ -47,8 +63,27 @@ if [ "${1:-}" = "--one" ]; then
   golden="${f%.mdk}.eval.golden"
   ll="$WORKDIR/$name.ll"; bin="$WORKDIR/$name.bin"
   st=0; msg=""
+  if [ "${CAPTURE:-0}" = "1" ]; then
+    if ! "$EMITBIN" "$RUNTIME" "$f" 2>"$WORKDIR/$name.emit.err" | perl -0pe 's/\(\)\s*\z//' > "$ll"; then
+      msg="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
+    elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
+      msg="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
+    else
+      self="$("$bin" 2>/dev/null)"; oracle="$("$DICTPP" "$RUNTIME" "$f" 2>/dev/null)"
+      if [ "$self" = "$oracle" ]; then
+        printf '%s\n' "$oracle" > "$golden"
+        msg="captured $name ($oracle)"
+      else
+        msg="SKIP $name — oracle ($oracle) != compiled self ($self); golden NOT written (known gap? STAGE2-DESIGN.md 2.4a-9 (ff))"; st=1
+      fi
+    fi
+    printf '%s\n' "$msg" > "$RESULTDIR/$name.out"
+    echo "$st" > "$RESULTDIR/$name.status"
+    printf '%s\n' "$msg"
+    exit 0
+  fi
   if [ ! -f "$golden" ]; then
-    msg="no golden for $name (run sh test/capture_goldens.sh)"; st=1
+    msg="no golden for $name (run CAPTURE=1 sh test/diff_compiler_llvm_typed.sh)"; st=1
   elif ! "$EMITBIN" "$RUNTIME" "$f" 2>"$WORKDIR/$name.emit.err" | perl -0pe 's/\(\)\s*\z//' > "$ll"; then
     msg="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
   elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
@@ -65,6 +100,9 @@ if [ "${1:-}" = "--one" ]; then
 fi
 
 [ -x "$EMITBIN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$EMITBIN") (missing $EMITBIN)"; exit 2; }
+if [ "${CAPTURE:-0}" = "1" ]; then
+  [ -x "$DICTPP" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$DICTPP") (missing $DICTPP)"; exit 2; }
+fi
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
@@ -88,8 +126,8 @@ if ! "$CC" $GC_CFLAGS -c "$RT" -o "$RTOBJ" 2>/dev/null; then RTOBJ="$RT"; fi
 JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
 
 ls "$FIXDIR"/*.mdk 2>/dev/null \
-  | EMITBIN="$EMITBIN" RUNTIME="$RUNTIME" CC="$CC" GC_CFLAGS="$GC_CFLAGS" GC_LIBS="$GC_LIBS" \
-    RTOBJ="$RTOBJ" WORKDIR="$WORK" RESULTDIR="$RESULTS" \
+  | EMITBIN="$EMITBIN" DICTPP="$DICTPP" RUNTIME="$RUNTIME" CC="$CC" GC_CFLAGS="$GC_CFLAGS" GC_LIBS="$GC_LIBS" \
+    RTOBJ="$RTOBJ" WORKDIR="$WORK" RESULTDIR="$RESULTS" CAPTURE="${CAPTURE:-0}" \
     xargs -P "$JOBS" -n 1 -I{} sh "$0" --one {}
 
 pass=0; fail=0
@@ -98,5 +136,10 @@ for s in "$RESULTS"/*.status; do
   if [ "$(cat "$s")" = 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
 done
 
-printf '\n%d ok, %d failing\n' "$pass" "$fail"
-[ "$fail" -eq 0 ]
+if [ "${CAPTURE:-0}" = "1" ]; then
+  printf '\n%d captured, %d skipped (see SKIP lines above)\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]
+else
+  printf '\n%d ok, %d failing\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]
+fi

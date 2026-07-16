@@ -100,6 +100,13 @@ fi
 #   core_ir_modules_main  — diff_compiler_core_ir_modules.sh
 #   llvm_emit_main        — diff_compiler_llvm.sh        (emit → clang → run vs golden)
 #   llvm_emit_typed_main  — diff_compiler_llvm_typed.sh
+#   core_ir_dict_pp_main  — diff_compiler_llvm_typed.sh CAPTURE=1 (#485): the typed
+#                           Core-IR tree-walker oracle the gate's .eval.golden files
+#                           are captured FROM (see STAGE2-DESIGN.md §2.4a; the gate's
+#                           own CAPTURE branch cross-checks it against compiled
+#                           `self` output before writing, so a known oracle gap —
+#                           e.g. a Unit-typed `main`, STAGE2-DESIGN.md 2.4a-9 (ff) —
+#                           is reported, never silently written)
 #   llvm_emit_modules_main — diff_compiler_llvm_modules.sh
 #   eval_autoprint_main   — diff_compiler_engines.sh    (the INTERPRETER arm of the
 #                           3-engine differential: `medaka run`'s exact eval path plus
@@ -150,6 +157,7 @@ eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
 eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
 eval_typed_modules_main eval_modules_main eval_autoprint_main \
 core_ir_main core_ir_prelude_main core_ir_typed_main core_ir_roundtrip_main core_ir_modules_main \
+core_ir_dict_pp_main \
 llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 llvm_bootstrap_lex_main \
 lex_main parse_main parse_result_main \

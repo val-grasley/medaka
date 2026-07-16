@@ -3,10 +3,11 @@
 # (compiler/entries/test_main.mdk: doctest extraction + running + property tests).
 #
 # OCaml-free (REROOT-PLAN §2c): native host test/bin/test_main vs a committed
-# golden captured from `main.exe test <f>` (test/capture_goldens.sh test).  Sibling
-# golden: <fixture>.test.golden.  The native binary takes the SAME positional args
-# as the interpreted entry did (runtime core file root); strip_unit drops its
-# trailing "()" Unit auto-print before the compare.
+# golden captured via CAPTURE=1 sh test/diff_compiler_test.sh (this gate owns its
+# own capture invocation — see Usage below).  Sibling golden: <fixture>.test.golden.
+# The native binary takes the SAME positional args as the interpreted entry did
+# (runtime core file root); strip_unit drops its trailing "()" Unit auto-print
+# before the compare.
 #
 # Each fixture's golden is the OCaml `medaka test` report — `running doctests in
 # <f>`, one `ok`/`FAIL`/`ERROR` line per example (loc + input; FAIL adds
@@ -54,6 +55,13 @@
 # counterexample depends on the RNG draw, which differs across implementations.
 #
 # Usage:  sh test/diff_compiler_test.sh [file.mdk ...]
+#         CAPTURE=1 sh test/diff_compiler_test.sh   # (re)capture .test.golden files
+#           via the EXACT SAME "$RUN" "$RUNTIME" "$CORE" "$f" "$root" | sed | strip_unit
+#           invocation the read path below diffs against — single source of truth,
+#           so a captured golden can never drift from what the gate itself checks.
+#           (#459/#391: this family previously had NO capture path at all — the
+#           FAIL message below used to cite `sh test/capture_goldens.sh test`, which
+#           matches ZERO driver-table rows and silently captures nothing.)
 # Exit:   0 if every fixture's native report matches its golden;
 #         2 if the oracle binary is missing (run sh test/build_oracles.sh first).
 set -u
@@ -88,6 +96,21 @@ else
          $ROOT/test/compiler_test_fixtures/blockquote_and_valid.mdk"
 fi
 
+if [ "${CAPTURE:-0}" = "1" ]; then
+  wrote=0
+  for f in $files; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    golden="${f%.mdk}.test.golden"
+    root="$(dirname "$f")"
+    "$RUN" "$RUNTIME" "$CORE" "$f" "$root" 2>/dev/null | sed "s#$ROOT/##g" | strip_unit > "$golden"
+    wrote=$((wrote + 1))
+    printf 'captured %s\n' "$name"
+  done
+  printf '\n%d goldens written\n' "$wrote"
+  exit 0
+fi
+
 pass=0
 fail=0
 for f in $files; do
@@ -95,7 +118,7 @@ for f in $files; do
   name="$(basename "$f")"
   golden="${f%.mdk}.test.golden"
   if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (no .test.golden — run sh test/capture_goldens.sh test)\n' "$name"; continue
+    fail=$((fail+1)); printf 'FAIL %s (no .test.golden — run CAPTURE=1 sh test/diff_compiler_test.sh %s)\n' "$name" "$f"; continue
   fi
   root="$(dirname "$f")"
   expected="$(cat "$golden")"
