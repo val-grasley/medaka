@@ -1190,13 +1190,8 @@ IDENT "x"
 RPAREN
 IDENT "r"
 NEWLINE
-EXPORT
-IDENT "union"
+IDENT "insertMin"
 COLON
-UPPER "Ord"
-IDENT "a"
-FAT_ARROW
-UPPER "Set"
 IDENT "a"
 ARROW
 UPPER "Set"
@@ -1205,50 +1200,478 @@ ARROW
 UPPER "Set"
 IDENT "a"
 NEWLINE
-IDENT "union"
-IDENT "a"
-IDENT "b"
-EQUAL
-IDENT "foldrSet"
-LPAREN
+IDENT "insertMin"
 IDENT "x"
-IDENT "acc"
-FAT_ARROW
-IDENT "insert"
-IDENT "x"
-IDENT "acc"
-RPAREN
-IDENT "b"
-IDENT "a"
-NEWLINE
-EXPORT
-IDENT "intersection"
-COLON
-UPPER "Ord"
-IDENT "a"
-FAT_ARROW
-UPPER "Set"
-IDENT "a"
-ARROW
-UPPER "Set"
-IDENT "a"
-ARROW
-UPPER "Set"
-IDENT "a"
-NEWLINE
-IDENT "intersection"
-IDENT "a"
-IDENT "b"
-EQUAL
-IDENT "foldrSet"
-LPAREN
-IDENT "intersectStep"
-IDENT "b"
-RPAREN
 UPPER "Tip"
+EQUAL
+IDENT "singleton"
+IDENT "x"
+NEWLINE
+IDENT "insertMin"
+IDENT "x"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "y"
+IDENT "l"
+IDENT "r"
+RPAREN
+EQUAL
+IDENT "balance"
+IDENT "y"
+LPAREN
+IDENT "insertMin"
+IDENT "x"
+IDENT "l"
+RPAREN
+IDENT "r"
+NEWLINE
+IDENT "insertMax"
+COLON
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
 IDENT "a"
 NEWLINE
-IDENT "intersectStep"
+IDENT "insertMax"
+IDENT "x"
+UPPER "Tip"
+EQUAL
+IDENT "singleton"
+IDENT "x"
+NEWLINE
+IDENT "insertMax"
+IDENT "x"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "y"
+IDENT "l"
+IDENT "r"
+RPAREN
+EQUAL
+IDENT "balance"
+IDENT "y"
+IDENT "l"
+LPAREN
+IDENT "insertMax"
+IDENT "x"
+IDENT "r"
+RPAREN
+NEWLINE
+IDENT "link"
+COLON
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+NEWLINE
+IDENT "link"
+IDENT "x"
+UPPER "Tip"
+IDENT "r"
+EQUAL
+IDENT "insertMin"
+IDENT "x"
+IDENT "r"
+NEWLINE
+IDENT "link"
+IDENT "x"
+IDENT "l"
+UPPER "Tip"
+EQUAL
+IDENT "insertMax"
+IDENT "x"
+IDENT "l"
+NEWLINE
+IDENT "link"
+IDENT "x"
+LPAREN
+IDENT "l"
+AS_AT
+LPAREN
+UPPER "Bin"
+IDENT "sl"
+IDENT "xl"
+IDENT "ll"
+IDENT "rl"
+RPAREN
+RPAREN
+LPAREN
+IDENT "r"
+AS_AT
+LPAREN
+UPPER "Bin"
+IDENT "sr"
+IDENT "xr"
+IDENT "lr"
+IDENT "rr"
+RPAREN
+RPAREN
+INDENT
+PIPE
+INT 3
+STAR
+IDENT "sl"
+LT
+IDENT "sr"
+EQUAL
+IDENT "balance"
+IDENT "xr"
+LPAREN
+IDENT "link"
+IDENT "x"
+IDENT "l"
+IDENT "lr"
+RPAREN
+IDENT "rr"
+NEWLINE
+PIPE
+INT 3
+STAR
+IDENT "sr"
+LT
+IDENT "sl"
+EQUAL
+IDENT "balance"
+IDENT "xl"
+IDENT "ll"
+LPAREN
+IDENT "link"
+IDENT "x"
+IDENT "rl"
+IDENT "r"
+RPAREN
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "bin"
+IDENT "x"
+IDENT "l"
+IDENT "r"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "link2"
+COLON
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+NEWLINE
+IDENT "link2"
+UPPER "Tip"
+IDENT "r"
+EQUAL
+IDENT "r"
+NEWLINE
+IDENT "link2"
+IDENT "l"
+UPPER "Tip"
+EQUAL
+IDENT "l"
+NEWLINE
+IDENT "link2"
+LPAREN
+IDENT "l"
+AS_AT
+LPAREN
+UPPER "Bin"
+IDENT "sl"
+IDENT "xl"
+IDENT "ll"
+IDENT "rl"
+RPAREN
+RPAREN
+LPAREN
+IDENT "r"
+AS_AT
+LPAREN
+UPPER "Bin"
+IDENT "sr"
+IDENT "xr"
+IDENT "lr"
+IDENT "rr"
+RPAREN
+RPAREN
+INDENT
+PIPE
+INT 3
+STAR
+IDENT "sl"
+LT
+IDENT "sr"
+EQUAL
+IDENT "balance"
+IDENT "xr"
+LPAREN
+IDENT "link2"
+IDENT "l"
+IDENT "lr"
+RPAREN
+IDENT "rr"
+NEWLINE
+PIPE
+INT 3
+STAR
+IDENT "sr"
+LT
+IDENT "sl"
+EQUAL
+IDENT "balance"
+IDENT "xl"
+IDENT "ll"
+LPAREN
+IDENT "link2"
+IDENT "rl"
+IDENT "r"
+RPAREN
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "glue"
+IDENT "l"
+IDENT "r"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "splitAt"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+LPAREN
+UPPER "Set"
+IDENT "a"
+COMMA
+UPPER "Set"
+IDENT "a"
+RPAREN
+NEWLINE
+IDENT "splitAt"
+IDENT "x"
+UPPER "Tip"
+EQUAL
+LPAREN
+UPPER "Tip"
+COMMA
+UPPER "Tip"
+RPAREN
+NEWLINE
+IDENT "splitAt"
+IDENT "x"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "y"
+IDENT "l"
+IDENT "r"
+RPAREN
+EQUAL
+MATCH
+IDENT "compare"
+IDENT "x"
+IDENT "y"
+INDENT
+UPPER "Lt"
+FAT_ARROW
+INDENT
+LET
+LPAREN
+IDENT "below"
+COMMA
+IDENT "above"
+RPAREN
+EQUAL
+IDENT "splitAt"
+IDENT "x"
+IDENT "l"
+NEWLINE
+LPAREN
+IDENT "below"
+COMMA
+IDENT "link"
+IDENT "y"
+IDENT "above"
+IDENT "r"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+UPPER "Gt"
+FAT_ARROW
+INDENT
+LET
+LPAREN
+IDENT "below"
+COMMA
+IDENT "above"
+RPAREN
+EQUAL
+IDENT "splitAt"
+IDENT "x"
+IDENT "r"
+NEWLINE
+LPAREN
+IDENT "link"
+IDENT "y"
+IDENT "l"
+IDENT "below"
+COMMA
+IDENT "above"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+UPPER "Eq"
+FAT_ARROW
+LPAREN
+IDENT "l"
+COMMA
+IDENT "r"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "splitMember"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+LPAREN
+UPPER "Set"
+IDENT "a"
+COMMA
+UPPER "Bool"
+COMMA
+UPPER "Set"
+IDENT "a"
+RPAREN
+NEWLINE
+IDENT "splitMember"
+IDENT "x"
+UPPER "Tip"
+EQUAL
+LPAREN
+UPPER "Tip"
+COMMA
+UPPER "False"
+COMMA
+UPPER "Tip"
+RPAREN
+NEWLINE
+IDENT "splitMember"
+IDENT "x"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "y"
+IDENT "l"
+IDENT "r"
+RPAREN
+EQUAL
+MATCH
+IDENT "compare"
+IDENT "x"
+IDENT "y"
+INDENT
+UPPER "Lt"
+FAT_ARROW
+INDENT
+LET
+LPAREN
+IDENT "below"
+COMMA
+IDENT "found"
+COMMA
+IDENT "above"
+RPAREN
+EQUAL
+IDENT "splitMember"
+IDENT "x"
+IDENT "l"
+NEWLINE
+LPAREN
+IDENT "below"
+COMMA
+IDENT "found"
+COMMA
+IDENT "link"
+IDENT "y"
+IDENT "above"
+IDENT "r"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+UPPER "Gt"
+FAT_ARROW
+INDENT
+LET
+LPAREN
+IDENT "below"
+COMMA
+IDENT "found"
+COMMA
+IDENT "above"
+RPAREN
+EQUAL
+IDENT "splitMember"
+IDENT "x"
+IDENT "r"
+NEWLINE
+LPAREN
+IDENT "link"
+IDENT "y"
+IDENT "l"
+IDENT "below"
+COMMA
+IDENT "found"
+COMMA
+IDENT "above"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+UPPER "Eq"
+FAT_ARROW
+LPAREN
+IDENT "l"
+COMMA
+UPPER "True"
+COMMA
+IDENT "r"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
+IDENT "union"
 COLON
 UPPER "Ord"
 IDENT "a"
@@ -1256,6 +1679,68 @@ FAT_ARROW
 UPPER "Set"
 IDENT "a"
 ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+NEWLINE
+IDENT "union"
+UPPER "Tip"
+IDENT "b"
+EQUAL
+IDENT "b"
+NEWLINE
+IDENT "union"
+IDENT "a"
+UPPER "Tip"
+EQUAL
+IDENT "a"
+NEWLINE
+IDENT "union"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "x"
+IDENT "l"
+IDENT "r"
+RPAREN
+IDENT "b"
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "bl"
+COMMA
+IDENT "br"
+RPAREN
+EQUAL
+IDENT "splitAt"
+IDENT "x"
+IDENT "b"
+NEWLINE
+IDENT "link"
+IDENT "x"
+LPAREN
+IDENT "union"
+IDENT "l"
+IDENT "bl"
+RPAREN
+LPAREN
+IDENT "union"
+IDENT "r"
+IDENT "br"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
+IDENT "intersection"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+UPPER "Set"
 IDENT "a"
 ARROW
 UPPER "Set"
@@ -1264,21 +1749,69 @@ ARROW
 UPPER "Set"
 IDENT "a"
 NEWLINE
-IDENT "intersectStep"
+IDENT "intersection"
+UPPER "Tip"
 IDENT "b"
-IDENT "x"
-IDENT "acc"
 EQUAL
-IF
-IDENT "has"
+UPPER "Tip"
+NEWLINE
+IDENT "intersection"
+IDENT "a"
+UPPER "Tip"
+EQUAL
+UPPER "Tip"
+NEWLINE
+IDENT "intersection"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "x"
+IDENT "l"
+IDENT "r"
+RPAREN
+IDENT "b"
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "bl"
+COMMA
+IDENT "found"
+COMMA
+IDENT "br"
+RPAREN
+EQUAL
+IDENT "splitMember"
 IDENT "x"
 IDENT "b"
+NEWLINE
+LET
+IDENT "l2"
+EQUAL
+IDENT "intersection"
+IDENT "l"
+IDENT "bl"
+NEWLINE
+LET
+IDENT "r2"
+EQUAL
+IDENT "intersection"
+IDENT "r"
+IDENT "br"
+NEWLINE
+IF
+IDENT "found"
 THEN
-IDENT "insert"
+IDENT "link"
 IDENT "x"
-IDENT "acc"
+IDENT "l2"
+IDENT "r2"
 ELSE
-IDENT "acc"
+IDENT "link2"
+IDENT "l2"
+IDENT "r2"
+NEWLINE
+DEDENT
 NEWLINE
 EXPORT
 IDENT "difference"
@@ -1296,20 +1829,52 @@ UPPER "Set"
 IDENT "a"
 NEWLINE
 IDENT "difference"
-IDENT "a"
+UPPER "Tip"
 IDENT "b"
 EQUAL
-IDENT "foldrSet"
-LPAREN
-IDENT "x"
-IDENT "acc"
-FAT_ARROW
-IDENT "delete"
-IDENT "x"
-IDENT "acc"
-RPAREN
+UPPER "Tip"
+NEWLINE
+IDENT "difference"
 IDENT "a"
-IDENT "b"
+UPPER "Tip"
+EQUAL
+IDENT "a"
+NEWLINE
+IDENT "difference"
+IDENT "a"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "x"
+IDENT "l"
+IDENT "r"
+RPAREN
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "al"
+COMMA
+IDENT "ar"
+RPAREN
+EQUAL
+IDENT "splitAt"
+IDENT "x"
+IDENT "a"
+NEWLINE
+IDENT "link2"
+LPAREN
+IDENT "difference"
+IDENT "al"
+IDENT "l"
+RPAREN
+LPAREN
+IDENT "difference"
+IDENT "ar"
+IDENT "r"
+RPAREN
+NEWLINE
+DEDENT
 NEWLINE
 EXPORT
 IDENT "isSubsetOf"
@@ -1329,19 +1894,76 @@ IDENT "isSubsetOf"
 IDENT "a"
 IDENT "b"
 EQUAL
-IDENT "foldrSet"
-LPAREN
-IDENT "x"
-IDENT "acc"
-FAT_ARROW
-IDENT "acc"
+IDENT "size"
+IDENT "a"
+LEQ
+IDENT "size"
+IDENT "b"
 AND
-IDENT "has"
+IDENT "subsetGo"
+IDENT "a"
+IDENT "b"
+NEWLINE
+IDENT "subsetGo"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "subsetGo"
+UPPER "Tip"
+IDENT "b"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "subsetGo"
+IDENT "a"
+UPPER "Tip"
+EQUAL
+UPPER "False"
+NEWLINE
+IDENT "subsetGo"
+LPAREN
+UPPER "Bin"
+UNDERSCORE
+IDENT "x"
+IDENT "l"
+IDENT "r"
+RPAREN
+IDENT "b"
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "bl"
+COMMA
+IDENT "found"
+COMMA
+IDENT "br"
+RPAREN
+EQUAL
+IDENT "splitMember"
 IDENT "x"
 IDENT "b"
-RPAREN
-UPPER "True"
-IDENT "a"
+NEWLINE
+IDENT "found"
+AND
+IDENT "subsetGo"
+IDENT "l"
+IDENT "bl"
+AND
+IDENT "subsetGo"
+IDENT "r"
+IDENT "br"
+NEWLINE
+DEDENT
 NEWLINE
 EXPORT
 IMPL
@@ -2333,6 +2955,589 @@ LPAREN
 IDENT "fromList"
 IDENT "xs"
 RPAREN
+RPAREN
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "naiveUnion"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+NEWLINE
+IDENT "naiveUnion"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "foldrSet"
+LPAREN
+IDENT "x"
+IDENT "acc"
+FAT_ARROW
+IDENT "insert"
+IDENT "x"
+IDENT "acc"
+RPAREN
+IDENT "b"
+IDENT "a"
+NEWLINE
+IDENT "naiveIntersection"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+NEWLINE
+IDENT "naiveIntersection"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "foldrSet"
+LPAREN
+IDENT "naiveIntersectStep"
+IDENT "b"
+RPAREN
+UPPER "Tip"
+IDENT "a"
+NEWLINE
+IDENT "naiveIntersectStep"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+NEWLINE
+IDENT "naiveIntersectStep"
+IDENT "b"
+IDENT "x"
+IDENT "acc"
+EQUAL
+IF
+IDENT "has"
+IDENT "x"
+IDENT "b"
+THEN
+IDENT "insert"
+IDENT "x"
+IDENT "acc"
+ELSE
+IDENT "acc"
+NEWLINE
+IDENT "naiveDifference"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+NEWLINE
+IDENT "naiveDifference"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "foldrSet"
+LPAREN
+IDENT "x"
+IDENT "acc"
+FAT_ARROW
+IDENT "delete"
+IDENT "x"
+IDENT "acc"
+RPAREN
+IDENT "a"
+IDENT "b"
+NEWLINE
+IDENT "naiveIsSubsetOf"
+COLON
+UPPER "Ord"
+IDENT "a"
+FAT_ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Set"
+IDENT "a"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "naiveIsSubsetOf"
+IDENT "a"
+IDENT "b"
+EQUAL
+IDENT "foldrSet"
+LPAREN
+IDENT "x"
+IDENT "acc"
+FAT_ARROW
+IDENT "acc"
+AND
+IDENT "has"
+IDENT "x"
+IDENT "b"
+RPAREN
+UPPER "True"
+IDENT "a"
+NEWLINE
+PROP
+STRING "union agrees with naive fold-insert and stays well-formed"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+LET
+IDENT "b"
+EQUAL
+IDENT "fromList"
+IDENT "ys"
+NEWLINE
+LET
+IDENT "got"
+EQUAL
+IDENT "union"
+IDENT "a"
+IDENT "b"
+NEWLINE
+IDENT "eq"
+LPAREN
+IDENT "toList"
+IDENT "got"
+RPAREN
+LPAREN
+IDENT "toList"
+LPAREN
+IDENT "naiveUnion"
+IDENT "a"
+IDENT "b"
+RPAREN
+RPAREN
+AND
+IDENT "wellFormed"
+IDENT "got"
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "union elements stay strictly ascending"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+IDENT "ascending"
+LPAREN
+IDENT "toList"
+LPAREN
+IDENT "union"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
+RPAREN
+LPAREN
+IDENT "fromList"
+IDENT "ys"
+RPAREN
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "intersection agrees with naive and stays well-formed"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+LET
+IDENT "b"
+EQUAL
+IDENT "fromList"
+IDENT "ys"
+NEWLINE
+LET
+IDENT "got"
+EQUAL
+IDENT "intersection"
+IDENT "a"
+IDENT "b"
+NEWLINE
+IDENT "eq"
+LPAREN
+IDENT "toList"
+IDENT "got"
+RPAREN
+LPAREN
+IDENT "toList"
+LPAREN
+IDENT "naiveIntersection"
+IDENT "a"
+IDENT "b"
+RPAREN
+RPAREN
+AND
+IDENT "wellFormed"
+IDENT "got"
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "difference agrees with naive and stays well-formed"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+LET
+IDENT "b"
+EQUAL
+IDENT "fromList"
+IDENT "ys"
+NEWLINE
+LET
+IDENT "got"
+EQUAL
+IDENT "difference"
+IDENT "a"
+IDENT "b"
+NEWLINE
+IDENT "eq"
+LPAREN
+IDENT "toList"
+IDENT "got"
+RPAREN
+LPAREN
+IDENT "toList"
+LPAREN
+IDENT "naiveDifference"
+IDENT "a"
+IDENT "b"
+RPAREN
+RPAREN
+AND
+IDENT "wellFormed"
+IDENT "got"
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "isSubsetOf agrees with the naive fold"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+LET
+IDENT "b"
+EQUAL
+IDENT "fromList"
+IDENT "ys"
+NEWLINE
+IDENT "eq"
+LPAREN
+IDENT "isSubsetOf"
+IDENT "a"
+IDENT "b"
+RPAREN
+LPAREN
+IDENT "naiveIsSubsetOf"
+IDENT "a"
+IDENT "b"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "a subset of a union is recognised"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+IDENT "isSubsetOf"
+IDENT "a"
+LPAREN
+IDENT "union"
+IDENT "a"
+LPAREN
+IDENT "fromList"
+IDENT "ys"
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "splitAt partitions around the element and both halves stay well-formed"
+LPAREN
+IDENT "x"
+COLON
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "below"
+COMMA
+IDENT "above"
+RPAREN
+EQUAL
+IDENT "splitAt"
+IDENT "x"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
+RPAREN
+NEWLINE
+IDENT "wellFormed"
+IDENT "below"
+AND
+IDENT "wellFormed"
+IDENT "above"
+AND
+IDENT "allElems"
+LPAREN
+IDENT "b"
+FAT_ARROW
+IDENT "lt"
+IDENT "b"
+IDENT "x"
+RPAREN
+IDENT "below"
+AND
+IDENT "allElems"
+LPAREN
+IDENT "a"
+FAT_ARROW
+IDENT "gt"
+IDENT "a"
+IDENT "x"
+RPAREN
+IDENT "above"
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "link rebuilds a well-formed set from a split"
+LPAREN
+IDENT "x"
+COLON
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "below"
+COMMA
+IDENT "above"
+RPAREN
+EQUAL
+IDENT "splitAt"
+IDENT "x"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
+RPAREN
+NEWLINE
+LET
+IDENT "rebuilt"
+EQUAL
+IDENT "link"
+IDENT "x"
+IDENT "below"
+IDENT "above"
+NEWLINE
+IDENT "wellFormed"
+IDENT "rebuilt"
+AND
+IDENT "has"
+IDENT "x"
+IDENT "rebuilt"
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "link2 rejoins a split without its element"
+LPAREN
+IDENT "x"
+COLON
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "below"
+COMMA
+IDENT "above"
+RPAREN
+EQUAL
+IDENT "splitAt"
+IDENT "x"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
+RPAREN
+NEWLINE
+LET
+IDENT "rebuilt"
+EQUAL
+IDENT "link2"
+IDENT "below"
+IDENT "above"
+NEWLINE
+IDENT "wellFormed"
+IDENT "rebuilt"
+AND
+IDENT "eq"
+LPAREN
+IDENT "toList"
+IDENT "rebuilt"
+RPAREN
+LPAREN
+IDENT "toList"
+LPAREN
+IDENT "delete"
+IDENT "x"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
 RPAREN
 RPAREN
 RPAREN
