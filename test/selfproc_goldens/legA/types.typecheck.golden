@@ -458,7 +458,7 @@ flatShadowScopingRef : Ref Bool
 flatUserShadowNamesRef : Ref (List String)
 foldAppFallback : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Ty -> Mono
 foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Kind -> List Ty -> Mono
-foldModules : (String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), a)) -> (Bool -> String -> a -> b -> b) -> b -> List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> b
+foldModules : Bool -> Bool -> (String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), a)) -> (Bool -> String -> a -> b -> b) -> b -> List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> b
 foldrFun : List Mono -> Mono -> Mono
 foreachUnit : (a -> Unit) -> List a -> Unit
 freeEffvars : Mono -> List Int

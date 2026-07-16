@@ -200,20 +200,21 @@ TIME_HEAP="${PERF_TIME_HEAP:-2147483648}"
 #           Now: rows are bucketed by head constructor in ONE pass, the oracle is
 #           an OrdMap, and the redundancy fold skips arms that provably cannot be
 #           unreachable. 3.10x -> 2.18x; 274 MB -> 118 MB at N=1000.
-# #154 PR-A eliminated registerAllData's per-module public-data re-registration — the
-# DOMINANT O(modules^2) alloc bug (~11x coefficient reduction; old net-alloc r2 ~4.0 ceiling
-# -> ~2.27 now).  But the path is STILL superlinear: the deferred `accAll ++ prog` /
-# `accData ++ publicDataDecls` concats in foldModules (~#13676) allocate ever-growing lists
-# every iteration, so net-alloc r2 CLIMBS past the gate's N (2.27 @ N400 -> ~2.75 @ N1600, a
-# clean a*N + b*N^2 fit).  Ledger RETAINED — do NOT claim linear — with the ceiling dropped
-# from ~4.0 to the post-PR-A reality so it still SELF-DRAINS: PR-C removes the concat and r2
-# falls toward ~2.0, tripping the FIXED promotion branch.
-KNOWN_SUPERLINEAR="modules"
-# Graded on net-TOTAL allocation r2 (the 2N->4N doubling). Allocation is
-# DETERMINISTIC, so these are exact, not sampled. CEIL fails-if-worse (headroom
-# above today's ~2.27, below a re-widening toward quadratic); FIXED fails-and-demands-
-# promotion when PR-C's concat removal drops r2 below it (linear ~= 2.0).
-KNOWN_CEIL_modules="2.9";   KNOWN_FIXED_modules="2.2"
+#   modules — MULTI-MODULE typecheck (issue #153/#154). The whole O(modules^2) family.
+#           #154 PR-A eliminated registerAllData's per-module public-data re-registration
+#           (the DOMINANT concat, ~11x coefficient cut; r2 ~4.0 -> ~2.27); PR-B made
+#           argDispatchIndices/registerAllData incremental; PR-C (this) removed the LAST
+#           quadratic — the `accAll ++ prog` / `accData ++ publicDataDecls` concats in
+#           foldModules, which copied a GROWING left operand every iteration. The perf-gate
+#           `checkModules` path reads NEITHER accumulator (checkBodyImpl binds accData as a
+#           dead `Module _ _ _` field; cmCheckWorker ignores accAll), so PR-C threads them
+#           UNCHANGED there via per-worker wantData/wantAll signals — O(N) total. MEASURED
+#           net-alloc, FLAT and linear to N=1600 (r2 2.02 @ 100/200/400, 2.02 @ 200/400/800,
+#           2.04 @ 400/800/1600; 91 -> 183 -> 370 -> 748 -> 1528 MB), and typecheck TIME
+#           dropped under the 200ms floor. PROMOTED OUT 2026-07-16 — now a HARD linear gate.
+# No currently-ledgered superlinear shapes: every entry has drained. is_known() below
+# stays (a future regression can re-ledger a shape without re-adding the plumbing).
+KNOWN_SUPERLINEAR=""
 
 is_known() {
   for k in $KNOWN_SUPERLINEAR; do [ "$k" = "$1" ] && return 0; done
@@ -500,15 +501,15 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck"
 # self-draining contract as the alloc entry: promoted out when #154/#150 land (the
 # fix drops typecheck under the 200ms floor at the largest N, tripping the "too FAST
 # to time-gate" promotion branch).
-# #154 PR-A cut the modules:typecheck coefficient hard, but the residual foldModules-concat
-# O(N^2) (see KNOWN_SUPERLINEAR note) keeps the PATH superlinear, so the TIME entry is
-# RETAINED alongside the alloc one (time is noisy — min-of-K — so its band is looser than the
-# deterministic alloc band).  match/listlit drained earlier by #115 (match 6.0s->0.11s,
-# listlit 5.3s->0.06s).
-KNOWN_SLOW_TIME="modules:typecheck"
+# #154 PR-A/PR-B/PR-C drained modules:typecheck: PR-C removed the last foldModules-concat
+# O(N^2) (see KNOWN_SUPERLINEAR note), and typecheck TIME fell UNDER the 200ms floor at the
+# gate's N (190ms @ N=400) — the same "too fast to time-gate" outcome as match/listlit under
+# #115 (match 6.0s->0.11s, listlit 5.3s->0.06s). PROMOTED OUT 2026-07-16; the modules block
+# now SKIPS the typecheck TIME below the floor (unledgered rule-4 behavior) and hard-gates it
+# as SUPERLINEAR if it ever climbs back over.
+KNOWN_SLOW_TIME=""
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
-KNOWN_TCEIL_modules_typecheck="3.5";  KNOWN_TFIXED_modules_typecheck="1.9"
 
 is_known_time() {
   for k in $KNOWN_SLOW_TIME; do [ "$k" = "$1" ] && return 0; done
@@ -771,61 +772,59 @@ case "$MBASE_ALLOC$ma1$ma2$ma3" in
     mnet1="$(awk -v a="$ma1" -v b="$MBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
     mnet2="$(awk -v a="$ma2" -v b="$MBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
     mnet3="$(awk -v a="$ma3" -v b="$MBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
-    mar1="$(awk -v a="$mnet1" -v b="$mnet2" 'BEGIN{printf "%.2f", (a+0>0)? b/a : 0}')"
-    mar2="$(awk -v a="$mnet2" -v b="$mnet3" 'BEGIN{printf "%.2f", (a+0>0)? b/a : 0}')"
 
-    # ── ALLOC verdict against the KNOWN_SUPERLINEAR ledger for `modules` (#154 PR-A: the
-    # dominant registerAllData O(N^2) is gone; the residual foldModules-concat O(N^2) keeps
-    # the shape ledgered, with the ceiling dropped from ~4.0 to ~2.9). ──
-    aworse="$(awk -v r="$mar2" -v c="$KNOWN_CEIL_modules"  'BEGIN{print (r > c) ? 1 : 0}')"
-    abetter="$(awk -v r="$mar2" -v f="$KNOWN_FIXED_modules" 'BEGIN{print (r < f) ? 1 : 0}')"
-
-    if [ "$aworse" = "1" ]; then
+    # ── ALLOC verdict: HARD LINEAR GATE (#154 PR-C promoted `modules` OUT of the ledger
+    # 2026-07-16).  The foldModules-concat O(modules^2) is gone; net-alloc r2 is FLAT ~2.0
+    # to N=1600.  Graded exactly like the single-file shapes: r2 > THRESH (or a CLIMBING
+    # ratio) FAILS as SUPERLINEAR; a too-small measurement is a harness failure, never a
+    # silent pass. ──
+    averdict="$(awk -v n1="$mnet1" -v n2="$mnet2" -v n3="$mnet3" -v th="$THRESH" 'BEGIN {
+      if (n1 + 0 < 1.0) { printf "0 0 TOOSMALL"; exit }
+      r1 = n2 / n1; r2 = n3 / n2
+      climbing = (r2 > r1 * 1.15 && r2 > 2.45)
+      printf "%.2f %.2f %s", r1, r2, ((r2 > th || climbing) ? "QUADRATIC" : "ok")
+    }')"
+    mar1="$(echo "$averdict" | cut -d' ' -f1)"
+    mar2="$(echo "$averdict" | cut -d' ' -f2)"
+    aword="$(echo "$averdict" | cut -d' ' -f3)"
+    if [ "$aword" = "TOOSMALL" ]; then
       fail=$((fail+1))
-      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** KNOWN-BAD, AND GOT WORSE (ceiling %s) **\n' \
-        "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "$mar1" "$mar2" "$KNOWN_CEIL_modules"
-    elif [ "$abetter" = "1" ]; then
+      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** N TOO SMALL — raise PERF_MOD_N **\n' \
+        "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "-" "-"
+    elif [ "$aword" = "QUADRATIC" ]; then
       fail=$((fail+1))
-      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** PROMOTE: residual O(N^2) now GONE **\n' \
+      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ** SUPERLINEAR (ALLOC) **\n' \
         "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "$mar1" "$mar2"
-      printf '           The foldModules-concat O(modules^2) is FIXED (PR-C). Remove "modules" from\n'
-      printf '           KNOWN_SUPERLINEAR in %s and promote this shape to a hard gate.\n' "$(basename "$0")"
     else
-      known=$((known+1))
-      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  known-superlinear (#154 residual concat; ceiling %s)\n' \
-        "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "$mar1" "$mar2" "$KNOWN_CEIL_modules"
+      pass=$((pass+1))
+      printf '%-10s %8s %7s MB %7s MB %7s MB  %6s %6s  ok\n' \
+        "modules" "$mn1" "$mnet1" "$mnet2" "$mnet3" "$mar1" "$mar2"
     fi
 
-    # ── TIME verdict against the KNOWN_SLOW_TIME ledger for `modules:typecheck` ──
+    # ── TIME verdict: no longer ledgered (#154 PR-C).  typecheck TIME is now UNDER the
+    # 200ms floor at the gate's N (the fix dropped it there), so it SKIPS loudly — the same
+    # rule-4 floor behavior the single-file loop applies to an UN-ledgered stage.  If it
+    # ever climbs back over the floor it is hard-gated: r2 > THRESH (or climbing) = SUPERLINEAR. ──
     if [ -z "$mt1" ] || [ -z "$mt2" ] || [ -z "$mt3" ]; then
       echo "           time typecheck: NO MEASUREMENT from the profiler (harness bug)"
       fail=$((fail+1))
     else
       below="$(awk -v v="$mt3" -v f="$TIME_FLOOR" 'BEGIN{print (v + 0 < f + 0) ? 1 : 0}')"
       if [ "$below" = "1" ]; then
-        # A ledgered stage dropping under the floor IS the fix signal — promote,
-        # never skip (see rule 4's ledger carve-out in the single-file loop).
         ms3="$(awk -v v="$mt3" 'BEGIN{printf "%.0f", v*1000}')"
         msf="$(awk -v f="$TIME_FLOOR" 'BEGIN{printf "%.0f", f*1000}')"
-        fail=$((fail+1))
-        printf '           time typecheck: ** PROMOTE: now too FAST to time-gate ** %s ms at N=%s < %s ms floor\n' "$ms3" "$mn3" "$msf"
-        printf '           The residual O(modules^2) time cost is FIXED (PR-C). Remove "modules:typecheck" from KNOWN_SLOW_TIME.\n'
+        printf '           time typecheck: SKIP — too small to time-gate: %s ms at N=%s < %s ms floor (linear since #154 PR-C)\n' "$ms3" "$mn3" "$msf"
       else
         mtr1="$(awk -v a="$mt1" -v b="$mt2" 'BEGIN{printf "%.2f", b/a}')"
         mtr2="$(awk -v a="$mt2" -v b="$mt3" 'BEGIN{printf "%.2f", b/a}')"
-        tworse="$(awk -v r="$mtr2" -v c="$KNOWN_TCEIL_modules_typecheck"  'BEGIN{print (r > c) ? 1 : 0}')"
-        tbetter="$(awk -v r="$mtr2" -v f="$KNOWN_TFIXED_modules_typecheck" 'BEGIN{print (r < f) ? 1 : 0}')"
-        if [ "$tworse" = "1" ]; then
+        tbad="$(awk -v r1="$mtr1" -v r2="$mtr2" -v th="$THRESH" 'BEGIN{print (r2 > th || (r2 > r1 * 1.15 && r2 > 2.45)) ? 1 : 0}')"
+        if [ "$tbad" = "1" ]; then
           fail=$((fail+1))
-          printf '           time typecheck: ** KNOWN-SLOW, AND GOT WORSE ** r1=%s r2=%s (ceiling %s)\n' "$mtr1" "$mtr2" "$KNOWN_TCEIL_modules_typecheck"
-        elif [ "$tbetter" = "1" ]; then
-          fail=$((fail+1))
-          printf '           time typecheck: ** PROMOTE: now scales LINEARLY ** r2=%s (< %s)\n' "$mtr2" "$KNOWN_TFIXED_modules_typecheck"
-          printf '           Remove "modules:typecheck" from KNOWN_SLOW_TIME — the bug is FIXED.\n'
+          printf '           time typecheck: ** SUPERLINEAR (TIME) ** %ss -> %ss -> %ss  r1=%s r2=%s (> %sx)\n' \
+            "$mt1" "$mt2" "$mt3" "$mtr1" "$mtr2" "$THRESH"
         else
-          known=$((known+1))
-          printf '           time typecheck: known-slow (TIME) %ss -> %ss -> %ss  r1=%s r2=%s — ledgered (#154 residual)\n' \
-            "$mt1" "$mt2" "$mt3" "$mtr1" "$mtr2"
+          printf '           time typecheck: ok  %ss -> %ss -> %ss  r1=%s r2=%s (min-of-%s, heap pinned)\n' \
+            "$mt1" "$mt2" "$mt3" "$mtr1" "$mtr2" "$PERF_K"
         fi
       fi
     fi ;;
