@@ -1,10 +1,10 @@
 running doctests in stdlib/hash_set.mdk
-  ok   stdlib/hash_set.mdk:52: size (fromList [1, 2, 3, 2, 1])
-  ok   stdlib/hash_set.mdk:65: has 2 (fromList [1, 2, 3])
-  ok   stdlib/hash_set.mdk:67: has 9 (fromList [1, 2, 3])
-  ok   stdlib/hash_set.mdk:133: size (fromList [1, 2, 3, 4, 5, 6, 7, 8, 8, 1])
-  ok   stdlib/hash_set.mdk:184: toList (fromList [1, 1, 2]) != []
-  ok   stdlib/hash_set.mdk:186: length (fromList [3, 1, 2, 1])
-  ok   stdlib/hash_set.mdk:203: eq (fromList [1, 2, 3]) (fromList [3, 2, 1, 2])
+  ok   stdlib/hash_set.mdk:53: size (fromList [1, 2, 3, 2, 1])
+  ok   stdlib/hash_set.mdk:66: has 2 (fromList [1, 2, 3])
+  ok   stdlib/hash_set.mdk:68: has 9 (fromList [1, 2, 3])
+  ok   stdlib/hash_set.mdk:134: size (fromList [1, 2, 3, 4, 5, 6, 7, 8, 8, 1])
+  ok   stdlib/hash_set.mdk:185: toList (fromList [1, 1, 2]) != []
+  ok   stdlib/hash_set.mdk:187: length (fromList [3, 1, 2, 1])
+  ok   stdlib/hash_set.mdk:204: eq (fromList [1, 2, 3]) (fromList [3, 2, 1, 2])
 
 stdlib/hash_set.mdk: 7/7 passed

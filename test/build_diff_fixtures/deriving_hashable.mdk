@@ -1,0 +1,113 @@
+-- Issue #422: `deriving (Hashable)` generates core.mdk's djb2-style fold —
+-- seed with the constructor ordinal, then `acc = acc * 33 + hash field`
+-- left-to-right.  This is a code GENERATOR, so the value that matters is the
+-- generated code's RUNTIME behaviour on the native path, not that it compiles.
+--
+-- The contract (core.mdk) is EQ-AGREEMENT: equal values must hash equal. Each
+-- probe below therefore builds two structurally-equal values by DIFFERENT
+-- routes (literal vs computed) and asserts their hashes agree — a deriver that
+-- broke that would be a silent wrong-answer bug every other gate would pass.
+--
+-- The fold is deliberately NOT masked non-negative: `Int` wraps, so `Big`
+-- below hashes NEGATIVE, and that is legal (only eq-agreement is contractual;
+-- hash_map/hash_set mask at the point of use — see hash_negative_hash.mdk,
+-- #416). `negHashes` pins that a negative derived hash still round-trips
+-- through a HashMap.
+import hash_map.{new as hmNew, set as hmSet, get as hmGet}
+
+-- multi-field
+data P = P Int String deriving (Hashable, Eq)
+-- multi-constructor: the ordinal seed is what keeps `A 1` and `B 1` apart, and
+-- what gives a field-less constructor its bare ordinal.
+data AB = A Int | B Int | C deriving (Hashable, Eq)
+-- nested: the field's own Hashable impl is what the fold calls
+data T = T (Option Int) deriving (Hashable, Eq)
+-- type-parameterised: `requires Hashable a` must be threaded onto the impl
+data Box a = Box a deriving (Hashable, Eq)
+-- named-field ("record"-shaped) variant — binds via PRec, not PCon
+data R = R { rx : Int, ry : String } deriving (Hashable, Eq)
+-- newtype: synthetic single variant at ordinal 0 ⇒ hash == hash of the wrapped
+newtype Key = Key String deriving (Hashable, Eq)
+-- enough fields that the wrapping fold lands negative
+data Big =
+  | Big Int Int Int Int Int Int Int Int Int Int Int Int
+deriving (Hashable, Eq)
+
+-- force a value through arithmetic so it cannot be constant-folded into the
+-- literal route at compile time
+idInt : Int -> Int
+idInt n = n + 0
+
+big1 : Big
+big1 =
+  Big
+    7
+    222222
+    333333
+    444444
+    555555
+    666666
+    777777
+    888888
+    999999
+    123456
+    654321
+    987654
+big2 : Big
+big2 =
+  Big
+    (idInt 7)
+    222222
+    333333
+    444444
+    555555
+    666666
+    777777
+    888888
+    999999
+    123456
+    654321
+    (987000 + 654)
+
+-- equal-by-different-routes pairs: every `eqAgree` MUST be True
+eqAgree : List Bool
+eqAgree = [
+  P 7 "hi" == P (idInt (3 + 4)) ("h" ++ "i"),
+  hash (P 7 "hi") == hash (P (idInt (3 + 4)) ("h" ++ "i")),
+  Box (1, "z") == Box (idInt 1, "" ++ "z"),
+  hash (Box (1, "z")) == hash (Box (idInt 1, "" ++ "z")),
+  R { rx = 1, ry = "q" } == R { rx = idInt 1, ry = "q" ++ "" },
+  hash R { rx = 1, ry = "q" } == hash R { rx = idInt 1, ry = "q" ++ "" },
+  big1 == big2,
+  hash big1 == hash big2,
+  Key "alpha" == Key ("al" ++ "pha"),
+  hash (Key "alpha") == hash (Key ("al" ++ "pha")),
+]
+
+-- the ordinal seed distinguishes same-payload constructors
+ordinalSeed : (Bool, Bool, Int)
+ordinalSeed = (hash (A 1) != hash (B 1), hash (A 1) + 33 == hash (B 1), hash C)
+
+-- a newtype's hash is exactly its wrapped value's
+newtypeTransparent : Bool
+newtypeTransparent = hash (Key "alpha") == hash "alpha"
+
+-- `T None` folds to `0 * 33 + hash None` == core.mdk's `hash None` == 1
+nestedNone : Bool
+nestedNone = hash (T None) == hash None
+
+-- a NEGATIVE derived hash still round-trips through a HashMap (#416 masks at
+-- slotOf), and collides correctly with its different-route twin
+negHashes : (Bool, Option String)
+negHashes =
+  let m = hmNew ()
+  let _ = hmSet big1 "found-it" m
+  (hash big1 < 0, hmGet big2 m)
+
+main : <IO> Unit
+main =
+  let _ = println (all (b => b) eqAgree)
+  let _ = println ordinalSeed
+  let _ = println newtypeTransparent
+  let _ = println nestedNone
+  println negHashes

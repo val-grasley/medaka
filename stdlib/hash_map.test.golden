@@ -1,13 +1,13 @@
 running doctests in stdlib/hash_map.mdk
-  ok   stdlib/hash_map.mdk:61: size (fromList [(1, 10), (2, 20), (1, 30)])
-  ok   stdlib/hash_map.mdk:68: isEmpty (new () : HashMap Int Int)
-  ok   stdlib/hash_map.mdk:81: get 2 (fromList [(1, 10), (2, 20)])
-  ok   stdlib/hash_map.mdk:83: get 9 (fromList [(1, 10), (2, 20)])
-  ok   stdlib/hash_map.mdk:92: has 2 (fromList [(1, 10), (2, 20)])
-  ok   stdlib/hash_map.mdk:99: findWithDefault 0 9 (fromList [(1, 10)])
-  ok   stdlib/hash_map.mdk:179: size (fromList [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)])
-  ok   stdlib/hash_map.mdk:232: keys (fromList [(5, 50)])
-  ok   stdlib/hash_map.mdk:239: values (fromList [(5, 50)])
-  ok   stdlib/hash_map.mdk:254: eq (fromList [(1, 10), (2, 20)]) (fromList [(2, 20), (1, 10)])
+  ok   stdlib/hash_map.mdk:62: size (fromList [(1, 10), (2, 20), (1, 30)])
+  ok   stdlib/hash_map.mdk:69: isEmpty (new () : HashMap Int Int)
+  ok   stdlib/hash_map.mdk:82: get 2 (fromList [(1, 10), (2, 20)])
+  ok   stdlib/hash_map.mdk:84: get 9 (fromList [(1, 10), (2, 20)])
+  ok   stdlib/hash_map.mdk:93: has 2 (fromList [(1, 10), (2, 20)])
+  ok   stdlib/hash_map.mdk:100: findWithDefault 0 9 (fromList [(1, 10)])
+  ok   stdlib/hash_map.mdk:180: size (fromList [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)])
+  ok   stdlib/hash_map.mdk:233: keys (fromList [(5, 50)])
+  ok   stdlib/hash_map.mdk:240: values (fromList [(5, 50)])
+  ok   stdlib/hash_map.mdk:255: eq (fromList [(1, 10), (2, 20)]) (fromList [(2, 20), (1, 10)])
 
 stdlib/hash_map.mdk: 10/10 passed

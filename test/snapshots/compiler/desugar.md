@@ -1,5 +1,5 @@
 # META
-source_lines=963
+source_lines=1014
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted desugar stage — Stage 1 port of `lib/desugar.ml`.  Lowers surface
@@ -177,6 +177,11 @@ callBin fn a b = EApp (EApp (EVar fn) a) b
 binOp : String -> Expr -> Expr -> Expr
 binOp op a b = EBinOp op a b (Ref RNone)
 
+-- an integer literal in EXPRESSION position.  `ENumLit`, never `ELit (LInt)` —
+-- that is the shape the parser emits and the only one dictPass rewrites away.
+intLit : Int -> Expr
+intLit n = ENumLit n (Ref None) (Ref RNone)
+
 -- a derived impl head with the fixed pub / non-default / no-name shape;
 -- applyDeriveParams rewrites tys + reqs afterwards for the type's params.
 derivedImpl : String -> String -> List ImplMethod -> Decl
@@ -340,7 +345,9 @@ anyRefutable (p::ps) = isRefutable p || anyRefutable ps
 
 -- ── Pass: expand_decl (`deriving` → generated impls) ──────────────────────
 -- Mirror of lib/desugar.ml's expand_decl + the Eq/Debug/Display/Ord/Generic
--- derivers.  A `data`/`newtype` with derives becomes the decl (derives cleared)
+-- derivers, PLUS `Hashable` (#422), which has no counterpart in the reference —
+-- it generates the djb2 fold core.mdk's `Hashable` doc specifies.  A
+-- `data`/`newtype` with derives becomes the decl (derives cleared)
 -- followed by one generated impl per derived interface; a `newtype` derives via
 -- a synthetic single-variant data deriver.  Generated bodies are core (no sugar),
 -- so they pass through the later passes unchanged.  Generated names are
@@ -380,7 +387,7 @@ deriveImpls f (d::ds) = match f (deriveRefName d)
 -- both starts working AND starts being advertised by the message, with no
 -- hand-typed list to rot.
 -- The generator is a THUNK on purpose: Medaka is strict, so an eager
--- `List (String, Decl)` would run all five derivers on every lookup.
+-- `List (String, Decl)` would run every deriver on every lookup.
 dataDerivers : String -> List String -> List Variant -> List (String, Unit -> Decl)
 dataDerivers name params variants = [
   ("Eq", _ => applyDeriveParams name params (deriveEqData name variants)),
@@ -397,6 +404,10 @@ dataDerivers name params variants = [
     "Generic",
     _ => applyDeriveParams name params (deriveGenericData name variants),
   ),
+  (
+    "Hashable",
+    _ => applyDeriveParams name params (deriveHashData name variants),
+  ),
 ]
 
 -- Force the deriver `iface` selects, or None when no deriver claims the name.
@@ -412,8 +423,6 @@ deriveForData name params variants iface =
 
 -- A newtype is structurally a single-constructor, single-field data type, so the
 -- data derivers produce the right tagged rendering via a synthetic variant.
--- (Num/Generic use specialized derivers in lib/desugar.ml — not exercised by the
--- corpus, so deferred; the corpus only derives Eq/Ord/Debug/Display.)
 -- The newtype deriver table — the newtype counterpart of `dataDerivers`, and
 -- likewise the single source of both the lookup and the diagnostic's copy.
 -- It is deliberately SHORTER than `dataDerivers`: `Generic` (and `Num`) go
@@ -434,6 +443,13 @@ newtypeDerivers name params con fty =
     (
       "Display",
       _ => applyDeriveParams name params (deriveShowData "Display" "display" name synthetic),
+    ),
+    -- Hashable needs no specialized newtype deriver: the synthetic variant is
+    -- ordinal 0 with one field, so the fold collapses to `0 * 33 + hash x` —
+    -- exactly "hash the wrapped value", which is what a newtype key should do.
+    (
+      "Hashable",
+      _ => applyDeriveParams name params (deriveHashData name synthetic),
     ),
   ]
 
@@ -683,6 +699,41 @@ lexCompareExprs ((ea, eb)::rest) = EMatch
     Arm (PCon "Eq" []) [] (lexCompareExprs rest),
     Arm (PVar "__c") [] (EVar "__c"),
   ]
+
+-- Hashable: the djb2-style fold core.mdk's `Hashable` doc specifies — seed the
+-- accumulator with the constructor's ordinal, then `acc = acc * 33 + hash field`
+-- left-to-right.  One arm per constructor, so the ordinal seed is what keeps
+-- `A 1` and `B 1` apart.  This is the SAME fold the hand-written compound impls
+-- next to that doc use (`hash (a, b) = hash a * 33 + hash b`, `hashListItems`),
+-- which is why a derived and a hand-written impl of the same shape agree.
+--
+-- Deliberately does NOT mask the result non-negative.  `Int` wraps, so the fold
+-- goes negative routinely — that is safe and intended: the `Hashable` contract
+-- requires only that equal values hash equal, never non-negativity, and both
+-- consumers mask at the point of use (`slotOf` in hash_map/hash_set, #416).
+-- Masking here would buy nothing, cost a bit of hash space, and make derived
+-- impls silently disagree with the unmasked compound impls in core.mdk.
+deriveHashData : String -> List Variant -> Decl
+deriveHashData name variants = derivedImpl
+  "Hashable"
+  name
+  [
+    ImplMethod "hash" [PVar "__x"] (EMatch (EVar "__x") (map hashArm (indexFrom 0 variants)))
+  ]
+
+hashArm : (Int, Variant) -> Arm
+hashArm (i, v) =
+  let vars = genVars "__a" (conArity v)
+  Arm (conBindPat v vars) [] (hashFold (intLit i) vars)
+
+-- `acc * 33 + hash field` per field, left-to-right.  A field-less constructor
+-- hashes to its bare ordinal (matching core.mdk's `hash None = 1`).
+hashFold : Expr -> List String -> Expr
+hashFold acc [] = acc
+hashFold acc (v::vs) =
+  hashFold
+    (binOp "+" (binOp "*" acc (intLit 33)) (EApp (EVar "hash") (EVar v)))
+    vs
 
 -- Generic: one arm per constructor → RCon name [to_rep a0, …]
 deriveGenericData : String -> List Variant -> Decl
@@ -1048,6 +1099,8 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "callBin" ((PVar "fn") (PVar "a") (PVar "b")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "fn"))) (EVar "a"))) (EVar "b")))
 (DTypeSig false "binOp" (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "binOp" ((PVar "op") (PVar "a") (PVar "b")) (EApp (EApp (EApp (EApp (EVar "EBinOp") (EVar "op")) (EVar "a")) (EVar "b")) (EApp (EVar "Ref") (EVar "RNone"))))
+(DTypeSig false "intLit" (TyFun (TyCon "Int") (TyCon "Expr")))
+(DFunDef false "intLit" ((PVar "n")) (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EApp (EVar "Ref") (EVar "None"))) (EApp (EVar "Ref") (EVar "RNone"))))
 (DTypeSig false "derivedImpl" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "ImplMethod")) (TyCon "Decl")))))
 (DFunDef false "derivedImpl" ((PVar "iface") (PVar "tyName") (PVar "methods")) (ERecordCreate "DImpl" ((fa "pub" (EVar "True")) (fa "iface" (EVar "iface")) (fa "tys" (EListLit (EApp (EApp (EVar "TyCon") (EVar "tyName")) (EVar "None")))) (fa "reqs" (EListLit)) (fa "methods" (EVar "methods")))))
 (DTypeSig false "binMethod" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "ImplMethod"))))))
@@ -1147,14 +1200,14 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "deriveImpls" (PWild (PList)) (EListLit))
 (DFunDef false "deriveImpls" ((PVar "f") (PCons (PVar "d") (PVar "ds"))) (EMatch (EApp (EVar "f") (EApp (EVar "deriveRefName") (EVar "d"))) (arm (PCon "Some" (PVar "gen")) () (EBinOp "::" (EVar "gen") (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))) (arm (PCon "None") () (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))))
 (DTypeSig false "dataDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl"))))))))
-(DFunDef false "dataDerivers" ((PVar "name") (PVar "params") (PVar "variants")) (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Generic")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants")))))))
+(DFunDef false "dataDerivers" ((PVar "name") (PVar "params") (PVar "variants")) (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Generic")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Hashable")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveHashData") (EVar "name")) (EVar "variants")))))))
 (DTypeSig false "lookupDeriver" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyCon "Decl")))))
 (DFunDef false "lookupDeriver" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupDeriver" ((PVar "n") (PCons (PTuple (PVar "k") (PVar "f")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "k")) (EApp (EVar "Some") (EApp (EVar "f") (ELit LUnit))) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupDeriver") (EVar "n")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "deriveForData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl")))))))
 (DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EVar "dataDerivers") (EVar "name")) (EVar "params")) (EVar "variants"))))
 (DTypeSig false "newtypeDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))))))))
-(DFunDef false "newtypeDerivers" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic")))))))))
+(DFunDef false "newtypeDerivers" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Hashable")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveHashData") (EVar "name")) (EVar "synthetic")))))))))
 (DTypeSig false "deriveForNewtype" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))))))))
 (DFunDef false "deriveForNewtype" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EApp (EVar "newtypeDerivers") (EVar "name")) (EVar "params")) (EVar "con")) (EVar "fty"))))
 (DTypeSig true "checkDerives" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
@@ -1257,6 +1310,13 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "lexCompareExprs" ((PList)) (EApp (EVar "EVar") (ELit (LString "Eq"))))
 (DFunDef false "lexCompareExprs" ((PList (PTuple (PVar "ea") (PVar "eb")))) (EApp (EApp (EApp (EVar "callBin") (ELit (LString "compare"))) (EVar "ea")) (EVar "eb")))
 (DFunDef false "lexCompareExprs" ((PCons (PTuple (PVar "ea") (PVar "eb")) (PVar "rest"))) (EApp (EApp (EVar "EMatch") (EApp (EApp (EApp (EVar "callBin") (ELit (LString "compare"))) (EVar "ea")) (EVar "eb"))) (EListLit (EApp (EApp (EApp (EVar "Arm") (EApp (EApp (EVar "PCon") (ELit (LString "Eq"))) (EListLit))) (EListLit)) (EApp (EVar "lexCompareExprs") (EVar "rest"))) (EApp (EApp (EApp (EVar "Arm") (EApp (EVar "PVar") (ELit (LString "__c")))) (EListLit)) (EApp (EVar "EVar") (ELit (LString "__c")))))))
+(DTypeSig false "deriveHashData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Decl"))))
+(DFunDef false "deriveHashData" ((PVar "name") (PVar "variants")) (EApp (EApp (EApp (EVar "derivedImpl") (ELit (LString "Hashable"))) (EVar "name")) (EListLit (EApp (EApp (EApp (EVar "ImplMethod") (ELit (LString "hash"))) (EListLit (EApp (EVar "PVar") (ELit (LString "__x"))))) (EApp (EApp (EVar "EMatch") (EApp (EVar "EVar") (ELit (LString "__x")))) (EApp (EApp (EVar "map") (EVar "hashArm")) (EApp (EApp (EVar "indexFrom") (ELit (LInt 0))) (EVar "variants"))))))))
+(DTypeSig false "hashArm" (TyFun (TyTuple (TyCon "Int") (TyCon "Variant")) (TyCon "Arm")))
+(DFunDef false "hashArm" ((PTuple (PVar "i") (PVar "v"))) (EBlock (DoLet false false (PVar "vars") (EApp (EApp (EVar "genVars") (ELit (LString "__a"))) (EApp (EVar "conArity") (EVar "v")))) (DoExpr (EApp (EApp (EApp (EVar "Arm") (EApp (EApp (EVar "conBindPat") (EVar "v")) (EVar "vars"))) (EListLit)) (EApp (EApp (EVar "hashFold") (EApp (EVar "intLit") (EVar "i"))) (EVar "vars"))))))
+(DTypeSig false "hashFold" (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr"))))
+(DFunDef false "hashFold" ((PVar "acc") (PList)) (EVar "acc"))
+(DFunDef false "hashFold" ((PVar "acc") (PCons (PVar "v") (PVar "vs"))) (EApp (EApp (EVar "hashFold") (EApp (EApp (EApp (EVar "binOp") (ELit (LString "+"))) (EApp (EApp (EApp (EVar "binOp") (ELit (LString "*"))) (EVar "acc")) (EApp (EVar "intLit") (ELit (LInt 33))))) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "hash")))) (EApp (EVar "EVar") (EVar "v"))))) (EVar "vs")))
 (DTypeSig false "deriveGenericData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Decl"))))
 (DFunDef false "deriveGenericData" ((PVar "name") (PVar "variants")) (EApp (EApp (EApp (EVar "derivedImpl") (ELit (LString "Generic"))) (EVar "name")) (EListLit (EApp (EApp (EApp (EVar "ImplMethod") (ELit (LString "to_rep"))) (EListLit (EApp (EVar "PVar") (ELit (LString "__x"))))) (EApp (EApp (EVar "EMatch") (EApp (EVar "EVar") (ELit (LString "__x")))) (EApp (EApp (EVar "map") (EVar "genericArm")) (EVar "variants")))))))
 (DTypeSig false "genericArm" (TyFun (TyCon "Variant") (TyCon "Arm")))
@@ -1458,6 +1518,8 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "callBin" ((PVar "fn") (PVar "a") (PVar "b")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (EVar "fn"))) (EVar "a"))) (EVar "b")))
 (DTypeSig false "binOp" (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "binOp" ((PVar "op") (PVar "a") (PVar "b")) (EApp (EApp (EApp (EApp (EVar "EBinOp") (EVar "op")) (EVar "a")) (EVar "b")) (EApp (EVar "Ref") (EVar "RNone"))))
+(DTypeSig false "intLit" (TyFun (TyCon "Int") (TyCon "Expr")))
+(DFunDef false "intLit" ((PVar "n")) (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EApp (EVar "Ref") (EVar "None"))) (EApp (EVar "Ref") (EVar "RNone"))))
 (DTypeSig false "derivedImpl" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "ImplMethod")) (TyCon "Decl")))))
 (DFunDef false "derivedImpl" ((PVar "iface") (PVar "tyName") (PVar "methods")) (ERecordCreate "DImpl" ((fa "pub" (EVar "True")) (fa "iface" (EVar "iface")) (fa "tys" (EListLit (EApp (EApp (EVar "TyCon") (EVar "tyName")) (EVar "None")))) (fa "reqs" (EListLit)) (fa "methods" (EVar "methods")))))
 (DTypeSig false "binMethod" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "ImplMethod"))))))
@@ -1557,14 +1619,14 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "deriveImpls" (PWild (PList)) (EListLit))
 (DFunDef false "deriveImpls" ((PVar "f") (PCons (PVar "d") (PVar "ds"))) (EMatch (EApp (EVar "f") (EApp (EVar "deriveRefName") (EVar "d"))) (arm (PCon "Some" (PVar "gen")) () (EBinOp "::" (EVar "gen") (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))) (arm (PCon "None") () (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))))
 (DTypeSig false "dataDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl"))))))))
-(DFunDef false "dataDerivers" ((PVar "name") (PVar "params") (PVar "variants")) (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Generic")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants")))))))
+(DFunDef false "dataDerivers" ((PVar "name") (PVar "params") (PVar "variants")) (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Generic")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Hashable")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveHashData") (EVar "name")) (EVar "variants")))))))
 (DTypeSig false "lookupDeriver" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyCon "Decl")))))
 (DFunDef false "lookupDeriver" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupDeriver" ((PVar "n") (PCons (PTuple (PVar "k") (PVar "f")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "k")) (EApp (EVar "Some") (EApp (EVar "f") (ELit LUnit))) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupDeriver") (EVar "n")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "deriveForData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl")))))))
 (DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EVar "dataDerivers") (EVar "name")) (EVar "params")) (EVar "variants"))))
 (DTypeSig false "newtypeDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))))))))
-(DFunDef false "newtypeDerivers" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic")))))))))
+(DFunDef false "newtypeDerivers" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Hashable")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveHashData") (EVar "name")) (EVar "synthetic")))))))))
 (DTypeSig false "deriveForNewtype" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))))))))
 (DFunDef false "deriveForNewtype" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EApp (EVar "newtypeDerivers") (EVar "name")) (EVar "params")) (EVar "con")) (EVar "fty"))))
 (DTypeSig true "checkDerives" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
@@ -1667,6 +1729,13 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "lexCompareExprs" ((PList)) (EApp (EVar "EVar") (ELit (LString "Eq"))))
 (DFunDef false "lexCompareExprs" ((PList (PTuple (PVar "ea") (PVar "eb")))) (EApp (EApp (EApp (EVar "callBin") (ELit (LString "compare"))) (EVar "ea")) (EVar "eb")))
 (DFunDef false "lexCompareExprs" ((PCons (PTuple (PVar "ea") (PVar "eb")) (PVar "rest"))) (EApp (EApp (EVar "EMatch") (EApp (EApp (EApp (EVar "callBin") (ELit (LString "compare"))) (EVar "ea")) (EVar "eb"))) (EListLit (EApp (EApp (EApp (EVar "Arm") (EApp (EApp (EVar "PCon") (ELit (LString "Eq"))) (EListLit))) (EListLit)) (EApp (EVar "lexCompareExprs") (EVar "rest"))) (EApp (EApp (EApp (EVar "Arm") (EApp (EVar "PVar") (ELit (LString "__c")))) (EListLit)) (EApp (EVar "EVar") (ELit (LString "__c")))))))
+(DTypeSig false "deriveHashData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Decl"))))
+(DFunDef false "deriveHashData" ((PVar "name") (PVar "variants")) (EApp (EApp (EApp (EVar "derivedImpl") (ELit (LString "Hashable"))) (EVar "name")) (EListLit (EApp (EApp (EApp (EVar "ImplMethod") (ELit (LString "hash"))) (EListLit (EApp (EVar "PVar") (ELit (LString "__x"))))) (EApp (EApp (EVar "EMatch") (EApp (EVar "EVar") (ELit (LString "__x")))) (EApp (EApp (EMethodRef "map") (EVar "hashArm")) (EApp (EApp (EVar "indexFrom") (ELit (LInt 0))) (EVar "variants"))))))))
+(DTypeSig false "hashArm" (TyFun (TyTuple (TyCon "Int") (TyCon "Variant")) (TyCon "Arm")))
+(DFunDef false "hashArm" ((PTuple (PVar "i") (PVar "v"))) (EBlock (DoLet false false (PVar "vars") (EApp (EApp (EVar "genVars") (ELit (LString "__a"))) (EApp (EVar "conArity") (EVar "v")))) (DoExpr (EApp (EApp (EApp (EVar "Arm") (EApp (EApp (EVar "conBindPat") (EVar "v")) (EVar "vars"))) (EListLit)) (EApp (EApp (EVar "hashFold") (EApp (EVar "intLit") (EVar "i"))) (EVar "vars"))))))
+(DTypeSig false "hashFold" (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr"))))
+(DFunDef false "hashFold" ((PVar "acc") (PList)) (EVar "acc"))
+(DFunDef false "hashFold" ((PVar "acc") (PCons (PVar "v") (PVar "vs"))) (EApp (EApp (EVar "hashFold") (EApp (EApp (EApp (EVar "binOp") (ELit (LString "+"))) (EApp (EApp (EApp (EVar "binOp") (ELit (LString "*"))) (EVar "acc")) (EApp (EVar "intLit") (ELit (LInt 33))))) (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "hash")))) (EApp (EVar "EVar") (EVar "v"))))) (EVar "vs")))
 (DTypeSig false "deriveGenericData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Decl"))))
 (DFunDef false "deriveGenericData" ((PVar "name") (PVar "variants")) (EApp (EApp (EApp (EVar "derivedImpl") (ELit (LString "Generic"))) (EVar "name")) (EListLit (EApp (EApp (EApp (EVar "ImplMethod") (ELit (LString "to_rep"))) (EListLit (EApp (EVar "PVar") (ELit (LString "__x"))))) (EApp (EApp (EVar "EMatch") (EApp (EVar "EVar") (ELit (LString "__x")))) (EApp (EApp (EMethodRef "map") (EVar "genericArm")) (EVar "variants")))))))
 (DTypeSig false "genericArm" (TyFun (TyCon "Variant") (TyCon "Arm")))

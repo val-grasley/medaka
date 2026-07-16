@@ -1,5 +1,5 @@
 # META
-source_lines=211
+source_lines=212
 stages=DESUGAR,MARK
 # SOURCE
 {- hash_set.mdk — a mutable hash set (Module 6).
@@ -14,10 +14,11 @@ stages=DESUGAR,MARK
    Standalone rather than a wrapper over `HashMap a Unit` — same reasoning as
    set.mdk over `Map a Unit` (self-contained, no qualified-import gymnastics, no
    `Unit` payload). Elements hash via the `Hashable` typeclass method `hash`,
-   which must agree with the element's `Eq`. ⛔ `deriving (Hashable)` does NOT
-   exist yet (issue #422) — a custom element type needs a hand-written `impl
-   Hashable T` (see the compound impls in `core.mdk` for the djb2-fold
-   pattern). Iteration order is unspecified.
+   which must agree with the element's `Eq`. A custom element type gets a
+   structural impl from `deriving (Hashable)` (#422); hand-write `impl Hashable
+   T` only when the derived fold is not what you want. A hash may be NEGATIVE
+   (the fold wraps) — `slotOf` masks the sign off before indexing, so that is
+   safe (#416). Iteration order is unspecified.
 
    `Foldable HashSet` makes `toList`/`elem`/`length`/`any`/… work (a set's
    elements *are* its `toList`, unlike a map's pairs). -}

@@ -1,5 +1,5 @@
 # META
-source_lines=262
+source_lines=263
 stages=DESUGAR,MARK
 # SOURCE
 {- hash_map.mdk — a mutable hash table (Module 6).
@@ -17,10 +17,11 @@ stages=DESUGAR,MARK
    Keys hash via the `Hashable` typeclass method `hash`. It must agree with the
    key's `Eq`, which holds for every structural `Eq` impl (all the built-ins) —
    a *custom* `Eq` that isn't structural would break it, so don't key a
-   HashMap on such a type. ⛔ `deriving (Hashable)` does NOT exist yet (issue
-   #422) — a custom key type needs a hand-written `impl Hashable T` (see the
-   compound impls in `core.mdk` for the djb2-fold pattern). Iteration order is
-   unspecified (hash order).
+   HashMap on such a type. A custom key type gets a structural impl from
+   `deriving (Hashable)` (#422); hand-write `impl Hashable T` only when the
+   derived fold is not what you want. A hash may be NEGATIVE (the fold wraps) —
+   `slotOf` masks the sign off before indexing, so that is safe (#416).
+   Iteration order is unspecified (hash order).
 
    The mutating ops sequence mutation statements in block bodies. A conditional
    mutation whose body is a multi-statement block (`deleteAt`) uses an **else-less

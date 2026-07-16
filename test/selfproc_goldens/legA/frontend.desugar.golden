@@ -27,6 +27,7 @@ deriveEqData : String -> List Variant -> Decl
 deriveForData : String -> List String -> List Variant -> String -> Option Decl
 deriveForNewtype : String -> List String -> String -> Ty -> String -> Option Decl
 deriveGenericData : String -> List Variant -> Decl
+deriveHashData : String -> List Variant -> Decl
 deriveImpls : (String -> Option Decl) -> List DeriveRef -> List Decl
 deriveOrdData : String -> List Variant -> Decl
 deriveShowData : String -> String -> String -> List Variant -> Decl
@@ -51,6 +52,8 @@ genericArm : Variant -> Arm
 genericRFields : List Field -> List String -> List Expr
 genericRep : String -> ConPayload -> List String -> Expr
 guardsToCore : List GuardArm -> Expr
+hashArm : (Int, Variant) -> Arm
+hashFold : Expr -> List String -> Expr
 ifaceDefaults : String -> List Decl -> List IfaceMethod
 ifaceDefaultsStep : String -> Decl -> List Decl -> List IfaceMethod
 ifaceMethodHasDefault : IfaceMethod -> Bool
@@ -58,6 +61,7 @@ implDefines : String -> List ImplMethod -> Bool
 implMethodNamed : String -> ImplMethod -> Bool
 indexFrom : Int -> List a -> List (Int, a)
 insertMethod : List IfaceMethod -> IfaceMethod -> List IfaceMethod
+intLit : Int -> Expr
 interpPartToExpr : InterpPart -> Expr
 interpToCore : List InterpPart -> Expr
 isRefutable : Pat -> Bool
