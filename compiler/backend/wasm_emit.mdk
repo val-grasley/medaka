@@ -7423,14 +7423,24 @@ emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k
   -- when this switch is NESTED inside a con-tower slot — at the slot's untyped `end`
   -- that strands the value ("values remaining on stack at end of block").  No result
   -- type ⇒ nothing stranded.
+  --
+  -- …but a no-result `if` is REACHABLE-after: wasm types it `[] -> []` and does NOT
+  -- propagate "both arms diverged", so control notionally falls out of `end` with an
+  -- empty stack.  Under a `block $dec… (result (ref eq))` head (a value-position
+  -- scrutinee, e.g. `main = match "if"`) that fall-out hits the block's end owing a
+  -- `(ref eq)` and strands it the other way — "expected (ref eq) but nothing on
+  -- stack", an INVALID module (#374).  Every path here really is `br`-terminated, so
+  -- close with `unreachable`: the fall-out goes stack-polymorphic and validates under
+  -- BOTH a result-typed head and an untyped con-tower slot.  This is exactly what the
+  -- `emitLitSwitchTail` twin already does — the fix was ported to only one of the pair.
   indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"] ++ ["if"])
     ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub)
     ++ indentBy idt ["else"]
     ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1)
-    ++ indentBy idt ["end"]
+    ++ indentBy idt ["end", "unreachable"]
 -- W6: Char-literal switch head — a Char is an i31 codepoint immediate (cf.
 -- `PLit (LChar)`); compare the i31 against the codepoint constant.
-emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft idt = indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1) ++ indentBy idt ["end"]
+emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft idt = indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1) ++ indentBy idt ["end", "unreachable"]
 -- W6: String-literal switch head — compare the focus $str against each literal via
 -- `$mdk_str_compare` (returns the i31 1 on equal), reusing the `PLit (LString)` logic.
 emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LString s)) sub)::more) dft idt =
@@ -7447,7 +7457,7 @@ emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LStrin
     ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub)
     ++ indentBy idt ["else"]
     ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1)
-    ++ indentBy idt ["end"]
+    ++ indentBy idt ["end", "unreachable"]
 emitLitSwitchRef _ _ _ _ _ _ _ _ _ _ _ =
   gapL "ref-mode: non-Int literal switch head (Char/String literals are W6)"
 
