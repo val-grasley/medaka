@@ -2024,10 +2024,27 @@ emitVarI32 fnNames valNames env x =
   else
     gapUnboundLTy ("unbound variable '" ++ x ++ "' (scalar mode: not a local, global value, or known function)")
 
+-- N1/WP2: sign-extend the i64 on the stack from bit 62, wrapping it into the 63-bit
+-- Int range — the `(x << 1) >> 1` pair that mirrors native's tag/untag shift.  Ref mode
+-- gets this inside `$mdk_box_int` (it re-boxes after every arith op), but SCALAR mode
+-- (`useRef == False`: a pure-Int program, no ADT/closure/string) never boxes — its
+-- values live as raw i64 on the wasm stack from literal to `$mdk_print_int` — so the
+-- wrap has to be emitted at each producing op or 64-bit intermediates escape.
+normInt64 : List String
+normInt64 = ["i64.const 1", "i64.shl", "i64.const 1", "i64.shr_s"]
+
+-- Which scalar-mode i64 ops can carry a result out of the 63-bit range, given operands
+-- already in it?  `+ - *` overflow; `/` only at (-2^62)/(-1) → +2^62 (which is also the
+-- only i64.div_s that could engine-trap once INT64_MIN is unreachable — normalizing here
+-- means the wrap happens instead, matching native).  `%` and the comparisons cannot.
+scalarNeedsNorm : String -> Bool
+scalarNeedsNorm op = contains op ["+", "-", "*", "/"]
+
 emitBinI32 : List String -> List String -> List String -> String -> CExpr -> CExpr -> (List String, WTy)
 emitBinI32 fnNames valNames env op l r =
   let (li, _) = emitScalarExpr fnNames valNames env l
   let (ri, _) = emitScalarExpr fnNames valNames env r
+  let nrm = if scalarNeedsNorm op then normInt64 else []
   -- layer-17 §2.1: i64 arithmetic.  A comparison yields wasm i32 0/1, so extend it
   -- back to the uniform i64 value rep.
   if isCmpOp op then (li ++ ri ++ [wasmBinOp64 op, "i64.extend_i32_u"], binOpTy op)
@@ -2035,13 +2052,14 @@ emitBinI32 fnNames valNames env op l r =
   -- ref mode (single function-scope $__sdivr i64 scratch; reuse across nested divs is
   -- safe — each store-then-immediately-use completes before the next).
   else if (op == "/" || op == "%") then
-    (li ++ ri ++ emitDivZeroGuard op "$__sdivr" ++ [wasmBinOp64 op], binOpTy op)
-  else (li ++ ri ++ [wasmBinOp64 op], binOpTy op)
+    (li ++ ri ++ emitDivZeroGuard op "$__sdivr" ++ [wasmBinOp64 op] ++ nrm, binOpTy op)
+  else (li ++ ri ++ [wasmBinOp64 op] ++ nrm, binOpTy op)
 
 emitUnI32 : List String -> List String -> List String -> String -> CExpr -> (List String, WTy)
 emitUnI32 fnNames valNames env "-" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
-  (["i64.const 0"] ++ xi ++ ["i64.sub"], WInt)
+  -- N1: negation overflows at exactly -2^62 (0 - (-2^62) = +2^62), so it wraps too.
+  (["i64.const 0"] ++ xi ++ ["i64.sub"] ++ normInt64, WInt)
 emitUnI32 fnNames valNames env "!" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
   -- i64 Bool -> negate: i64.eqz yields i32, extend back to i64.

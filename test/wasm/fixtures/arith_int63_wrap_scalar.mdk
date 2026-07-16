@@ -1,0 +1,4 @@
+-- N1/WP2: `Int` is 63-bit two's complement and WRAPS — `intMaxBound * 2` is -2 on
+-- every engine.  SCALAR mode (no ADT/closure/string ⇒ useRef == False): the i64 never
+-- boxes, so it pins the wrap emitted at the arith op itself, not at the box seam.
+main = 4611686018427387903 * 2
