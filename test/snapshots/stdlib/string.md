@@ -1,5 +1,5 @@
 # META
-source_lines=623
+source_lines=658
 stages=DESUGAR,MARK
 # SOURCE
 -- string.mdk — operations on String and Char
@@ -273,6 +273,41 @@ export endsWith : String -> String -> Bool
 endsWith suffix s =
   stringSlice (stringLength s - stringLength suffix) (stringLength s) s ==
     suffix
+
+{- | Remove `prefix` from the front of `s`, or `None` when `s` doesn't start
+   with it.  The `Option` is the point: unlike `drop (length prefix)` it tells
+   you whether the prefix was actually there.
+
+   > stripPrefix "he" "hello"
+   Some "llo"
+   > stripPrefix "xy" "hello"
+   None
+   > stripPrefix "" "hi"
+   Some "hi"
+   > stripPrefix "hello" "hello"
+   Some "" -}
+export stripPrefix : String -> String -> Option String
+stripPrefix prefix s =
+  if startsWith prefix s then
+    Some (stringSlice (stringLength prefix) (stringLength s) s)
+  else
+    None
+
+{- | Remove `suffix` from the end of `s`, or `None` when `s` doesn't end with
+   it.
+
+   > stripSuffix "lo" "hello"
+   Some "hel"
+   > stripSuffix "xy" "hello"
+   None
+   > stripSuffix "" "hi"
+   Some "hi" -}
+export stripSuffix : String -> String -> Option String
+stripSuffix suffix s =
+  if endsWith suffix s then
+    Some (stringSlice 0 (stringLength s - stringLength suffix) s)
+  else
+    None
 
 {- | True when `needle` occurs anywhere in `haystack` (the empty string is
    contained in everything).
@@ -677,6 +712,10 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DFunDef false "startsWith" ((PVar "prefix") (PVar "s")) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "prefix"))) (EVar "s")) (EVar "prefix")))
 (DTypeSig true "endsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "endsWith" ((PVar "suffix") (PVar "s")) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "-" (EApp (EVar "stringLength") (EVar "s")) (EApp (EVar "stringLength") (EVar "suffix")))) (EApp (EVar "stringLength") (EVar "s"))) (EVar "s")) (EVar "suffix")))
+(DTypeSig true "stripPrefix" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")))))
+(DFunDef false "stripPrefix" ((PVar "prefix") (PVar "s")) (EIf (EApp (EApp (EVar "startsWith") (EVar "prefix")) (EVar "s")) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "stringSlice") (EApp (EVar "stringLength") (EVar "prefix"))) (EApp (EVar "stringLength") (EVar "s"))) (EVar "s"))) (EVar "None")))
+(DTypeSig true "stripSuffix" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")))))
+(DFunDef false "stripSuffix" ((PVar "suffix") (PVar "s")) (EIf (EApp (EApp (EVar "endsWith") (EVar "suffix")) (EVar "s")) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "-" (EApp (EVar "stringLength") (EVar "s")) (EApp (EVar "stringLength") (EVar "suffix")))) (EVar "s"))) (EVar "None")))
 (DTypeSig true "contains" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "contains" ((PVar "needle") (PVar "haystack")) (EApp (EVar "isSome") (EApp (EApp (EVar "indexOf") (EVar "needle")) (EVar "haystack"))))
 (DTypeSig true "indexOf" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int")))))
@@ -827,6 +866,10 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DFunDef false "startsWith" ((PVar "prefix") (PVar "s")) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "prefix"))) (EVar "s")) (EVar "prefix")))
 (DTypeSig true "endsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "endsWith" ((PVar "suffix") (PVar "s")) (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "-" (EApp (EVar "stringLength") (EVar "s")) (EApp (EVar "stringLength") (EVar "suffix")))) (EApp (EVar "stringLength") (EVar "s"))) (EVar "s")) (EVar "suffix")))
+(DTypeSig true "stripPrefix" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")))))
+(DFunDef false "stripPrefix" ((PVar "prefix") (PVar "s")) (EIf (EApp (EApp (EVar "startsWith") (EVar "prefix")) (EVar "s")) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "stringSlice") (EApp (EVar "stringLength") (EVar "prefix"))) (EApp (EVar "stringLength") (EVar "s"))) (EVar "s"))) (EVar "None")))
+(DTypeSig true "stripSuffix" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String")))))
+(DFunDef false "stripSuffix" ((PVar "suffix") (PVar "s")) (EIf (EApp (EApp (EVar "endsWith") (EVar "suffix")) (EVar "s")) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "-" (EApp (EVar "stringLength") (EVar "s")) (EApp (EVar "stringLength") (EVar "suffix")))) (EVar "s"))) (EVar "None")))
 (DTypeSig true "contains" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "contains" ((PVar "needle") (PVar "haystack")) (EApp (EVar "isSome") (EApp (EApp (EVar "indexOf") (EVar "needle")) (EVar "haystack"))))
 (DTypeSig true "indexOf" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int")))))

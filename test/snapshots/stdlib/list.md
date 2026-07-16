@@ -1,5 +1,5 @@
 # META
-source_lines=601
+source_lines=952
 stages=DESUGAR,MARK
 # SOURCE
 -- list.mdk — operations on List a
@@ -205,6 +205,182 @@ findIndices p xs = go 0 xs
 export elemIndex : Eq a => a -> List a -> Option Int
 elemIndex x xs = findIndex (== x) xs
 
+{- | Indices of every occurrence of `x` (by `Eq`).
+
+   > elemIndices 2 [1, 2, 3, 2]
+   [1, 3]
+   > elemIndices 9 [1, 2, 3]
+   [] -}
+export elemIndices : Eq a => a -> List a -> List Int
+elemIndices x xs = findIndices (== x) xs
+
+{- | Look `key` up in an association list, returning the first match.
+   `O(n)` — for a large or long-lived table reach for `map.Map` (`O(log n)`)
+   or `hash_map.HashMap` instead.
+
+   > lookup 2 [(1, "a"), (2, "b")]
+   Some "b"
+   > lookup 9 [(1, "a"), (2, "b")]
+   None -}
+export lookup : Eq k => k -> List (k, v) -> Option v
+lookup _ [] = None
+lookup key ((k, v)::rest)
+  | key == k = Some v
+  | otherwise = lookup key rest
+
+{- | The first non-`None` result of `f` — `find` and `map` in a single pass,
+   without rebuilding the list.  Short-circuits on the first hit.
+
+   > findMap (x => if x > 2 then Some (x * 10) else None) [1, 2, 3, 4]
+   Some 30
+   > findMap (x => if x > 9 then Some x else None) [1, 2, 3]
+   None -}
+export findMap : (a -> <e> Option b) -> List a -> <e> Option b
+findMap _ [] = None
+findMap f (x::rest) = match f x
+  Some y => Some y
+  None => findMap f rest
+
+-- Non-empty folds
+
+{- | Left-fold using the first element as the seed — `None` on an empty list.
+   Named `reduce` rather than `foldl1`: it needs no seed, so it reads as
+   "reduce the list to one value".
+
+   > reduce (x y => x + y) [1, 2, 3, 4]
+   Some 10
+   > reduce (x y => if x > y then x else y) [3, 1, 2]
+   Some 3
+   > reduce (x y => x + y) ([] : List Int)
+   None -}
+export reduce : (a -> a -> <e> a) -> List a -> <e> Option a
+reduce _ [] = None
+reduce f (x::xs) = Some (go x xs)
+  where
+    go acc [] = acc
+    go acc (y::rest) = go (f acc y) rest
+
+{- | Largest element by a custom comparator, or `None` when empty.  Ties keep
+   the *first* of the equal elements.  `maximum` (core) is the `Ord` case.
+
+   > maximumBy (x y => compare (x % 10) (y % 10)) [23, 47, 15]
+   Some 47
+   > maximumBy compare ([] : List Int)
+   None -}
+export maximumBy : (a -> a -> <e> Ordering) -> List a -> <e> Option a
+maximumBy cmp xs = reduce pick xs
+  where
+    pick a b = match cmp b a
+      Gt => b
+      _ => a
+
+{- | Smallest element by a custom comparator, or `None` when empty.  Ties keep
+   the *first* of the equal elements.  `minimum` (core) is the `Ord` case.
+
+   > minimumBy (x y => compare (x % 10) (y % 10)) [23, 47, 15]
+   Some 23
+   > minimumBy compare ([] : List Int)
+   None -}
+export minimumBy : (a -> a -> <e> Ordering) -> List a -> <e> Option a
+minimumBy cmp xs = reduce pick xs
+  where
+    pick a b = match cmp b a
+      Lt => b
+      _ => a
+
+-- Indexed
+
+{- | `map`, but `f` also receives each element's 0-based index.
+
+   > mapWithIndex (i x => i * x) [1, 2, 3]
+   [0, 2, 6]
+   > mapWithIndex (i x => i + x) [10, 20]
+   [10, 21] -}
+export mapWithIndex : (Int -> a -> <e> b) -> List a -> <e> List b
+mapWithIndex f xs = go 0 xs
+  where
+    go _ [] = []
+    go i (x::rest) = f i x :: go (i + 1) rest
+
+{- | Pair every element with its 0-based index.
+
+   > indexed ["a", "b", "c"]
+   [(0, "a"), (1, "b"), (2, "c")] -}
+export indexed : List a -> List (Int, a)
+indexed xs = mapWithIndex (i x => (i, x)) xs
+
+{- | Left-to-right `map` threading an accumulator: `f` sees the running state
+   and each element, and returns the new state plus the mapped element.
+   Returns the final state and the mapped list.
+
+   > mapAccumL (s x => (s + x, s)) 0 [1, 2, 3]
+   (6, [0, 1, 3]) -}
+export mapAccumL : (s -> a -> <e> (s, b)) -> s -> List a -> <e> (s, List b)
+mapAccumL _ s [] = (s, [])
+mapAccumL f s (x::xs) =
+  let (s2, y) = f s x
+  let (s3, ys) = mapAccumL f s2 xs
+  (s3, y::ys)
+
+{- | Like `mapAccumL`, but threads the accumulator right-to-left.  The output
+   list stays in the input's order.
+
+   > mapAccumR (s x => (s + x, s)) 0 [1, 2, 3]
+   (6, [5, 3, 0]) -}
+export mapAccumR : (s -> a -> <e> (s, b)) -> s -> List a -> <e> (s, List b)
+mapAccumR _ s [] = (s, [])
+mapAccumR f s (x::xs) =
+  let (s2, ys) = mapAccumR f s xs
+  let (s3, y) = f s2 x
+  (s3, y::ys)
+
+-- Positional edits
+--
+-- All three clamp rather than panic, matching `slice`/`take`: an index outside
+-- the list is a no-op (`insertAt` clamps to the nearer end).
+
+{- | Insert `x` so that it lands at index `i`, shifting the rest right.
+   `i <= 0` prepends; `i >= length` appends.
+
+   > insertAt 1 9 [1, 2, 3]
+   [1, 9, 2, 3]
+   > insertAt 0 9 [1, 2]
+   [9, 1, 2]
+   > insertAt 7 9 [1, 2]
+   [1, 2, 9] -}
+export insertAt : Int -> a -> List a -> List a
+insertAt _ x [] = [x]
+insertAt i x (y::rest)
+  | i <= 0 = x :: y::rest
+  | otherwise = y :: insertAt (i - 1) x rest
+
+{- | Replace the element at index `i` with `x`.  Out-of-range leaves the list
+   unchanged.
+
+   > updateAt 1 9 [1, 2, 3]
+   [1, 9, 3]
+   > updateAt 7 9 [1, 2]
+   [1, 2] -}
+export updateAt : Int -> a -> List a -> List a
+updateAt _ _ [] = []
+updateAt i x (y::rest)
+  | i < 0 = y::rest
+  | i == 0 = x::rest
+  | otherwise = y :: updateAt (i - 1) x rest
+
+{- | Drop the element at index `i`.  Out-of-range leaves the list unchanged.
+
+   > removeAt 1 [1, 2, 3]
+   [1, 3]
+   > removeAt 7 [1, 2]
+   [1, 2] -}
+export removeAt : Int -> List a -> List a
+removeAt _ [] = []
+removeAt i (y::rest)
+  | i < 0 = y::rest
+  | i == 0 = rest
+  | otherwise = y :: removeAt (i - 1) rest
+
 -- Sublists
 
 {- | First `n` elements (fewer if the list is shorter).
@@ -317,6 +493,103 @@ chunks n (xs@(_::_))
   | n <= 0 = []
   | otherwise = take n xs :: chunks n (drop n xs)
 
+{- | Drop the longest *suffix* whose elements all satisfy the predicate — the
+   mirror of `dropWhile`.  Trailing-whitespace trimming is the usual reason.
+
+   > dropWhileEnd (x => x == 0) [1, 2, 0, 0]
+   [1, 2]
+   > dropWhileEnd (x => x == 0) [0, 1, 0]
+   [0, 1]
+   > dropWhileEnd (x => x == 0) [0, 0]
+   [] -}
+export dropWhileEnd : (a -> <e> Bool) -> List a -> <e> List a
+dropWhileEnd p xs = reverse (dropWhile p (reverse xs))
+
+{- | The longest *suffix* whose elements all satisfy the predicate — the mirror
+   of `takeWhile`.
+
+   > takeWhileEnd (x => x > 1) [1, 2, 3]
+   [2, 3]
+   > takeWhileEnd (x => x > 9) [1, 2, 3]
+   []
+   > takeWhileEnd (x => x > 0) [1, 2]
+   [1, 2] -}
+export takeWhileEnd : (a -> <e> Bool) -> List a -> <e> List a
+takeWhileEnd p xs = reverse (takeWhile p (reverse xs))
+
+{- | Split on every occurrence of the separator *sublist*, dropping the
+   separators.  The list analogue of `string.split`; an empty separator
+   yields `[xs]`.
+
+   > splitOn [0] [1, 0, 2, 0, 3]
+   [[1], [2], [3]]
+   > splitOn [0, 0] [1, 0, 0, 2]
+   [[1], [2]]
+   > splitOn [9] [1, 2]
+   [[1, 2]]
+   > splitOn [0] [0, 1]
+   [[], [1]] -}
+export splitOn : Eq a => List a -> List a -> List (List a)
+splitOn [] xs = [xs]
+splitOn sep xs = go xs
+  where
+    sepLen = length sep
+    go ys = match findSub 0 ys
+      None => [ys]
+      Some i => take i ys :: go (drop (i + sepLen) ys)
+    findSub i ys
+      | startsWith sep ys = Some i
+      | otherwise = findSubTail i ys
+    findSubTail _ [] = None
+    findSubTail i (_::rest) = findSub (i + 1) rest
+
+-- Sublist predicates
+--
+-- Named to mirror `string.startsWith` / `endsWith` / `contains` (same
+-- needle-first argument order) rather than Haskell's `isPrefixOf` family —
+-- these ask the same question of a different container, so they get the same
+-- name.  For a *single element* rather than a sublist, `elem` (core, over any
+-- `Foldable`) is what you want.
+
+{- | True when `prefix` is a leading sublist of `xs`.  Every list starts with
+   the empty list.
+
+   > startsWith [1, 2] [1, 2, 3]
+   True
+   > startsWith [2, 3] [1, 2, 3]
+   False
+   > startsWith ([] : List Int) [1]
+   True -}
+export startsWith : Eq a => List a -> List a -> Bool
+startsWith [] _ = True
+startsWith _ [] = False
+startsWith (p::ps) (x::xs) = p == x && startsWith ps xs
+
+{- | True when `suffix` is a trailing sublist of `xs`.
+
+   > endsWith [2, 3] [1, 2, 3]
+   True
+   > endsWith [1, 2] [1, 2, 3]
+   False -}
+export endsWith : Eq a => List a -> List a -> Bool
+endsWith suffix xs = startsWith (reverse suffix) (reverse xs)
+
+{- | True when `sub` occurs as a contiguous run anywhere in `xs`.  `O(n*m)`
+   naive scan — fine for short needles; for text prefer `string.contains`,
+   which is host-backed.
+
+   > contains [2, 3] [1, 2, 3, 4]
+   True
+   > contains [2, 4] [1, 2, 3, 4]
+   False
+   > contains ([] : List Int) [1]
+   True -}
+export contains : Eq a => List a -> List a -> Bool
+contains sub [] = startsWith sub []
+contains sub (xs@(_::rest))
+  | startsWith sub xs = True
+  | otherwise = contains sub rest
+
 -- Sorting
 
 {- | Stable sort with a custom comparator (bottom-up is unnecessary; a plain
@@ -376,6 +649,32 @@ nubBy same xs = go xs []
    [1, 2, 3] -}
 export nub : Eq a => List a -> List a
 nub xs = nubBy (==) xs
+
+{- | Remove the *first* element matching a custom equality; unchanged when
+   nothing matches.
+
+   > deleteBy (x y => x == y) 2 [1, 2, 3, 2]
+   [1, 3, 2] -}
+export deleteBy : (a -> a -> <e> Bool) -> a -> List a -> <e> List a
+deleteBy _ _ [] = []
+deleteBy same x (y::rest)
+  | same x y = rest
+  | otherwise = y :: deleteBy same x rest
+
+{- | Remove the *first* occurrence of `x` (by `Eq`); unchanged when absent.
+   Only the first — `filter (!= x) xs` removes every occurrence.
+
+   > delete 2 [1, 2, 3, 2]
+   [1, 3, 2]
+   > delete 9 [1, 2]
+   [1, 2] -}
+export delete : Eq a => a -> List a -> List a
+delete x xs = deleteBy (==) x xs
+
+-- Set-like operations (`union` / `intersect` / `difference`) are deliberately
+-- absent: an `Eq`-based list version is `O(n*m)`, and `set.Set` already does
+-- each in `O(n log m)` with the same semantics.  Reach for `set`, or
+-- `hash_set` when the element is `Hashable`.
 
 -- Grouping
 
@@ -473,6 +772,20 @@ export tail : List a -> Option (List a)
 tail [] = None
 tail (_::xs) = Some xs
 
+{- | Split off the first element — `head` and `tail` in one match, which is
+   what you want when destructuring a list you cannot pattern-match on
+   directly.  `None` exactly when the list is empty.
+
+   > uncons [1, 2, 3]
+   Some (1, [2, 3])
+   > uncons [1]
+   Some (1, [])
+   > uncons ([] : List Int)
+   None -}
+export uncons : List a -> Option (a, List a)
+uncons [] = None
+uncons (x::xs) = Some (x, xs)
+
 export last : List a -> Option a
 last [] = None
 last [x] = Some x
@@ -527,6 +840,33 @@ zipWith _ [] _ = []
 zipWith _ _ [] = []
 zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
 
+{- | Like `zip3`, but for four lists, producing 4-tuples.  Stops at the
+   shortest input.
+
+   > zip4 [1, 2] [3, 4] [5, 6] [7, 8]
+   [(1, 3, 5, 7), (2, 4, 6, 8)]
+   > zip4 [1, 2] [3] [5, 6] [7, 8]
+   [(1, 3, 5, 7)] -}
+export zip4 : List a -> List b -> List c -> List d -> List (a, b, c, d)
+zip4 [] _ _ _ = []
+zip4 _ [] _ _ = []
+zip4 _ _ [] _ = []
+zip4 _ _ _ [] = []
+zip4 (w::ws) (x::xs) (y::ys) (z::zs) = (w, x, y, z) :: zip4 ws xs ys zs
+
+{- | Like `zipWith`, but for three lists.  `zip3` is the special case
+   `zipWith3 (x y z => (x, y, z))`.
+
+   > zipWith3 (x y z => x + y + z) [1, 2] [10, 20] [100, 200]
+   [111, 222]
+   > zipWith3 (x y z => x + y + z) [1, 2, 3] [10, 20] [100]
+   [111] -}
+export zipWith3 : (a -> b -> c -> <e> d) -> List a -> List b -> List c -> <e> List d
+zipWith3 _ [] _ _ = []
+zipWith3 _ _ [] _ = []
+zipWith3 _ _ _ [] = []
+zipWith3 f (x::xs) (y::ys) (z::zs) = f x y z :: zipWith3 f xs ys zs
+
 {- | Split a list of pairs into a pair of lists — the inverse of `zip`.
 
    > unzip [(1, 2), (3, 4)]
@@ -536,6 +876,17 @@ zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
 export unzip : List (a, b) -> (List a, List b)
 unzip [] = ([], [])
 unzip ((x, y)::xys) = let (xs, ys) = unzip xys in (x::xs, y::ys)
+
+{- | Split a list of triples into three lists — the inverse of `zip3`.
+
+   > unzip3 [(1, 2, 3), (4, 5, 6)]
+   ([1, 4], [2, 5], [3, 6])
+   > unzip3 ([] : List (Int, Int, Int))
+   ([], [], []) -}
+export unzip3 : List (a, b, c) -> (List a, List b, List c)
+unzip3 [] = ([], [], [])
+unzip3 ((x, y, z)::rest) =
+  let (xs, ys, zs) = unzip3 rest in (x::xs, y::ys, z::zs)
 
 -- Effectful traversal lives in `core.mdk` as the `Traversable` interface:
 -- `traverse`/`sequence` are now interface methods (List instance in core), so
@@ -651,6 +1002,40 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "findIndices" ((PVar "p") (PVar "xs")) (ELetGroup ((lgb "go" (clause (PWild (PList)) (EListLit)) (clause ((PVar "i") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EVar "p") (EVar "x")) (EBinOp "::" (EVar "i") (EApp (EApp (EVar "go") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "go") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))) (EApp (EApp (EVar "go") (ELit (LInt 0))) (EVar "xs"))))
 (DTypeSig true "elemIndex" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "elemIndex" ((PVar "x") (PVar "xs")) (EApp (EApp (EVar "findIndex") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "x")))) (EVar "xs")))
+(DTypeSig true "elemIndices" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyCon "Int"))))))
+(DFunDef false "elemIndices" ((PVar "x") (PVar "xs")) (EApp (EApp (EVar "findIndices") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "x")))) (EVar "xs")))
+(DTypeSig true "lookup" (TyConstrained ((cstr "Eq" (TyVar "k"))) (TyFun (TyVar "k") (TyFun (TyApp (TyCon "List") (TyTuple (TyVar "k") (TyVar "v"))) (TyApp (TyCon "Option") (TyVar "v"))))))
+(DFunDef false "lookup" (PWild (PList)) (EVar "None"))
+(DFunDef false "lookup" ((PVar "key") (PCons (PTuple (PVar "k") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "key") (EVar "k")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookup") (EVar "key")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "findMap" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "b")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "b"))))))
+(DFunDef false "findMap" (PWild (PList)) (EVar "None"))
+(DFunDef false "findMap" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EMatch (EApp (EVar "f") (EVar "x")) (arm (PCon "Some" (PVar "y")) () (EApp (EVar "Some") (EVar "y"))) (arm (PCon "None") () (EApp (EApp (EVar "findMap") (EVar "f")) (EVar "rest")))))
+(DTypeSig true "reduce" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "a")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "a"))))))
+(DFunDef false "reduce" (PWild (PList)) (EVar "None"))
+(DFunDef false "reduce" ((PVar "f") (PCons (PVar "x") (PVar "xs"))) (ELetGroup ((lgb "go" (clause ((PVar "acc") (PList)) (EVar "acc")) (clause ((PVar "acc") (PCons (PVar "y") (PVar "rest"))) (EApp (EApp (EVar "go") (EApp (EApp (EVar "f") (EVar "acc")) (EVar "y"))) (EVar "rest"))))) (EApp (EVar "Some") (EApp (EApp (EVar "go") (EVar "x")) (EVar "xs")))))
+(DTypeSig true "maximumBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "a"))))))
+(DFunDef false "maximumBy" ((PVar "cmp") (PVar "xs")) (ELetGroup ((lgb "pick" (clause ((PVar "a") (PVar "b")) (EMatch (EApp (EApp (EVar "cmp") (EVar "b")) (EVar "a")) (arm (PCon "Gt") () (EVar "b")) (arm PWild () (EVar "a")))))) (EApp (EApp (EVar "reduce") (EVar "pick")) (EVar "xs"))))
+(DTypeSig true "minimumBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "a"))))))
+(DFunDef false "minimumBy" ((PVar "cmp") (PVar "xs")) (ELetGroup ((lgb "pick" (clause ((PVar "a") (PVar "b")) (EMatch (EApp (EApp (EVar "cmp") (EVar "b")) (EVar "a")) (arm (PCon "Lt") () (EVar "b")) (arm PWild () (EVar "a")))))) (EApp (EApp (EVar "reduce") (EVar "pick")) (EVar "xs"))))
+(DTypeSig true "mapWithIndex" (TyFun (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "b")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "b"))))))
+(DFunDef false "mapWithIndex" ((PVar "f") (PVar "xs")) (ELetGroup ((lgb "go" (clause (PWild (PList)) (EListLit)) (clause ((PVar "i") (PCons (PVar "x") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "f") (EVar "i")) (EVar "x")) (EApp (EApp (EVar "go") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest")))))) (EApp (EApp (EVar "go") (ELit (LInt 0))) (EVar "xs"))))
+(DTypeSig true "indexed" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyVar "a")))))
+(DFunDef false "indexed" ((PVar "xs")) (EApp (EApp (EVar "mapWithIndex") (ELam ((PVar "i") (PVar "x")) (ETuple (EVar "i") (EVar "x")))) (EVar "xs")))
+(DTypeSig true "mapAccumL" (TyFun (TyFun (TyVar "s") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyVar "b"))))) (TyFun (TyVar "s") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyApp (TyCon "List") (TyVar "b"))))))))
+(DFunDef false "mapAccumL" (PWild (PVar "s") (PList)) (ETuple (EVar "s") (EListLit)))
+(DFunDef false "mapAccumL" ((PVar "f") (PVar "s") (PCons (PVar "x") (PVar "xs"))) (EBlock (DoLet false false (PTuple (PVar "s2") (PVar "y")) (EApp (EApp (EVar "f") (EVar "s")) (EVar "x"))) (DoLet false false (PTuple (PVar "s3") (PVar "ys")) (EApp (EApp (EApp (EVar "mapAccumL") (EVar "f")) (EVar "s2")) (EVar "xs"))) (DoExpr (ETuple (EVar "s3") (EBinOp "::" (EVar "y") (EVar "ys"))))))
+(DTypeSig true "mapAccumR" (TyFun (TyFun (TyVar "s") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyVar "b"))))) (TyFun (TyVar "s") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyApp (TyCon "List") (TyVar "b"))))))))
+(DFunDef false "mapAccumR" (PWild (PVar "s") (PList)) (ETuple (EVar "s") (EListLit)))
+(DFunDef false "mapAccumR" ((PVar "f") (PVar "s") (PCons (PVar "x") (PVar "xs"))) (EBlock (DoLet false false (PTuple (PVar "s2") (PVar "ys")) (EApp (EApp (EApp (EVar "mapAccumR") (EVar "f")) (EVar "s")) (EVar "xs"))) (DoLet false false (PTuple (PVar "s3") (PVar "y")) (EApp (EApp (EVar "f") (EVar "s2")) (EVar "x"))) (DoExpr (ETuple (EVar "s3") (EBinOp "::" (EVar "y") (EVar "ys"))))))
+(DTypeSig true "insertAt" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "insertAt" (PWild (PVar "x") (PList)) (EListLit (EVar "x")))
+(DFunDef false "insertAt" ((PVar "i") (PVar "x") (PCons (PVar "y") (PVar "rest"))) (EIf (EBinOp "<=" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "x") (EBinOp "::" (EVar "y") (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EApp (EVar "insertAt") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "updateAt" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "updateAt" (PWild PWild (PList)) (EListLit))
+(DFunDef false "updateAt" ((PVar "i") (PVar "x") (PCons (PVar "y") (PVar "rest"))) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "y") (EVar "rest")) (EIf (EBinOp "==" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "x") (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EApp (EVar "updateAt") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig true "removeAt" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
+(DFunDef false "removeAt" (PWild (PList)) (EListLit))
+(DFunDef false "removeAt" ((PVar "i") (PCons (PVar "y") (PVar "rest"))) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "y") (EVar "rest")) (EIf (EBinOp "==" (EVar "i") (ELit (LInt 0))) (EVar "rest") (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EVar "removeAt") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig true "take" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "take" (PWild (PList)) (EListLit))
 (DFunDef false "take" ((PVar "n") (PCons (PVar "x") (PVar "xs"))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EVar "x") (EApp (EApp (EVar "take") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "xs"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -676,6 +1061,22 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DTypeSig true "chunks" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "chunks" (PWild (PList)) (EListLit))
 (DFunDef false "chunks" ((PVar "n") (PAs "xs" (PCons PWild PWild))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "take") (EVar "n")) (EVar "xs")) (EApp (EApp (EVar "chunks") (EVar "n")) (EApp (EApp (EVar "drop") (EVar "n")) (EVar "xs")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "dropWhileEnd" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "dropWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "dropWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
+(DTypeSig true "takeWhileEnd" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "takeWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "takeWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
+(DTypeSig true "splitOn" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "splitOn" ((PList) (PVar "xs")) (EListLit (EVar "xs")))
+(DFunDef false "splitOn" ((PVar "sep") (PVar "xs")) (ELetGroup ((lgb "sepLen" (clause () (EApp (EVar "length") (EVar "sep")))) (lgb "go" (clause ((PVar "ys")) (EMatch (EApp (EApp (EVar "findSub") (ELit (LInt 0))) (EVar "ys")) (arm (PCon "None") () (EListLit (EVar "ys"))) (arm (PCon "Some" (PVar "i")) () (EBinOp "::" (EApp (EApp (EVar "take") (EVar "i")) (EVar "ys")) (EApp (EVar "go") (EApp (EApp (EVar "drop") (EBinOp "+" (EVar "i") (EVar "sepLen"))) (EVar "ys")))))))) (lgb "findSub" (clause ((PVar "i") (PVar "ys")) (EIf (EApp (EApp (EVar "startsWith") (EVar "sep")) (EVar "ys")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findSubTail") (EVar "i")) (EVar "ys")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))) (lgb "findSubTail" (clause (PWild (PList)) (EVar "None")) (clause ((PVar "i") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "findSub") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))) (EApp (EVar "go") (EVar "xs"))))
+(DTypeSig true "startsWith" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "startsWith" ((PList) PWild) (EVar "True"))
+(DFunDef false "startsWith" (PWild (PList)) (EVar "False"))
+(DFunDef false "startsWith" ((PCons (PVar "p") (PVar "ps")) (PCons (PVar "x") (PVar "xs"))) (EBinOp "&&" (EBinOp "==" (EVar "p") (EVar "x")) (EApp (EApp (EVar "startsWith") (EVar "ps")) (EVar "xs"))))
+(DTypeSig true "endsWith" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "endsWith" ((PVar "suffix") (PVar "xs")) (EApp (EApp (EVar "startsWith") (EApp (EVar "reverse") (EVar "suffix"))) (EApp (EVar "reverse") (EVar "xs"))))
+(DTypeSig true "contains" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "contains" ((PVar "sub") (PList)) (EApp (EApp (EVar "startsWith") (EVar "sub")) (EListLit)))
+(DFunDef false "contains" ((PVar "sub") (PAs "xs" (PCons PWild (PVar "rest")))) (EIf (EApp (EApp (EVar "startsWith") (EVar "sub")) (EVar "xs")) (EVar "True") (EIf (EVar "otherwise") (EApp (EApp (EVar "contains") (EVar "sub")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "sortBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "sortBy" (PWild (PList)) (EListLit))
 (DFunDef false "sortBy" (PWild (PList (PVar "x"))) (EListLit (EVar "x")))
@@ -692,6 +1093,11 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "nubBy" ((PVar "same") (PVar "xs")) (ELetGroup ((lgb "go" (clause ((PList) PWild) (EListLit)) (clause ((PCons (PVar "x") (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "any") (ELam ((PVar "s")) (EApp (EApp (EVar "same") (EVar "x")) (EVar "s")))) (EVar "seen")) (EApp (EApp (EVar "go") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "x") (EApp (EApp (EVar "go") (EVar "rest")) (EBinOp "::" (EVar "x") (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))) (EApp (EApp (EVar "go") (EVar "xs")) (EListLit))))
 (DTypeSig true "nub" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "nub" ((PVar "xs")) (EApp (EApp (EVar "nubBy") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "==" (EVar "_a") (EVar "_b")))) (EVar "xs")))
+(DTypeSig true "deleteBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool")))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "deleteBy" (PWild PWild (PList)) (EListLit))
+(DFunDef false "deleteBy" ((PVar "same") (PVar "x") (PCons (PVar "y") (PVar "rest"))) (EIf (EApp (EApp (EVar "same") (EVar "x")) (EVar "y")) (EVar "rest") (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EApp (EVar "deleteBy") (EVar "same")) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "delete" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "delete" ((PVar "x") (PVar "xs")) (EApp (EApp (EApp (EVar "deleteBy") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "==" (EVar "_a") (EVar "_b")))) (EVar "x")) (EVar "xs")))
 (DTypeSig true "groupBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
 (DFunDef false "groupBy" (PWild (PList)) (EListLit))
 (DFunDef false "groupBy" ((PVar "same") (PCons (PVar "x") (PVar "xs"))) (EBlock (DoLet false false (PTuple (PVar "grp") (PVar "rest")) (EApp (EApp (EVar "span") (ELam ((PVar "y")) (EApp (EApp (EVar "same") (EVar "x")) (EVar "y")))) (EVar "xs"))) (DoExpr (EBinOp "::" (EBinOp "::" (EVar "x") (EVar "grp")) (EApp (EApp (EVar "groupBy") (EVar "same")) (EVar "rest"))))))
@@ -724,6 +1130,9 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DTypeSig true "tail" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "tail" ((PList)) (EVar "None"))
 (DFunDef false "tail" ((PCons PWild (PVar "xs"))) (EApp (EVar "Some") (EVar "xs")))
+(DTypeSig true "uncons" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyTuple (TyVar "a") (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "uncons" ((PList)) (EVar "None"))
+(DFunDef false "uncons" ((PCons (PVar "x") (PVar "xs"))) (EApp (EVar "Some") (ETuple (EVar "x") (EVar "xs"))))
 (DTypeSig true "last" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyVar "a"))))
 (DFunDef false "last" ((PList)) (EVar "None"))
 (DFunDef false "last" ((PList (PVar "x"))) (EApp (EVar "Some") (EVar "x")))
@@ -749,9 +1158,23 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "zipWith" (PWild (PList) PWild) (EListLit))
 (DFunDef false "zipWith" (PWild PWild (PList)) (EListLit))
 (DFunDef false "zipWith" ((PVar "f") (PCons (PVar "x") (PVar "xs")) (PCons (PVar "y") (PVar "ys"))) (EBinOp "::" (EApp (EApp (EVar "f") (EVar "x")) (EVar "y")) (EApp (EApp (EApp (EVar "zipWith") (EVar "f")) (EVar "xs")) (EVar "ys"))))
+(DTypeSig true "zip4" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "b")) (TyFun (TyApp (TyCon "List") (TyVar "c")) (TyFun (TyApp (TyCon "List") (TyVar "d")) (TyApp (TyCon "List") (TyTuple (TyVar "a") (TyVar "b") (TyVar "c") (TyVar "d"))))))))
+(DFunDef false "zip4" ((PList) PWild PWild PWild) (EListLit))
+(DFunDef false "zip4" (PWild (PList) PWild PWild) (EListLit))
+(DFunDef false "zip4" (PWild PWild (PList) PWild) (EListLit))
+(DFunDef false "zip4" (PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "zip4" ((PCons (PVar "w") (PVar "ws")) (PCons (PVar "x") (PVar "xs")) (PCons (PVar "y") (PVar "ys")) (PCons (PVar "z") (PVar "zs"))) (EBinOp "::" (ETuple (EVar "w") (EVar "x") (EVar "y") (EVar "z")) (EApp (EApp (EApp (EApp (EVar "zip4") (EVar "ws")) (EVar "xs")) (EVar "ys")) (EVar "zs"))))
+(DTypeSig true "zipWith3" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "b") (TyFun (TyVar "c") (TyEffect () (Some "e") (TyVar "d"))))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "b")) (TyFun (TyApp (TyCon "List") (TyVar "c")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "d"))))))))
+(DFunDef false "zipWith3" (PWild (PList) PWild PWild) (EListLit))
+(DFunDef false "zipWith3" (PWild PWild (PList) PWild) (EListLit))
+(DFunDef false "zipWith3" (PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "zipWith3" ((PVar "f") (PCons (PVar "x") (PVar "xs")) (PCons (PVar "y") (PVar "ys")) (PCons (PVar "z") (PVar "zs"))) (EBinOp "::" (EApp (EApp (EApp (EVar "f") (EVar "x")) (EVar "y")) (EVar "z")) (EApp (EApp (EApp (EApp (EVar "zipWith3") (EVar "f")) (EVar "xs")) (EVar "ys")) (EVar "zs"))))
 (DTypeSig true "unzip" (TyFun (TyApp (TyCon "List") (TyTuple (TyVar "a") (TyVar "b"))) (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")))))
 (DFunDef false "unzip" ((PList)) (ETuple (EListLit) (EListLit)))
 (DFunDef false "unzip" ((PCons (PTuple (PVar "x") (PVar "y")) (PVar "xys"))) (ELet false (PTuple (PVar "xs") (PVar "ys")) (EApp (EVar "unzip") (EVar "xys")) (ETuple (EBinOp "::" (EVar "x") (EVar "xs")) (EBinOp "::" (EVar "y") (EVar "ys")))))
+(DTypeSig true "unzip3" (TyFun (TyApp (TyCon "List") (TyTuple (TyVar "a") (TyVar "b") (TyVar "c"))) (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")) (TyApp (TyCon "List") (TyVar "c")))))
+(DFunDef false "unzip3" ((PList)) (ETuple (EListLit) (EListLit) (EListLit)))
+(DFunDef false "unzip3" ((PCons (PTuple (PVar "x") (PVar "y") (PVar "z")) (PVar "rest"))) (ELet false (PTuple (PVar "xs") (PVar "ys") (PVar "zs")) (EApp (EVar "unzip3") (EVar "rest")) (ETuple (EBinOp "::" (EVar "x") (EVar "xs")) (EBinOp "::" (EVar "y") (EVar "ys")) (EBinOp "::" (EVar "z") (EVar "zs")))))
 (DTypeSig false "isSorted" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool"))))
 (DFunDef false "isSorted" ((PList)) (EVar "True"))
 (DFunDef false "isSorted" ((PList PWild)) (EVar "True"))
@@ -819,6 +1242,40 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "findIndices" ((PVar "p") (PVar "xs")) (ELetGroup ((lgb "go" (clause (PWild (PList)) (EListLit)) (clause ((PVar "i") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EVar "p") (EVar "x")) (EBinOp "::" (EVar "i") (EApp (EApp (EVar "go") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "go") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))) (EApp (EApp (EVar "go") (ELit (LInt 0))) (EVar "xs"))))
 (DTypeSig true "elemIndex" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "elemIndex" ((PVar "x") (PVar "xs")) (EApp (EApp (EVar "findIndex") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "x")))) (EVar "xs")))
+(DTypeSig true "elemIndices" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyCon "Int"))))))
+(DFunDef false "elemIndices" ((PVar "x") (PVar "xs")) (EApp (EApp (EVar "findIndices") (ELam ((PVar "_s")) (EBinOp "==" (EVar "_s") (EVar "x")))) (EVar "xs")))
+(DTypeSig true "lookup" (TyConstrained ((cstr "Eq" (TyVar "k"))) (TyFun (TyVar "k") (TyFun (TyApp (TyCon "List") (TyTuple (TyVar "k") (TyVar "v"))) (TyApp (TyCon "Option") (TyVar "v"))))))
+(DFunDef false "lookup" (PWild (PList)) (EVar "None"))
+(DFunDef false "lookup" ((PVar "key") (PCons (PTuple (PVar "k") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "key") (EVar "k")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EDictApp "lookup") (EVar "key")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "findMap" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "b")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "b"))))))
+(DFunDef false "findMap" (PWild (PList)) (EVar "None"))
+(DFunDef false "findMap" ((PVar "f") (PCons (PVar "x") (PVar "rest"))) (EMatch (EApp (EVar "f") (EVar "x")) (arm (PCon "Some" (PVar "y")) () (EApp (EVar "Some") (EVar "y"))) (arm (PCon "None") () (EApp (EApp (EVar "findMap") (EVar "f")) (EVar "rest")))))
+(DTypeSig true "reduce" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "a")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "a"))))))
+(DFunDef false "reduce" (PWild (PList)) (EVar "None"))
+(DFunDef false "reduce" ((PVar "f") (PCons (PVar "x") (PVar "xs"))) (ELetGroup ((lgb "go" (clause ((PVar "acc") (PList)) (EVar "acc")) (clause ((PVar "acc") (PCons (PVar "y") (PVar "rest"))) (EApp (EApp (EVar "go") (EApp (EApp (EVar "f") (EVar "acc")) (EVar "y"))) (EVar "rest"))))) (EApp (EVar "Some") (EApp (EApp (EVar "go") (EVar "x")) (EVar "xs")))))
+(DTypeSig true "maximumBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "a"))))))
+(DFunDef false "maximumBy" ((PVar "cmp") (PVar "xs")) (ELetGroup ((lgb "pick" (clause ((PVar "a") (PVar "b")) (EMatch (EApp (EApp (EVar "cmp") (EVar "b")) (EVar "a")) (arm (PCon "Gt") () (EVar "b")) (arm PWild () (EVar "a")))))) (EApp (EApp (EVar "reduce") (EVar "pick")) (EVar "xs"))))
+(DTypeSig true "minimumBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyVar "a"))))))
+(DFunDef false "minimumBy" ((PVar "cmp") (PVar "xs")) (ELetGroup ((lgb "pick" (clause ((PVar "a") (PVar "b")) (EMatch (EApp (EApp (EVar "cmp") (EVar "b")) (EVar "a")) (arm (PCon "Lt") () (EVar "b")) (arm PWild () (EVar "a")))))) (EApp (EApp (EVar "reduce") (EVar "pick")) (EVar "xs"))))
+(DTypeSig true "mapWithIndex" (TyFun (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "b")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "b"))))))
+(DFunDef false "mapWithIndex" ((PVar "f") (PVar "xs")) (ELetGroup ((lgb "go" (clause (PWild (PList)) (EListLit)) (clause ((PVar "i") (PCons (PVar "x") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "f") (EVar "i")) (EVar "x")) (EApp (EApp (EVar "go") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest")))))) (EApp (EApp (EVar "go") (ELit (LInt 0))) (EVar "xs"))))
+(DTypeSig true "indexed" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyVar "a")))))
+(DFunDef false "indexed" ((PVar "xs")) (EApp (EApp (EVar "mapWithIndex") (ELam ((PVar "i") (PVar "x")) (ETuple (EVar "i") (EVar "x")))) (EVar "xs")))
+(DTypeSig true "mapAccumL" (TyFun (TyFun (TyVar "s") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyVar "b"))))) (TyFun (TyVar "s") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyApp (TyCon "List") (TyVar "b"))))))))
+(DFunDef false "mapAccumL" (PWild (PVar "s") (PList)) (ETuple (EVar "s") (EListLit)))
+(DFunDef false "mapAccumL" ((PVar "f") (PVar "s") (PCons (PVar "x") (PVar "xs"))) (EBlock (DoLet false false (PTuple (PVar "s2") (PVar "y")) (EApp (EApp (EVar "f") (EVar "s")) (EVar "x"))) (DoLet false false (PTuple (PVar "s3") (PVar "ys")) (EApp (EApp (EApp (EVar "mapAccumL") (EVar "f")) (EVar "s2")) (EVar "xs"))) (DoExpr (ETuple (EVar "s3") (EBinOp "::" (EVar "y") (EVar "ys"))))))
+(DTypeSig true "mapAccumR" (TyFun (TyFun (TyVar "s") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyVar "b"))))) (TyFun (TyVar "s") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyTuple (TyVar "s") (TyApp (TyCon "List") (TyVar "b"))))))))
+(DFunDef false "mapAccumR" (PWild (PVar "s") (PList)) (ETuple (EVar "s") (EListLit)))
+(DFunDef false "mapAccumR" ((PVar "f") (PVar "s") (PCons (PVar "x") (PVar "xs"))) (EBlock (DoLet false false (PTuple (PVar "s2") (PVar "ys")) (EApp (EApp (EApp (EVar "mapAccumR") (EVar "f")) (EVar "s")) (EVar "xs"))) (DoLet false false (PTuple (PVar "s3") (PVar "y")) (EApp (EApp (EVar "f") (EVar "s2")) (EVar "x"))) (DoExpr (ETuple (EVar "s3") (EBinOp "::" (EVar "y") (EVar "ys"))))))
+(DTypeSig true "insertAt" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "insertAt" (PWild (PVar "x") (PList)) (EListLit (EVar "x")))
+(DFunDef false "insertAt" ((PVar "i") (PVar "x") (PCons (PVar "y") (PVar "rest"))) (EIf (EBinOp "<=" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "x") (EBinOp "::" (EVar "y") (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EApp (EVar "insertAt") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "updateAt" (TyFun (TyCon "Int") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "updateAt" (PWild PWild (PList)) (EListLit))
+(DFunDef false "updateAt" ((PVar "i") (PVar "x") (PCons (PVar "y") (PVar "rest"))) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "y") (EVar "rest")) (EIf (EBinOp "==" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "x") (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EApp (EVar "updateAt") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig true "removeAt" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
+(DFunDef false "removeAt" (PWild (PList)) (EListLit))
+(DFunDef false "removeAt" ((PVar "i") (PCons (PVar "y") (PVar "rest"))) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp "::" (EVar "y") (EVar "rest")) (EIf (EBinOp "==" (EVar "i") (ELit (LInt 0))) (EVar "rest") (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EVar "removeAt") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig true "take" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "take" (PWild (PList)) (EListLit))
 (DFunDef false "take" ((PVar "n") (PCons (PVar "x") (PVar "xs"))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EVar "x") (EApp (EApp (EVar "take") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "xs"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -844,6 +1301,22 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DTypeSig true "chunks" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "chunks" (PWild (PList)) (EListLit))
 (DFunDef false "chunks" ((PVar "n") (PAs "xs" (PCons PWild PWild))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "take") (EVar "n")) (EVar "xs")) (EApp (EApp (EVar "chunks") (EVar "n")) (EApp (EApp (EVar "drop") (EVar "n")) (EVar "xs")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "dropWhileEnd" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "dropWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "dropWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
+(DTypeSig true "takeWhileEnd" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "takeWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "takeWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
+(DTypeSig true "splitOn" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "splitOn" ((PList) (PVar "xs")) (EListLit (EVar "xs")))
+(DFunDef false "splitOn" ((PVar "sep") (PVar "xs")) (ELetGroup ((lgb "sepLen" (clause () (EApp (EMethodRef "length") (EVar "sep")))) (lgb "go" (clause ((PVar "ys")) (EMatch (EApp (EApp (EVar "findSub") (ELit (LInt 0))) (EVar "ys")) (arm (PCon "None") () (EListLit (EVar "ys"))) (arm (PCon "Some" (PVar "i")) () (EBinOp "::" (EApp (EApp (EVar "take") (EVar "i")) (EVar "ys")) (EApp (EVar "go") (EApp (EApp (EVar "drop") (EBinOp "+" (EVar "i") (EVar "sepLen"))) (EVar "ys")))))))) (lgb "findSub" (clause ((PVar "i") (PVar "ys")) (EIf (EApp (EApp (EDictApp "startsWith") (EVar "sep")) (EVar "ys")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findSubTail") (EVar "i")) (EVar "ys")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))) (lgb "findSubTail" (clause (PWild (PList)) (EVar "None")) (clause ((PVar "i") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "findSub") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))) (EApp (EVar "go") (EVar "xs"))))
+(DTypeSig true "startsWith" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "startsWith" ((PList) PWild) (EVar "True"))
+(DFunDef false "startsWith" (PWild (PList)) (EVar "False"))
+(DFunDef false "startsWith" ((PCons (PVar "p") (PVar "ps")) (PCons (PVar "x") (PVar "xs"))) (EBinOp "&&" (EBinOp "==" (EVar "p") (EVar "x")) (EApp (EApp (EDictApp "startsWith") (EVar "ps")) (EVar "xs"))))
+(DTypeSig true "endsWith" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "endsWith" ((PVar "suffix") (PVar "xs")) (EApp (EApp (EDictApp "startsWith") (EApp (EVar "reverse") (EVar "suffix"))) (EApp (EVar "reverse") (EVar "xs"))))
+(DTypeSig true "contains" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "contains" ((PVar "sub") (PList)) (EApp (EApp (EDictApp "startsWith") (EMethodRef "sub")) (EListLit)))
+(DFunDef false "contains" ((PVar "sub") (PAs "xs" (PCons PWild (PVar "rest")))) (EIf (EApp (EApp (EDictApp "startsWith") (EMethodRef "sub")) (EVar "xs")) (EVar "True") (EIf (EVar "otherwise") (EApp (EApp (EDictApp "contains") (EMethodRef "sub")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "sortBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Ordering")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "sortBy" (PWild (PList)) (EListLit))
 (DFunDef false "sortBy" (PWild (PList (PVar "x"))) (EListLit (EVar "x")))
@@ -860,6 +1333,11 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "nubBy" ((PVar "same") (PVar "xs")) (ELetGroup ((lgb "go" (clause ((PList) PWild) (EListLit)) (clause ((PCons (PVar "x") (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EDictApp "any") (ELam ((PVar "s")) (EApp (EApp (EVar "same") (EVar "x")) (EVar "s")))) (EVar "seen")) (EApp (EApp (EVar "go") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "x") (EApp (EApp (EVar "go") (EVar "rest")) (EBinOp "::" (EVar "x") (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))) (EApp (EApp (EVar "go") (EVar "xs")) (EListLit))))
 (DTypeSig true "nub" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "nub" ((PVar "xs")) (EApp (EApp (EVar "nubBy") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "==" (EVar "_a") (EVar "_b")))) (EVar "xs")))
+(DTypeSig true "deleteBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool")))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "deleteBy" (PWild PWild (PList)) (EListLit))
+(DFunDef false "deleteBy" ((PVar "same") (PVar "x") (PCons (PVar "y") (PVar "rest"))) (EIf (EApp (EApp (EVar "same") (EVar "x")) (EVar "y")) (EVar "rest") (EIf (EVar "otherwise") (EBinOp "::" (EVar "y") (EApp (EApp (EApp (EVar "deleteBy") (EVar "same")) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "delete" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "delete" ((PVar "x") (PVar "xs")) (EApp (EApp (EApp (EVar "deleteBy") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "==" (EVar "_a") (EVar "_b")))) (EVar "x")) (EVar "xs")))
 (DTypeSig true "groupBy" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool")))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
 (DFunDef false "groupBy" (PWild (PList)) (EListLit))
 (DFunDef false "groupBy" ((PVar "same") (PCons (PVar "x") (PVar "xs"))) (EBlock (DoLet false false (PTuple (PVar "grp") (PVar "rest")) (EApp (EApp (EVar "span") (ELam ((PVar "y")) (EApp (EApp (EVar "same") (EVar "x")) (EVar "y")))) (EVar "xs"))) (DoExpr (EBinOp "::" (EBinOp "::" (EVar "x") (EVar "grp")) (EApp (EApp (EVar "groupBy") (EVar "same")) (EVar "rest"))))))
@@ -892,6 +1370,9 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DTypeSig true "tail" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyVar "a")))))
 (DFunDef false "tail" ((PList)) (EVar "None"))
 (DFunDef false "tail" ((PCons PWild (PVar "xs"))) (EApp (EVar "Some") (EVar "xs")))
+(DTypeSig true "uncons" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyTuple (TyVar "a") (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "uncons" ((PList)) (EVar "None"))
+(DFunDef false "uncons" ((PCons (PVar "x") (PVar "xs"))) (EApp (EVar "Some") (ETuple (EVar "x") (EVar "xs"))))
 (DTypeSig true "last" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "Option") (TyVar "a"))))
 (DFunDef false "last" ((PList)) (EVar "None"))
 (DFunDef false "last" ((PList (PVar "x"))) (EApp (EVar "Some") (EVar "x")))
@@ -917,9 +1398,23 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "zipWith" (PWild (PList) PWild) (EListLit))
 (DFunDef false "zipWith" (PWild PWild (PList)) (EListLit))
 (DFunDef false "zipWith" ((PVar "f") (PCons (PVar "x") (PVar "xs")) (PCons (PVar "y") (PVar "ys"))) (EBinOp "::" (EApp (EApp (EVar "f") (EVar "x")) (EVar "y")) (EApp (EApp (EApp (EVar "zipWith") (EVar "f")) (EVar "xs")) (EVar "ys"))))
+(DTypeSig true "zip4" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "b")) (TyFun (TyApp (TyCon "List") (TyVar "c")) (TyFun (TyApp (TyCon "List") (TyVar "d")) (TyApp (TyCon "List") (TyTuple (TyVar "a") (TyVar "b") (TyVar "c") (TyVar "d"))))))))
+(DFunDef false "zip4" ((PList) PWild PWild PWild) (EListLit))
+(DFunDef false "zip4" (PWild (PList) PWild PWild) (EListLit))
+(DFunDef false "zip4" (PWild PWild (PList) PWild) (EListLit))
+(DFunDef false "zip4" (PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "zip4" ((PCons (PVar "w") (PVar "ws")) (PCons (PVar "x") (PVar "xs")) (PCons (PVar "y") (PVar "ys")) (PCons (PVar "z") (PVar "zs"))) (EBinOp "::" (ETuple (EVar "w") (EVar "x") (EVar "y") (EVar "z")) (EApp (EApp (EApp (EApp (EVar "zip4") (EVar "ws")) (EVar "xs")) (EVar "ys")) (EVar "zs"))))
+(DTypeSig true "zipWith3" (TyFun (TyFun (TyVar "a") (TyFun (TyVar "b") (TyFun (TyVar "c") (TyEffect () (Some "e") (TyVar "d"))))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "b")) (TyFun (TyApp (TyCon "List") (TyVar "c")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "d"))))))))
+(DFunDef false "zipWith3" (PWild (PList) PWild PWild) (EListLit))
+(DFunDef false "zipWith3" (PWild PWild (PList) PWild) (EListLit))
+(DFunDef false "zipWith3" (PWild PWild PWild (PList)) (EListLit))
+(DFunDef false "zipWith3" ((PVar "f") (PCons (PVar "x") (PVar "xs")) (PCons (PVar "y") (PVar "ys")) (PCons (PVar "z") (PVar "zs"))) (EBinOp "::" (EApp (EApp (EApp (EVar "f") (EVar "x")) (EVar "y")) (EVar "z")) (EApp (EApp (EApp (EApp (EVar "zipWith3") (EVar "f")) (EVar "xs")) (EVar "ys")) (EVar "zs"))))
 (DTypeSig true "unzip" (TyFun (TyApp (TyCon "List") (TyTuple (TyVar "a") (TyVar "b"))) (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")))))
 (DFunDef false "unzip" ((PList)) (ETuple (EListLit) (EListLit)))
 (DFunDef false "unzip" ((PCons (PTuple (PVar "x") (PVar "y")) (PVar "xys"))) (ELet false (PTuple (PVar "xs") (PVar "ys")) (EApp (EVar "unzip") (EVar "xys")) (ETuple (EBinOp "::" (EVar "x") (EVar "xs")) (EBinOp "::" (EVar "y") (EVar "ys")))))
+(DTypeSig true "unzip3" (TyFun (TyApp (TyCon "List") (TyTuple (TyVar "a") (TyVar "b") (TyVar "c"))) (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "b")) (TyApp (TyCon "List") (TyVar "c")))))
+(DFunDef false "unzip3" ((PList)) (ETuple (EListLit) (EListLit) (EListLit)))
+(DFunDef false "unzip3" ((PCons (PTuple (PVar "x") (PVar "y") (PVar "z")) (PVar "rest"))) (ELet false (PTuple (PVar "xs") (PVar "ys") (PVar "zs")) (EApp (EVar "unzip3") (EVar "rest")) (ETuple (EBinOp "::" (EVar "x") (EVar "xs")) (EBinOp "::" (EVar "y") (EVar "ys")) (EBinOp "::" (EVar "z") (EVar "zs")))))
 (DTypeSig false "isSorted" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool"))))
 (DFunDef false "isSorted" ((PList)) (EVar "True"))
 (DFunDef false "isSorted" ((PList PWild)) (EVar "True"))
