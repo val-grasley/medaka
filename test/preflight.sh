@@ -1,7 +1,7 @@
 #!/bin/sh
 # preflight.sh — the LOCAL agent loop. Fast, targeted, and deliberately INCOMPLETE.
 #
-#   sh test/preflight.sh [base-ref]        # default base: main
+#   sh test/preflight.sh [base-ref]        # default base: origin/main (NOT `main` — #560)
 #
 # WHY THIS EXISTS
 # ---------------
@@ -41,7 +41,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Keep the build/test write-storm OUT OF RAM (/tmp is a RAM-backed tmpfs).
 . "$ROOT/test/lib_scratch.sh"
 mdk_warn_if_tmp_full
-BASE="${1:-main}"
+BASE_ARG="${1:-}"
 cd "$ROOT" || exit 1
 
 # ── Where the changed-file list comes from ───────────────────────────────────
@@ -64,6 +64,88 @@ if [ -n "${PREFLIGHT_CHANGED_FILE:-}" ]; then
   changed="$(cat "$PREFLIGHT_CHANGED_FILE")"
   BASE="(PREFLIGHT_CHANGED_FILE)"
 else
+  # ── Which base ref? NOT `main`. ────────────────────────────────────────────
+  #
+  # In a worktree, `refs/heads/main` is UNMAINTAINABLE from where every agent
+  # works: it is checked out in the primary tree, so `git checkout main` in an
+  # agent worktree fails outright ("'main' is already used by worktree at …").
+  # Nothing an agent does can advance it; it sits at whatever the last `git pull`
+  # in the primary tree left, forever. `refs/remotes/origin/main` lives in the
+  # same shared common dir but is refreshed by ANY fetch anywhere in the fleet —
+  # including the `git merge origin/main` every agent is told to run first. So
+  # origin/main is the ref the fleet actually maintains; `main` is one it cannot.
+  #
+  # Three-dot ALREADY handles a base that has ADVANCED past the fork point — it
+  # diffs from the merge-base — so a base being "ahead" is harmless, and that is
+  # why defaulting to origin/main needs no fetch to be correct. The failure is a
+  # base BEHIND the fork point: the merge-base drags back, and every commit that
+  # landed in between is attributed to your branch. That was #560 — a diff
+  # touching only parser.mdk grew to 22 files, enrolled the wasm gates and the
+  # clang storm, then exited 2 having run NOTHING. It scales with fleet
+  # productivity: the more `main` lags, the more of other people's work preflight
+  # blames on you.
+  if [ -n "$BASE_ARG" ]; then
+    BASE="$BASE_ARG"
+  elif git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    BASE="origin/main"
+  elif git rev-parse --verify --quiet main >/dev/null 2>&1; then
+    # Fork, or a remote not named `origin`. `main` may be right here — but we
+    # cannot verify freshness without origin/main, so say so rather than imply it.
+    BASE="main"
+    echo "preflight: NOTE — no 'origin/main' ref; falling back to local 'main'."
+    echo "preflight:   Freshness is UNVERIFIABLE without it. If 'main' is behind this"
+    echo "preflight:   branch's fork point, the list below includes commits that are"
+    echo "preflight:   not yours and the gate set is fiction (#560)."
+  else
+    BASE=""
+  fi
+
+  # An unresolvable base must not be swallowed. `git diff <bad-ref>...HEAD
+  # 2>/dev/null` fails silently, leaving only working-tree changes — or none at
+  # all, whereupon preflight printed "no changes — nothing to do" and exited 0
+  # over real committed work. Verified against this script before the fix: a green
+  # that ran nothing, the exact hazard this file's header exists to rail about.
+  if [ -z "$BASE" ] || ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null 2>&1; then
+    echo "preflight: cannot resolve base ref '${BASE_ARG:-origin/main}' — refusing to guess." >&2
+    echo "preflight:   A base that does not resolve yields a SILENTLY EMPTY diff, which" >&2
+    echo "preflight:   would report 'nothing to do' and exit 0 over your committed work." >&2
+    echo "preflight:   Fetch it (git fetch origin main), or pass one: sh test/preflight.sh <ref>" >&2
+    exit 1
+  fi
+
+  # ── Staleness assert ──────────────────────────────────────────────────────
+  #
+  # Network-free. Compares the fork point $BASE implies against the one
+  # origin/main implies, and fires ONLY when $BASE is a PROPER ANCESTOR of the
+  # true fork point — i.e. provably reaches back too far and WILL invent files.
+  # Vacuous (and free) on the default, where the two are the same commit.
+  #
+  # Deliberately not `--is-ancestor $BASE HEAD`: that proves ANCESTRY, not
+  # FRESHNESS, and passes cheerfully on a stale main — which is precisely why the
+  # BASE_OK assert every agent runs could never catch #560.
+  #
+  # A deliberately-NARROW override (say HEAD~3 on a branch with commits) is a
+  # DESCENDANT of the fork point, so it correctly does not fire.
+  #
+  # WARN, not fail: after the default flip the answer is now CORRECT rather than
+  # plausible-wrong, so the only way here is to ASK for a stale base — and
+  # `make preflight BASE=main` is a documented invocation (Makefile). Hard-failing
+  # a documented override on the most-run script in the repo buys a workaround,
+  # not a fix. The unresolvable-base arm above still hard-fails, because that one
+  # has no legitimate use and no way to be labelled.
+  if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    mb_base="$(git merge-base "$BASE" HEAD 2>/dev/null || true)"
+    mb_true="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+    if [ -n "$mb_base" ] && [ -n "$mb_true" ] && [ "$mb_base" != "$mb_true" ] &&
+      git merge-base --is-ancestor "$mb_base" "$mb_true" 2>/dev/null; then
+      echo "preflight: ⚠️  BASE '$BASE' is $(git rev-list --count "$mb_base".."$mb_true") commit(s) BEHIND"
+      echo "preflight:   this branch's fork point ($(git rev-parse --short "$mb_true"))."
+      echo "preflight:   The list below WILL include commits that are not yours, and the"
+      echo "preflight:   derived gate set with them (#560). Prefer: sh test/preflight.sh origin/main"
+      echo
+    fi
+  fi
+
   # committed-vs-base, working tree, INDEX, and untracked. `--cached` is not optional:
   # without it a fully-`git add`ed change is invisible here (working-tree diff is empty and
   # nothing is committed yet), so `preflight` printed "no changes vs main — nothing to do"
