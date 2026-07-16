@@ -1,0 +1,20 @@
+-- Pin (#314): a `let`-bound RECURSIVE LOCAL function. `go` calls itself; eval
+-- binds the name before evaluating the body, so `run` printed 3, but the native
+-- LLVM emitter (and the WasmGC emitter) lowered the block-`let` CLam WITHOUT the
+-- self-name in scope, so `build` failed with `unbound variable 'go'` — a loud
+-- run≠build miscompile (S1). All three engines (eval == native == wasm) must now
+-- accept AND agree that `f 0` is 3. Covers tail (`go`), non-tail (`sum`), and
+-- outer-variable capture (`bump` closes over `base`) in one program.
+f x =
+  let go i = if i >= 3 then i else go (i + 1)
+  go x
+
+sumTo n =
+  let sum i = if i <= 0 then 0 else i + sum (i - 1)
+  sum n
+
+addFrom base n =
+  let bump i = if i >= n then base else base + bump (i + 1)
+  bump 0
+
+main = println (debug (f 0 + sumTo 5 + addFrom 100 3))
