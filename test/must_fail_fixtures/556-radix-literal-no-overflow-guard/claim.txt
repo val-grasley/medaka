@@ -1,0 +1,10 @@
+issue: 556
+what: radix literals (hex/binary/octal) have NO overflow guard — a literal wider than
+what: 64 bits silently wraps instead of being rejected. S0, release-blocker, 0.1.0.
+cmd: run main.mdk
+exit: 0
+stdout: -1
+control: run control.mdk
+why-control: 0xFF is an IN-RANGE hex literal and must keep printing 255. It isolates the
+why-control: bug to the OVERFLOW GUARD — if this breaks, hex lexing broke generally and
+why-control: the drain would be a lie.

@@ -1,0 +1,11 @@
+interface Sz a where
+  sz : a -> Int
+
+data B = B Int
+
+impl Sz B where
+  sz (B n)
+    | n > 0 = n
+    | otherwise = 0
+
+main = println (sz (B 3))

@@ -1,0 +1,296 @@
+#!/bin/sh
+# diff_compiler_must_fail.sh — the MUST-FAIL suite: make the TRACKER self-drain.
+#
+# Every fixture here asserts that an OPEN issue's bug STILL REPRODUCES. When someone
+# fixes the bug, the pinned observation stops holding, this gate goes RED, and the
+# failure message tells them to close the issue and delete the fixture.
+#
+# ⭐ WHY THIS EXISTS (#547). `needs-repro` marks the claims nobody has confirmed.
+# NOTHING marked the ones that silently became FALSE. When the backlog was re-derived
+# on 2026-07-14, SIX entries were already fixed — two of them labelled "silent build
+# miscompile", one billed as "the best value-to-risk item on the board". #72 had all
+# four of its holes fixed and sat open regardless. Every one of those cost a later
+# agent a read, several cost a full investigation. A bug list is a statement encoding
+# a fact about the code ("this is broken") with NO DERIVATION AND NO EXPIRY — the
+# exact disease .claude/ORCHESTRATING.md's "DERIVE, don't encode" section describes.
+# This is the expiry.
+#
+# ── ⚠️ READ THIS BEFORE YOU ADD A FIXTURE: RUN IT, DO NOT REASON ABOUT IT ──────
+#
+# A FIXTURE IS A CLAIM ABOUT THE BROKEN BUILD, SO ONLY THE BROKEN BUILD CAN CHECK IT.
+# You cannot derive a pin by reading the issue title. The agent who built this suite
+# reasoned six repros out of six issue titles and THE BINARY CORRECTED TWO OF THEM —
+# both had read as self-evidently correct. (One "reproduced" a bug in an interface
+# declaration that was really a missing `where`; one's control was a syntax error the
+# author had written himself and nearly filed as a finding.) Three non-discriminating
+# probes were written in ONE session in this repo, each reading as obviously right.
+#
+#   Write the fixture. RUN it. Paste the REAL output into claim.txt. Never the reverse.
+#
+# ── HOW A FIXTURE REFUSES TO CONFUSE "STILL BROKEN" WITH "SOMETHING ELSE BROKE" ──
+#
+# This is the whole design problem. A fixture that passes because the compiler crashed
+# for an UNRELATED reason is WORSE THAN NO FIXTURE — it launders a regression as
+# evidence that a bug is still open. Cf. #463: the shadow gate's BUILD_CRASH verdict
+# accepts ANY nonzero exit, so an unrelated crash reads as the pinned bug. Hence:
+#
+#   1. NO ASSERTION IS EVER "NONZERO" OR "IT CRASHED". Every claim pins an EXACT exit
+#      code AND an exact observable — stdout bytes, or a diagnostic's stable `code` +
+#      `range` + message. An unrelated failure has a different exit or different bytes,
+#      so it FAILS rather than matching.
+#   2. EVERY FIXTURE SHIPS A CONTROL — a near-identical program isolating the bug's ONE
+#      distinguishing feature, which must stay GREEN. #508 pins "a guard in an impl
+#      method body is a parse error" and its control is the SAME GUARD standalone, which
+#      must parse clean. If the control breaks, the ENVIRONMENT broke, not the bug, and
+#      this gate says CONTROL-BROKE — a verdict distinct from both PASS and DRAINED, so
+#      "you broke the prelude" can never be read as "you fixed #508".
+#      A fixture with no sensible control must say `control: none <reason>` OUT LOUD.
+#      Silence is not an option; declining a control is a deliberate, visible act.
+#   3. `checked N fixtures` is printed, and N == 0 IS A FAILURE. "This didn't run" must
+#      never look like "this passed" — every silent-green bug in this repo is that
+#      sentence.
+#
+# ── DIAGNOSTIC PINS ARE HAND-WRITTEN AND DELIBERATELY NOT BLESSABLE ─────────────
+#
+# There is no --bless here, on purpose (docs/ops/TESTING-DESIGN.md §4.5). A must-fail
+# row you can rubber-stamp is a skip-list with extra steps, and a skip-list CANNOT
+# NOTICE AN ACCIDENTAL FIX, so it rots — that is how test/ported/ died. Pins key on the
+# stable `code` from `check --json` (DIAGNOSTIC-CODES-DESIGN.md), so message prose can
+# be reworded freely without touching this suite; only the CODE and RANGE are load-bearing.
+#
+# ── THE MEMBER SET IS DERIVED, NEVER ENCODED ───────────────────────────────────
+#
+# The fixture set is `ls test/must_fail_fixtures/`. There is NO table in this script and
+# NO count in this header. Adding a fixture is adding ONE DIRECTORY — no gate edit,
+# nothing to remember, and no coverage self-audit to forget (contrast
+# diff_compiler_shadow_semantics.sh, which needs one precisely BECAUSE it encodes a set
+# it could have derived). Three issues — #446, #87, #516 — shipped a wrong fixture count,
+# one of them while citing the AGENTS.md passage warning against exactly that.
+#
+# ── WHERE THIS RUNS, AND WHY IT IS NOT IN A GATE SHARD ─────────────────────────
+#
+# It is a NAMED step in the `soundness` job (.github/workflows/ci.yml), not a shard.
+# A gate shard is NARROWED on `pull_request` by test/preflight.sh's path map: a fix to
+# compiler/frontend/parser.mdk derives 'diff_compiler_parse*' and would NOT derive this
+# gate — so the drain would only fire in the MERGE QUEUE, bouncing the PR after review.
+# The alternative — adding this gate to a dozen preflight `add` arms — is a
+# hand-maintained map of "which bug lives in which file", i.e. the encoded-fact disease
+# this gate exists to cure; it would rot on the first new fixture.
+# `soundness` runs FULL on every event, is already REQUIRED, and already builds ./medaka
+# under `if: docs_only != 'true'` — and a docs-only PR cannot fix a compiler bug, so that
+# guard is exactly right. Being named in a `run:` step satisfies
+# diff_compiler_ci_shard_coverage.sh (its `named` set); this basename matches no shard
+# pattern, so there is no duplicate either.
+#
+# Usage:  sh test/diff_compiler_must_fail.sh
+# Exit:   0 every pinned bug still reproduces; 1 a bug DRAINED (go close the issue),
+#         a control broke, or a claim is malformed.
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MEDAKA="$ROOT/medaka"
+FIXDIR="$ROOT/test/must_fail_fixtures"
+
+[ -x "$MEDAKA" ] || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
+[ -d "$FIXDIR" ] || { echo "missing fixture dir: $FIXDIR"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found (needed to render check --json)"; exit 2; }
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+bound() { perl -e 'alarm 60; exec @ARGV' "$@"; }
+
+# Render `check --json` to one stable line per diagnostic: CODE sl:sc-el:ec message
+render_diags() {
+  python3 - "$1" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        doc = json.load(fh)
+except Exception as e:
+    print(f"!!UNPARSEABLE-JSON {e}")
+    sys.exit(0)
+for f in doc.get("files", []):
+    for d in f.get("diagnostics", []):
+        r = d.get("range", {})
+        s, e = r.get("start", {}), r.get("end", {})
+        print("%s %s:%s-%s:%s %s" % (d.get("code"), s.get("line"), s.get("character"),
+                                     e.get("line"), e.get("character"), d.get("message")))
+PY
+}
+
+# claim_get <file> <key>  -> all values for that key, one per line
+claim_get() { sed -n "s/^$2:[[:space:]]*//p" "$1"; }
+claim_has() { grep -q "^$2:" "$1"; }
+
+# run_verb <verb> <fixture-dir> <file> <outfile>  -> exit code
+# fmt-write mutates its input, so it runs against a COPY: a gate must never edit the
+# corpus it is grading.
+run_verb() {
+  _verb="$1"; _dir="$2"; _file="$3"; _out="$4"
+  case "$_verb" in
+    check)      bound "$MEDAKA" check      "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
+    check-json) bound "$MEDAKA" check --json "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
+    run)        bound "$MEDAKA" run        "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
+    fmt-write)
+      _work="$TMP/fmtwork"; rm -rf "$_work"; mkdir -p "$_work"
+      cp "$_dir/$_file" "$_work/$_file"
+      bound "$MEDAKA" fmt --write "$_work/$_file" >"$_out" 2>"$_out.err"; _rc=$?
+      cp "$_work/$_file" "$_out.after"
+      return $_rc ;;
+    *) echo "unknown verb: $_verb" >"$_out"; return 127 ;;
+  esac
+}
+
+printf '%s\n' "MUST-FAIL suite — every row asserts an OPEN issue's bug STILL reproduces."
+printf '%s\n' "A RED run here usually means someone FIXED something. That is a good failure."
+echo
+
+checked=0; repro=0; drained=0; broke=0; malformed=0
+
+for dir in "$FIXDIR"/*/; do
+  [ -d "$dir" ] || continue
+  name="$(basename "$dir")"
+  claim="$dir/claim.txt"
+  checked=$((checked+1))
+
+  if [ ! -f "$claim" ]; then
+    printf 'MALFORMED  %-46s no claim.txt\n' "$name"
+    malformed=$((malformed+1)); continue
+  fi
+
+  issue="$(claim_get "$claim" issue)"
+  what="$(claim_get "$claim" what)"
+  cmd="$(claim_get "$claim" cmd)"
+  ctl="$(claim_get "$claim" control)"
+  exp_exit="$(claim_get "$claim" exit)"
+
+  if [ -z "$issue" ] || [ -z "$cmd" ] || [ -z "$exp_exit" ] || [ -z "$ctl" ]; then
+    printf 'MALFORMED  %-46s claim.txt needs issue:, cmd:, exit: and control:\n' "$name"
+    printf '           (control: none <reason> is allowed, but must be EXPLICIT)\n'
+    malformed=$((malformed+1)); continue
+  fi
+
+  verb="${cmd%% *}"; file="${cmd#* }"
+  out="$TMP/$name.out"
+  run_verb "$verb" "$dir" "$file" "$out"
+  got_exit=$?
+
+  fail=""
+
+  # ── exit code: EXACT. Never "nonzero". ──
+  [ "$got_exit" = "$exp_exit" ] || \
+    fail="$fail\n     exit: expected $exp_exit, got $got_exit"
+
+  # ── stdout: exact, WITH trailing newline ──
+  if claim_has "$claim" stdout; then
+    claim_get "$claim" stdout | while IFS= read -r l; do printf '%b\n' "$l"; done > "$TMP/$name.want"
+    cmp -s "$out" "$TMP/$name.want" || \
+      fail="$fail\n     stdout: expected [$(tr '\n' '|' < "$TMP/$name.want")] got [$(tr '\n' '|' < "$out")]"
+  fi
+
+  # ── stdout-bytes: exact, NO trailing newline appended (that IS the bug, for #68) ──
+  if claim_has "$claim" stdout-bytes; then
+    printf '%b' "$(claim_get "$claim" stdout-bytes)" > "$TMP/$name.wantb"
+    if ! cmp -s "$out" "$TMP/$name.wantb"; then
+      fail="$fail\n     stdout-bytes: expected [$(xxd -p < "$TMP/$name.wantb" | tr -d '\n')]"
+      fail="$fail\n                   got      [$(xxd -p < "$out" | tr -d '\n')]"
+    fi
+  fi
+
+  # ── diag: the FULL ordered diagnostic list must match, exactly. No count field: the
+  #    list IS the assertion, so it cannot drift out of sync with a number. ──
+  if claim_has "$claim" diag; then
+    render_diags "$out" > "$TMP/$name.diags"
+    claim_get "$claim" diag > "$TMP/$name.wantdiags"
+    if ! cmp -s "$TMP/$name.diags" "$TMP/$name.wantdiags"; then
+      fail="$fail\n     diagnostics: expected:"
+      while IFS= read -r l; do fail="$fail\n       - $l"; done < "$TMP/$name.wantdiags"
+      fail="$fail\n                  actual:"
+      if [ -s "$TMP/$name.diags" ]; then
+        while IFS= read -r l; do fail="$fail\n       - $l"; done < "$TMP/$name.diags"
+      else
+        fail="$fail\n       - (none)"
+      fi
+    fi
+  fi
+
+  # ── file-after: the fixture's bytes after an in-place rewrite (fmt --write) ──
+  if claim_has "$claim" file-after; then
+    claim_get "$claim" file-after | while IFS= read -r l; do printf '%b\n' "$l"; done > "$TMP/$name.wantf"
+    if [ -f "$out.after" ]; then
+      cmp -s "$out.after" "$TMP/$name.wantf" || \
+        fail="$fail\n     file-after: expected [$(tr '\n' '|' < "$TMP/$name.wantf")] got [$(tr '\n' '|' < "$out.after")]"
+    else
+      fail="$fail\n     file-after: claimed, but verb '$verb' rewrites no file"
+    fi
+  fi
+
+  # ── THE CONTROL. Must be green, or this is not a drain. ──
+  ctl_broke=""
+  case "$ctl" in
+    none*) ;;
+    *)
+      cverb="${ctl%% *}"; cfile="${ctl#* }"
+      cout="$TMP/$name.ctl"
+      run_verb "$cverb" "$dir" "$cfile" "$cout"
+      crc=$?
+      [ "$crc" = 0 ] || ctl_broke="control '$ctl' exited $crc, expected 0"
+      if [ -z "$ctl_broke" ] && [ "$cverb" = "check-json" ]; then
+        render_diags "$cout" > "$TMP/$name.ctldiags"
+        [ -s "$TMP/$name.ctldiags" ] && \
+          ctl_broke="control '$ctl' must be diagnostic-free, but emitted: $(head -1 "$TMP/$name.ctldiags")"
+      fi ;;
+  esac
+
+  if [ -n "$ctl_broke" ]; then
+    broke=$((broke+1))
+    printf 'CONTROL-BROKE  %-42s (issue #%s)\n' "$name" "$issue"
+    printf '  ⚠️  This is NOT a drain — do not close #%s. Your change broke the CONTROL,\n' "$issue"
+    printf '      which means the ENVIRONMENT moved, not the bug.\n'
+    printf '      %s\n' "$ctl_broke"
+    echo
+    continue
+  fi
+
+  if [ -z "$fail" ]; then
+    repro=$((repro+1))
+    printf 'REPRO      %-46s (issue #%s still open, still broken)\n' "$name" "$issue"
+  else
+    drained=$((drained+1))
+    printf 'DRAINED    %-46s (issue #%s)\n' "$name" "$issue"
+    echo
+    printf '  ✅ ISSUE #%s APPEARS FIXED — this is a GOOD failure, probably not your bug.\n' "$issue"
+    printf '%s\n' "$what" | sed 's/^/     /'
+    printf '     test/must_fail_fixtures/%s pinned the BROKEN behavior of:\n' "$name"
+    printf '       medaka %s %s\n' "$verb" "$file"
+    printf '     ...and that behavior no longer holds:%b\n' "$fail"
+    echo
+    printf '     Its CONTROL still passes, so this is a real fix, not a broken environment.\n'
+    printf '     DO THIS, IN THIS PR:\n'
+    printf '       1. gh issue close %s --comment "fixed by <sha>; must-fail fixture drained"\n' "$issue"
+    printf '       2. git rm -r test/must_fail_fixtures/%s\n' "$name"
+    printf '          (or re-point it at a regression gate asserting the FIXED behavior)\n'
+    echo
+  fi
+done
+
+echo
+printf 'checked %d fixtures: %d still reproduce, %d DRAINED, %d control-broke, %d malformed\n' \
+  "$checked" "$repro" "$drained" "$broke" "$malformed"
+
+# N == 0 must be a FAILURE, not a pass. A must-fail suite that graded nothing and
+# printed green would be the exact bug this whole suite exists to prevent.
+if [ "$checked" -eq 0 ]; then
+  echo
+  echo "FAIL: no fixtures found in $FIXDIR — a suite that checked NOTHING must never report green."
+  exit 1
+fi
+
+if [ "$drained" -gt 0 ]; then
+  echo
+  echo "⭐ The tracker just drained itself. That is this gate's entire purpose — see the"
+  echo "   per-fixture instructions above, close the issue(s), and delete the fixture(s)."
+fi
+
+[ $((drained + broke + malformed)) -eq 0 ]

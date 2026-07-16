@@ -1,0 +1,2 @@
+f (a::as) = a
+main = println (f [1, 2])

@@ -1,0 +1,9 @@
+issue: 458
+what: `fmt --write` silently rewrites hex int literals to decimal (0xD800 -> 55296),
+what: destroying author intent. The pre-commit hook runs fmt, so this lands unasked.
+cmd: fmt-write main.mdk
+exit: 0
+file-after: main = println 55296
+control: fmt-write control.mdk
+why-control: a DECIMAL literal must survive fmt --write untouched. If the control changes,
+why-control: fmt broke generally and this row's silence would be meaningless.

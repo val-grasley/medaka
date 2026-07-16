@@ -945,6 +945,31 @@ jobs:
         if: needs.detect.outputs.docs_only != 'true'
         run: FORCE=1 sh test/build_oracles.sh --build-one diagnostics_project_main
 
+      # ── The MUST-FAIL suite: the TRACKER's self-drain (#547). ───────────────────
+      #
+      # Every fixture asserts an OPEN issue's bug STILL reproduces. When a fix lands, the
+      # pin stops holding, this goes RED, and the message says to close the issue. It is
+      # the same ratchet the docs already run under ("docs are GATED"; a ledger must FAIL
+      # when an entry stops earning its place) applied to the last un-drained ledger in
+      # the repo. Six entries were already dead when the backlog was re-derived on
+      # 2026-07-14 — two labelled "silent build miscompile" — with nothing to notice.
+      #
+      # ⚠️ IT LIVES HERE, NOT IN A GATE SHARD, AND THAT IS LOAD-BEARING. Shards are
+      # NARROWED on `pull_request` by test/preflight.sh's path map: a fix to
+      # compiler/frontend/parser.mdk derives 'diff_compiler_parse*' and would NOT derive
+      # this gate, so the drain would fire only in the merge queue — bouncing the PR
+      # AFTER review. The alternative (adding it to preflight's `add` arms) is a
+      # hand-maintained map of which-bug-lives-in-which-file: the encoded-fact disease
+      # this gate exists to cure, which would rot on the first new fixture. `soundness`
+      # runs FULL on every event, is already required, and already built ./medaka above.
+      #
+      # Guarded on docs_only like its neighbours — and unlike the doc gates at the top of
+      # this job, that guard is CORRECT here: this needs the compiler, and a docs-only PR
+      # cannot fix a compiler bug.
+      - name: Open bugs must still reproduce (must-fail suite — a RED here means someone FIXED something)
+        if: needs.detect.outputs.docs_only != 'true'
+        run: sh test/diff_compiler_must_fail.sh
+
       - name: Compiler source must be well-typed
         if: needs.detect.outputs.docs_only != 'true'
         run: |
