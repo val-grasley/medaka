@@ -1,5 +1,5 @@
 # META
-source_lines=9999
+source_lines=10013
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -3286,6 +3286,20 @@ emitBlock e env [CSExpr ex] = emitExpr e env ex
 emitBlock e env ((CSExpr ex)::rest) =
   let _ = emitExpr e env ex
   emitBlock e env rest
+-- #314: a block-statement function-`let` (`let go i = … go …`) lowers to a
+-- `CSLet` whose rhs is a `CLam` and whose body may call `go` recursively (the
+-- self-ref is annotated AGlobal since the non-recursive let does not scope its own
+-- name).  The generic PVar arm below would `emitExpr` the CLam with `go` NOT in the
+-- env, so the lifted body's self-call hits the `gapE "unbound variable"` build
+-- failure (`run` worked — eval binds the name before evaluating the body).  Route
+-- it through `emitRecLam` (which binds `go -> %clos` inside the lifted define, so a
+-- self-call re-enters the same closure) and bind `go` for the rest of the block —
+-- the exact mirror of the expression-level `emitLet _ True (PVar f) (CLam …)` arm.
+-- A non-recursive function-`let` takes this path harmlessly (`go` never appears
+-- free, so it is simply not captured).
+emitBlock e env ((CSLet _ (PVar x) (CLam pats body))::rest) =
+  let (w, ty) = emitRecLam e env x pats body
+  emitBlock e ((x, (w, ty))::env) rest
 emitBlock e env ((CSLet _ (PVar x) ex)::rest) =
   if staticIsFloat env ex then
     let d = emitFloatD e env ex
@@ -10676,6 +10690,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "emitBlock" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyApp (TyCon "List") (TyCon "CStmt")) (TyTuple (TyCon "String") (TyCon "LTy"))))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PList (PCon "CSExpr" (PVar "ex")))) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex")))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSExpr" (PVar "ex")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EVar "env")) (EVar "rest")))))
+(DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PVar" (PVar "x")) (PCon "CLam" (PVar "pats") (PVar "body"))) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "w") (PVar "ty")) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecLam") (EVar "e")) (EVar "env")) (EVar "x")) (EVar "pats")) (EVar "body"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EVar "w") (EVar "ty"))) (EVar "env"))) (EVar "rest")))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PVar" (PVar "x")) (PVar "ex")) (PVar "rest"))) (EIf (EApp (EApp (EVar "staticIsFloat") (EVar "env")) (EVar "ex")) (EBlock (DoLet false false (PVar "d") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EVar "d") (EVar "LTFloatU"))) (EVar "env"))) (EVar "rest")))) (EBlock (DoLet false false (PTuple (PVar "v") (PVar "ty")) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EVar "v") (EVar "ty"))) (EVar "env"))) (EVar "rest"))))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PWild") (PVar "ex")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EVar "env")) (EVar "rest")))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PTuple" (PVar "ps")) (PVar "ex")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "v") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoLet false false (PVar "env2") (EApp (EApp (EApp (EApp (EApp (EVar "bindPattern") (EVar "e")) (EVar "env")) (EApp (EVar "PTuple") (EVar "ps"))) (EVar "v")) (EApp (EVar "CBlock") (EVar "rest")))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EVar "env2")) (EVar "rest")))))
@@ -12791,6 +12806,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "emitBlock" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyApp (TyCon "List") (TyCon "CStmt")) (TyTuple (TyCon "String") (TyCon "LTy"))))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PList (PCon "CSExpr" (PVar "ex")))) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex")))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSExpr" (PVar "ex")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EVar "env")) (EVar "rest")))))
+(DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PVar" (PVar "x")) (PCon "CLam" (PVar "pats") (PVar "body"))) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "w") (PVar "ty")) (EApp (EApp (EApp (EApp (EApp (EVar "emitRecLam") (EVar "e")) (EVar "env")) (EVar "x")) (EVar "pats")) (EVar "body"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EVar "w") (EVar "ty"))) (EVar "env"))) (EVar "rest")))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PVar" (PVar "x")) (PVar "ex")) (PVar "rest"))) (EIf (EApp (EApp (EVar "staticIsFloat") (EVar "env")) (EVar "ex")) (EBlock (DoLet false false (PVar "d") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EVar "d") (EVar "LTFloatU"))) (EVar "env"))) (EVar "rest")))) (EBlock (DoLet false false (PTuple (PVar "v") (PVar "ty")) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EVar "v") (EVar "ty"))) (EVar "env"))) (EVar "rest"))))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PWild") (PVar "ex")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EVar "env")) (EVar "rest")))))
 (DFunDef false "emitBlock" ((PVar "e") (PVar "env") (PCons (PCon "CSLet" PWild (PCon "PTuple" (PVar "ps")) (PVar "ex")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "v") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "ex"))) (DoLet false false (PVar "env2") (EApp (EApp (EApp (EApp (EApp (EVar "bindPattern") (EVar "e")) (EVar "env")) (EApp (EVar "PTuple") (EVar "ps"))) (EVar "v")) (EApp (EVar "CBlock") (EVar "rest")))) (DoExpr (EApp (EApp (EApp (EVar "emitBlock") (EVar "e")) (EVar "env2")) (EVar "rest")))))

@@ -4724,6 +4724,9 @@ emitBlockRef prog env d [CSExpr ex] = emitRefExpr prog env d ex
 emitBlockRef prog env d ((CSExpr ex)::rest) = emitRefExpr prog env d ex
   ++ ["drop"]
   ++ emitBlockRef prog env d rest
+-- #314: a recursive block-statement function-`let` (see emitSelfRecLocalBind).
+emitBlockRef prog env d ((CSLet _ (PVar x) (CLam pats body))::rest) = emitSelfRecLocalBind prog env x pats body
+  ++ emitBlockRef prog (x::env) d rest
 emitBlockRef prog env d ((CSLet _ (PVar x) ex)::rest) = emitRefExpr prog env d ex
   ++ ["local.set $" ++ gname x]
   ++ emitBlockRef prog (x::env) d rest
@@ -6334,6 +6337,9 @@ emitBlockTail prog env arity [CSExpr ex] = emitRefTail prog env arity ex
 emitBlockTail prog env arity ((CSExpr ex)::rest) = emitRefExpr prog env 0 ex
   ++ ["drop"]
   ++ emitBlockTail prog env arity rest
+-- #314: a recursive block-statement function-`let` (see emitSelfRecLocalBind).
+emitBlockTail prog env arity ((CSLet _ (PVar x) (CLam pats body))::rest) = emitSelfRecLocalBind prog env x pats body
+  ++ emitBlockTail prog (x::env) arity rest
 emitBlockTail prog env arity ((CSLet _ (PVar x) ex)::rest) = emitRefExpr prog env 0 ex
   ++ ["local.set $" ++ gname x]
   ++ emitBlockTail prog (x::env) arity rest
@@ -6633,6 +6639,23 @@ argLoadAt (p, i) = [
 -- before the closures because the closures capture them — so a value binding whose rhs
 -- calls a sibling FUNCTION is the one shape this cannot tie, and it is rejected
 -- precisely rather than miscompiled (llvm_emit rejects the mirror case in emitKnotRun).
+-- #314: a block-statement function-`let` (`let go i = … go …`) — a single
+-- self-recursive LOCAL function that the CBlock emitters (emitBlockTail /
+-- emitBlockRef) would otherwise lower as a plain `CLam` capture, leaving the
+-- self-call `go` unbound in the lifted body (build-fail; eval worked because it
+-- binds the name first).  Reuse the W9 letgroup machinery for a ONE-member group:
+-- lift `$mdk_lgN_go` (its prologue rebuilds `go`'s own closure into a local, so the
+-- self-call resolves), then at the use site rebuild `go`'s closure into local `$go`.
+-- Returns the use-site rebuild instrs; the caller binds `go` (`x::env`) for the rest
+-- of the block.  Peer of the native emitter's `emitRecLam` route in emitBlock.
+emitSelfRecLocalBind : Prog -> List String -> String -> List Pat -> CExpr -> List String
+emitSelfRecLocalBind prog env x pats body =
+  let gid = freshLamId ()
+  let bind = CBind x [CClause pats body]
+  let groupCaps = filterList (c => contains c env) (dedupKeep (filterList (notIn [x]) (freeVarsClauses [] bind)))
+  let _ = emitLgLifted prog gid [x] groupCaps [bind] bind
+  rebuildLgClosure prog gid groupCaps bind
+
 emitLetGroupRef : Prog -> List String -> Int -> List CBind -> CExpr -> List String
 emitLetGroupRef prog env d binds body =
   let gid = freshLamId ()

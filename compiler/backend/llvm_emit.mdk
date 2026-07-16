@@ -3282,6 +3282,20 @@ emitBlock e env [CSExpr ex] = emitExpr e env ex
 emitBlock e env ((CSExpr ex)::rest) =
   let _ = emitExpr e env ex
   emitBlock e env rest
+-- #314: a block-statement function-`let` (`let go i = … go …`) lowers to a
+-- `CSLet` whose rhs is a `CLam` and whose body may call `go` recursively (the
+-- self-ref is annotated AGlobal since the non-recursive let does not scope its own
+-- name).  The generic PVar arm below would `emitExpr` the CLam with `go` NOT in the
+-- env, so the lifted body's self-call hits the `gapE "unbound variable"` build
+-- failure (`run` worked — eval binds the name before evaluating the body).  Route
+-- it through `emitRecLam` (which binds `go -> %clos` inside the lifted define, so a
+-- self-call re-enters the same closure) and bind `go` for the rest of the block —
+-- the exact mirror of the expression-level `emitLet _ True (PVar f) (CLam …)` arm.
+-- A non-recursive function-`let` takes this path harmlessly (`go` never appears
+-- free, so it is simply not captured).
+emitBlock e env ((CSLet _ (PVar x) (CLam pats body))::rest) =
+  let (w, ty) = emitRecLam e env x pats body
+  emitBlock e ((x, (w, ty))::env) rest
 emitBlock e env ((CSLet _ (PVar x) ex)::rest) =
   if staticIsFloat env ex then
     let d = emitFloatD e env ex
