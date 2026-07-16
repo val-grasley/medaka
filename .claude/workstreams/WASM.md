@@ -17,6 +17,24 @@ laws, WH host-boundary laws, the host-import inventory, and the law-by-law confo
 table with issue refs). A ✗ behavior not in that table, `test/engine_divergence.txt`, or
 an open issue is an unfiled finding.
 
+> ### 🔁 CLOSING AN ISSUE IS NOT DONE UNTIL THE ROWS ASSERTING IT ARE DRAINED — **in the SAME commit**
+>
+> **This file and `docs/spec/WASM-SEMANTICS.md` drift for exactly one reason: nobody updates them
+> together.** Caught twice in one session, same shape both times: #369 was FIXED while the contract's
+> N4 row still read *"✗ CONFIRMED S0"*, and #381 was CLOSED while its Perf-posture row still read
+> *"✗ STATIC"*. Both times this file was right and **the contract — the doc this very paragraph calls
+> ground truth — was the stale one.**
+>
+> **Every `**#N**` in that table is an encoded claim that N is OPEN**, with no derivation and no expiry
+> (#383 tracks the sweep; #404 the same disease in stdlib). So when you close a wasm issue:
+> `grep -rn '#<N>' docs/spec/WASM-SEMANTICS.md test/engine_divergence.txt test/ENGINE-DIVERGENCE.md
+> test/CAPABILITY-EXCEPTIONS.txt .claude/workstreams/WASM.md` and drain **all** of it in the closing
+> commit. *A bug that is stale in three places is invisible in all three.*
+>
+> The derived fix (nobody has built it yet): the table's `**#N**` refs are **mechanically checkable**
+> against issue state — a gate could parse them and fail when a cited issue is CLOSED. Then it
+> self-drains instead of needing a human sweep.
+
 **The playground runs on this backend, and the playground is the 0.1.0 front door.** A stranger's first
 Medaka program goes through `wasm_emit`. That is what makes this workstream a release concern and not
 a side quest.
@@ -274,7 +292,7 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
 
   ⇒ **the scan is SHARED; only the extra nesting factor was wasm's.** #381's original "no llvm twin"
   framing was WRONG — llvm has a *quadratic* twin (ws:emitter measured native `match:emit` at
-  **3.71/3.73** over N=1000→4000, #396). #401's memo pattern is a plausible lead for #349–#352 —
+  **3.71/3.73** over N=1000→4000 — filed with its numbers as **#408**, spun out of #396). #401's memo pattern is a plausible lead for #349–#352 —
   and it was **taken from `llvm_emit`'s `ctorMapRef`/`installCtorMap` in the first place.**
 
   ### 🔬 Three measurement traps, each of which produced a confidently WRONG published number
