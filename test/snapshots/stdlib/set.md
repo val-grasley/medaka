@@ -1,5 +1,5 @@
 # META
-source_lines=484
+source_lines=649
 stages=DESUGAR,MARK
 # SOURCE
 {- set.mdk — an immutable, ordered set of unique elements.
@@ -264,6 +264,74 @@ foldlSet : (b -> a -> <e> b) -> b -> Set a -> <e> b
 foldlSet f z Tip = z
 foldlSet f z (Bin _ x l r) = foldlSet f (f (foldlSet f z l) x) r
 
+-- ── Split / join ────────────────────────────────────────────────────────
+
+{- The join-based kit (Adams 1992; Blelloch, Ferizovic & Sun 2016) — the mirror
+   of the one in map.mdk; see that module for the full rationale.  `balance`
+   above only repairs a one-element imbalance, which is all an insert or delete
+   can create; combining two whole sets needs primitives that cope with
+   subtrees of wildly different weights:
+
+     • `link x l r` — rebuild `l < x < r` into one balanced set, any weights.
+     • `link2 l r`  — the same without a dividing element, for when that
+                      element is being dropped (`difference`).
+
+   With `splitAt`, every operation below divides and conquers over the tree
+   *structure* rather than re-inserting every element one at a time. -}
+
+insertMin : a -> Set a -> Set a
+insertMin x Tip = singleton x
+insertMin x (Bin _ y l r) = balance y (insertMin x l) r
+
+insertMax : a -> Set a -> Set a
+insertMax x Tip = singleton x
+insertMax x (Bin _ y l r) = balance y l (insertMax x r)
+
+-- Join `l < x < r` for arbitrarily unbalanced `l`/`r`: descend the heavy side
+-- until the weights are within `delta`, rebalancing on the way out.
+link : a -> Set a -> Set a -> Set a
+link x Tip r = insertMin x r
+link x l Tip = insertMax x l
+link x (l@(Bin sl xl ll rl)) (r@(Bin sr xr lr rr))
+  | 3 * sl < sr = balance xr (link x l lr) rr
+  | 3 * sr < sl = balance xl ll (link x rl r)
+  | otherwise = bin x l r
+
+-- `link` with no dividing element — every element of `l` is below every
+-- element of `r`.  Falls back to `glue` once the weights are comparable.
+link2 : Set a -> Set a -> Set a
+link2 Tip r = r
+link2 l Tip = l
+link2 (l@(Bin sl xl ll rl)) (r@(Bin sr xr lr rr))
+  | 3 * sl < sr = balance xr (link2 l lr) rr
+  | 3 * sr < sl = balance xl ll (link2 rl r)
+  | otherwise = glue l r
+
+-- Split a set around an element: everything below it, everything above it.
+-- The element itself (if present) is dropped -- `splitMember` reports it.
+splitAt : Ord a => a -> Set a -> (Set a, Set a)
+splitAt x Tip = (Tip, Tip)
+splitAt x (Bin _ y l r) = match compare x y
+  Lt =>
+    let (below, above) = splitAt x l
+    (below, link y above r)
+  Gt =>
+    let (below, above) = splitAt x r
+    (link y l below, above)
+  Eq => (l, r)
+
+-- `splitAt` that also reports whether the split element was present.
+splitMember : Ord a => a -> Set a -> (Set a, Bool, Set a)
+splitMember x Tip = (Tip, False, Tip)
+splitMember x (Bin _ y l r) = match compare x y
+  Lt =>
+    let (below, found, above) = splitMember x l
+    (below, found, link y above r)
+  Gt =>
+    let (below, found, above) = splitMember x r
+    (link y l below, found, above)
+  Eq => (l, True, r)
+
 -- ── Set algebra ─────────────────────────────────────────────────────────
 
 {- | Union — every element in either set.
@@ -278,7 +346,12 @@ foldlSet f z (Bin _ x l r) = foldlSet f (f (foldlSet f z l) x) r
    > toList (union (fromList [1, 2, 3]) (fromList [2]))
    [1, 2, 3] -}
 export union : Ord a => Set a -> Set a -> Set a
-union a b = foldrSet (x acc => insert x acc) b a
+union Tip b = b
+union a Tip = a
+union (Bin _ x l r) b =
+  let (bl, br) = splitAt x b
+  -- `x`'s counterpart in `b` was dropped by `splitAt`, so the left set wins.
+  link x (union l bl) (union r br)
 
 {- | Intersection — elements in both sets.
 
@@ -292,10 +365,13 @@ union a b = foldrSet (x acc => insert x acc) b a
    > toList (intersection (fromList [1, 2, 3]) (fromList [2]))
    [2] -}
 export intersection : Ord a => Set a -> Set a -> Set a
-intersection a b = foldrSet (intersectStep b) Tip a
-
-intersectStep : Ord a => Set a -> a -> Set a -> Set a
-intersectStep b x acc = if has x b then insert x acc else acc
+intersection Tip b = Tip
+intersection a Tip = Tip
+intersection (Bin _ x l r) b =
+  let (bl, found, br) = splitMember x b
+  let l2 = intersection l bl
+  let r2 = intersection r br
+  if found then link x l2 r2 else link2 l2 r2
 
 {- | Difference — elements in the first set but not the second.
 
@@ -309,7 +385,12 @@ intersectStep b x acc = if has x b then insert x acc else acc
    > toList (difference (fromList [1, 2, 3]) (fromList [1, 2, 3]))
    [] -}
 export difference : Ord a => Set a -> Set a -> Set a
-difference a b = foldrSet (x acc => delete x acc) a b
+difference Tip b = Tip
+difference a Tip = a
+difference a (Bin _ x l r) =
+  let (al, ar) = splitAt x a
+  -- `splitAt` already dropped `x` from both halves, so it is simply not rebuilt.
+  link2 (difference al l) (difference ar r)
 
 {- | `True` when every element of the first set is in the second.
 
@@ -318,7 +399,22 @@ difference a b = foldrSet (x acc => delete x acc) a b
    > isSubsetOf (fromList [1, 4]) (fromList [1, 2, 3])
    False -}
 export isSubsetOf : Ord a => Set a -> Set a -> Bool
-isSubsetOf a b = foldrSet (x acc => acc && has x b) True a
+isSubsetOf a b = size a <= size b && subsetGo a b
+
+{- The size test above is an O(1) reject that settles the commonest `False`.
+   Past it, `subsetGo` splits `b` around `a`'s root and recurses -- so a missing
+   element aborts the whole walk through `&&` instead of being folded over the
+   rest of `a`.  (The old `foldrSet (x acc => acc && has x b) True a`
+   short-circuited each individual `has`, but the fold still visited every
+   element of `a` after the answer was already known.)  Splitting also shrinks
+   `b` on the way down, giving O(|a|·log(|b|/|a| + 1)) rather than a fixed
+   O(|a|·log|b|). -}
+subsetGo : Ord a => Set a -> Set a -> Bool
+subsetGo Tip b = True
+subsetGo a Tip = False
+subsetGo (Bin _ x l r) b =
+  let (bl, found, br) = splitMember x b
+  found && subsetGo l bl && subsetGo r br
 
 -- ── Typeclass instances ─────────────────────────────────────────────────
 
@@ -486,6 +582,75 @@ prop "difference elements stay in the first set" (xs : List Int) (ys : List Int)
 
 prop "deleting a member removes it" (x : Int) (xs : List Int) =
   not (has x (delete x (insert x (fromList xs))))
+
+{- The naive fold-insert bodies the join-based set algebra replaced (#423).
+   Obviously correct and obviously slow, which makes them the differential
+   oracle for the fast versions: the properties below assert the two agree
+   element-for-element on random inputs.  A join-based operation that silently
+   corrupted the weight-balance invariant would still answer every doctest
+   correctly, so `wellFormed` is asserted alongside each one. -}
+
+naiveUnion : Ord a => Set a -> Set a -> Set a
+naiveUnion a b = foldrSet (x acc => insert x acc) b a
+
+naiveIntersection : Ord a => Set a -> Set a -> Set a
+naiveIntersection a b = foldrSet (naiveIntersectStep b) Tip a
+
+naiveIntersectStep : Ord a => Set a -> a -> Set a -> Set a
+naiveIntersectStep b x acc = if has x b then insert x acc else acc
+
+naiveDifference : Ord a => Set a -> Set a -> Set a
+naiveDifference a b = foldrSet (x acc => delete x acc) a b
+
+naiveIsSubsetOf : Ord a => Set a -> Set a -> Bool
+naiveIsSubsetOf a b = foldrSet (x acc => acc && has x b) True a
+
+prop "union agrees with naive fold-insert and stays well-formed" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = union a b
+  eq (toList got) (toList (naiveUnion a b)) && wellFormed got
+
+prop "union elements stay strictly ascending" (xs : List Int) (ys : List Int) =
+  ascending (toList (union (fromList xs) (fromList ys)))
+
+prop "intersection agrees with naive and stays well-formed" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = intersection a b
+  eq (toList got) (toList (naiveIntersection a b)) && wellFormed got
+
+prop "difference agrees with naive and stays well-formed" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = difference a b
+  eq (toList got) (toList (naiveDifference a b)) && wellFormed got
+
+prop "isSubsetOf agrees with the naive fold" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  eq (isSubsetOf a b) (naiveIsSubsetOf a b)
+
+prop "a subset of a union is recognised" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  isSubsetOf a (union a (fromList ys))
+
+prop "splitAt partitions around the element and both halves stay well-formed" (x : Int) (xs : List Int) =
+  let (below, above) = splitAt x (fromList xs)
+  wellFormed below
+    && wellFormed above
+    && allElems (b => lt b x) below
+    && allElems (a => gt a x) above
+
+prop "link rebuilds a well-formed set from a split" (x : Int) (xs : List Int) =
+  let (below, above) = splitAt x (fromList xs)
+  let rebuilt = link x below above
+  wellFormed rebuilt && has x rebuilt
+
+prop "link2 rejoins a split without its element" (x : Int) (xs : List Int) =
+  let (below, above) = splitAt x (fromList xs)
+  let rebuilt = link2 below above
+  wellFormed rebuilt && eq (toList rebuilt) (toList (delete x (fromList xs)))
 # DESUGAR
 (DUse false (UseGroup ("core") ((mem "Eq" false) (mem "Ord" false) (mem "Debug" false) (mem "Display" false) (mem "Foldable" false) (mem "Semigroup" false) (mem "Monoid" false) (mem "Ordering" false) (mem "Option" false) (mem "FromEntries" false))))
 (DData Public "Set" ("a") ((variant "Tip" (ConPos)) (variant "Bin" (ConPos (TyCon "Int") (TyVar "a") (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))) ())
@@ -555,16 +720,44 @@ prop "deleting a member removes it" (x : Int) (xs : List Int) =
 (DTypeSig false "foldlSet" (TyFun (TyFun (TyVar "b") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "b")))) (TyFun (TyVar "b") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyEffect () (Some "e") (TyVar "b"))))))
 (DFunDef false "foldlSet" ((PVar "f") (PVar "z") (PCon "Tip")) (EVar "z"))
 (DFunDef false "foldlSet" ((PVar "f") (PVar "z") (PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EVar "foldlSet") (EVar "f")) (EApp (EApp (EVar "f") (EApp (EApp (EApp (EVar "foldlSet") (EVar "f")) (EVar "z")) (EVar "l"))) (EVar "x"))) (EVar "r")))
+(DTypeSig false "insertMin" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))
+(DFunDef false "insertMin" ((PVar "x") (PCon "Tip")) (EApp (EVar "singleton") (EVar "x")))
+(DFunDef false "insertMin" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EVar "balance") (EVar "y")) (EApp (EApp (EVar "insertMin") (EVar "x")) (EVar "l"))) (EVar "r")))
+(DTypeSig false "insertMax" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))
+(DFunDef false "insertMax" ((PVar "x") (PCon "Tip")) (EApp (EVar "singleton") (EVar "x")))
+(DFunDef false "insertMax" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EVar "balance") (EVar "y")) (EVar "l")) (EApp (EApp (EVar "insertMax") (EVar "x")) (EVar "r"))))
+(DTypeSig false "link" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "link" ((PVar "x") (PCon "Tip") (PVar "r")) (EApp (EApp (EVar "insertMin") (EVar "x")) (EVar "r")))
+(DFunDef false "link" ((PVar "x") (PVar "l") (PCon "Tip")) (EApp (EApp (EVar "insertMax") (EVar "x")) (EVar "l")))
+(DFunDef false "link" ((PVar "x") (PAs "l" (PCon "Bin" (PVar "sl") (PVar "xl") (PVar "ll") (PVar "rl"))) (PAs "r" (PCon "Bin" (PVar "sr") (PVar "xr") (PVar "lr") (PVar "rr")))) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sl")) (EVar "sr")) (EApp (EApp (EApp (EVar "balance") (EVar "xr")) (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "l")) (EVar "lr"))) (EVar "rr")) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sr")) (EVar "sl")) (EApp (EApp (EApp (EVar "balance") (EVar "xl")) (EVar "ll")) (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "rl")) (EVar "r"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "bin") (EVar "x")) (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "link2" (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))
+(DFunDef false "link2" ((PCon "Tip") (PVar "r")) (EVar "r"))
+(DFunDef false "link2" ((PVar "l") (PCon "Tip")) (EVar "l"))
+(DFunDef false "link2" ((PAs "l" (PCon "Bin" (PVar "sl") (PVar "xl") (PVar "ll") (PVar "rl"))) (PAs "r" (PCon "Bin" (PVar "sr") (PVar "xr") (PVar "lr") (PVar "rr")))) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sl")) (EVar "sr")) (EApp (EApp (EApp (EVar "balance") (EVar "xr")) (EApp (EApp (EVar "link2") (EVar "l")) (EVar "lr"))) (EVar "rr")) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sr")) (EVar "sl")) (EApp (EApp (EApp (EVar "balance") (EVar "xl")) (EVar "ll")) (EApp (EApp (EVar "link2") (EVar "rl")) (EVar "r"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "glue") (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "splitAt" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyTuple (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))))
+(DFunDef false "splitAt" ((PVar "x") (PCon "Tip")) (ETuple (EVar "Tip") (EVar "Tip")))
+(DFunDef false "splitAt" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EVar "splitAt") (EVar "x")) (EVar "l"))) (DoExpr (ETuple (EVar "below") (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "above")) (EVar "r")))))) (arm (PCon "Gt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EVar "splitAt") (EVar "x")) (EVar "r"))) (DoExpr (ETuple (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "l")) (EVar "below")) (EVar "above"))))) (arm (PCon "Eq") () (ETuple (EVar "l") (EVar "r")))))
+(DTypeSig false "splitMember" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyTuple (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool") (TyApp (TyCon "Set") (TyVar "a")))))))
+(DFunDef false "splitMember" ((PVar "x") (PCon "Tip")) (ETuple (EVar "Tip") (EVar "False") (EVar "Tip")))
+(DFunDef false "splitMember" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "found") (PVar "above")) (EApp (EApp (EVar "splitMember") (EVar "x")) (EVar "l"))) (DoExpr (ETuple (EVar "below") (EVar "found") (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "above")) (EVar "r")))))) (arm (PCon "Gt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "found") (PVar "above")) (EApp (EApp (EVar "splitMember") (EVar "x")) (EVar "r"))) (DoExpr (ETuple (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "l")) (EVar "below")) (EVar "found") (EVar "above"))))) (arm (PCon "Eq") () (ETuple (EVar "l") (EVar "True") (EVar "r")))))
 (DTypeSig true "union" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
-(DFunDef false "union" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EVar "insert") (EVar "x")) (EVar "acc")))) (EVar "b")) (EVar "a")))
+(DFunDef false "union" ((PCon "Tip") (PVar "b")) (EVar "b"))
+(DFunDef false "union" ((PVar "a") (PCon "Tip")) (EVar "a"))
+(DFunDef false "union" ((PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r")) (PVar "b")) (EBlock (DoLet false false (PTuple (PVar "bl") (PVar "br")) (EApp (EApp (EVar "splitAt") (EVar "x")) (EVar "b"))) (DoExpr (EApp (EApp (EApp (EVar "link") (EVar "x")) (EApp (EApp (EVar "union") (EVar "l")) (EVar "bl"))) (EApp (EApp (EVar "union") (EVar "r")) (EVar "br"))))))
 (DTypeSig true "intersection" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
-(DFunDef false "intersection" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (EApp (EVar "intersectStep") (EVar "b"))) (EVar "Tip")) (EVar "a")))
-(DTypeSig false "intersectStep" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))))
-(DFunDef false "intersectStep" ((PVar "b") (PVar "x") (PVar "acc")) (EIf (EApp (EApp (EVar "has") (EVar "x")) (EVar "b")) (EApp (EApp (EVar "insert") (EVar "x")) (EVar "acc")) (EVar "acc")))
+(DFunDef false "intersection" ((PCon "Tip") (PVar "b")) (EVar "Tip"))
+(DFunDef false "intersection" ((PVar "a") (PCon "Tip")) (EVar "Tip"))
+(DFunDef false "intersection" ((PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r")) (PVar "b")) (EBlock (DoLet false false (PTuple (PVar "bl") (PVar "found") (PVar "br")) (EApp (EApp (EVar "splitMember") (EVar "x")) (EVar "b"))) (DoLet false false (PVar "l2") (EApp (EApp (EVar "intersection") (EVar "l")) (EVar "bl"))) (DoLet false false (PVar "r2") (EApp (EApp (EVar "intersection") (EVar "r")) (EVar "br"))) (DoExpr (EIf (EVar "found") (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "l2")) (EVar "r2")) (EApp (EApp (EVar "link2") (EVar "l2")) (EVar "r2"))))))
 (DTypeSig true "difference" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
-(DFunDef false "difference" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EVar "delete") (EVar "x")) (EVar "acc")))) (EVar "a")) (EVar "b")))
+(DFunDef false "difference" ((PCon "Tip") (PVar "b")) (EVar "Tip"))
+(DFunDef false "difference" ((PVar "a") (PCon "Tip")) (EVar "a"))
+(DFunDef false "difference" ((PVar "a") (PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r"))) (EBlock (DoLet false false (PTuple (PVar "al") (PVar "ar")) (EApp (EApp (EVar "splitAt") (EVar "x")) (EVar "a"))) (DoExpr (EApp (EApp (EVar "link2") (EApp (EApp (EVar "difference") (EVar "al")) (EVar "l"))) (EApp (EApp (EVar "difference") (EVar "ar")) (EVar "r"))))))
 (DTypeSig true "isSubsetOf" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool")))))
-(DFunDef false "isSubsetOf" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EBinOp "&&" (EVar "acc") (EApp (EApp (EVar "has") (EVar "x")) (EVar "b"))))) (EVar "True")) (EVar "a")))
+(DFunDef false "isSubsetOf" ((PVar "a") (PVar "b")) (EBinOp "&&" (EBinOp "<=" (EApp (EVar "size") (EVar "a")) (EApp (EVar "size") (EVar "b"))) (EApp (EApp (EVar "subsetGo") (EVar "a")) (EVar "b"))))
+(DTypeSig false "subsetGo" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "subsetGo" ((PCon "Tip") (PVar "b")) (EVar "True"))
+(DFunDef false "subsetGo" ((PVar "a") (PCon "Tip")) (EVar "False"))
+(DFunDef false "subsetGo" ((PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r")) (PVar "b")) (EBlock (DoLet false false (PTuple (PVar "bl") (PVar "found") (PVar "br")) (EApp (EApp (EVar "splitMember") (EVar "x")) (EVar "b"))) (DoExpr (EBinOp "&&" (EBinOp "&&" (EVar "found") (EApp (EApp (EVar "subsetGo") (EVar "l")) (EVar "bl"))) (EApp (EApp (EVar "subsetGo") (EVar "r")) (EVar "br"))))))
 (DImpl true "Foldable" ((TyCon "Set")) () ((im "fold" ((PVar "f") (PVar "z") (PVar "s")) (EApp (EApp (EApp (EVar "foldlSet") (EVar "f")) (EVar "z")) (EVar "s"))) (im "foldRight" ((PVar "f") (PVar "z") (PVar "s")) (EApp (EApp (EApp (EVar "foldrSet") (EVar "f")) (EVar "z")) (EVar "s"))) (im "toList" ((PVar "s")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "::" (EVar "_a") (EVar "_b")))) (EListLit)) (EVar "s"))) (im "isEmpty" ((PCon "Tip")) (EVar "True")) (im "isEmpty" (PWild) (EVar "False")) (im "length" ((PVar "s")) (EApp (EVar "size") (EVar "s")))))
 (DImpl true "Eq" ((TyApp (TyCon "Set") (TyVar "a"))) ((req "Eq" ((TyVar "a")))) ((im "eq" ((PVar "a") (PVar "b")) (EIf (EBinOp "!=" (EApp (EVar "size") (EVar "a")) (EApp (EVar "size") (EVar "b"))) (EVar "False") (EApp (EApp (EVar "eq") (EApp (EVar "toList") (EVar "a"))) (EApp (EVar "toList") (EVar "b")))))))
 (DImpl true "Ord" ((TyApp (TyCon "Set") (TyVar "a"))) ((req "Ord" ((TyVar "a")))) ((im "compare" ((PVar "a") (PVar "b")) (EApp (EApp (EVar "compare") (EApp (EVar "toList") (EVar "a"))) (EApp (EVar "toList") (EVar "b"))))))
@@ -603,6 +796,25 @@ prop "deleting a member removes it" (x : Int) (xs : List Int) =
 (DProp false "size of a union is at most the sum of sizes" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EVar "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EVar "fromList") (EVar "ys"))) (DoExpr (EBinOp "<=" (EApp (EVar "size") (EApp (EApp (EVar "union") (EVar "a")) (EVar "b"))) (EBinOp "+" (EApp (EVar "size") (EVar "a")) (EApp (EVar "size") (EVar "b")))))))
 (DProp false "difference elements stay in the first set" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EVar "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EVar "fromList") (EVar "ys"))) (DoExpr (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "e") (PVar "acc")) (EBinOp "&&" (EVar "acc") (EApp (EApp (EVar "has") (EVar "e")) (EVar "a"))))) (EVar "True")) (EApp (EApp (EVar "difference") (EVar "a")) (EVar "b"))))))
 (DProp false "deleting a member removes it" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EApp (EVar "not") (EApp (EApp (EVar "has") (EVar "x")) (EApp (EApp (EVar "delete") (EVar "x")) (EApp (EApp (EVar "insert") (EVar "x")) (EApp (EVar "fromList") (EVar "xs")))))))
+(DTypeSig false "naiveUnion" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "naiveUnion" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EVar "insert") (EVar "x")) (EVar "acc")))) (EVar "b")) (EVar "a")))
+(DTypeSig false "naiveIntersection" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "naiveIntersection" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (EApp (EVar "naiveIntersectStep") (EVar "b"))) (EVar "Tip")) (EVar "a")))
+(DTypeSig false "naiveIntersectStep" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))))
+(DFunDef false "naiveIntersectStep" ((PVar "b") (PVar "x") (PVar "acc")) (EIf (EApp (EApp (EVar "has") (EVar "x")) (EVar "b")) (EApp (EApp (EVar "insert") (EVar "x")) (EVar "acc")) (EVar "acc")))
+(DTypeSig false "naiveDifference" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "naiveDifference" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EVar "delete") (EVar "x")) (EVar "acc")))) (EVar "a")) (EVar "b")))
+(DTypeSig false "naiveIsSubsetOf" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "naiveIsSubsetOf" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EBinOp "&&" (EVar "acc") (EApp (EApp (EVar "has") (EVar "x")) (EVar "b"))))) (EVar "True")) (EVar "a")))
+(DProp false "union agrees with naive fold-insert and stays well-formed" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EVar "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EVar "fromList") (EVar "ys"))) (DoLet false false (PVar "got") (EApp (EApp (EVar "union") (EVar "a")) (EVar "b"))) (DoExpr (EBinOp "&&" (EApp (EApp (EVar "eq") (EApp (EVar "toList") (EVar "got"))) (EApp (EVar "toList") (EApp (EApp (EVar "naiveUnion") (EVar "a")) (EVar "b")))) (EApp (EVar "wellFormed") (EVar "got"))))))
+(DProp false "union elements stay strictly ascending" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EApp (EVar "ascending") (EApp (EVar "toList") (EApp (EApp (EVar "union") (EApp (EVar "fromList") (EVar "xs"))) (EApp (EVar "fromList") (EVar "ys"))))))
+(DProp false "intersection agrees with naive and stays well-formed" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EVar "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EVar "fromList") (EVar "ys"))) (DoLet false false (PVar "got") (EApp (EApp (EVar "intersection") (EVar "a")) (EVar "b"))) (DoExpr (EBinOp "&&" (EApp (EApp (EVar "eq") (EApp (EVar "toList") (EVar "got"))) (EApp (EVar "toList") (EApp (EApp (EVar "naiveIntersection") (EVar "a")) (EVar "b")))) (EApp (EVar "wellFormed") (EVar "got"))))))
+(DProp false "difference agrees with naive and stays well-formed" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EVar "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EVar "fromList") (EVar "ys"))) (DoLet false false (PVar "got") (EApp (EApp (EVar "difference") (EVar "a")) (EVar "b"))) (DoExpr (EBinOp "&&" (EApp (EApp (EVar "eq") (EApp (EVar "toList") (EVar "got"))) (EApp (EVar "toList") (EApp (EApp (EVar "naiveDifference") (EVar "a")) (EVar "b")))) (EApp (EVar "wellFormed") (EVar "got"))))))
+(DProp false "isSubsetOf agrees with the naive fold" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EVar "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EVar "fromList") (EVar "ys"))) (DoExpr (EApp (EApp (EVar "eq") (EApp (EApp (EVar "isSubsetOf") (EVar "a")) (EVar "b"))) (EApp (EApp (EVar "naiveIsSubsetOf") (EVar "a")) (EVar "b"))))))
+(DProp false "a subset of a union is recognised" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EVar "fromList") (EVar "xs"))) (DoExpr (EApp (EApp (EVar "isSubsetOf") (EVar "a")) (EApp (EApp (EVar "union") (EVar "a")) (EApp (EVar "fromList") (EVar "ys")))))))
+(DProp false "splitAt partitions around the element and both halves stay well-formed" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EVar "splitAt") (EVar "x")) (EApp (EVar "fromList") (EVar "xs")))) (DoExpr (EBinOp "&&" (EBinOp "&&" (EBinOp "&&" (EApp (EVar "wellFormed") (EVar "below")) (EApp (EVar "wellFormed") (EVar "above"))) (EApp (EApp (EVar "allElems") (ELam ((PVar "b")) (EApp (EApp (EVar "lt") (EVar "b")) (EVar "x")))) (EVar "below"))) (EApp (EApp (EVar "allElems") (ELam ((PVar "a")) (EApp (EApp (EVar "gt") (EVar "a")) (EVar "x")))) (EVar "above"))))))
+(DProp false "link rebuilds a well-formed set from a split" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EVar "splitAt") (EVar "x")) (EApp (EVar "fromList") (EVar "xs")))) (DoLet false false (PVar "rebuilt") (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "below")) (EVar "above"))) (DoExpr (EBinOp "&&" (EApp (EVar "wellFormed") (EVar "rebuilt")) (EApp (EApp (EVar "has") (EVar "x")) (EVar "rebuilt"))))))
+(DProp false "link2 rejoins a split without its element" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EVar "splitAt") (EVar "x")) (EApp (EVar "fromList") (EVar "xs")))) (DoLet false false (PVar "rebuilt") (EApp (EApp (EVar "link2") (EVar "below")) (EVar "above"))) (DoExpr (EBinOp "&&" (EApp (EVar "wellFormed") (EVar "rebuilt")) (EApp (EApp (EVar "eq") (EApp (EVar "toList") (EVar "rebuilt"))) (EApp (EVar "toList") (EApp (EApp (EVar "delete") (EVar "x")) (EApp (EVar "fromList") (EVar "xs")))))))))
 # MARK
 (DUse false (UseGroup ("core") ((mem "Eq" false) (mem "Ord" false) (mem "Debug" false) (mem "Display" false) (mem "Foldable" false) (mem "Semigroup" false) (mem "Monoid" false) (mem "Ordering" false) (mem "Option" false) (mem "FromEntries" false))))
 (DData Public "Set" ("a") ((variant "Tip" (ConPos)) (variant "Bin" (ConPos (TyCon "Int") (TyVar "a") (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))) ())
@@ -672,16 +884,44 @@ prop "deleting a member removes it" (x : Int) (xs : List Int) =
 (DTypeSig false "foldlSet" (TyFun (TyFun (TyVar "b") (TyFun (TyVar "a") (TyEffect () (Some "e") (TyVar "b")))) (TyFun (TyVar "b") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyEffect () (Some "e") (TyVar "b"))))))
 (DFunDef false "foldlSet" ((PVar "f") (PVar "z") (PCon "Tip")) (EVar "z"))
 (DFunDef false "foldlSet" ((PVar "f") (PVar "z") (PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EVar "foldlSet") (EVar "f")) (EApp (EApp (EVar "f") (EApp (EApp (EApp (EVar "foldlSet") (EVar "f")) (EVar "z")) (EVar "l"))) (EVar "x"))) (EVar "r")))
+(DTypeSig false "insertMin" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))
+(DFunDef false "insertMin" ((PVar "x") (PCon "Tip")) (EApp (EVar "singleton") (EVar "x")))
+(DFunDef false "insertMin" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EVar "balance") (EVar "y")) (EApp (EApp (EVar "insertMin") (EVar "x")) (EVar "l"))) (EVar "r")))
+(DTypeSig false "insertMax" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))
+(DFunDef false "insertMax" ((PVar "x") (PCon "Tip")) (EApp (EVar "singleton") (EVar "x")))
+(DFunDef false "insertMax" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EVar "balance") (EVar "y")) (EVar "l")) (EApp (EApp (EVar "insertMax") (EVar "x")) (EVar "r"))))
+(DTypeSig false "link" (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "link" ((PVar "x") (PCon "Tip") (PVar "r")) (EApp (EApp (EVar "insertMin") (EVar "x")) (EVar "r")))
+(DFunDef false "link" ((PVar "x") (PVar "l") (PCon "Tip")) (EApp (EApp (EVar "insertMax") (EVar "x")) (EVar "l")))
+(DFunDef false "link" ((PVar "x") (PAs "l" (PCon "Bin" (PVar "sl") (PVar "xl") (PVar "ll") (PVar "rl"))) (PAs "r" (PCon "Bin" (PVar "sr") (PVar "xr") (PVar "lr") (PVar "rr")))) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sl")) (EVar "sr")) (EApp (EApp (EApp (EVar "balance") (EVar "xr")) (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "l")) (EVar "lr"))) (EVar "rr")) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sr")) (EVar "sl")) (EApp (EApp (EApp (EVar "balance") (EVar "xl")) (EVar "ll")) (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "rl")) (EVar "r"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "bin") (EVar "x")) (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "link2" (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))
+(DFunDef false "link2" ((PCon "Tip") (PVar "r")) (EVar "r"))
+(DFunDef false "link2" ((PVar "l") (PCon "Tip")) (EVar "l"))
+(DFunDef false "link2" ((PAs "l" (PCon "Bin" (PVar "sl") (PVar "xl") (PVar "ll") (PVar "rl"))) (PAs "r" (PCon "Bin" (PVar "sr") (PVar "xr") (PVar "lr") (PVar "rr")))) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sl")) (EVar "sr")) (EApp (EApp (EApp (EVar "balance") (EVar "xr")) (EApp (EApp (EVar "link2") (EVar "l")) (EVar "lr"))) (EVar "rr")) (EIf (EBinOp "<" (EBinOp "*" (ELit (LInt 3)) (EVar "sr")) (EVar "sl")) (EApp (EApp (EApp (EVar "balance") (EVar "xl")) (EVar "ll")) (EApp (EApp (EVar "link2") (EVar "rl")) (EVar "r"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "glue") (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "splitAt" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyTuple (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))))
+(DFunDef false "splitAt" ((PVar "x") (PCon "Tip")) (ETuple (EVar "Tip") (EVar "Tip")))
+(DFunDef false "splitAt" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EDictApp "splitAt") (EVar "x")) (EVar "l"))) (DoExpr (ETuple (EVar "below") (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "above")) (EVar "r")))))) (arm (PCon "Gt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EDictApp "splitAt") (EVar "x")) (EVar "r"))) (DoExpr (ETuple (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "l")) (EVar "below")) (EVar "above"))))) (arm (PCon "Eq") () (ETuple (EVar "l") (EVar "r")))))
+(DTypeSig false "splitMember" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyTuple (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool") (TyApp (TyCon "Set") (TyVar "a")))))))
+(DFunDef false "splitMember" ((PVar "x") (PCon "Tip")) (ETuple (EVar "Tip") (EVar "False") (EVar "Tip")))
+(DFunDef false "splitMember" ((PVar "x") (PCon "Bin" PWild (PVar "y") (PVar "l") (PVar "r"))) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "found") (PVar "above")) (EApp (EApp (EDictApp "splitMember") (EVar "x")) (EVar "l"))) (DoExpr (ETuple (EVar "below") (EVar "found") (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "above")) (EVar "r")))))) (arm (PCon "Gt") () (EBlock (DoLet false false (PTuple (PVar "below") (PVar "found") (PVar "above")) (EApp (EApp (EDictApp "splitMember") (EVar "x")) (EVar "r"))) (DoExpr (ETuple (EApp (EApp (EApp (EVar "link") (EVar "y")) (EVar "l")) (EVar "below")) (EVar "found") (EVar "above"))))) (arm (PCon "Eq") () (ETuple (EVar "l") (EVar "True") (EVar "r")))))
 (DTypeSig true "union" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
-(DFunDef false "union" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EDictApp "insert") (EVar "x")) (EVar "acc")))) (EVar "b")) (EVar "a")))
+(DFunDef false "union" ((PCon "Tip") (PVar "b")) (EVar "b"))
+(DFunDef false "union" ((PVar "a") (PCon "Tip")) (EVar "a"))
+(DFunDef false "union" ((PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r")) (PVar "b")) (EBlock (DoLet false false (PTuple (PVar "bl") (PVar "br")) (EApp (EApp (EDictApp "splitAt") (EVar "x")) (EVar "b"))) (DoExpr (EApp (EApp (EApp (EVar "link") (EVar "x")) (EApp (EApp (EDictApp "union") (EVar "l")) (EVar "bl"))) (EApp (EApp (EDictApp "union") (EVar "r")) (EVar "br"))))))
 (DTypeSig true "intersection" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
-(DFunDef false "intersection" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (EApp (EDictApp "intersectStep") (EVar "b"))) (EVar "Tip")) (EVar "a")))
-(DTypeSig false "intersectStep" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))))
-(DFunDef false "intersectStep" ((PVar "b") (PVar "x") (PVar "acc")) (EIf (EApp (EApp (EDictApp "has") (EVar "x")) (EVar "b")) (EApp (EApp (EDictApp "insert") (EVar "x")) (EVar "acc")) (EVar "acc")))
+(DFunDef false "intersection" ((PCon "Tip") (PVar "b")) (EVar "Tip"))
+(DFunDef false "intersection" ((PVar "a") (PCon "Tip")) (EVar "Tip"))
+(DFunDef false "intersection" ((PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r")) (PVar "b")) (EBlock (DoLet false false (PTuple (PVar "bl") (PVar "found") (PVar "br")) (EApp (EApp (EDictApp "splitMember") (EVar "x")) (EVar "b"))) (DoLet false false (PVar "l2") (EApp (EApp (EDictApp "intersection") (EVar "l")) (EVar "bl"))) (DoLet false false (PVar "r2") (EApp (EApp (EDictApp "intersection") (EVar "r")) (EVar "br"))) (DoExpr (EIf (EVar "found") (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "l2")) (EVar "r2")) (EApp (EApp (EVar "link2") (EVar "l2")) (EVar "r2"))))))
 (DTypeSig true "difference" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
-(DFunDef false "difference" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EDictApp "delete") (EVar "x")) (EVar "acc")))) (EVar "a")) (EVar "b")))
+(DFunDef false "difference" ((PCon "Tip") (PVar "b")) (EVar "Tip"))
+(DFunDef false "difference" ((PVar "a") (PCon "Tip")) (EVar "a"))
+(DFunDef false "difference" ((PVar "a") (PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r"))) (EBlock (DoLet false false (PTuple (PVar "al") (PVar "ar")) (EApp (EApp (EDictApp "splitAt") (EVar "x")) (EVar "a"))) (DoExpr (EApp (EApp (EVar "link2") (EApp (EApp (EDictApp "difference") (EVar "al")) (EVar "l"))) (EApp (EApp (EDictApp "difference") (EVar "ar")) (EVar "r"))))))
 (DTypeSig true "isSubsetOf" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool")))))
-(DFunDef false "isSubsetOf" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EBinOp "&&" (EVar "acc") (EApp (EApp (EDictApp "has") (EVar "x")) (EVar "b"))))) (EVar "True")) (EVar "a")))
+(DFunDef false "isSubsetOf" ((PVar "a") (PVar "b")) (EBinOp "&&" (EBinOp "<=" (EApp (EVar "size") (EVar "a")) (EApp (EVar "size") (EVar "b"))) (EApp (EApp (EDictApp "subsetGo") (EVar "a")) (EVar "b"))))
+(DTypeSig false "subsetGo" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "subsetGo" ((PCon "Tip") (PVar "b")) (EVar "True"))
+(DFunDef false "subsetGo" ((PVar "a") (PCon "Tip")) (EVar "False"))
+(DFunDef false "subsetGo" ((PCon "Bin" PWild (PVar "x") (PVar "l") (PVar "r")) (PVar "b")) (EBlock (DoLet false false (PTuple (PVar "bl") (PVar "found") (PVar "br")) (EApp (EApp (EDictApp "splitMember") (EVar "x")) (EVar "b"))) (DoExpr (EBinOp "&&" (EBinOp "&&" (EVar "found") (EApp (EApp (EDictApp "subsetGo") (EVar "l")) (EVar "bl"))) (EApp (EApp (EDictApp "subsetGo") (EVar "r")) (EVar "br"))))))
 (DImpl true "Foldable" ((TyCon "Set")) () ((im "fold" ((PVar "f") (PVar "z") (PVar "s")) (EApp (EApp (EApp (EVar "foldlSet") (EVar "f")) (EVar "z")) (EVar "s"))) (im "foldRight" ((PVar "f") (PVar "z") (PVar "s")) (EApp (EApp (EApp (EVar "foldrSet") (EVar "f")) (EVar "z")) (EVar "s"))) (im "toList" ((PVar "s")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "_a") (PVar "_b")) (EBinOp "::" (EVar "_a") (EVar "_b")))) (EListLit)) (EVar "s"))) (im "isEmpty" ((PCon "Tip")) (EVar "True")) (im "isEmpty" (PWild) (EVar "False")) (im "length" ((PVar "s")) (EApp (EVar "size") (EVar "s")))))
 (DImpl true "Eq" ((TyApp (TyCon "Set") (TyVar "a"))) ((req "Eq" ((TyVar "a")))) ((im "eq" ((PVar "a") (PVar "b")) (EIf (EBinOp "!=" (EApp (EVar "size") (EVar "a")) (EApp (EVar "size") (EVar "b"))) (EVar "False") (EApp (EApp (EMethodRef "eq") (EApp (EMethodRef "toList") (EVar "a"))) (EApp (EMethodRef "toList") (EVar "b")))))))
 (DImpl true "Ord" ((TyApp (TyCon "Set") (TyVar "a"))) ((req "Ord" ((TyVar "a")))) ((im "compare" ((PVar "a") (PVar "b")) (EApp (EApp (EMethodRef "compare") (EApp (EMethodRef "toList") (EVar "a"))) (EApp (EMethodRef "toList") (EVar "b"))))))
@@ -720,3 +960,22 @@ prop "deleting a member removes it" (x : Int) (xs : List Int) =
 (DProp false "size of a union is at most the sum of sizes" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EDictApp "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EDictApp "fromList") (EVar "ys"))) (DoExpr (EBinOp "<=" (EApp (EVar "size") (EApp (EApp (EDictApp "union") (EVar "a")) (EVar "b"))) (EBinOp "+" (EApp (EVar "size") (EVar "a")) (EApp (EVar "size") (EVar "b")))))))
 (DProp false "difference elements stay in the first set" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EDictApp "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EDictApp "fromList") (EVar "ys"))) (DoExpr (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "e") (PVar "acc")) (EBinOp "&&" (EVar "acc") (EApp (EApp (EDictApp "has") (EVar "e")) (EVar "a"))))) (EVar "True")) (EApp (EApp (EDictApp "difference") (EVar "a")) (EVar "b"))))))
 (DProp false "deleting a member removes it" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EApp (EVar "not") (EApp (EApp (EDictApp "has") (EVar "x")) (EApp (EApp (EDictApp "delete") (EVar "x")) (EApp (EApp (EDictApp "insert") (EVar "x")) (EApp (EDictApp "fromList") (EVar "xs")))))))
+(DTypeSig false "naiveUnion" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "naiveUnion" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EDictApp "insert") (EVar "x")) (EVar "acc")))) (EVar "b")) (EVar "a")))
+(DTypeSig false "naiveIntersection" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "naiveIntersection" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (EApp (EDictApp "naiveIntersectStep") (EVar "b"))) (EVar "Tip")) (EVar "a")))
+(DTypeSig false "naiveIntersectStep" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyVar "a") (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a")))))))
+(DFunDef false "naiveIntersectStep" ((PVar "b") (PVar "x") (PVar "acc")) (EIf (EApp (EApp (EDictApp "has") (EVar "x")) (EVar "b")) (EApp (EApp (EDictApp "insert") (EVar "x")) (EVar "acc")) (EVar "acc")))
+(DTypeSig false "naiveDifference" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyApp (TyCon "Set") (TyVar "a"))))))
+(DFunDef false "naiveDifference" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EApp (EApp (EDictApp "delete") (EVar "x")) (EVar "acc")))) (EVar "a")) (EVar "b")))
+(DTypeSig false "naiveIsSubsetOf" (TyConstrained ((cstr "Ord" (TyVar "a"))) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyFun (TyApp (TyCon "Set") (TyVar "a")) (TyCon "Bool")))))
+(DFunDef false "naiveIsSubsetOf" ((PVar "a") (PVar "b")) (EApp (EApp (EApp (EVar "foldrSet") (ELam ((PVar "x") (PVar "acc")) (EBinOp "&&" (EVar "acc") (EApp (EApp (EDictApp "has") (EVar "x")) (EVar "b"))))) (EVar "True")) (EVar "a")))
+(DProp false "union agrees with naive fold-insert and stays well-formed" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EDictApp "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EDictApp "fromList") (EVar "ys"))) (DoLet false false (PVar "got") (EApp (EApp (EDictApp "union") (EVar "a")) (EVar "b"))) (DoExpr (EBinOp "&&" (EApp (EApp (EMethodRef "eq") (EApp (EMethodRef "toList") (EVar "got"))) (EApp (EMethodRef "toList") (EApp (EApp (EDictApp "naiveUnion") (EVar "a")) (EVar "b")))) (EApp (EDictApp "wellFormed") (EVar "got"))))))
+(DProp false "union elements stay strictly ascending" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EApp (EDictApp "ascending") (EApp (EMethodRef "toList") (EApp (EApp (EDictApp "union") (EApp (EDictApp "fromList") (EVar "xs"))) (EApp (EDictApp "fromList") (EVar "ys"))))))
+(DProp false "intersection agrees with naive and stays well-formed" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EDictApp "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EDictApp "fromList") (EVar "ys"))) (DoLet false false (PVar "got") (EApp (EApp (EDictApp "intersection") (EVar "a")) (EVar "b"))) (DoExpr (EBinOp "&&" (EApp (EApp (EMethodRef "eq") (EApp (EMethodRef "toList") (EVar "got"))) (EApp (EMethodRef "toList") (EApp (EApp (EDictApp "naiveIntersection") (EVar "a")) (EVar "b")))) (EApp (EDictApp "wellFormed") (EVar "got"))))))
+(DProp false "difference agrees with naive and stays well-formed" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EDictApp "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EDictApp "fromList") (EVar "ys"))) (DoLet false false (PVar "got") (EApp (EApp (EDictApp "difference") (EVar "a")) (EVar "b"))) (DoExpr (EBinOp "&&" (EApp (EApp (EMethodRef "eq") (EApp (EMethodRef "toList") (EVar "got"))) (EApp (EMethodRef "toList") (EApp (EApp (EDictApp "naiveDifference") (EVar "a")) (EVar "b")))) (EApp (EDictApp "wellFormed") (EVar "got"))))))
+(DProp false "isSubsetOf agrees with the naive fold" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EDictApp "fromList") (EVar "xs"))) (DoLet false false (PVar "b") (EApp (EDictApp "fromList") (EVar "ys"))) (DoExpr (EApp (EApp (EMethodRef "eq") (EApp (EApp (EDictApp "isSubsetOf") (EVar "a")) (EVar "b"))) (EApp (EApp (EDictApp "naiveIsSubsetOf") (EVar "a")) (EVar "b"))))))
+(DProp false "a subset of a union is recognised" ((pp "xs" (TyApp (TyCon "List") (TyCon "Int"))) (pp "ys" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PVar "a") (EApp (EDictApp "fromList") (EVar "xs"))) (DoExpr (EApp (EApp (EDictApp "isSubsetOf") (EVar "a")) (EApp (EApp (EDictApp "union") (EVar "a")) (EApp (EDictApp "fromList") (EVar "ys")))))))
+(DProp false "splitAt partitions around the element and both halves stay well-formed" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EDictApp "splitAt") (EVar "x")) (EApp (EDictApp "fromList") (EVar "xs")))) (DoExpr (EBinOp "&&" (EBinOp "&&" (EBinOp "&&" (EApp (EDictApp "wellFormed") (EVar "below")) (EApp (EDictApp "wellFormed") (EVar "above"))) (EApp (EApp (EVar "allElems") (ELam ((PVar "b")) (EApp (EApp (EMethodRef "lt") (EVar "b")) (EVar "x")))) (EVar "below"))) (EApp (EApp (EVar "allElems") (ELam ((PVar "a")) (EApp (EApp (EMethodRef "gt") (EVar "a")) (EVar "x")))) (EVar "above"))))))
+(DProp false "link rebuilds a well-formed set from a split" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EDictApp "splitAt") (EVar "x")) (EApp (EDictApp "fromList") (EVar "xs")))) (DoLet false false (PVar "rebuilt") (EApp (EApp (EApp (EVar "link") (EVar "x")) (EVar "below")) (EVar "above"))) (DoExpr (EBinOp "&&" (EApp (EDictApp "wellFormed") (EVar "rebuilt")) (EApp (EApp (EDictApp "has") (EVar "x")) (EVar "rebuilt"))))))
+(DProp false "link2 rejoins a split without its element" ((pp "x" (TyCon "Int")) (pp "xs" (TyApp (TyCon "List") (TyCon "Int")))) (EBlock (DoLet false false (PTuple (PVar "below") (PVar "above")) (EApp (EApp (EDictApp "splitAt") (EVar "x")) (EApp (EDictApp "fromList") (EVar "xs")))) (DoLet false false (PVar "rebuilt") (EApp (EApp (EVar "link2") (EVar "below")) (EVar "above"))) (DoExpr (EBinOp "&&" (EApp (EDictApp "wellFormed") (EVar "rebuilt")) (EApp (EApp (EMethodRef "eq") (EApp (EMethodRef "toList") (EVar "rebuilt"))) (EApp (EMethodRef "toList") (EApp (EApp (EDictApp "delete") (EVar "x")) (EApp (EDictApp "fromList") (EVar "xs")))))))))
