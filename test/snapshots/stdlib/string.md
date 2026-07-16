@@ -1,5 +1,5 @@
 # META
-source_lines=594
+source_lines=621
 stages=DESUGAR,MARK
 # SOURCE
 -- string.mdk — operations on String and Char
@@ -173,13 +173,23 @@ export utf8ByteLength : String -> Int
 utf8ByteLength s = arrayLength (toUtf8 s)
 
 {- | Parse a decimal integer, an optional leading `-`/`+` allowed; `None` on
-   any other character or on the empty string.
+   any other character, the empty string, or a magnitude outside the `Int`
+   range (`intMinBound`..`intMaxBound`) — out-of-range input is rejected
+   rather than silently wrapping.
 
    > toInt "42"
    Some 42
    > toInt "-7"
    Some -7
    > toInt "12x"
+   None
+   > toInt "4611686018427387903"
+   Some 4611686018427387903
+   > toInt "4611686018427387904"
+   None
+   > toInt "-4611686018427387904"
+   Some -4611686018427387904
+   > toInt "99999999999999999999"
    None -}
 export toInt : String -> Option Int
 toInt s =
@@ -191,28 +201,45 @@ parseInt a n = if n == 0 then None else parseSign a n (arrayGetUnsafe 0 a)
 
 parseSign : Array Char -> Int -> Char -> Option Int
 parseSign a n c
-  | c == '-' = negOpt (parseDigits a n 1 0 False)
-  | c == '+' = parseDigits a n 1 0 False
-  | otherwise = parseDigits a n 0 0 False
+  | c == '-' = parseDigits a n 1 0 False True
+  | c == '+' = parseDigits a n 1 0 False False
+  | otherwise = parseDigits a n 0 0 False False
 
-parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Option Int
-parseDigits a n i acc seen
-  | i >= n = finishInt seen acc
-  | otherwise = parseDigitStep a n i acc seen (arrayGetUnsafe i a)
+{- Accumulates a NON-POSITIVE running magnitude (`acc <= 0`) regardless of
+   the parsed sign, and detects overflow before every multiply/add rather
+   than after (`Int` wraps by design, so a post-hoc check can't see it).
+   Negative accumulation — not positive-then-negate — is deliberate:
+   `intMinBound`'s magnitude (2^62) is one larger than `intMaxBound`'s
+   (2^62 - 1), so only the negative side can hold it without overflowing;
+   `finishInt` negates back to positive only when the source had no `-`. -}
+parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Bool -> Option Int
+parseDigits a n i acc seen negative
+  | i >= n = finishInt seen acc negative
+  | otherwise = parseDigitStep a n i acc seen negative (arrayGetUnsafe i a)
 
-parseDigitStep : Array Char -> Int -> Int -> Int -> Bool -> Char -> Option Int
-parseDigitStep a n i acc seen c =
+parseDigitStep : Array Char -> Int -> Int -> Int -> Bool -> Bool -> Char -> Option Int
+parseDigitStep a n i acc seen negative c =
   if isDigit c then
-    parseDigits a n (i + 1) (acc * 10 + (charCode c - 48)) True
-  else
+    let d = charCode c - 48
+    let limit = if negative then intMinBound else 0 - intMaxBound
+    let multMin = limit / 10
+    if acc < multMin then None
+    else
+      let acc2 = acc * 10
+      if acc2 < limit + d then
+        None
+      else
+        parseDigits a n (i + 1) (acc2 - d) True negative
+  else None
+
+finishInt : Bool -> Int -> Bool -> Option Int
+finishInt seen acc negative =
+  if not seen then
     None
-
-finishInt : Bool -> Int -> Option Int
-finishInt seen acc = if seen then Some acc else None
-
-negOpt : Option Int -> Option Int
-negOpt None = None
-negOpt (Some n) = Some (0 - n)
+  else if negative then
+    Some acc
+  else
+    Some (0 - acc)
 
 {- | Parse a decimal float; `None` on failure.
 
@@ -635,16 +662,13 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DTypeSig false "parseInt" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
 (DFunDef false "parseInt" ((PVar "a") (PVar "n")) (EIf (EBinOp "==" (EVar "n") (ELit (LInt 0))) (EVar "None") (EApp (EApp (EApp (EVar "parseSign") (EVar "a")) (EVar "n")) (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EVar "a")))))
 (DTypeSig false "parseSign" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Char") (TyApp (TyCon "Option") (TyCon "Int"))))))
-(DFunDef false "parseSign" ((PVar "a") (PVar "n") (PVar "c")) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "-"))) (EApp (EVar "negOpt") (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False"))) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "+"))) (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 0))) (ELit (LInt 0))) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "parseDigits" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "Option") (TyCon "Int"))))))))
-(DFunDef false "parseDigits" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EApp (EApp (EVar "finishInt") (EVar "seen")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigitStep") (EVar "a")) (EVar "n")) (EVar "i")) (EVar "acc")) (EVar "seen")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "parseDigitStep" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Char") (TyApp (TyCon "Option") (TyCon "Int")))))))))
-(DFunDef false "parseDigitStep" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen") (PVar "c")) (EIf (EApp (EVar "isDigit") (EVar "c")) (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EBinOp "*" (EVar "acc") (ELit (LInt 10))) (EBinOp "-" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48))))) (EVar "True")) (EVar "None")))
-(DTypeSig false "finishInt" (TyFun (TyCon "Bool") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
-(DFunDef false "finishInt" ((PVar "seen") (PVar "acc")) (EIf (EVar "seen") (EApp (EVar "Some") (EVar "acc")) (EVar "None")))
-(DTypeSig false "negOpt" (TyFun (TyApp (TyCon "Option") (TyCon "Int")) (TyApp (TyCon "Option") (TyCon "Int"))))
-(DFunDef false "negOpt" ((PCon "None")) (EVar "None"))
-(DFunDef false "negOpt" ((PCon "Some" (PVar "n"))) (EApp (EVar "Some") (EBinOp "-" (ELit (LInt 0)) (EVar "n"))))
+(DFunDef false "parseSign" ((PVar "a") (PVar "n") (PVar "c")) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "-"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False")) (EVar "True")) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "+"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False")) (EVar "False")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 0))) (ELit (LInt 0))) (EVar "False")) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "parseDigits" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyApp (TyCon "Option") (TyCon "Int")))))))))
+(DFunDef false "parseDigits" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen") (PVar "negative")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EApp (EApp (EApp (EVar "finishInt") (EVar "seen")) (EVar "acc")) (EVar "negative")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigitStep") (EVar "a")) (EVar "n")) (EVar "i")) (EVar "acc")) (EVar "seen")) (EVar "negative")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "parseDigitStep" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyFun (TyCon "Char") (TyApp (TyCon "Option") (TyCon "Int"))))))))))
+(DFunDef false "parseDigitStep" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen") (PVar "negative") (PVar "c")) (EIf (EApp (EVar "isDigit") (EVar "c")) (EBlock (DoLet false false (PVar "d") (EBinOp "-" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48)))) (DoLet false false (PVar "limit") (EIf (EVar "negative") (EVar "intMinBound") (EBinOp "-" (ELit (LInt 0)) (EVar "intMaxBound")))) (DoLet false false (PVar "multMin") (EBinOp "/" (EVar "limit") (ELit (LInt 10)))) (DoExpr (EIf (EBinOp "<" (EVar "acc") (EVar "multMin")) (EVar "None") (EBlock (DoLet false false (PVar "acc2") (EBinOp "*" (EVar "acc") (ELit (LInt 10)))) (DoExpr (EIf (EBinOp "<" (EVar "acc2") (EBinOp "+" (EVar "limit") (EVar "d"))) (EVar "None") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "acc2") (EVar "d"))) (EVar "True")) (EVar "negative")))))))) (EVar "None")))
+(DTypeSig false "finishInt" (TyFun (TyCon "Bool") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "finishInt" ((PVar "seen") (PVar "acc") (PVar "negative")) (EIf (EApp (EVar "not") (EVar "seen")) (EVar "None") (EIf (EVar "negative") (EApp (EVar "Some") (EVar "acc")) (EApp (EVar "Some") (EBinOp "-" (ELit (LInt 0)) (EVar "acc"))))))
 (DTypeSig true "toFloat" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Float"))))
 (DFunDef false "toFloat" ((PVar "s")) (EApp (EVar "stringToFloat") (EVar "s")))
 (DTypeSig true "startsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
@@ -788,16 +812,13 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DTypeSig false "parseInt" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
 (DFunDef false "parseInt" ((PVar "a") (PVar "n")) (EIf (EBinOp "==" (EVar "n") (ELit (LInt 0))) (EVar "None") (EApp (EApp (EApp (EVar "parseSign") (EVar "a")) (EVar "n")) (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EVar "a")))))
 (DTypeSig false "parseSign" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Char") (TyApp (TyCon "Option") (TyCon "Int"))))))
-(DFunDef false "parseSign" ((PVar "a") (PVar "n") (PVar "c")) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "-"))) (EApp (EVar "negOpt") (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False"))) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "+"))) (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 0))) (ELit (LInt 0))) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "parseDigits" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "Option") (TyCon "Int"))))))))
-(DFunDef false "parseDigits" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EApp (EApp (EVar "finishInt") (EVar "seen")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigitStep") (EVar "a")) (EVar "n")) (EVar "i")) (EVar "acc")) (EVar "seen")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "parseDigitStep" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Char") (TyApp (TyCon "Option") (TyCon "Int")))))))))
-(DFunDef false "parseDigitStep" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen") (PVar "c")) (EIf (EApp (EVar "isDigit") (EVar "c")) (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EBinOp "*" (EVar "acc") (ELit (LInt 10))) (EBinOp "-" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48))))) (EVar "True")) (EVar "None")))
-(DTypeSig false "finishInt" (TyFun (TyCon "Bool") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
-(DFunDef false "finishInt" ((PVar "seen") (PVar "acc")) (EIf (EVar "seen") (EApp (EVar "Some") (EVar "acc")) (EVar "None")))
-(DTypeSig false "negOpt" (TyFun (TyApp (TyCon "Option") (TyCon "Int")) (TyApp (TyCon "Option") (TyCon "Int"))))
-(DFunDef false "negOpt" ((PCon "None")) (EVar "None"))
-(DFunDef false "negOpt" ((PCon "Some" (PVar "n"))) (EApp (EVar "Some") (EBinOp "-" (ELit (LInt 0)) (EVar "n"))))
+(DFunDef false "parseSign" ((PVar "a") (PVar "n") (PVar "c")) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "-"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False")) (EVar "True")) (EIf (EBinOp "==" (EVar "c") (ELit (LChar "+"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 1))) (ELit (LInt 0))) (EVar "False")) (EVar "False")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (ELit (LInt 0))) (ELit (LInt 0))) (EVar "False")) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "parseDigits" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyApp (TyCon "Option") (TyCon "Int")))))))))
+(DFunDef false "parseDigits" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen") (PVar "negative")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EApp (EApp (EApp (EVar "finishInt") (EVar "seen")) (EVar "acc")) (EVar "negative")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigitStep") (EVar "a")) (EVar "n")) (EVar "i")) (EVar "acc")) (EVar "seen")) (EVar "negative")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "a"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "parseDigitStep" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyFun (TyCon "Char") (TyApp (TyCon "Option") (TyCon "Int"))))))))))
+(DFunDef false "parseDigitStep" ((PVar "a") (PVar "n") (PVar "i") (PVar "acc") (PVar "seen") (PVar "negative") (PVar "c")) (EIf (EApp (EVar "isDigit") (EVar "c")) (EBlock (DoLet false false (PVar "d") (EBinOp "-" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 48)))) (DoLet false false (PVar "limit") (EIf (EVar "negative") (EVar "intMinBound") (EBinOp "-" (ELit (LInt 0)) (EVar "intMaxBound")))) (DoLet false false (PVar "multMin") (EBinOp "/" (EVar "limit") (ELit (LInt 10)))) (DoExpr (EIf (EBinOp "<" (EVar "acc") (EVar "multMin")) (EVar "None") (EBlock (DoLet false false (PVar "acc2") (EBinOp "*" (EVar "acc") (ELit (LInt 10)))) (DoExpr (EIf (EBinOp "<" (EVar "acc2") (EBinOp "+" (EVar "limit") (EVar "d"))) (EVar "None") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "parseDigits") (EVar "a")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "acc2") (EVar "d"))) (EVar "True")) (EVar "negative")))))))) (EVar "None")))
+(DTypeSig false "finishInt" (TyFun (TyCon "Bool") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "finishInt" ((PVar "seen") (PVar "acc") (PVar "negative")) (EIf (EApp (EVar "not") (EVar "seen")) (EVar "None") (EIf (EVar "negative") (EApp (EVar "Some") (EVar "acc")) (EApp (EVar "Some") (EBinOp "-" (ELit (LInt 0)) (EVar "acc"))))))
 (DTypeSig true "toFloat" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Float"))))
 (DFunDef false "toFloat" ((PVar "s")) (EApp (EVar "stringToFloat") (EVar "s")))
 (DTypeSig true "startsWith" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))

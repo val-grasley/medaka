@@ -169,13 +169,23 @@ export utf8ByteLength : String -> Int
 utf8ByteLength s = arrayLength (toUtf8 s)
 
 {- | Parse a decimal integer, an optional leading `-`/`+` allowed; `None` on
-   any other character or on the empty string.
+   any other character, the empty string, or a magnitude outside the `Int`
+   range (`intMinBound`..`intMaxBound`) — out-of-range input is rejected
+   rather than silently wrapping.
 
    > toInt "42"
    Some 42
    > toInt "-7"
    Some -7
    > toInt "12x"
+   None
+   > toInt "4611686018427387903"
+   Some 4611686018427387903
+   > toInt "4611686018427387904"
+   None
+   > toInt "-4611686018427387904"
+   Some -4611686018427387904
+   > toInt "99999999999999999999"
    None -}
 export toInt : String -> Option Int
 toInt s =
@@ -187,28 +197,45 @@ parseInt a n = if n == 0 then None else parseSign a n (arrayGetUnsafe 0 a)
 
 parseSign : Array Char -> Int -> Char -> Option Int
 parseSign a n c
-  | c == '-' = negOpt (parseDigits a n 1 0 False)
-  | c == '+' = parseDigits a n 1 0 False
-  | otherwise = parseDigits a n 0 0 False
+  | c == '-' = parseDigits a n 1 0 False True
+  | c == '+' = parseDigits a n 1 0 False False
+  | otherwise = parseDigits a n 0 0 False False
 
-parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Option Int
-parseDigits a n i acc seen
-  | i >= n = finishInt seen acc
-  | otherwise = parseDigitStep a n i acc seen (arrayGetUnsafe i a)
+{- Accumulates a NON-POSITIVE running magnitude (`acc <= 0`) regardless of
+   the parsed sign, and detects overflow before every multiply/add rather
+   than after (`Int` wraps by design, so a post-hoc check can't see it).
+   Negative accumulation — not positive-then-negate — is deliberate:
+   `intMinBound`'s magnitude (2^62) is one larger than `intMaxBound`'s
+   (2^62 - 1), so only the negative side can hold it without overflowing;
+   `finishInt` negates back to positive only when the source had no `-`. -}
+parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Bool -> Option Int
+parseDigits a n i acc seen negative
+  | i >= n = finishInt seen acc negative
+  | otherwise = parseDigitStep a n i acc seen negative (arrayGetUnsafe i a)
 
-parseDigitStep : Array Char -> Int -> Int -> Int -> Bool -> Char -> Option Int
-parseDigitStep a n i acc seen c =
+parseDigitStep : Array Char -> Int -> Int -> Int -> Bool -> Bool -> Char -> Option Int
+parseDigitStep a n i acc seen negative c =
   if isDigit c then
-    parseDigits a n (i + 1) (acc * 10 + (charCode c - 48)) True
-  else
+    let d = charCode c - 48
+    let limit = if negative then intMinBound else 0 - intMaxBound
+    let multMin = limit / 10
+    if acc < multMin then None
+    else
+      let acc2 = acc * 10
+      if acc2 < limit + d then
+        None
+      else
+        parseDigits a n (i + 1) (acc2 - d) True negative
+  else None
+
+finishInt : Bool -> Int -> Bool -> Option Int
+finishInt seen acc negative =
+  if not seen then
     None
-
-finishInt : Bool -> Int -> Option Int
-finishInt seen acc = if seen then Some acc else None
-
-negOpt : Option Int -> Option Int
-negOpt None = None
-negOpt (Some n) = Some (0 - n)
+  else if negative then
+    Some acc
+  else
+    Some (0 - acc)
 
 {- | Parse a decimal float; `None` on failure.
 
