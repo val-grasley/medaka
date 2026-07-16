@@ -1,5 +1,5 @@
 # META
-source_lines=336
+source_lines=338
 stages=DESUGAR,MARK
 # SOURCE
 -- Structural S-expression dump of the self-host AST, mirroring dev/astdump.ml
@@ -8,6 +8,8 @@ stages=DESUGAR,MARK
 -- the AST/parser; new variants get a matching clause here.
 
 import frontend.ast.{
+  DeriveRef(..),
+  deriveRefName,
   Lit(..),
   Ty(..),
   Constraint(..),
@@ -241,7 +243,7 @@ declSexp (DData vis n ps vs ds) = node
     escStr n,
     slist (map escStr ps),
     slist (map variantSexp vs),
-    slist (map escStr ds),
+    slist (map (d => escStr (deriveRefName d)) ds),
   ]
 declSexp (DUse pub path _) = node "DUse" [boolStr pub, usePathSexp path]
 declSexp (DEffect pub n dom) =
@@ -263,7 +265,7 @@ declSexp (DNewtype p n ps con fty ds) = node
     slist (map escStr ps),
     escStr con,
     tySexp fty,
-    slist (map escStr ds),
+    slist (map (d => escStr (deriveRefName d)) ds),
   ]
 declSexp (DLetGroup p binds) =
   node "DLetGroup" [boolStr p, slist (map letBindSexp binds)]
@@ -339,7 +341,7 @@ usePathSexp (UseAlias ids a) =
 export programToSexp : List Decl -> String
 programToSexp prog = joinNl (map declSexp prog)
 # DESUGAR
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "DeriveRef" true) (mem "deriveRefName" false) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true))))
 (DUse false (UseGroup ("support" "util") ((mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false))))
 (DTypeSig true "boolStr" (TyFun (TyCon "Bool") (TyCon "String")))
 (DFunDef false "boolStr" ((PCon "True")) (ELit (LString "true")))
@@ -472,14 +474,14 @@ programToSexp prog = joinNl (map declSexp prog)
 (DFunDef false "declSexp" ((PCon "DTypeSig" (PVar "p") (PVar "n") (PVar "t"))) (EApp (EApp (EVar "node") (ELit (LString "DTypeSig"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "tySexp") (EVar "t")))))
 (DFunDef false "declSexp" ((PCon "DExtern" (PVar "p") (PVar "n") (PVar "t"))) (EApp (EApp (EVar "node") (ELit (LString "DExtern"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "tySexp") (EVar "t")))))
 (DFunDef false "declSexp" ((PCon "DFunDef" (PVar "p") (PVar "n") (PVar "ps") (PVar "b"))) (EApp (EApp (EVar "node") (ELit (LString "DFunDef"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "patSexp")) (EVar "ps"))) (EApp (EVar "exprSexp") (EVar "b")))))
-(DFunDef false "declSexp" ((PCon "DData" (PVar "vis") (PVar "n") (PVar "ps") (PVar "vs") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DData"))) (EListLit (EApp (EVar "visSexp") (EVar "vis")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "variantSexp")) (EVar "vs"))) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ds"))))))
+(DFunDef false "declSexp" ((PCon "DData" (PVar "vis") (PVar "n") (PVar "ps") (PVar "vs") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DData"))) (EListLit (EApp (EVar "visSexp") (EVar "vis")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "variantSexp")) (EVar "vs"))) (EApp (EVar "slist") (EApp (EApp (EVar "map") (ELam ((PVar "d")) (EApp (EVar "escStr") (EApp (EVar "deriveRefName") (EVar "d"))))) (EVar "ds"))))))
 (DFunDef false "declSexp" ((PCon "DUse" (PVar "pub") (PVar "path") PWild)) (EApp (EApp (EVar "node") (ELit (LString "DUse"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "usePathSexp") (EVar "path")))))
 (DFunDef false "declSexp" ((PCon "DEffect" (PVar "pub") (PVar "n") (PVar "dom"))) (EApp (EApp (EVar "node") (ELit (LString "DEffect"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "optStrSexp") (EVar "dom")))))
 (DFunDef false "declSexp" ((PCon "DProp" (PVar "pub") (PVar "name") (PVar "params") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "DProp"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "propParamSexp")) (EVar "params"))) (EApp (EVar "exprSexp") (EVar "body")))))
 (DFunDef false "declSexp" ((PCon "DTest" (PVar "pub") (PVar "name") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "DTest"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "exprSexp") (EVar "body")))))
 (DFunDef false "declSexp" ((PCon "DBench" (PVar "pub") (PVar "name") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "DBench"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "exprSexp") (EVar "body")))))
 (DFunDef false "declSexp" ((PCon "DTypeAlias" (PVar "p") (PVar "n") (PVar "ps") (PVar "t"))) (EApp (EApp (EVar "node") (ELit (LString "DTypeAlias"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "tySexp") (EVar "t")))))
-(DFunDef false "declSexp" ((PCon "DNewtype" (PVar "p") (PVar "n") (PVar "ps") (PVar "con") (PVar "fty") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DNewtype"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "escStr") (EVar "con")) (EApp (EVar "tySexp") (EVar "fty")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ds"))))))
+(DFunDef false "declSexp" ((PCon "DNewtype" (PVar "p") (PVar "n") (PVar "ps") (PVar "con") (PVar "fty") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DNewtype"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "escStr") (EVar "con")) (EApp (EVar "tySexp") (EVar "fty")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (ELam ((PVar "d")) (EApp (EVar "escStr") (EApp (EVar "deriveRefName") (EVar "d"))))) (EVar "ds"))))))
 (DFunDef false "declSexp" ((PCon "DLetGroup" (PVar "p") (PVar "binds"))) (EApp (EApp (EVar "node") (ELit (LString "DLetGroup"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "letBindSexp")) (EVar "binds"))))))
 (DFunDef false "declSexp" ((PCon "DAttrib" (PVar "attrs") (PVar "d"))) (EApp (EApp (EVar "node") (ELit (LString "DAttrib"))) (EListLit (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "attrSexp")) (EVar "attrs"))) (EApp (EVar "declSexp") (EVar "d")))))
 (DFunDef false "declSexp" ((PRec "DInterface" ((rf "pub" None) (rf "def" None) (rf "name" None) (rf "typarams" None) (rf "supers" None) (rf "methods" None)) false)) (EApp (EApp (EVar "node") (ELit (LString "DInterface"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "boolStr") (EVar "def")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "escStr")) (EVar "typarams"))) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "superSexp")) (EVar "supers"))) (EApp (EVar "slist") (EApp (EApp (EVar "map") (EVar "ifaceMethodSexp")) (EVar "methods"))))))
@@ -511,7 +513,7 @@ programToSexp prog = joinNl (map declSexp prog)
 (DTypeSig true "programToSexp" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "String")))
 (DFunDef false "programToSexp" ((PVar "prog")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "declSexp")) (EVar "prog"))))
 # MARK
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "DeriveRef" true) (mem "deriveRefName" false) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true) (mem "Attr" true))))
 (DUse false (UseGroup ("support" "util") ((mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false))))
 (DTypeSig true "boolStr" (TyFun (TyCon "Bool") (TyCon "String")))
 (DFunDef false "boolStr" ((PCon "True")) (ELit (LString "true")))
@@ -644,14 +646,14 @@ programToSexp prog = joinNl (map declSexp prog)
 (DFunDef false "declSexp" ((PCon "DTypeSig" (PVar "p") (PVar "n") (PVar "t"))) (EApp (EApp (EVar "node") (ELit (LString "DTypeSig"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "tySexp") (EVar "t")))))
 (DFunDef false "declSexp" ((PCon "DExtern" (PVar "p") (PVar "n") (PVar "t"))) (EApp (EApp (EVar "node") (ELit (LString "DExtern"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "tySexp") (EVar "t")))))
 (DFunDef false "declSexp" ((PCon "DFunDef" (PVar "p") (PVar "n") (PVar "ps") (PVar "b"))) (EApp (EApp (EVar "node") (ELit (LString "DFunDef"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "patSexp")) (EVar "ps"))) (EApp (EVar "exprSexp") (EVar "b")))))
-(DFunDef false "declSexp" ((PCon "DData" (PVar "vis") (PVar "n") (PVar "ps") (PVar "vs") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DData"))) (EListLit (EApp (EVar "visSexp") (EVar "vis")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "variantSexp")) (EVar "vs"))) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ds"))))))
+(DFunDef false "declSexp" ((PCon "DData" (PVar "vis") (PVar "n") (PVar "ps") (PVar "vs") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DData"))) (EListLit (EApp (EVar "visSexp") (EVar "vis")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "variantSexp")) (EVar "vs"))) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (ELam ((PVar "d")) (EApp (EVar "escStr") (EApp (EVar "deriveRefName") (EVar "d"))))) (EVar "ds"))))))
 (DFunDef false "declSexp" ((PCon "DUse" (PVar "pub") (PVar "path") PWild)) (EApp (EApp (EVar "node") (ELit (LString "DUse"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "usePathSexp") (EVar "path")))))
 (DFunDef false "declSexp" ((PCon "DEffect" (PVar "pub") (PVar "n") (PVar "dom"))) (EApp (EApp (EVar "node") (ELit (LString "DEffect"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "optStrSexp") (EVar "dom")))))
 (DFunDef false "declSexp" ((PCon "DProp" (PVar "pub") (PVar "name") (PVar "params") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "DProp"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "propParamSexp")) (EVar "params"))) (EApp (EVar "exprSexp") (EVar "body")))))
 (DFunDef false "declSexp" ((PCon "DTest" (PVar "pub") (PVar "name") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "DTest"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "exprSexp") (EVar "body")))))
 (DFunDef false "declSexp" ((PCon "DBench" (PVar "pub") (PVar "name") (PVar "body"))) (EApp (EApp (EVar "node") (ELit (LString "DBench"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "exprSexp") (EVar "body")))))
 (DFunDef false "declSexp" ((PCon "DTypeAlias" (PVar "p") (PVar "n") (PVar "ps") (PVar "t"))) (EApp (EApp (EVar "node") (ELit (LString "DTypeAlias"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "tySexp") (EVar "t")))))
-(DFunDef false "declSexp" ((PCon "DNewtype" (PVar "p") (PVar "n") (PVar "ps") (PVar "con") (PVar "fty") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DNewtype"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "escStr") (EVar "con")) (EApp (EVar "tySexp") (EVar "fty")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ds"))))))
+(DFunDef false "declSexp" ((PCon "DNewtype" (PVar "p") (PVar "n") (PVar "ps") (PVar "con") (PVar "fty") (PVar "ds"))) (EApp (EApp (EVar "node") (ELit (LString "DNewtype"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "escStr") (EVar "n")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "ps"))) (EApp (EVar "escStr") (EVar "con")) (EApp (EVar "tySexp") (EVar "fty")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (ELam ((PVar "d")) (EApp (EVar "escStr") (EApp (EVar "deriveRefName") (EVar "d"))))) (EVar "ds"))))))
 (DFunDef false "declSexp" ((PCon "DLetGroup" (PVar "p") (PVar "binds"))) (EApp (EApp (EVar "node") (ELit (LString "DLetGroup"))) (EListLit (EApp (EVar "boolStr") (EVar "p")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "letBindSexp")) (EVar "binds"))))))
 (DFunDef false "declSexp" ((PCon "DAttrib" (PVar "attrs") (PVar "d"))) (EApp (EApp (EVar "node") (ELit (LString "DAttrib"))) (EListLit (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "attrSexp")) (EVar "attrs"))) (EApp (EVar "declSexp") (EVar "d")))))
 (DFunDef false "declSexp" ((PRec "DInterface" ((rf "pub" None) (rf "def" None) (rf "name" None) (rf "typarams" None) (rf "supers" None) (rf "methods" None)) false)) (EApp (EApp (EVar "node") (ELit (LString "DInterface"))) (EListLit (EApp (EVar "boolStr") (EVar "pub")) (EApp (EVar "boolStr") (EVar "def")) (EApp (EVar "escStr") (EVar "name")) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "escStr")) (EVar "typarams"))) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "superSexp")) (EVar "supers"))) (EApp (EVar "slist") (EApp (EApp (EMethodRef "map") (EVar "ifaceMethodSexp")) (EVar "methods"))))))

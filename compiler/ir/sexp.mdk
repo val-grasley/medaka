@@ -4,6 +4,8 @@
 -- the AST/parser; new variants get a matching clause here.
 
 import frontend.ast.{
+  DeriveRef(..),
+  deriveRefName,
   Lit(..),
   Ty(..),
   Constraint(..),
@@ -237,7 +239,7 @@ declSexp (DData vis n ps vs ds) = node
     escStr n,
     slist (map escStr ps),
     slist (map variantSexp vs),
-    slist (map escStr ds),
+    slist (map (d => escStr (deriveRefName d)) ds),
   ]
 declSexp (DUse pub path _) = node "DUse" [boolStr pub, usePathSexp path]
 declSexp (DEffect pub n dom) =
@@ -259,7 +261,7 @@ declSexp (DNewtype p n ps con fty ds) = node
     slist (map escStr ps),
     escStr con,
     tySexp fty,
-    slist (map escStr ds),
+    slist (map (d => escStr (deriveRefName d)) ds),
   ]
 declSexp (DLetGroup p binds) =
   node "DLetGroup" [boolStr p, slist (map letBindSexp binds)]

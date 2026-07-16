@@ -41,10 +41,13 @@ import frontend.ast.{
   Variant(..),
   Attr,
   Decl(..),
+  DeriveRef(..),
+  deriveRefName,
   Route(..),
 }
 import support.util.{
   listLen,
+  joinWith,
   contains,
   allList,
   fallthroughName,
@@ -338,8 +341,12 @@ anyRefutable (p::ps) = isRefutable p || anyRefutable ps
 -- a synthetic single-variant data deriver.  Generated bodies are core (no sugar),
 -- so they pass through the later passes unchanged.  Generated names are
 -- positional (`__a%d`/`__b%d`) — deterministic, matching the reference.
--- (Record derives, Arbitrary, and newtype Num/Generic are not exercised by the
--- corpus → deferred.)
+-- (Record derives, Arbitrary, and newtype Num/Generic remain deferred.  The old
+-- note here claimed they were "not exercised by the corpus"; that was FALSE —
+-- test/ported/test_eval_ported.mdk derives `Num` AND `Generic` on newtypes and
+-- only passes because the bindings that use them (`distRN`, `genNewtypeName`)
+-- are dead: no test forces them, and a top-level nullary is lazy.  `checkDerives`
+-- below now reports those sites instead of dropping them silently — #421.)
 expandDecl : Decl -> List Decl
 expandDecl (DData vis name params variants derives) =
   DData vis name params variants [] ::
@@ -356,44 +363,116 @@ attribHead : List Attr -> List Decl -> List Decl
 attribHead _ [] = []
 attribHead attrs (first::rest) = DAttrib attrs first :: rest
 
-deriveImpls : (String -> Option Decl) -> List String -> List Decl
+deriveImpls : (String -> Option Decl) -> List DeriveRef -> List Decl
 deriveImpls _ [] = []
-deriveImpls f (d::ds) = match f d
+deriveImpls f (d::ds) = match f (deriveRefName d)
   Some gen => gen :: deriveImpls f ds
   None => deriveImpls f ds
 
+-- Every `data` deriver, keyed by the name that selects it in `deriving (…)`.
+-- This list is THE single source of truth: `deriveForData` looks a name up here,
+-- and the "supported: …" copy in the unknown-derive diagnostic (#421) is
+-- `map fst` of this same list — so a deriver added later (#422's `Hashable`)
+-- both starts working AND starts being advertised by the message, with no
+-- hand-typed list to rot.
+-- The generator is a THUNK on purpose: Medaka is strict, so an eager
+-- `List (String, Decl)` would run all five derivers on every lookup.
+dataDerivers : String -> List String -> List Variant -> List (String, Unit -> Decl)
+dataDerivers name params variants = [
+  ("Eq", _ => applyDeriveParams name params (deriveEqData name variants)),
+  ("Ord", _ => applyDeriveParams name params (deriveOrdData name variants)),
+  (
+    "Debug",
+    _ => applyDeriveParams name params (deriveShowData "Debug" "debug" name variants),
+  ),
+  (
+    "Display",
+    _ => applyDeriveParams name params (deriveShowData "Display" "display" name variants),
+  ),
+  (
+    "Generic",
+    _ => applyDeriveParams name params (deriveGenericData name variants),
+  ),
+]
+
+-- Force the deriver `iface` selects, or None when no deriver claims the name.
+lookupDeriver : String -> List (String, Unit -> Decl) -> Option Decl
+lookupDeriver _ [] = None
+lookupDeriver n ((k, f)::rest)
+  | n == k = Some (f ())
+  | otherwise = lookupDeriver n rest
+
 deriveForData : String -> List String -> List Variant -> String -> Option Decl
-deriveForData name params variants "Eq" =
-  Some (applyDeriveParams name params (deriveEqData name variants))
-deriveForData name params variants "Debug" =
-  Some (applyDeriveParams
-    name
-    params
-    (deriveShowData "Debug" "debug" name variants))
-deriveForData name params variants "Display" =
-  Some (applyDeriveParams
-    name
-    params
-    (deriveShowData "Display" "display" name variants))
-deriveForData name params variants "Generic" =
-  Some (applyDeriveParams name params (deriveGenericData name variants))
-deriveForData name params variants "Ord" =
-  Some (applyDeriveParams name params (deriveOrdData name variants))
-deriveForData _ _ _ _ = None
+deriveForData name params variants iface =
+  lookupDeriver iface (dataDerivers name params variants)
 
 -- A newtype is structurally a single-constructor, single-field data type, so the
 -- data derivers produce the right tagged rendering via a synthetic variant.
 -- (Num/Generic use specialized derivers in lib/desugar.ml — not exercised by the
 -- corpus, so deferred; the corpus only derives Eq/Ord/Debug/Display.)
+-- The newtype deriver table — the newtype counterpart of `dataDerivers`, and
+-- likewise the single source of both the lookup and the diagnostic's copy.
+-- It is deliberately SHORTER than `dataDerivers`: `Generic` (and `Num`) go
+-- through specialized newtype derivers in lib/desugar.ml that this port has not
+-- taken, so a newtype genuinely cannot derive them here.  Keeping the two tables
+-- separate is what stops the diagnostic from advertising `Generic` on a newtype
+-- that cannot have it.
+newtypeDerivers : String -> List String -> String -> Ty -> List (String, Unit -> Decl)
+newtypeDerivers name params con fty =
+  let synthetic = [Variant con (ConPos [fty])]
+  [
+    ("Eq", _ => applyDeriveParams name params (deriveEqData name synthetic)),
+    ("Ord", _ => applyDeriveParams name params (deriveOrdData name synthetic)),
+    (
+      "Debug",
+      _ => applyDeriveParams name params (deriveShowData "Debug" "debug" name synthetic),
+    ),
+    (
+      "Display",
+      _ => applyDeriveParams name params (deriveShowData "Display" "display" name synthetic),
+    ),
+  ]
+
 deriveForNewtype : String -> List String -> String -> Ty -> String -> Option Decl
 deriveForNewtype name params con fty iface =
-  let synthetic = [Variant con (ConPos [fty])]
-  match iface
-    "Eq" => Some (applyDeriveParams name params (deriveEqData name synthetic))
-    "Ord" => Some (applyDeriveParams name params (deriveOrdData name synthetic))
-    "Debug" => Some (applyDeriveParams name params (deriveShowData "Debug" "debug" name synthetic))
-    "Display" => Some (applyDeriveParams name params (deriveShowData "Display" "display" name synthetic))
-    _ => None
+  lookupDeriver iface (newtypeDerivers name params con fty)
+
+-- ── Pass: unknown `deriving (…)` names (standalone, pre-desugar) ─────────────
+-- `expandDecl` DROPS any derive name it has no deriver for, so `deriving (Banana)`
+-- generated nothing and said nothing (#421): the failure surfaced later and
+-- elsewhere as "No impl of Banana for X" at the first use site — or never, when the
+-- impl was only needed on a rare path.  This standalone pass reports each such
+-- name.  It must run on the RAW pre-desugar AST because that is the only tree that
+-- still HAS the derives (`expandDecl` clears the field), exactly like
+-- `checkGuardExhaustiveness`'s standalone pass over the surface `EGuards` shape.
+-- Pure: it returns messages + locs and the driver pushes them, so errors keep
+-- accumulating rather than raising here.
+export checkDerives : List Decl -> List (String, Option Loc)
+checkDerives decls = flatMap declDeriveErrors decls
+
+-- The `match derives` guard is load-bearing, not style: Medaka is strict, so
+-- passing `map fst (dataDerivers …)` to a decl with NO derives would still build
+-- the deriver table for every `data` in the program.
+declDeriveErrors : Decl -> List (String, Option Loc)
+declDeriveErrors (DData _ name params variants derives) = match derives
+  [] => []
+  _ => flatMap (unknownDerive name (map fst (dataDerivers name params variants))) derives
+declDeriveErrors (DNewtype _ name params con fty derives) = match derives
+  [] => []
+  _ => flatMap (unknownDerive name (map fst (newtypeDerivers name params con fty))) derives
+declDeriveErrors (DAttrib _ d) = declDeriveErrors d
+declDeriveErrors _ = []
+
+unknownDerive : String -> List String -> DeriveRef -> List (String, Option Loc)
+unknownDerive tyName supported (DeriveRef n loc)
+  | contains n supported = []
+  | otherwise = [(cannotDeriveMsg tyName supported n, loc)]
+
+-- Reports what was OBSERVED (no deriver claims this name), not a conclusion
+-- ("unknown interface") — `Num` IS a real interface, it just has no deriver here.
+cannotDeriveMsg : String -> List String -> String -> String
+cannotDeriveMsg tyName supported n =
+  "cannot derive '\{n}' for '\{tyName}'; supported: \{joinWith ", " supported}"
 
 -- rewrite a generated impl's head/constraints for the type's params:
 -- `data Box a deriving Eq` → `impl Eq (Box a) requires Eq a`

@@ -373,11 +373,20 @@ public export data Variant = Variant String ConPayload
 -- declaration attributes: `@deprecated "msg"`, `@inline`, `@must_use`
 public export data Attr = AttrDeprecated String | AttrInline | AttrMustUse
 
+-- One name inside a `deriving (…)` clause, carrying the span of the NAME itself
+-- so desugar can point a "cannot derive" diagnostic at the offending name rather
+-- than at the decl.  The loc is `Some` only on the `parseLocated` path (the same
+-- convention as `TyCon`'s `Option Loc`); the pure `parse` path leaves placeholders.
+public export data DeriveRef = DeriveRef String (Option Loc)
+
+export deriveRefName : DeriveRef -> String
+deriveRefName (DeriveRef n _) = n
+
 public export data Decl =
   | DTypeSig Bool String Ty
   | DExtern Bool String Ty
   | DFunDef Bool String (List Pat) Expr
-  | DData DataVis String (List String) (List Variant) (List String)
+  | DData DataVis String (List String) (List Variant) (List DeriveRef)
   | DUse Bool UsePath Loc
   -- pub? name domain?  `effect Foo` (atomic host capability),
   -- `effect Net Prefix` (domain-carrying).  v2 Stage 2a: domain = Some "Prefix" or None.
@@ -403,7 +412,7 @@ public export data Decl =
   -- pub? name typarams rhs
   | DTypeAlias Bool String (List String) Ty
   -- pub? tyname typarams conname fieldty derives
-  | DNewtype Bool String (List String) String Ty (List String)
+  | DNewtype Bool String (List String) String Ty (List DeriveRef)
   -- top-level `let rec … with …` mutually-recursive group
   | DLetGroup Bool (List LetBind)
   -- `@attr…` annotations wrapping the next decl
