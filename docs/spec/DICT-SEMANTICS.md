@@ -288,13 +288,27 @@ by forbidding overlap but through its minimality premise: it applies only for
 `min⊑(match(IE, π))`, which §6 C1 requires to exist uniquely wherever `inst`
 fires. Two `⊑`-incomparable matches with no common `⊑`-lower match are
 **ambiguous overlap** and the program is rejected — most-specific-wins is a
-total tie-break, never "pick one". When both `assum`/`super` and `inst` could
-apply they must produce equivalent evidence (the consistency condition of §6).
-Where multiple derivations exist but agree, resolution picks any; where they
-could disagree, the program is rejected as incoherent — it is **not** left to
-the evaluator to choose. In particular, the choice among overlapping
-instances is made **here, once, during elaboration** — never re-made per
-resolution position, per engine, or at run time (§6 "uniform resolution", §7).
+total tie-break, never "pick one". That reject is an `inst`-vs-`inst` rule and
+scopes to `inst` alone.
+
+When both `assum`/`super` and `inst` could apply, **`assum`/`super` takes
+precedence**: a predicate already in scope is used, and `inst` fires only when
+no assumption matches (GHC's rule). This is what makes this section's "nested
+obligations themselves resolve most-specifically" realisable, and with it
+§2's "never pre-baked at the instance declaration": inside the body of a
+parametric instance the `requires` context is *in scope as an assumption*, so
+the body forwards the dict built at the **construction site's** goal rather
+than re-resolving its own rigid goal through `inst` to the general instance.
+The two are therefore not in tension — they resolve at different types, and
+`assum` is the one holding the construction goal's evidence. Note the
+precedence is only reachable when an assumption actually **matches** the goal:
+matching is structural, on rigid variables, never unification (§6.1.3) — given
+`S a`, the goal `S (List a)` is *not* an assumption in scope, `assum` stays
+silent, and `inst` correctly commits to the general instance.
+
+In particular, the choice among overlapping instances is made **here, once,
+during elaboration** — never re-made per resolution position, per engine, or at
+run time (§6 "uniform resolution", §7).
 
 **Well-formedness (for entailment to be a total function).** Beyond unique
 most-specific matches (§6 C1), resolution is decidable only if (W1) the

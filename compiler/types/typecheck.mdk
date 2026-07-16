@@ -2429,6 +2429,7 @@ data PerRun =
       seedSchemesOut : Ref (List (String, Scheme)),
       pendingArgStamps : Ref (List PendingEntry),
       activeDictVars : Ref (List (Int, String)),
+      activeDictPreds : Ref (List (String, Mono, String)),
       funConstraintsRef : Ref (List (String, List Int)),
       funConstraintIfacesRef : Ref (List (String, List String)),
       currentImportDefinersRef : Ref (List (String, String)),
@@ -2492,6 +2493,7 @@ freshPerRun _ = PerRun {
   seedSchemesOut = Ref [],
   pendingArgStamps = Ref [],
   activeDictVars = Ref [],
+  activeDictPreds = Ref [],
   funConstraintsRef = Ref [],
   funConstraintIfacesRef = Ref [],
   currentImportDefinersRef = Ref [],
@@ -9684,11 +9686,26 @@ data EntailKind =
   | EKOp Bool KeyBuckets Bool
 
 entail : ImplBuckets -> String -> Mono -> String -> EntailKind -> (Route, List Route)
-entail implTable name m encl kind = match entailAssumVar m encl name kind
+entail implTable name m encl kind = match entailAssum m encl name kind
   Some dname => (entailAssumRoute dname kind, [])
   None => match headTyconMono m
     Some tag => entailInst implTable name m encl tag kind
     None => (entailFallback implTable kind, [])
+
+-- #412: `assum`, both halves.  DICT-SEMANTICS §3 pins the precedence — `assum`/`super`
+-- takes precedence over `inst`; a predicate already in scope is USED, and `inst` fires only
+-- when no assumption matches (GHC's rule) — which is what makes :160's "sub-evidence is
+-- never pre-baked at the instance declaration" realisable.  The tyvar-keyed registry runs
+-- first and unchanged; the predicate-keyed one (registerPredGiven) then answers the
+-- STRUCTURED given (`requires S (List a)`) that `activeDictVarOf` structurally cannot see,
+-- because it recurses to the spine head and a structured subject has a TCon there.
+-- Strictly additive: every goal the tyvar path already answers routes exactly as before.
+entailAssum : Mono -> String -> String -> EntailKind -> Option String
+entailAssum m encl name kind = match entailAssumVar m encl name kind
+  Some dname => Some dname
+  None => match ifaceOfMethodName name
+    Some iface => activeDictPredOf iface m encl
+    None => None
 
 -- assum: which in-scope dict-param (if any) does [m]'s head constraint var read?  The
 -- genuine/arg kinds prefer the enclosing method's own slot (activeDictVarOfEncl); the
@@ -11903,10 +11920,104 @@ registersElementDict mname rpNames = contains mname rpNames
 
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> Unit
 registerReqSlots _ _ _ [] = ()
-registerReqSlots mname implTvMap slot ((Require _ rargs)::rest) =
+registerReqSlots mname implTvMap slot ((Require iface rargs)::rest) =
   let ids = flatMap (a => monoTyvarIds (fromAstType implTvMap a)) rargs
   let _ = registerEachActive ids (dictParamName mname slot)
+  let _ = registerPredGiven iface (map (a => fromAstType implTvMap a) rargs) (dictParamName mname slot)
   registerReqSlots mname implTvMap (slot + 1) rest
+
+-- #412: the PREDICATE-keyed half of the given registry.  `activeDictVars` above is keyed
+-- by TYVAR ID, which cannot express a STRUCTURED given: `requires S (List a)` registers
+-- only `a`'s id (monoTyvarIds descends to the leaves), and the goal `S (List a)` looks up
+-- through `activeDictVarOf`, which recurses to the SPINE HEAD (`TCon "List"`) and finds no
+-- tyvar — so `assum` was unreachable by construction and `entail` fell through to
+-- `entailInst`, statically committing the body to the GENERAL instance and discarding the
+-- most-specific dict the construction site had correctly built and passed.  DICT-SEMANTICS
+-- §3 (assum before inst) + :155-166 (sub-evidence is never pre-baked at the declaration).
+-- Keyed by (iface, subject mono) so it is neither iface-blind nor structure-blind, and
+-- matched by `monoSameGiven` — structural, on rigid-tyvar IDENTITY, never unification.
+-- Only single-parameter ifaces get a subject (multi-param `requires` registers nothing —
+-- the tyvar-id path is unchanged for them).
+--
+-- §6.1.3's rigid commit is preserved TWICE OVER, and the guard below is the load-bearing
+-- one: `requires S a` is a bare-tyvar given, so it never reaches this registry at all, and
+-- the body's goal `S (List a)` finds no assumption ⇒ `inst` fires on the rigid goal ⇒ the
+-- general instance ⇒ 2, unchanged.  Even had it been registered, `monoSameGiven` compares
+-- structurally and would not match subject `a` against goal `List a` — only unification
+-- would, and this is deliberately not unification.  Pinned by
+-- test/build_diff_fixtures/impl_requires_structured_rigid_control.mdk.
+--
+-- ⚠️ STRUCTURED subjects ONLY (`monoIsBareTyvar` guard) — a MINIMALITY guard, kept because
+-- the bare case buys nothing and costs surface, not because a gate caught it.  A bare-tyvar
+-- given (`requires S a`) is already answered by `activeDictVars`, which `entailAssum`
+-- consults FIRST, so registering it here could only ever produce a second answer to an
+-- already-answered goal.  It would also opt that goal into this registry's one sharp edge:
+-- `monoSameGiven` compares TVar to TVar by ID, and ids here are not unique forever — see
+-- the G4 note at `currentImplBody` ("an operand could normalize to an unsolved tyvar whose
+-- id collides with a stale activeDictVars entry left by a previously-inferred impl"), which
+-- `activeDictVarOf` is scope-gated against by the `inImpl` flag and this lookup is not.
+-- A STRUCTURED subject is matched head-first down a TCon spine, so it answers only a goal
+-- of the same shape at the same interface, and the id comparison is reached only after that
+-- shape already agrees.
+registerPredGiven : String -> List Mono -> String -> Unit
+registerPredGiven iface [subject] dname
+  | monoIsBareTyvar subject = ()
+  | otherwise = setRef perRun.value.activeDictPreds ((iface, subject, dname)::perRun.value.activeDictPreds.value)
+registerPredGiven _ _ _ = ()
+
+-- True iff [m] normalizes to a bare type VARIABLE (the given shape `activeDictVars`
+-- already covers). `TApp`/`TCon`/`TFun` are the STRUCTURED shapes it cannot see.
+monoIsBareTyvar : Mono -> Bool
+monoIsBareTyvar m = match normalize m
+  TVar _ => True
+  _ => False
+
+-- structural equality of two monos that may contain RIGID tyvars, compared by tyvar
+-- IDENTITY (`monoSameShape` is documented var-free and answers False on any TVar, so it
+-- cannot serve here).  Deliberately NOT unification: a given must match a goal only when
+-- it IS that goal, never by binding the given's variables.
+monoSameGiven : Mono -> Mono -> Bool
+monoSameGiven a b = match normalize a
+  TVar c1 => match normalize b
+    TVar c2 => tyvarId c1 == tyvarId c2
+    _ => False
+  TCon x => match normalize b
+    TCon y => x == y
+    _ => False
+  TApp a1 b1 => match normalize b
+    TApp a2 b2 => monoSameGiven a1 a2 && monoSameGiven b1 b2
+    _ => False
+  TFun a1 _ b1 => match normalize b
+    TFun a2 _ b2 => monoSameGiven a1 a2 && monoSameGiven b1 b2
+    _ => False
+  _ => False
+
+-- assum lookup over the predicate-keyed givens: the in-scope dict param holding evidence
+-- for `iface subject`.  PREFERS the entry owned by the enclosing method [encl] (`$dict_
+-- <encl>_<slot>`) for exactly the reason `activeDictVarForEncl` does: registerImplRequires
+-- registers every method of an impl against the SAME given, so a global first-match would
+-- return whichever method registered LAST — a dict param out of scope in this body.
+activeDictPredOf : String -> Mono -> String -> Option String
+activeDictPredOf iface subject encl =
+  let preds = perRun.value.activeDictPreds.value
+  match firstPredForEncl iface subject "$dict_\{encl}_" preds
+    Some dname => Some dname
+    None => firstPredForEncl iface subject "" preds
+
+firstPredForEncl : String -> Mono -> String -> List (String, Mono, String) -> Option String
+firstPredForEncl _ _ _ [] = None
+firstPredForEncl iface subject pfx ((eiface, esubject, ename)::rest)
+  | eiface == iface && startsWith pfx ename && monoSameGiven esubject subject =
+    Some ename
+  | otherwise = firstPredForEncl iface subject pfx rest
+
+-- the interface a method NAME belongs to, for the predicate-keyed assum lookup.  A
+-- non-method [name] (a top-level constrained call routed through EKNestedTop) is absent
+-- from methodIfaceParamsRef → None → no predicate route, tyvar-keyed behaviour unchanged.
+ifaceOfMethodName : String -> Option String
+ifaceOfMethodName name = map
+  ((iface, _, _) => iface)
+  (omLookup name perRun.value.methodIfaceParamsRef.value)
 
 registerEachActive : List Int -> String -> Unit
 registerEachActive [] _ = ()
