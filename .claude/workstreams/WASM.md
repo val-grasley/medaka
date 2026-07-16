@@ -17,6 +17,33 @@ laws, WH host-boundary laws, the host-import inventory, and the law-by-law confo
 table with issue refs). A ✗ behavior not in that table, `test/engine_divergence.txt`, or
 an open issue is an unfiled finding.
 
+> ### 🔁 CLOSING AN ISSUE IS NOT DONE UNTIL THE ROWS ASSERTING IT ARE DRAINED — **in the SAME commit**
+>
+> **This file and `docs/spec/WASM-SEMANTICS.md` drift, and both times we caught it the cause was the
+> same: nobody updated them together.** Caught twice in one session, same shape both times: #369 was FIXED while the contract's
+> N4 row still read *"✗ CONFIRMED S0"*, and #381 was CLOSED while its Perf-posture row still read
+> *"✗ STATIC"*. Both times this file was right and **the contract — the doc this very paragraph calls
+> ground truth — was the stale one.**
+>
+> **Every `#N` in that table is an encoded claim about N's state**, with no derivation and no expiry —
+> **#438** tracks that specifically (⚠️ **#383 does NOT**: it is the adjacent wasm stale-claims sweep,
+> but its 8 items never name the law table — I cited it here and was wrong, same shape as the #404 I'd
+> just cut two lines earlier). So when you close a wasm issue:
+> `grep -rn '#<N>' docs/spec/WASM-SEMANTICS.md test/engine_divergence.txt test/ENGINE-DIVERGENCE.md
+> test/CAPABILITY-EXCEPTIONS.txt .claude/workstreams/WASM.md` and drain **all** of it in the closing
+> commit. *A bug that is stale in three places is invisible in all three.*
+>
+> ⚠️ **A derived fix is NOT available today, and the obvious one does not work.** *"A gate could parse
+> the `**#N**` refs and fail when a cited issue is CLOSED"* is **false** — the table's markup is not a
+> state signal, and its own rows disprove it: **bold is used for CLOSED issues** precisely when a row
+> announces a fix (`**#369 FIXED** by #388`, `**#381 FIXED** by #401`), while **open** issues appear
+> **unbolded** (`the #349–#352 sibling census`, `shipped (#396)`), and some bold spans wrap prose
+> around the number rather than the number itself. Sharpest of all: **`#382` appears bolded once and
+> unbolded once IN THE SAME ROW.** A naive gate would flag the two rows this session just FIXED and
+> silently skip four open ones. **A gate here would need a consistent machine-readable
+> format to exist FIRST** — that is the actual prerequisite work, and nobody has done it. Until then
+> this rule is enforced by the grep above and by a reviewer, not by CI.
+
 **The playground runs on this backend, and the playground is the 0.1.0 front door.** A stranger's first
 Medaka program goes through `wasm_emit`. That is what makes this workstream a release concern and not
 a side quest.
@@ -51,10 +78,51 @@ semantics PR is in those files.
 
 ---
 
+## 🔬 THE CLASS: **a probe whose SKIPPED STEP is invisible in its output** (named 2026-07-16)
+
+**Three instances in ONE day, across BOTH backend workstreams.** That is past coincidence — treat it as
+a standing hazard whenever you point a probe at anything:
+
+| # | probe | the step it skipped, invisible in its output | what got published |
+|---|---|---|---|
+| 1 | ws:emitter's `profile_main` backend stages | **`dceFilter` never ran** — the fixtures' `main` rooted nothing, so a real build prunes all N | *"10 s to emit 16000 functions"* — a path that cannot execute |
+| 2 | our wasm `gen_match` timing | **the probe PANICKED** (`gen_match` has no `main`); `2>&1 >/dev/null` swallowed it | a real number, but of work-before-a-panic |
+| 3 | our llvm `gen_match` **control** | **the same panic** — so the "discriminating test" compared **two panics** | *"llvm is linear (2.02×)"* — false; llvm is super-linear |
+
+**Every one produced a number that looked like evidence** — plausible magnitude, clean ratios,
+reproducible. None of them announced what they had skipped. Note #3 especially: **the control was
+broken in the same way as the thing it controlled for**, which is the failure a control exists to
+prevent, so it pointed the right way *for the wrong reason* and survived review.
+
+**The bar — the only place in the tree that gets this right** is `compiler/entries/wasm_emit_gaps_main.mdk`
+(grep `GAP CENSUS`): it skips DCE **deliberately and says so, in the file**. *Skipping a step is fine.
+Skipping it silently is the bug.*
+
+**Three defences, in order of strength:**
+
+1. **Run the step inside the instrument.** ws:emitter's #396 runs `dceFilter` *inside* `profile_main`, at
+   the same pipeline point as `llvm_emit_modules_main` — the property is **demonstrated**, not argued.
+2. **Ship a FALSIFIABILITY CONTROL.** #396's: same fixture, dead root (`main = println 1`) vs live root —
+   **0.024 s vs 0.677 s, 28×**. Without one, a fixture "fix" is unfalsifiable, which is the same defect as
+   a gate that cannot fail. **This is what separates a fixed measurement from a differently-broken one.**
+3. **Assert the probe COMPLETED** — exit 0, expected marker present (`[perf] total`), output **non-empty**.
+   Never trust a timing that may have run past a panic. ⚠️ And a byte-diff over **empty** captures is a
+   green that proves nothing: #401's first WAT capture had **38 silently-empty** files that would have
+   diffed "identical".
+
+**Corollary — the unit of a claim, again.** *"Does the fixture survive DCE?"* is a **per-FIXTURE**
+question, not per-probe: `xref` puts the cost in N *unreferenced* decls (DCE prunes all N ⇒ dead
+measurement) while `gen_match` concentrates it in ONE function `main` roots (DCE **must** keep it).
+Same disease as *"a plural noun is a claim about a SET"* and *"a one-backend fix is a half fix"*: the
+general claim was the wrong unit.
+
+---
+
 ## ⭐ A new gate must land GREEN — and the perf gate already has the ledger that lets it (2026-07-16)
 
 **A gate cannot land red**: `main` would block the merge queue for every workstream. So how do you land
-#359's emit stage while #381's quadratic is still live and measuring **5.3×** against a ~2.0× threshold?
+#359's emit stage while a quadratic it grades is **still live** — as #381's was, measuring **cubic**
+against a ~2.0× threshold — without turning `main` red for everyone?
 
 **Two ways, and the second is the one to reach for:**
 
@@ -198,26 +266,66 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
 - Identity: `dictTag` is 30-bit djb2 with no collision check (#377); `gname` has
   enumerable injectivity punctures (#378 — land its collision check WITH or BEFORE #324's
   sanitizer, or a loud invalid-id failure becomes silent aliasing).
-- Perf: the emitter is `contains`-over-lists per node, like pre-audit native, plus two
-  wasm-only shapes — `ctorOrdinal` re-filters the whole ctor table per construction site
-  and per `br_table` slot, and `indent` re-maps subtree lines per nesting level (#381,
-  #382). NOTHING gates it: `diff_compiler_perf_scaling.sh` has no emit stage (#359), and
-  most of these scans allocate nothing, so the arm must grade TIME.
-  **⭐ #381 MEASURED 2026-07-16 (was STATIC) — it is WORSE than quadratic (~N^2.4).** Via the
-  discriminating test on the perf gate's own `gen_match` shape (grep `gen_match` in
-  `test/diff_compiler_perf_scaling.sh`: one data decl with N ctors + one N-arm match),
-  min-of-3, `GC_INITIAL_HEAP_SIZE=512M` pinned:
+- Perf: the emitter is `contains`-over-lists per node, like pre-audit native, plus two shapes
+  the audit called **wasm-only** — `ctorOrdinal` re-filters the whole ctor table per construction
+  site and per `br_table` slot, and `indent` re-maps subtree lines per nesting level (#381, #382).
+  ⚠️ **"wasm-only" was HALF WRONG** (measured, below): `ctorOrdinal`'s scan is **shared with
+  `llvm_emit`**; only the *slot × branch nesting* that turns it cubic is wasm's. Gating: the
+  **native** emit arm shipped in #396; **the wasm arm of #359 is still open**, so wasm emit remains
+  ungated — and the arm must grade **TIME**, since most of these scans allocate nothing (#396's
+  own headline: a live quadratic at TIME r2 = 3.96 while the ALLOC arm read a clean linear 2.04
+  and called it "ok" — the arm was not broken, it was *right and blind*).
+  **⭐ #381 MEASURED, then RE-measured twice — FIXED by #401 (`5d82fa48`). The measurement history is
+  the more useful artifact; read it before you measure anything here.**
 
-  | N | `wasm_emit_main` | ratio | `llvm_emit_main` | ratio |
+  Final numbers — **both backends, the perf gate's own `gen_match` shape made DCE-REACHABLE
+  (`main = println (toInt C0)`), through the `*_emit_modules_main` probes (which run `dceFilter`,
+  i.e. the REAL build path)**, min-of-3, `GC_INITIAL_HEAP_SIZE=512M` pinned, baseline-subtracted,
+  load < 1.5:
+
+  | N | llvm net | ratio | wasm net (pre-#401) | ratio |
   |---|---|---|---|---|
-  | 100 | 0.0402 s | 2.58× | 0.0145 s | 1.89× |
-  | 200 | 0.2456 s | 6.11× | 0.0164 s | 1.13× |
-  | 400 | 1.3019 s | **5.30×** | 0.0332 s | 2.02× |
+  | 200 | 0.0272 s | — | 0.1434 s | — |
+  | 400 | 0.0617 s | **2.27×** | 1.1348 s | **7.91×** |
+  | 800 | 0.1769 s | **2.87×** | 9.4797 s | **8.35×** |
 
-  Linear ≈ 2.0×/doubling, quadratic ≈ 4.0×. **llvm holds linear; wasm is ~N^2.4 and 39× slower at
-  N=400** ⇒ a genuine wasm-only gap, not a corpus artifact. **The audit's perf pass was grep-proven
-  but never measured — measuring took ~5 minutes and turned an S3 hypothesis into a verified one with
-  a repro.** Do that before spawning any perf fix: a static census names a shape, not a cost.
+  linear ≈ 2.0 · quadratic ≈ 4.0 · **cubic ≈ 8.0**. **wasm was CUBIC** (53× llvm at N=800); #401
+  took it to **1.90× (linear)** — a 53× win at N=400 — with byte-identical WAT across 200 fixtures.
+
+  **The mechanism, and the part that generalizes:**
+
+  | backend | cost | why |
+  |---|---|---|
+  | **llvm** | scan O(C) × per-construction-site O(N) = **O(N×C)** → quadratic | `llvm_emit`'s own `ctorOrdinal` has **the same whole-table scan** |
+  | **wasm** | same scan × per-**(slot, branch)** nesting O(N×B) = **O(N×B×C)** → cubic | wasm nests slots × branches; llvm does not |
+
+  ⇒ **the scan is SHARED; only the extra nesting factor was wasm's.** #381's original "no llvm twin"
+  framing was WRONG — llvm has a *quadratic* twin (ws:emitter measured native `match:emit` at
+  **3.71/3.73** over N=1000→4000 — filed with its numbers as **#408**, spun out of #396). #401's memo pattern is a plausible lead for #349–#352 —
+  and it was **taken from `llvm_emit`'s `ctorMapRef`/`installCtorMap` in the first place.**
+
+  ### 🔬 Three measurement traps, each of which produced a confidently WRONG published number
+
+  1. **The audit filed it STATIC** (grep-proven, never run). Measuring took ~5 minutes and turned an
+     S3 hypothesis into a verified issue. **A grep-proven census names a SHAPE, not a COST.**
+  2. **`gen_match` has NO `main`, so the probe PANICS** — and `2>&1 >/dev/null` swallows it, so you
+     time work-done-before-a-panic. Worse: reuse that repro for a WAT byte-diff and you get
+     **empty-vs-empty = a false "identical"** (#401 hit 38 silently-empty captures). ⚠️ **The
+     "discriminating test" above compared llvm vs wasm on the UNROOTED fixture — i.e. two panics —
+     and the published "llvm is linear (2.02×)" came from that.** It pointed the right way for the
+     wrong reason. **Root the fixture; assert exit 0 and non-empty output.**
+  3. **A probe that skips `dceFilter` may time emission a real build never performs.** `wasm_emit_main`
+     runs **no DCE**; `wasm_emit_modules_main` does. But **"does it survive DCE?" is a per-FIXTURE
+     question, not a per-probe one**: `xref` puts the cost in N *unreferenced* decls (DCE prunes all
+     N ⇒ dead measurement), while `gen_match` concentrates it in ONE function `main` roots (DCE
+     *must* keep it — proven: the WAT contains `func $dm400__toInt`, 4.29 MB, 79 `br_table`s).
+     Best practice, from ws:emitter (#396): run `dceFilter` **inside** the profiler, and ship a
+     **dead-vs-rooted falsifiability control** (they measured **28×**) — without one, a fixture
+     change is unfalsifiable.
+
+  **And: a scaling ratio is NOT a constant.** Our llvm reading climbed 2.27 → 2.87 over N=200→800;
+  ws:emitter's read 3.71 at N=1000→4000. Same curve, different N. **Quoting a ratio without its N
+  band is an under-specified claim** — both workstreams did it on the same day.
 
 ### ⭐ The debunkings are findings too — do NOT re-file these
 
