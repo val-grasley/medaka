@@ -238,6 +238,7 @@ import backend.wasm_preamble.{
   hashStringRuntimeLines,
   floatFmtImportLines,
   mathHostImportLines,
+  floatRemRuntimeLines,
   floatRuntimeLines,
   hashFloatRuntimeLines,
   randomFloatRuntimeLines,
@@ -1043,7 +1044,7 @@ isLeafExternW name = contains name [
   -- #101: libm math externs.  IEEE-exact ops lower to native f64 opcodes
   -- (sqrt/floor/ceil/trunc → f64.sqrt/floor/ceil/trunc; round → $mdk_round, C-round
   -- half-away-from-zero); transcendentals lower to JS `Math.*` HOST IMPORTS ($mdk_<name>,
-  -- gated on useMathRef).  floatRem lowers to $mdk_float_rem (already in floatRuntime).
+  -- gated on useMathRef).  floatRem lowers to $mdk_float_rem (floatRemRuntimeLines).
   -- All mirror llvm's isMathUnary/isMathBinary/floatRem NAME SET (see llvm_emit.mdk).
   "sqrt", "floor", "ceil", "trunc", "round",
   "cbrt", "exp", "log", "log2", "log10",
@@ -1366,7 +1367,7 @@ noteW8Extern name =
   let _ = if contains name ["floatToString", "intToFloat", "floatToInt", "hashFloat", "randomFloat"]
           then setRef useFloatRef True else ()
   -- #101: libm math externs that produce/consume a boxed $float force the Float runtime
-  -- (ref-mode + floatRuntimeLines, which also carries $mdk_round / $mdk_float_rem).
+  -- (ref-mode + floatRuntimeLines carries $mdk_round; $mdk_float_rem is floatRemRuntimeLines).
   let _ = if isFloatMathExternW name then setRef useFloatRef True else ()
   -- #101: the transcendental / binary math externs lower to JS Math.* host imports —
   -- force useMathRef so mathHostImportLines is declared.
@@ -2174,6 +2175,10 @@ emitRefProgram prog groups =
   -- W8b: the Float runtime (intToFloat/floatToInt/floatToString) + the hashFloat /
   -- randomFloat helpers (gated separately since they need mix64 / next_u64) + the
   -- string index-of / compare runtime.
+  -- #345 $mdk_float_rem backs the monomorphic Float `%` (useFloatRef) AND the num-poly
+  -- `%` value-dispatch arm ($mdk_value_mod, useValueArithRef) — emit it when EITHER is on,
+  -- so an int-only value-arith program doesn't reference a missing $mdk_float_rem.
+  let floatRemRt = if useFloatRef.value || useValueArithRef.value then floatRemRuntimeLines else []
   let floatRt = if useFloatRef.value then floatRuntimeLines else []
   let hashFloatRt = if useFloatHashRef.value then hashFloatRuntimeLines else []
   let randomFloatRt = if useFloatRngRef.value then randomFloatRuntimeLines else []
@@ -2207,7 +2212,7 @@ emitRefProgram prog groups =
   joinNl (header ++ typeSection ++ imports ++ trapImport ++ elemDecl ++ globals
             ++ fns ++ implFns ++ defaultDefs ++ lifted ++ applyRt ++ ioRt ++ strLeafRt ++ strConcatRt ++ appendRt ++ valueCmpRt ++ valueArithRt
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
-            ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
+            ++ floatRemRt ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
             ++ strCodecRt ++ charFromCodeRt ++ charClassRt ++ ioHostRt ++ ioArgsRt ++ fileBytesRt ++ floatStrRt
             ++ dataSegs ++ initLines ++ [")"])
 
@@ -4529,7 +4534,7 @@ emitValueCmpNumRef prog env d op l r =
     lv ++ rv ++ ["call $mdk_value_cmp_num", "i32.const 0", wasmBinOp op, "ref.i31"]
 
 -- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  `%` has no
--- f64 instruction, so it calls $mdk_float_rem (a - b*trunc(a/b) == fmod == LLVM frem).
+-- f64 instruction, so it calls $mdk_float_rem (exact power-of-two-reduction fmod == LLVM frem).
 -- Comparison (==,!=,<,>,<=,>=) → unbox both, f64 compare → i31 Bool.
 emitFloatBinRef : Prog -> List String -> Int -> String -> CExpr -> CExpr -> List String
 emitFloatBinRef prog env d op l r =
@@ -5178,7 +5183,7 @@ emitLeafExternRef prog env d "intBitsToFloat" [a] = emitRefExpr prog env d a
 -- #101: libm math externs.  IEEE-exact unary ops → native f64 opcodes (correctly-rounded,
 -- byte-match native libm); round → $mdk_round (C round(): half away from zero);
 -- transcendentals → JS Math.* host imports; binary pow/atan2/hypot → host imports;
--- floatRem → $mdk_float_rem (WAT fmod, already in floatRuntimeLines).  A $float is
+-- floatRem → $mdk_float_rem (WAT fmod, floatRemRuntimeLines).  A $float is
 -- unboxed to f64, the op runs, the f64 result reboxes into a fresh (struct $float).
 emitLeafExternRef prog env d "sqrt" [a] = floatArgW prog env d a
   ++ ["f64.sqrt", "struct.new $float"]

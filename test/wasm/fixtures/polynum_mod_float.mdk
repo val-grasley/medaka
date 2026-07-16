@@ -1,4 +1,6 @@
--- A0 `%` on Float through the runtime helper (a - b*trunc(a/b) == native mdk_num_mod).
+-- A0 `%` on Float through the runtime value-dispatch helper (fmod == native mdk_num_mod).
+-- NOTE: small operands only — see polynum_mod_float_large / _neg (#345) for the ratios
+-- where the old `a - b*trunc(a/b)` formula silently diverged from fmod.
 modd a b = a % b
 
 anchor : Float -> Float

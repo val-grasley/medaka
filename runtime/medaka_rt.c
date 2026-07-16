@@ -1092,7 +1092,10 @@ long long mdk_num_mod(long long l, long long r) {
     return (((l >> 1) % (r >> 1)) << 1) | 1;
   }
   double a = ((double *)l)[1], b = ((double *)r)[1];
-  return mdk_box_float(a - b * (double)((long long)(a / b)));
+  /* #345: fmod, not `a - b*trunc(a/b)`.  The trunc-cast overflows i64 when
+   * |a/b| > ~9.2e18 (e.g. 1e300 % 7) -> UB garbage -> silent wrong answer.
+   * fmod matches every other `%` path (frem inline emit, mdk_float_rem, eval). */
+  return mdk_box_float(fmod(a, b));
 }
 /* floatRem : Float -> Float -> Float — fmod, which is bit-for-bit LLVM `frem`
  * (the inline emit for `Float % Float`) so the interpreter's `%` matches build. */

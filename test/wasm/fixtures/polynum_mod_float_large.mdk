@@ -1,0 +1,10 @@
+-- #345 A0 `%` on Float through the runtime value-dispatch helper, LARGE ratio.
+-- 1e300 % 7 == 1.0 (fmod).  The old `a - b*trunc(a/b)` returned 1e300 natively (i64
+-- trunc-cast overflow -> UB) and 0.0 on wasm (f64.trunc precision loss) — this fixture
+-- pins eval == native == wasm on a ratio where the buggy formula diverged.
+modd a b = a % b
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (modd 1.0e300 7.0)

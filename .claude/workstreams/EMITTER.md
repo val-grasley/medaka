@@ -122,7 +122,8 @@ snapshot goldens — bless them by name in the same commit.
 
 ## Sequencing
 
-The DAG lives in **#362** (tracking). Shape: Phase 0 semantics defects (#345, #346, #360→#305,
+The DAG lives in **#362** (tracking). Shape: Phase 0 semantics defects (#345 ✅ FIXED — Num-poly
+Float `%` is fmod on every engine; #346, #360→#305,
 #361) → Phase 1 enforcement (#359 emit-stage perf arm; #347/#348 identity hardening) → Phase 2
 mechanical perf under the OrdMap constraint (#349 → #350 → #352; #351 gated) → Phase 3 the
 architecture arc (#353 umbrella; #354–#358 staged). Enforcement lands before optimization on
