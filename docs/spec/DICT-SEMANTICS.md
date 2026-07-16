@@ -479,7 +479,18 @@ program.
 - **C3 — Resolution determinism.** Entailment (§3) returns the same evidence
   regardless of search order; with C1 holding, `inst` is deterministic — the
   `⊑`-minimum is unique, so most-specific selection cannot reintroduce order
-  sensitivity — and `assum`/`super` agree with `inst` by C2.
+  sensitivity. Where more than one rule could fire, determinism does **not**
+  rest on the rules agreeing: §3's **precedence** (`assum`/`super` before
+  `inst`) makes the choice, so entailment is a function of the goal *and the
+  scope* `P`, never of search order. `assum` and `super` both discharge a goal
+  with evidence resolved at the **construction site's** instantiation; C2 is
+  what pins that evidence to be the most-specific one *there*. Neither is
+  required to equal what an independent `inst` would build at a **rigid**
+  use-site goal — and where they differ, the in-scope evidence wins (§3). That
+  is exactly what makes §2's uniformity of nested resolution realisable, and it
+  is not an incoherence: coherence quantifies over derivations of the **same**
+  judgment, and a rigid use-site goal and the construction goal its evidence was
+  built at are different judgments (§6.1.3).
 - **C4 — Single instance environment.** `IE`/`CE` are *global* after import
   resolution (§8). Two modules resolving the same predicate must consult the
   same instance set and produce the same evidence — otherwise C1/C2 hold only
