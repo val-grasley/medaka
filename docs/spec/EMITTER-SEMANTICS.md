@@ -221,19 +221,56 @@ laws bind **all four engines** and every reflective helper (V6).
   `nan <= nan` read True on native and wasm while eval said False. The three-way
   helpers survive **only** for the String/immediate shapes, where `-1/0/1` is
   exact; they must never again back a relational operator.
-- **N6 — `compare` at Float needs a decided total-order story.** IEEE defines
-  the four predicates; it does *not* give `compare : Float -> Float ->
-  Ordering` a lawful answer at NaN (LT/EQ/GT are all wrong; each choice makes
-  some derived operator lie). This spec pins the decision structure rather
-  than silently choosing: (i) the **derived-operator law** — `<`/`<=`/`>`/`>=`
-  at Float must **never** be routed through `compare` (they are primitive
-  IEEE predicates; N5); (ii) `compare`/`min`/`max`/`sort` at a NaN operand is
-  a **flagged owner decision** — candidates are IEEE-754 `totalOrder`
-  (−NaN < −inf … +inf < +NaN), "NaN poisons: trap E-NAN-ORD", or "unspecified
-  but engine-uniform". Until the owner decides, the *conformance requirement*
-  is engine-uniformity (R2): all four engines must give the same answer, and
-  the current per-engine improvisation is a standing R2 violation (#305
-  family). **FLAG: owner decision wanted.**
+- **N6 — `compare` at Float is IEEE-754 `totalOrder`.** IEEE defines the four
+  predicates; it does *not* give `compare : Float -> Float -> Ordering` a
+  lawful answer at NaN (LT/EQ/GT are all wrong; each choice makes some derived
+  operator lie).
+
+  **PINNED (owner decision, 2026-07-16, #360): `compare`/`min`/`max`/`sort` at
+  Float are IEEE-754 `totalOrder`:**
+
+  ```
+  −NaN < −inf < … < −0.0 < +0.0 < … < +inf < +NaN
+  ```
+
+  so `compare` is a genuine total order, and `sort`/`min`/`max` are
+  deterministic on NaN data and never crash. **Accepted cost:** `compare x y ==
+  Eq` no longer coincides with `x == y` at NaN and −0.0 — `Ord`'s total order
+  and `Eq`'s IEEE equality deliberately diverge at exactly those two points,
+  the same trade Rust's `f64::total_cmp` and Java's `Double.compare` make. This
+  retires the standing R2 (engine-uniformity) violation: the answer is now
+  specified, not improvised per engine.
+
+  What this replaced was not merely under-specified, it was **unlawful**:
+  `compare nan x` returned `Eq` for *every* `x`, so `compare` violated
+  transitivity (`nan Eq 1.0` and `nan Eq 3.0`, yet `1.0 != 3.0`). A sorted
+  result was an accident of the algorithm — an inconsistent comparator licenses
+  any permutation.
+
+  **N5 IS UNAFFECTED, AND THAT IS LOAD-BEARING.** totalOrder applies to
+  `compare`/`min`/`max`/`sort` **only**. The derived-operator law stands
+  unchanged: `<`/`<=`/`>`/`>=` at Float are primitive IEEE predicates on every
+  path, **never** routed through `compare`, and all four are False at a NaN
+  operand. The two coexist because they are answering different questions —
+  `compare` must totalize NaN to be a lawful `Ord`; the relational operators
+  must *refuse* to order it to be lawful IEEE.
+
+  The mechanism is explicit and fragile enough to name: `interface Ord`
+  **defaults** `lt`/`gt`/`lte`/`gte` to derivations of `compare`, so
+  `impl Ord Float` (`stdlib/core.mdk`) **must override all four** back to the
+  primitives. Without those overrides the Float dict hands the relational
+  operators totalOrder and `nan < 1.0` silently becomes True — re-opening the
+  #305 S0. `min`/`max` deliberately keep the compare-derived defaults: they are
+  not IEEE predicates, and #360 asks for them to be total.
+
+  Sign-bit note: totalOrder distinguishes −NaN from +NaN and −0.0 from +0.0,
+  neither of which any arithmetic predicate can see (`-0.0 == 0.0`; every NaN
+  comparison is False). The impl reads the sign out of the IEEE encoding
+  (`floatToBytes64`), on the zero/NaN cold path only. A consequence worth
+  knowing before writing a test: **a hardware NaN's sign is target-dependent**
+  (x86's `0.0/0.0` is −NaN, ARM's is +NaN), so under totalOrder a NaN's
+  *position* is a platform fact. Pin totalOrder's laws, never a NaN's absolute
+  position — see `test/eval_prelude_fixtures/float_totalorder_nan.mdk`.
 - **N7 — Conversions are total and defined.** `intToFloat` is IEEE
   round-to-nearest (63-bit ints above 2^53 round; that rounding is the
   semantics, identically everywhere). Float→Int conversions (`truncate`,
@@ -395,7 +432,7 @@ laws bind **all four engines** and every reflective helper (V6).
 | N1 wrap / N2 div-mod / N3 literals | ✅ CONFIRMED | bare `add/sub/mul` (no nsw/nuw, grep-clean), `sdiv/srem` guarded, trap codes match eval; literal tag-width guard at 2^61 handled via full-width shl |
 | N4 IEEE ops | ✅ | inline paths ✅ (`fadd…frem`, no fast-math); the runtime-dispatch Float `%` arm is now fmod on every engine (#345 FIXED) |
 | N5 IEEE compare, uniformly | ✅ | inline `fcmp o*`/`une` ✅ both backends; `nan <= nan` on global Floats CONFIRMED correct (the `RScalar` stamp covers it — a suspected divergence DISPROVED by probe); the generic/HOF (type-lost) path **#305 FIXED** — per-op IEEE predicates `mdk_value_lt/le/gt/ge` + `$mdk_value_*` peers replace the 3-way derivation; eval==native==wasm pinned by `test/llvm_fixtures_typed/float_typelost_ord_nan.mdk` (engines gate + value pin) and `test/run_check_agreement_fixtures/accept_float_ne_nan.mdk` |
-| N6 total-order story | ✗ undecided | owner decision — **#360**; until then bar = engine uniformity |
+| N6 total-order story | ✅ | **DECIDED + IMPLEMENTED 2026-07-16 (#360): IEEE-754 totalOrder** (−NaN < −inf … +inf < +NaN) for `compare`/`min`/`max`/`sort`. `impl Ord Float` (`stdlib/core.mdk`) reads the sign bit via `floatToBytes64` on the zero/NaN cold path. Accepted cost: `compare x y == Eq` ≠ `x == y` at NaN/−0.0 (cf. Rust `total_cmp`). **N5 unaffected** — the impl explicitly overrides `lt`/`gt`/`lte`/`gte` back to the IEEE primitives, because Ord's DEFAULTS would otherwise derive them from `compare` and re-open #305; `min`/`max` keep the compare-derived defaults on purpose. Pinned by `test/eval_prelude_fixtures/float_totalorder_nan.mdk` (eval + Core IR), its `build_diff_fixtures` twin (native), and `run_check_agreement_fixtures/accept_float_totalorder` (run==build==`.out`). ⚠ A hardware NaN's sign is target-dependent (x86 −NaN, arm +NaN), so those fixtures pin totalOrder's LAWS, never a NaN's absolute position |
 | N7 conversions | ✅ **FIXED (#346/#372)** | `floatToInt` saturates (NaN→0, ±inf/range→`intMaxBound`/`intMinBound`), clamped to the 63-bit domain on both backends; `floor/ceil/round/trunc` ✅ (C library, Float→Float) |
 | N8 know-don't-guess | ✗ STATIC (architectural) | five accreted recovery heuristics (`staticIsFloat`, two-pass `inferSigs` w/ mutated `sigs`, `bodyFloatRet`/`closureRetTyRef`, `RScalar`, `mainKind`) — umbrella **#353**; the `RScalar` stamp is the done-right model |
 | N9 format/parse round-trip | ✅ CONFIRMED | shortest-round-trip lexeme (revised #57), `-0.0`/nan/inf pinned, `1e+300` re-lexes (#51 CLOSED; stale AGENTS.md row — #361); IR-text literal serialization round-trips via same formatter + `ensureFloatDot`; wasm JS-host copies UNVERIFIED — #361 |

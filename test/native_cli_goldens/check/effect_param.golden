@@ -13,6 +13,8 @@ arbitraryString : Unit -> <Rand> String
 bimap : (a -> b) -> (c -> d) -> e a c -> e b d
 clamp : Ord a => a -> a -> a -> a
 compare : a -> a -> Ordering
+compareBySign : Float -> Float -> Ordering
+compareNaN : Float -> Float -> Ordering
 compose : (a -> b) -> (c -> a) -> c -> b
 const : a -> b -> a
 count : Foldable b => (a -> Bool) -> b a -> Int
@@ -42,6 +44,7 @@ find : Foldable b => (a -> Bool) -> b a -> Option a
 flat : Thenable a => a (a b) -> a b
 flatMap : Thenable b => (a -> b c) -> b a -> b c
 flip : (a -> b -> c) -> b -> a -> c
+floatSignBit : Float -> Bool
 fold : (a -> b -> a) -> a -> c b -> a
 foldMap : (a -> b) -> c a -> b
 foldRight : (a -> b -> b) -> b -> c a -> b
