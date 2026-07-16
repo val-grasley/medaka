@@ -763,3 +763,52 @@ Two physical runtimes (Boehm+tagged-word native; host-GC+structs WasmGC) are
 *expected and fine* — "one language" is guaranteed by the shared contract + the
 layering rule, not by a shared encoding. §8 and §7.1 were never in real conflict;
 they sit at different layers.
+
+---
+
+## 9. GC strategy — keep Boehm (decided 2026-07-16); the revisit trigger
+
+**Decision (collaborative):** Boehm stays the native collector through 0.1.0 and
+until the trigger below fires. A "tuned custom GC" is **not** near-term work — do
+not relitigate this without new evidence; produce the evidence via issue **#503**.
+
+**Why Boehm holds:**
+
+1. **Boehm is what makes the architecture cheap.** Conservative stack scanning
+   means the emitter carries zero root bookkeeping — no stack maps, no safepoints,
+   no rooting discipline across the ~2,100-line C extern surface (§2a's rule stays
+   one sentence: "allocate returned values via `mdk_alloc`"). That absence of
+   machinery is a large part of why the self-host fixpoint is tractable and why
+   async-runtime C shims (`docs/design/ASYNC-RUNTIME-DESIGN.md`) stay thin.
+2. **GC is semantically invisible in Medaka** — no finalizers, no weak refs in the
+   language. The collector is *fully* swappable later with zero language-visible
+   change, so waiting costs no lock-in (contrast async, where the contract had to
+   be locked early precisely because it leaks into semantics).
+3. **The measured wins keep coming from allocating less, not collecting faster**
+   (the quadratics history, parse dedup) — and the cheap ladder isn't exhausted:
+   initial-heap sizing, the free-space divisor (pinned to 1 at startup — verify,
+   don't inherit), `GC_malloc_atomic` for pointer-free payloads, incremental mode.
+   All IR-invariant (the opt-knob gates prove knobs never move emitted IR).
+4. **Nothing on the 0.1.0 north star needs it** — the playground is WasmGC (host
+   GC), and compile-run-exit native workloads don't hit Boehm's real weaknesses
+   (fragmentation over long uptimes, conservative retention).
+
+**The honest bill for the alternative.** The custom GC worth building for a strict
+functional allocation profile is precise + moving + generational (bump-allocated
+nursery; short-lived compiler garbage dies free). Precise+moving means: emitter
+stack maps/safepoints through *text* LLVM IR; every C extern rewritten to a
+rooting/handle API; the raw-pointer-across-calls assumption (tagged words, §8)
+invalidated everywhere; the §2a `set_ref` write-barrier question un-mooted; seed
+re-mints throughout stabilization. A documented middle path exists if the trigger
+fires — *conservative* Immix (Shahriyar/Blackburn 2014: within a few % of precise)
+keeps no-stack-maps while adding bump allocation — and the seam is already narrow
+and must stay so: emitted IR allocates **only** via `@mdk_alloc`/`@mdk_alloc_atomic`,
+and Boehm appears in ~10 call sites inside `runtime/medaka_rt.c`'s wrappers.
+**Discipline: no new direct `GC_*` calls outside those wrappers.**
+
+**Revisit trigger — all three, measured on the binary (issue #503):**
+(a) allocation-reduction work has plateaued (no top-tier perf issue is an
+"allocate less" fix); (b) `check` is still GC-bound with the collector's share of
+wall time quantified, not vibes; (c) the knob/atomic ladder above has been swept
+and logged in `compiler/PERF-RESULTS.md`. Until then, a custom GC is a solution
+ahead of its evidence.
