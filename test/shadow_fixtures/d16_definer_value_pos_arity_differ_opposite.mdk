@@ -1,0 +1,23 @@
+-- SHADOW-SEMANTICS cell D16: the OPPOSITE arity direction to d13 — the METHOD's
+-- arity (1) is now SMALLER than the STANDALONE's (2) (issue #410).
+--
+-- d13 covers method 2 / standalone 1; this covers method 1 / standalone 2, which
+-- exercises the other side of the route-derived arity. Pre-fix the lift built a
+-- 1-arity closure around a body calling the 2-arity standalone; post-fix
+-- methValArity reads the standalone's arity off the RLocal route, so the closure
+-- is arity 2 and `f 1 2` is a saturated direct call.
+--
+-- The result is annotated `Int` for the same reason as d13: isolate the emitter
+-- arity lie from the separate unannotated requirement-route bug (d14), which bites
+-- this shape too (unannotated, println's Display dict is emitted NULL and the
+-- binary segfaults even though no list is involved).
+-- Expected: check/run/build all accept and print 3.
+interface Sz a where
+  size : a -> Int
+
+size : Int -> Int -> Int
+size n m = n + m
+
+main =
+  let r = let f = size in f 1 2 : Int
+  println r

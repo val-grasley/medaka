@@ -1,0 +1,30 @@
+-- SHADOW-SEMANTICS cell D14: KNOWN-BAD (issue #410 headline repro).
+--
+-- Identical to d13 but WITHOUT the `List Int` annotation. The emitter arity lie
+-- d13 pins is fixed; what remains is a SEPARATE, upstream bug: `println`'s
+-- `Display (List Int)` requirement is emitted with a NULL element dict
+-- (`@mdk_dc_N = [2 x i64] [<List-display tag>, i64 0]` — the `0` is an RNone
+-- route), so `display` dereferences NULL and the shipped binary SEGFAULTs.
+--
+-- The element TYPE resolves correctly to Int (annotating `List String` reports
+-- "Type mismatch: Int vs String" at the list literal), so this is not a typing
+-- failure — it is the requirement ROUTE being stamped without being resolved
+-- against the inferred type. Adding the annotation (d13) makes the route
+-- resolve, which is what isolates the two bugs. The route is stamped in
+-- compiler/types/typecheck.mdk, so this is NOT an emitter fix.
+--
+-- Pinned BUILD_CRASH: `run` is correct ([2, 3, 4]) while the built binary
+-- crashes. This row goes RED the day the route bug is fixed — re-pin it to
+-- ALL_EXACT with value [2, 3, 4] then, and delete this note.
+interface Sizeable a where
+  size : a -> a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box a) (Box b) = a + b
+
+size : Int -> Int
+size n = n + 1
+
+main = println (map size [1, 2, 3])

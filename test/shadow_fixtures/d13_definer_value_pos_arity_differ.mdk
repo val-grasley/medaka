@@ -1,0 +1,31 @@
+-- SHADOW-SEMANTICS cell D13: definer shadow in VALUE position where the METHOD's
+-- arity (2) DIFFERS from the STANDALONE's (1) — issue #410.
+--
+-- This is the cell the corpus was structurally blind to: D4/D4b are both
+-- arity-EQUAL, and when the two arities coincide the emitter's value-position
+-- lift can read the arity off the METHOD name and still be accidentally right.
+-- With the arities differing that lie became visible: `emitMethodValue` built a
+-- 2-arity closure around a body calling the 1-arity standalone, so `map` (which
+-- applies ONE arg) got a PARTIAL APPLICATION back instead of an Int. The list
+-- then held PAP heap pointers, and `build` printed them as integers —
+-- `[70290166652896, ...]` — at exit 0, with no error. SILENT WRONGNESS.
+--
+-- The result is annotated `List Int` deliberately: that pins THIS bug (the
+-- emitter arity lie, fixed by `methValArity`) and keeps the cell independent of
+-- the SEPARATE unannotated-requirement-route bug ledgered in d14 (#410's
+-- headline repro), which is a typecheck-side NULL element dict.
+-- Expected: check/run/build all accept and print [2, 3, 4].
+interface Sizeable a where
+  size : a -> a -> Int
+
+data Box = Box Int
+
+impl Sizeable Box where
+  size (Box a) (Box b) = a + b
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  let ys = map size [1, 2, 3] : List Int
+  println ys
