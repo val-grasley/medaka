@@ -12,7 +12,9 @@
      arithmetic, correct across leap years and for negative (pre-1970) epochs.
      Medaka's `/` truncates toward zero, so the seconds→days split uses a
      `floorDiv` helper; Hinnant's own `era` adjustments already assume
-     truncating division, so they are used verbatim.
+     truncating division, so they are used verbatim.  `floorDiv` itself now
+     lives in `math.mdk` (promoted in #433 — this file used to hand-roll a
+     private copy; same algorithm, unchanged).
 
    ── Effect labels ──────────────────────────────────────────────────────
    The three externs all carry the `<Clock>` effect.  `sleepMs` reuses
@@ -22,6 +24,8 @@
    oracle has no FFI to the clock, so `wallTimeSec` / `monotonicSec` return
    fixed plausible values and `sleepMs` is a no-op.  On native `build` they
    call the real C clock / `nanosleep`. -}
+
+import math.{floorDiv}
 
 -- ── Duration ────────────────────────────────────────────────────────────
 -- | A time span, stored as a whole number of MILLISECONDS.
@@ -98,14 +102,6 @@ public export data DateTime =
       minute : Int,
       second : Int,
     }
-
--- Floor division (Medaka `/` truncates toward zero; the calendar needs floor
--- so that a negative epoch maps to the correct earlier day).
-floorDiv : Int -> Int -> Int
-floorDiv a b =
-  let q = a / b
-  let r = a - q * b
-  if r != 0 && r < 0 != (b < 0) then q - 1 else q
 
 -- Days since 1970-01-01 for a civil (y, m, d).  Hinnant's days_from_civil.
 daysFromCivil : Int -> Int -> Int -> Int
