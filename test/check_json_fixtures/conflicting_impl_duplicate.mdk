@@ -1,0 +1,16 @@
+-- #414: the duplicate-head coherence conflict.  Its message names both heads
+-- IDENTICALLY ("Overlapping impls of C: Int and Int"), so the range is the ONLY
+-- thing that can tell the two impls apart — with the old fabricated 0:0 caret the
+-- diagnostic was unusable.  The range must span the head tycon of the
+-- LATER-declared `impl C Int`.
+interface C a where
+  c : a -> Int
+
+impl C Int where
+  c _ = 1
+
+impl C Int where
+  c _ = 2
+
+main : <IO> Unit
+main = println (c 1)
