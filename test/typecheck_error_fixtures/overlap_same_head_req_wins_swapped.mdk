@@ -1,0 +1,25 @@
+-- #326 regression (swapped declaration order of overlap_same_head_req_wins.mdk): the
+-- MOST-SPECIFIC `impl Foo (Box Int) requires Baz Int` is now declared FIRST and the
+-- general `impl Foo (Box a) requires Bar a` SECOND.  min⊑ selection is declaration-order
+-- INDEPENDENT, so `foo (Box 7)` still selects `Box Int` and reports its OWN requirement,
+-- `No impl of Baz for Int` — byte-identical to the non-swapped fixture.  A declaration-
+-- order first-match (the pre-#326 checker) would instead report whichever impl leads,
+-- so the two orderings would DISAGREE — this fixture pins the order-independence.
+interface Bar a where
+  bar : a -> Int
+
+interface Baz a where
+  baz : a -> Int
+
+interface Foo a where
+  foo : a -> Int
+
+data Box a = Box a
+
+impl Foo (Box Int) requires Baz Int where
+  foo _ = 1
+
+impl Foo (Box a) requires Bar a where
+  foo _ = 0
+
+main = foo (Box 7)
