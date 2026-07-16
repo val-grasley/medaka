@@ -12,6 +12,8 @@
 --   resolve         name resolution (resolveToLines; raw prelude, desugared target)
 --   mark            method-reference marking (markWithPrelude; desugared core)
 --   typecheck       HM type inference (checkToLinesWithRuntime; desugared runtime+core)
+--   lower           Core IR lowering (lowerProgramEmit over the elaborated program)
+--   emit            LLVM text IR emission (emitProgram over the Core IR)
 --
 -- Without MEDAKA_PERF set the driver exits silently (no useful stdout output —
 -- this is a measurement tool, not a pipeline validator).
@@ -25,7 +27,36 @@ import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
 import frontend.marker.{markWithPrelude}
-import types.typecheck.{checkToLinesWithRuntime}
+import types.typecheck.{
+  checkToLinesWithRuntime,
+  elaborateDict,
+  constrainedSigNames,
+  preludeReturnPosDictNames,
+  preludeArgPosDictNames,
+  mainTypeIsUnit,
+  mainTypeIsFloat,
+}
+import eval.eval.{funNamesOf, dropShadowedExp}
+import ir.core_ir_lower.{
+  lowerProgramEmit,
+  returnsSelfTable,
+  selfFnParamTable,
+  methodIfaceTable,
+  methodConstraintIfaces,
+  ctorFieldTypeNames,
+  declSigTypeNames,
+}
+import backend.llvm_emit.{
+  emitProgram,
+  installReturnsSelf,
+  installSelfFnParams,
+  installMethodIface,
+  installMethodConstraintIfaces,
+  installCtorFieldTypes,
+  installDeclSigTypes,
+  installMainIsUnitHint,
+  installMainIsFloatHint,
+}
 import tools.fmt.{formatSource}
 import frontend.exhaust.{checkGuardExhaustivenessWith}
 import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
@@ -108,6 +139,41 @@ runStaged on rsrc csrc tsrc =
   let _ = checkToLinesWithRuntime rDecls cDecls desugared
   let tT1 = now ()
   let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
+  -- BACKEND. Until 2026-07-16 this profiler stopped at typecheck, so the O(n^2)
+  -- detector (test/diff_compiler_perf_scaling.sh) graded NO backend stage and every
+  -- emitter quadratic was invisible to it (issue #359). Same lesson as
+  -- `exhaust-guards` above, one pipeline half later: an unprofiled stage is an
+  -- unprofilable bug.
+  --
+  -- Mirrors entries/llvm_emit_typed_main.mdk (the typed LLVM driver): elaborateDict
+  -- stamps dict routes, lowerProgramEmit produces Core IR, emitProgram renders the
+  -- textual LLVM IR. The elaboration is deliberately OUTSIDE both timers — it is
+  -- typecheck-side work, and rule 1 of the gate says grade a stage, never a sum.
+  let userNames = funNamesOf desugared
+  let livePrelude = dropShadowedExp userNames cDecls
+  let combined = livePrelude ++ desugared
+  let dictNames = preludeReturnPosDictNames livePrelude combined
+        ++ preludeArgPosDictNames livePrelude combined
+        ++ constrainedSigNames desugared
+  let _ = installReturnsSelf (returnsSelfTable combined)
+  let _ = installSelfFnParams (selfFnParamTable combined)
+  let _ = installMethodIface (methodIfaceTable combined)
+  let _ = installMethodConstraintIfaces (methodConstraintIfaces combined)
+  let _ = installCtorFieldTypes (ctorFieldTypeNames combined)
+  let _ = installDeclSigTypes (declSigTypeNames rDecls ++ declSigTypeNames combined)
+  let _ = installMainIsUnitHint (mainTypeIsUnit ())
+  let _ = installMainIsFloatHint (mainTypeIsFloat ())
+  let elaborated = elaborateDict rDecls dictNames userNames combined
+  let tL0 = now ()
+  let aL0 = allocSnap ()
+  let cprog = lowerProgramEmit elaborated
+  let tL1 = now ()
+  let _ = emitPhaseA on "lower" (tL1 - tL0) (allocSnap () - aL0) declsOp
+  let tE0 = now ()
+  let aE0 = allocSnap ()
+  let _ = emitProgram cprog
+  let tE1 = now ()
+  let _ = emitPhaseA on "emit" (tE1 - tE0) (allocSnap () - aE0) declsOp
   -- fmt: the whole comment-preserving format pass (collectComments +
   -- parseWithPositions + formatProgram).  Profiled because it was NOT before, and
   -- an unprofiled pass is where a quadratic hides: the comment side-channel's
@@ -133,3 +199,7 @@ runStaged on rsrc csrc tsrc =
 -- mark: method-reference marking (desugared core as the prelude)
 
 -- typecheck: HM inference over desugared runtime + core ++ target
+
+-- lower: Core IR lowering of the elaborated program (prelude ++ target)
+
+-- emit: LLVM text IR emission from that Core IR

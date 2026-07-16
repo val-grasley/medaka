@@ -273,6 +273,10 @@ gen_bindings() {
     printf 'f%s : Int -> Int\nf%s x = x + %s\n' "$i" "$i" "$i"
     i=$((i+1))
   done >> "$f"
+  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
+  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
+  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
+  printf 'main = println 1\n' >> "$f"
 }
 
 gen_match() {
@@ -285,6 +289,10 @@ gen_match() {
   done >> "$f"
   printf 'toInt : T%s -> Int\ntoInt v = match v\n' "$n" >> "$f"
   i=0; while [ "$i" -lt "$n" ]; do printf '  C%s => %s\n' "$i" "$i"; i=$((i+1)); done >> "$f"
+  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
+  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
+  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
+  printf 'main = println 1\n' >> "$f"
 }
 
 gen_listlit() {
@@ -296,6 +304,10 @@ gen_listlit() {
     i=$((i+1))
   done >> "$f"
   printf ']\n' >> "$f"
+  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
+  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
+  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
+  printf 'main = println 1\n' >> "$f"
 }
 
 gen_nesting() {
@@ -304,6 +316,10 @@ gen_nesting() {
   printf 'deep : Int\ndeep =\n' >> "$f"
   i=0; while [ "$i" -lt "$n" ]; do printf '  let v%s = %s\n' "$i" "$i" >> "$f"; i=$((i+1)); done
   printf '  v0\n' >> "$f"
+  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
+  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
+  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
+  printf 'main = println 1\n' >> "$f"
 }
 
 gen_comments() {
@@ -325,6 +341,10 @@ gen_comments() {
     printf 'f%s x = x + %s  -- trailing comment on the body of f%s\n' "$i" "$i" "$i"
     i=$((i+1))
   done >> "$f"
+  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
+  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
+  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
+  printf 'main = println 1\n' >> "$f"
 }
 
 gen_xref() {
@@ -340,6 +360,10 @@ gen_xref() {
     printf 'f%s : Int -> Int\nf%s x = f%s x + %s\n' "$i" "$i" "$prev" "$i"
     i=$((i+1))
   done >> "$f"
+  # An `emit`-able program MUST have a `main` — emitProgram panics "no `main`
+  # binding" without one, which aborted the WHOLE profiler (issue #359 wiring).
+  # It matches the _baseline.mdk fixture, so it subtracts straight back out.
+  printf 'main = println 1\n' >> "$f"
 }
 
 # gen_modules — the ONLY multi-module generator (issue #153). Writes N separate
@@ -494,7 +518,21 @@ stage_times_min_modules() {
 # shape's TIME signal catches the class. On every OTHER shape fmt is under the
 # 200ms floor and SKIPs (loud, harmless); the `comments` shape is sized so its fmt
 # time clears the floor and is graded.
-TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt"
+# `lower` and `emit` are the BACKEND arm (issue #359). Until 2026-07-16 this list
+# stopped at typecheck, so the O(n^2) detector graded NOTHING downstream of the front
+# end and every emitter quadratic was structurally invisible to it — the same blind
+# spot that let a quadratic hide in `exhaust-guards`, one pipeline half later. The
+# 2026-07-16 emitter audit (#349-#352) filed findings that sit entirely behind it, and
+# most are PURE SCANS, so they need exactly this TIME arm: allocation cannot see them.
+#
+# ⚠️ These two stages carry a LARGE FIXED PRELUDE COST that the front-end stages do
+# not: `lower`/`emit` run over `livePrelude ++ target`, so core.mdk is lowered and
+# emitted on EVERY run (~13 MB / ~28 ms at N=1). The per-stage TIME arm does NOT
+# subtract a baseline, so that constant DILUTES the ratio toward 1.0 — a quadratic in
+# the target reads smaller here than it would in isolation. Read a `lower`/`emit`
+# ratio as a LOWER BOUND on the true exponent: over-threshold is real, under-threshold
+# is not proof of linearity.
+TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lower emit"
 
 # ── KNOWN SLOW (TIME) — a ledger, NOT a skip-list ────────────────────────────
 #
@@ -551,9 +589,42 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt"
 # #115 (match 6.0s->0.11s, listlit 5.3s->0.06s). PROMOTED OUT 2026-07-16; the modules block
 # now SKIPS the typecheck TIME below the floor (unledgered rule-4 behavior) and hard-gates it
 # as SUPERLINEAR if it ever climbs back over.
-KNOWN_SLOW_TIME=""
+#   xref:emit — FOUND BY THIS GATE the moment it could see the backend at all
+#     (2026-07-16, issue #359), and it is the SAME thesis as match:typecheck above,
+#     one pipeline half later: the LLVM emitter is QUADRATIC in the number of
+#     top-level declarations, and ALLOCATION IS BLIND TO IT.
+#
+#         xref, emit stage            TIME              ALLOC (whole-run net)
+#           N=4000                    0.694s            1128.7 MB
+#           N=8000                    2.511s  (3.62x)   2297.2 MB  (2.04x)
+#           N=16000                   9.946s  (3.96x)   4681.3 MB  (2.04x)
+#
+#     Allocation reads a clean, flat, LINEAR 2.04x/2.04x — "ok" — while emit takes
+#     TEN SECONDS to emit 16000 functions. Reproduced on THREE independent quiet-box
+#     batches (r1 3.60/3.62/3.66, r2 3.94/3.96/3.96 — the tightest spread in this
+#     file), heap pinned, min-of-5. It is NOT a GC heap-resize step: a step COLLAPSES one
+#     doubling later, and this ratio CLIMBS (3.62 -> 3.96) toward the pure-quadratic
+#     4.0 while the heap is pinned at 2 GB.
+#
+#     This is the EMPIRICAL CONFIRMATION of the 2026-07-16 emitter perf audit
+#     (#349/#350/#352), which found the quadratics by reading the source. #349
+#     (dedupS conses) allocates and should show on the alloc arm; #350/#352 are pure
+#     scans over accumulated per-decl state, which is what a flat alloc ratio beside
+#     a 3.96x time ratio looks like. Fix those and this entry PROMOTES OUT.
+#
+#     ⚠️ 3.96x is a LOWER BOUND on the true exponent, not an estimate of it. Unlike
+#     the front-end stages, `emit` pays a large FIXED prelude cost (core.mdk is
+#     emitted on every run, ~0.03s/~13 MB) that the per-stage TIME arm does not
+#     subtract, so the constant term DILUTES the measured ratio downward.
+#
+KNOWN_SLOW_TIME="xref:emit"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
+# Observed r2 3.94-3.96 across three batches; ceiling 5.2 gives the same ~1.2 absolute
+# headroom the match/listlit/modules entries use, while still catching a real
+# worsening. TFIXED 2.60 (the file-wide convention): drop under it and #349/#350/#352
+# are fixed and this entry must be promoted out.
+KNOWN_TCEIL_xref_emit="5.2";          KNOWN_TFIXED_xref_emit="2.60"
 
 is_known_time() {
   for k in $KNOWN_SLOW_TIME; do [ "$k" = "$1" ] && return 0; done
@@ -563,6 +634,12 @@ is_known_time() {
 fail=0
 known=0
 pass=0
+
+# How many times a BACKEND stage (lower/emit) actually produced a graded ratio.
+# "Green" must never mean "did not run": if these two always SKIP under the TIME_FLOOR
+# the gate silently reverts to issue #359's blind spot — grading no backend stage at
+# all — while still exiting 0. Asserted non-zero at the bottom of this file.
+backend_graded=0
 
 printf '%-10s %8s %10s %10s %10s  %6s %6s  %s\n' \
   shape N 'net-N' 'net-2N' 'net-4N' 'r1' 'r2' verdict
@@ -656,6 +733,9 @@ for shape in bindings match listlit nesting xref comments; do
 "
       continue
     fi
+
+    # Past the floor: this stage gets a real ratio. Record that the backend arm ran.
+    case "$st" in lower|emit) backend_graded=$((backend_graded+1)) ;; esac
 
     tr1="$(awk -v a="$s1" -v b="$s2" 'BEGIN{printf "%.2f", b/a}')"
     tr2="$(awk -v a="$s2" -v b="$s3" 'BEGIN{printf "%.2f", b/a}')"
@@ -878,8 +958,22 @@ esac
 printf -- '---------------------------------------------------------------------\n'
 printf '%d ok, %d known-superlinear (ledgered), %d regressed (threshold %sx per doubling)\n' "$pass" "$known" "$fail" "$THRESH"
 
+printf 'backend TIME arm (issue #359): %d lower/emit stage-ratios graded\n' "$backend_graded"
+
 # Never exit 0 having measured nothing.
 [ $((pass + known + fail)) -gt 0 ] || { echo "FAIL: the gate measured no shapes at all"; exit 1; }
+
+# Never exit 0 having graded no BACKEND stage — that is precisely issue #359, and it
+# would come back SILENTLY (every lower/emit dropping under TIME_FLOOR reads as a
+# loud-but-harmless SKIP per stage, yet in aggregate it means the O(n^2) detector is
+# once again blind to the entire second half of the pipeline). N==0 is a FAILURE.
+if [ "$backend_graded" -eq 0 ]; then
+  echo "FAIL: no backend stage (lower/emit) was graded on TIME — the #359 blind spot is back."
+  echo "      Every lower/emit reading fell under the ${TIME_FLOOR}s TIME_FLOOR. Either the"
+  echo "      profiler stopped emitting [perf] lower / [perf] emit, or the shapes shrank."
+  echo "      Do NOT 'fix' this by lowering the floor: raise N until the stage is timeable."
+  exit 1
+fi
 
 if [ "$fail" -gt 0 ]; then
   cat <<EOF
@@ -902,8 +996,12 @@ O(n^2) all by itself (list append is O(n)).
 To localize it:
   MEDAKA_PERF=1 test/bin/profile_main stdlib/runtime.mdk stdlib/core.mdk <fixture>
 gives per-STAGE time and allocation. Then \`perf\` (apt-get install linux-perf) to
-name the hot symbol -- but note call graphs are unusable in these binaries (tail
-calls, no frame pointers); use FLAT symbol counts only.
+name the hot symbol. USE DWARF CALL GRAPHS -- \`perf record --call-graph dwarf,16384\`
+-- the emitted LLVM carries CFI, so unwinding produces clean stacks. (This message
+used to say call graphs were "unusable" and to use flat counts only. That was WRONG:
+it described frame-pointer unwinding, and it cost an agent a wrong turn. Flat counts
+are still the right axis for a NON-allocating quadratic -- a hot symbol that allocates
+nothing is not a false positive, it is the bug class allocation profiling cannot see.)
 
 WARNING: \`whenL False (expensiveCall ...)\` is NOT a stub -- Medaka is strict, so
 the argument still evaluates. To stub something out, actually remove the call.
