@@ -1,5 +1,5 @@
 # META
-source_lines=3631
+source_lines=3671
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/lint.mdk — the `medaka lint` framework + seed rules.
@@ -65,6 +65,7 @@ import support.util.{
   lookupAssoc,
   dedupBy,
 }
+import hash_map.{HashMap, new, set, has, findWithDefault}
 import tools.printer.{declToString, exprToString}
 import support.char.{isAlnum, isLower, isUpper}
 import ir.sexp.{exprSexp, patSexp}
@@ -1266,10 +1267,15 @@ stdlibFinding (name, loc) = Finding {
 -- name (entry-point boilerplate).  Multi-clause defs dedupe to one finding.
 ruleMissingSignature : String -> String -> Positions -> List Decl -> List Finding
 ruleMissingSignature _ _ pos prog =
+  -- HashMap-as-set: `contains n sigNames` over the signed-name LIST was O(signs)
+  -- per def, i.e. O(defs x signs) across the filterList — and in the common case
+  -- where most defs ARE signed, signs grows with defs, so this was quadratic. It
+  -- is a PURE SCAN (no extra allocation), so the alloc signal is blind to it and
+  -- only the `manydefs` shape's lint-stage TIME catches it (the issue-#110 class).
   map
     missingSigFinding
     (filterList
-      (missingSigPair (flatMap topSigNameL prog))
+      (missingSigPair (nameSetOf (flatMap topSigNameL prog)))
       (dedupeNamesLoc (flatMap topDefNameL (declLocList pos prog))))
 
 topSigNameL : Decl -> List String
@@ -1277,8 +1283,8 @@ topSigNameL (DTypeSig _ name _) = [name]
 topSigNameL (DAttrib _ d) = topSigNameL d
 topSigNameL _ = []
 
-missingSigPair : List String -> (String, Option Loc) -> Bool
-missingSigPair sigNames (n, _) = not (n == "main" || contains n sigNames)
+missingSigPair : HashMap String Unit -> (String, Option Loc) -> Bool
+missingSigPair sigNames (n, _) = not (n == "main" || has n sigNames)
 
 missingSigFinding : (String, Option Loc) -> Finding
 missingSigFinding (name, loc) = Finding {
@@ -3319,8 +3325,8 @@ ruleDeadCode _ src pos prog =
   let reach = reachableNames src prog
   map deadFinding (filterList (deadPair reach) (privateDefLocs pos prog))
 
-deadPair : List String -> (String, Option Loc) -> Bool
-deadPair reach (n, _) = not (contains n reach)
+deadPair : HashMap String Unit -> (String, Option Loc) -> Bool
+deadPair reach (n, _) = not (has n reach)
 
 deadFinding : (String, Option Loc) -> Finding
 deadFinding (name, loc) = Finding {
@@ -3340,18 +3346,35 @@ deadFinding (name, loc) = Finding {
 -- flag alone.
 privateDefLocs : Positions -> List Decl -> List (String, Option Loc)
 privateDefLocs pos prog =
-  let exported = exportedNames prog
+  -- HashMap-as-set: `contains` over the exported LIST was O(exports) per decl,
+  -- i.e. O(decls x exports) over the filterList — one of this rule's four
+  -- List-as-a-set quadratics (see reachableNames).  Membership only; order
+  -- irrelevant.
+  let exported = nameSetOf (exportedNames prog)
   dedupeNamesLoc (filterList
     (candidatePair exported)
     (flatMap allDefNameL (declLocList pos prog)))
+
+-- Build a HashMap-as-set from a name list (membership testing only).
+nameSetOf : List String -> HashMap String Unit
+nameSetOf names =
+  let s = new ()
+  let _ = nameSetInto names s
+  s
+
+nameSetInto : List String -> HashMap String Unit -> Unit
+nameSetInto [] _ = ()
+nameSetInto (n::rest) s =
+  let _ = set n () s
+  nameSetInto rest s
 
 allDefNameL : (Decl, Option Loc) -> List (String, Option Loc)
 allDefNameL (DFunDef _ name _ _, loc) = [(name, loc)]
 allDefNameL (DAttrib _ d, loc) = allDefNameL (d, loc)
 allDefNameL _ = []
 
-candidatePair : List String -> (String, Option Loc) -> Bool
-candidatePair exported (n, _) = isOrdinaryIdent n && not (contains n exported)
+candidatePair : HashMap String Unit -> (String, Option Loc) -> Bool
+candidatePair exported (n, _) = isOrdinaryIdent n && not (has n exported)
 
 isOrdinaryIdent : String -> Bool
 isOrdinaryIdent s
@@ -3359,11 +3382,22 @@ isOrdinaryIdent s
   | otherwise = isIdentStart (arrayGetUnsafe 0 (stringToChars s))
 
 -- the set of names reachable from the file's roots (fixpoint closure).
-reachableNames : String -> List Decl -> List String
+--
+-- HashMap-backed, mirroring ir/dce.mdk's `reachableNames`/`funGraph`/`closure`
+-- (the SAME algorithm, whose assoc-list version was retired there for being
+-- O(N^2)).  This copy kept the list version and so kept the quadratics: the ref
+-- map was an assoc list rebuilt per clause (`acc ++ [(n, rs)]` copies a GROWING
+-- list every element) with an O(names) `lookupAssoc`/`replaceAssoc` on each, and
+-- the BFS tested membership with `contains` over a `visited` LIST.  Now: O(1)-
+-- average membership + O(1) graph lookup -> ~O(names + edges).  Consumed only by
+-- `deadPair`'s membership test, so order and duplicates are irrelevant.
+reachableNames : String -> List Decl -> HashMap String Unit
 reachableNames src prog =
   let refMap = mergeRefs (flatMap defRefPair prog)
   let seed = exportedNames prog ++ ("main" :: flatMap nonDefRefL prog ++ doctestIdents src)
-  bfsReach refMap [] seed
+  let visited = new ()
+  let _ = bfsReach refMap visited seed
+  visited
 
 -- one (defName, bodyRefs) per top-level DFunDef clause; refs are the identifier
 -- tokens of the printed decl (deduped).
@@ -3417,33 +3451,39 @@ bodyIdents d = sortUniqS (identTokens (declToString d))
 -- and enqueue its body refs (only DFunDef keys have refs; every other name is a
 -- leaf).  Terminates because `visited` grows monotonically and each name is
 -- expanded once.
-bfsReach : List (String, List String) -> List String -> List String -> List String
-bfsReach _ visited [] = visited
+-- BFS over the ref graph: pop a name; if already visited skip; else mark visited
+-- and enqueue its body refs (only DFunDef keys have refs; every other name is a
+-- leaf).  Terminates because `visited` grows monotonically and each name is
+-- expanded once.  `has`/`set` are O(1) average, so this is ~O(names + edges); the
+-- old `contains x visited` over a list made it O(names^2).
+bfsReach : HashMap String (List String) -> HashMap String Unit -> List String -> Unit
+bfsReach _ _ [] = ()
 bfsReach refMap visited (x::rest)
-  | contains x visited = bfsReach refMap visited rest
-  | otherwise = bfsReach refMap (x::visited) (refsOf refMap x ++ rest)
+  | has x visited = bfsReach refMap visited rest
+  | otherwise =
+    let _ = set x () visited
+    bfsReach refMap visited (refsOf refMap x ++ rest)
 
-refsOf : List (String, List String) -> String -> List String
-refsOf refMap n = match lookupAssoc n refMap
-  Some rs => rs
-  None => []
+refsOf : HashMap String (List String) -> String -> List String
+refsOf refMap n = findWithDefault [] n refMap
 
 -- merge same-named clause ref-lists into one entry per name (union, deduped).
-mergeRefs : List (String, List String) -> List (String, List String)
-mergeRefs pairs = mergeRefsGo [] pairs
+-- HashMap-backed: the old assoc-list version did an O(names) `lookupAssoc` plus
+-- either an O(names) `replaceAssoc` or an `acc ++ [(n, rs)]` — which COPIES the
+-- whole growing accumulator on every element — making map construction O(D^2) in
+-- both time and allocation (the dominant allocator: 56 MB -> 1138 MB across
+-- 400 -> 3200 defs).  Refs feed a membership-only closure, so order is irrelevant.
+mergeRefs : List (String, List String) -> HashMap String (List String)
+mergeRefs pairs =
+  let m = new ()
+  let _ = mergeRefsGo m pairs
+  m
 
-mergeRefsGo : List (String, List String) -> List (String, List String) -> List (String, List String)
-mergeRefsGo acc [] = acc
-mergeRefsGo acc ((n, rs)::rest) = match lookupAssoc n acc
-  Some existing =>
-    mergeRefsGo (replaceAssoc n (sortUniqS (existing ++ rs)) acc) rest
-  None => mergeRefsGo (acc ++ [(n, rs)]) rest
-
-replaceAssoc : String -> List String -> List (String, List String) -> List (String, List String)
-replaceAssoc _ _ [] = []
-replaceAssoc n v ((k, old)::rest)
-  | k == n = (n, v)::rest
-  | otherwise = (k, old) :: replaceAssoc n v rest
+mergeRefsGo : HashMap String (List String) -> List (String, List String) -> Unit
+mergeRefsGo _ [] = ()
+mergeRefsGo acc ((n, rs)::rest) =
+  let _ = set n (sortUniqS (findWithDefault [] n acc ++ rs)) acc
+  mergeRefsGo acc rest
 
 -- ── identifier tokeniser ──────────────────────────────────────────────────────
 -- Maximal runs of identifier characters that START with a letter or `_`.  Over-
@@ -3638,6 +3678,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DUse false (UseGroup ("frontend" "parser") ((mem "Positions" false) (mem "DeclPos" false) (mem "positionsDecls" false) (mem "declPosLine" false) (mem "declPosEndLine" false) (mem "parseWithPositions" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "Severity" true) (mem "Diag" true) (mem "ppSeverity" false) (mem "readFileSafe" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "anyList" false) (mem "allList" false) (mem "filterList" false) (mem "joinNl" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "splitNl" false) (mem "splitOnChar" false) (mem "joinWith" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "lookupAssoc" false) (mem "dedupBy" false))))
+(DUse false (UseGroup ("hash_map") ((mem "HashMap" false) (mem "new" false) (mem "set" false) (mem "has" false) (mem "findWithDefault" false))))
 (DUse false (UseGroup ("tools" "printer") ((mem "declToString" false) (mem "exprToString" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isAlnum" false) (mem "isLower" false) (mem "isUpper" false))))
 (DUse false (UseGroup ("ir" "sexp") ((mem "exprSexp" false) (mem "patSexp" false))))
@@ -3999,13 +4040,13 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "stdlibFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))
 (DFunDef false "stdlibFinding" ((PTuple (PVar "name") (PVar "loc"))) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameStdlibReimpl")) (fa "message" (EBinOp "++" (EBinOp "++" (ELit (LString "top-level '")) (EVar "name")) (ELit (LString "' shadows a stdlib function — use the stdlib version")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "ruleMissingSignature" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Finding")))))))
-(DFunDef false "ruleMissingSignature" (PWild PWild (PVar "pos") (PVar "prog")) (EApp (EApp (EVar "map") (EVar "missingSigFinding")) (EApp (EApp (EVar "filterList") (EApp (EVar "missingSigPair") (EApp (EApp (EVar "flatMap") (EVar "topSigNameL")) (EVar "prog")))) (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EVar "flatMap") (EVar "topDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog")))))))
+(DFunDef false "ruleMissingSignature" (PWild PWild (PVar "pos") (PVar "prog")) (EApp (EApp (EVar "map") (EVar "missingSigFinding")) (EApp (EApp (EVar "filterList") (EApp (EVar "missingSigPair") (EApp (EVar "nameSetOf") (EApp (EApp (EVar "flatMap") (EVar "topSigNameL")) (EVar "prog"))))) (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EVar "flatMap") (EVar "topDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog")))))))
 (DTypeSig false "topSigNameL" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "topSigNameL" ((PCon "DTypeSig" PWild (PVar "name") PWild)) (EListLit (EVar "name")))
 (DFunDef false "topSigNameL" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "topSigNameL") (EVar "d")))
 (DFunDef false "topSigNameL" (PWild) (EListLit))
-(DTypeSig false "missingSigPair" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
-(DFunDef false "missingSigPair" ((PVar "sigNames") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EBinOp "||" (EBinOp "==" (EVar "n") (ELit (LString "main"))) (EApp (EApp (EVar "contains") (EVar "n")) (EVar "sigNames")))))
+(DTypeSig false "missingSigPair" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
+(DFunDef false "missingSigPair" ((PVar "sigNames") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EBinOp "||" (EBinOp "==" (EVar "n") (ELit (LString "main"))) (EApp (EApp (EVar "has") (EVar "n")) (EVar "sigNames")))))
 (DTypeSig false "missingSigFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))
 (DFunDef false "missingSigFinding" ((PTuple (PVar "name") (PVar "loc"))) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameMissingSignature")) (fa "message" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "top-level '")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "' has no type signature. Add a `"))) (EApp (EVar "display") (EVar "name"))) (ELit (LString " : …` declaration")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "irrefutablePat" (TyFun (TyCon "Oracle") (TyFun (TyCon "Pat") (TyCon "Bool"))))
@@ -4825,22 +4866,27 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "bindChainFinding" ((PVar "loc") PWild) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameBindChainToDo")) (fa "message" (ELit (LString "deep nested Result/Option passthrough-bind `match` chain (≥3 binds). Rewrite as a `do` block"))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "ruleDeadCode" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Finding")))))))
 (DFunDef false "ruleDeadCode" (PWild (PVar "src") (PVar "pos") (PVar "prog")) (EBlock (DoLet false false (PVar "reach") (EApp (EApp (EVar "reachableNames") (EVar "src")) (EVar "prog"))) (DoExpr (EApp (EApp (EVar "map") (EVar "deadFinding")) (EApp (EApp (EVar "filterList") (EApp (EVar "deadPair") (EVar "reach"))) (EApp (EApp (EVar "privateDefLocs") (EVar "pos")) (EVar "prog")))))))
-(DTypeSig false "deadPair" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
-(DFunDef false "deadPair" ((PVar "reach") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "reach"))))
+(DTypeSig false "deadPair" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
+(DFunDef false "deadPair" ((PVar "reach") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EApp (EApp (EVar "has") (EVar "n")) (EVar "reach"))))
 (DTypeSig false "deadFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))
 (DFunDef false "deadFinding" ((PTuple (PVar "name") (PVar "loc"))) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameDeadCode")) (fa "message" (EBinOp "++" (EBinOp "++" (ELit (LString "private top-level '")) (EVar "name")) (ELit (LString "' is unreachable from exports/main/doctests — remove it (dead code)")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "privateDefLocs" (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))
-(DFunDef false "privateDefLocs" ((PVar "pos") (PVar "prog")) (EBlock (DoLet false false (PVar "exported") (EApp (EVar "exportedNames") (EVar "prog"))) (DoExpr (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EVar "filterList") (EApp (EVar "candidatePair") (EVar "exported"))) (EApp (EApp (EVar "flatMap") (EVar "allDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog"))))))))
+(DFunDef false "privateDefLocs" ((PVar "pos") (PVar "prog")) (EBlock (DoLet false false (PVar "exported") (EApp (EVar "nameSetOf") (EApp (EVar "exportedNames") (EVar "prog")))) (DoExpr (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EVar "filterList") (EApp (EVar "candidatePair") (EVar "exported"))) (EApp (EApp (EVar "flatMap") (EVar "allDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog"))))))))
+(DTypeSig false "nameSetOf" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit"))))
+(DFunDef false "nameSetOf" ((PVar "names")) (EBlock (DoLet false false (PVar "s") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "nameSetInto") (EVar "names")) (EVar "s"))) (DoExpr (EVar "s"))))
+(DTypeSig false "nameSetInto" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyCon "Unit"))))
+(DFunDef false "nameSetInto" ((PList) PWild) (ELit LUnit))
+(DFunDef false "nameSetInto" ((PCons (PVar "n") (PVar "rest")) (PVar "s")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EVar "n")) (ELit LUnit)) (EVar "s"))) (DoExpr (EApp (EApp (EVar "nameSetInto") (EVar "rest")) (EVar "s")))))
 (DTypeSig false "allDefNameL" (TyFun (TyTuple (TyCon "Decl") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "allDefNameL" ((PTuple (PCon "DFunDef" PWild (PVar "name") PWild PWild) (PVar "loc"))) (EListLit (ETuple (EVar "name") (EVar "loc"))))
 (DFunDef false "allDefNameL" ((PTuple (PCon "DAttrib" PWild (PVar "d")) (PVar "loc"))) (EApp (EVar "allDefNameL") (ETuple (EVar "d") (EVar "loc"))))
 (DFunDef false "allDefNameL" (PWild) (EListLit))
-(DTypeSig false "candidatePair" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
-(DFunDef false "candidatePair" ((PVar "exported") (PTuple (PVar "n") PWild)) (EBinOp "&&" (EApp (EVar "isOrdinaryIdent") (EVar "n")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "exported")))))
+(DTypeSig false "candidatePair" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
+(DFunDef false "candidatePair" ((PVar "exported") (PTuple (PVar "n") PWild)) (EBinOp "&&" (EApp (EVar "isOrdinaryIdent") (EVar "n")) (EApp (EVar "not") (EApp (EApp (EVar "has") (EVar "n")) (EVar "exported")))))
 (DTypeSig false "isOrdinaryIdent" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isOrdinaryIdent" ((PVar "s")) (EIf (EBinOp "==" (EApp (EVar "stringLength") (EVar "s")) (ELit (LInt 0))) (EVar "False") (EIf (EVar "otherwise") (EApp (EVar "isIdentStart") (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EApp (EVar "stringToChars") (EVar "s")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "reachableNames" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "reachableNames" ((PVar "src") (PVar "prog")) (EBlock (DoLet false false (PVar "refMap") (EApp (EVar "mergeRefs") (EApp (EApp (EVar "flatMap") (EVar "defRefPair")) (EVar "prog")))) (DoLet false false (PVar "seed") (EBinOp "++" (EApp (EVar "exportedNames") (EVar "prog")) (EBinOp "::" (ELit (LString "main")) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EVar "nonDefRefL")) (EVar "prog")) (EApp (EVar "doctestIdents") (EVar "src")))))) (DoExpr (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EListLit)) (EVar "seed")))))
+(DTypeSig false "reachableNames" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")))))
+(DFunDef false "reachableNames" ((PVar "src") (PVar "prog")) (EBlock (DoLet false false (PVar "refMap") (EApp (EVar "mergeRefs") (EApp (EApp (EVar "flatMap") (EVar "defRefPair")) (EVar "prog")))) (DoLet false false (PVar "seed") (EBinOp "++" (EApp (EVar "exportedNames") (EVar "prog")) (EBinOp "::" (ELit (LString "main")) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EVar "nonDefRefL")) (EVar "prog")) (EApp (EVar "doctestIdents") (EVar "src")))))) (DoLet false false (PVar "visited") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EVar "seed"))) (DoExpr (EVar "visited"))))
 (DTypeSig false "defRefPair" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "defRefPair" ((PVar "d")) (EMatch (EApp (EVar "defNameOf") (EVar "d")) (arm (PCon "Some" (PVar "name")) () (EListLit (ETuple (EVar "name") (EApp (EVar "sortUniqS") (EApp (EVar "identTokens") (EApp (EVar "declToString") (EApp (EVar "unAttrib") (EVar "d")))))))) (arm (PCon "None") () (EListLit))))
 (DTypeSig false "defNameOf" (TyFun (TyCon "Decl") (TyApp (TyCon "Option") (TyCon "String"))))
@@ -4870,19 +4916,16 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "nonDefRefL" ((PVar "d")) (EApp (EVar "bodyIdents") (EVar "d")))
 (DTypeSig false "bodyIdents" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "bodyIdents" ((PVar "d")) (EApp (EVar "sortUniqS") (EApp (EVar "identTokens") (EApp (EVar "declToString") (EVar "d")))))
-(DTypeSig false "bfsReach" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
-(DFunDef false "bfsReach" (PWild (PVar "visited") (PList)) (EVar "visited"))
-(DFunDef false "bfsReach" ((PVar "refMap") (PVar "visited") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "visited")) (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EVar "rest")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EBinOp "::" (EVar "x") (EVar "visited"))) (EBinOp "++" (EApp (EApp (EVar "refsOf") (EVar "refMap")) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "refsOf" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "refsOf" ((PVar "refMap") (PVar "n")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "refMap")) (arm (PCon "Some" (PVar "rs")) () (EVar "rs")) (arm (PCon "None") () (EListLit))))
-(DTypeSig false "mergeRefs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
-(DFunDef false "mergeRefs" ((PVar "pairs")) (EApp (EApp (EVar "mergeRefsGo") (EListLit)) (EVar "pairs")))
-(DTypeSig false "mergeRefsGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "mergeRefsGo" ((PVar "acc") (PList)) (EVar "acc"))
-(DFunDef false "mergeRefsGo" ((PVar "acc") (PCons (PTuple (PVar "n") (PVar "rs")) (PVar "rest"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "acc")) (arm (PCon "Some" (PVar "existing")) () (EApp (EApp (EVar "mergeRefsGo") (EApp (EApp (EApp (EVar "replaceAssoc") (EVar "n")) (EApp (EVar "sortUniqS") (EBinOp "++" (EVar "existing") (EVar "rs")))) (EVar "acc"))) (EVar "rest"))) (arm (PCon "None") () (EApp (EApp (EVar "mergeRefsGo") (EBinOp "++" (EVar "acc") (EListLit (ETuple (EVar "n") (EVar "rs"))))) (EVar "rest")))))
-(DTypeSig false "replaceAssoc" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "replaceAssoc" (PWild PWild (PList)) (EListLit))
-(DFunDef false "replaceAssoc" ((PVar "n") (PVar "v") (PCons (PTuple (PVar "k") (PVar "old")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EBinOp "::" (ETuple (EVar "n") (EVar "v")) (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "k") (EVar "old")) (EApp (EApp (EApp (EVar "replaceAssoc") (EVar "n")) (EVar "v")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "bfsReach" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Unit")))))
+(DFunDef false "bfsReach" (PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "bfsReach" ((PVar "refMap") (PVar "visited") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EApp (EVar "has") (EVar "x")) (EVar "visited")) (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EVar "rest")) (EIf (EVar "otherwise") (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EVar "x")) (ELit LUnit)) (EVar "visited"))) (DoExpr (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EBinOp "++" (EApp (EApp (EVar "refsOf") (EVar "refMap")) (EVar "x")) (EVar "rest"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "refsOf" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "refsOf" ((PVar "refMap") (PVar "n")) (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "n")) (EVar "refMap")))
+(DTypeSig false "mergeRefs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "mergeRefs" ((PVar "pairs")) (EBlock (DoLet false false (PVar "m") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "mergeRefsGo") (EVar "m")) (EVar "pairs"))) (DoExpr (EVar "m"))))
+(DTypeSig false "mergeRefsGo" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyCon "Unit"))))
+(DFunDef false "mergeRefsGo" (PWild (PList)) (ELit LUnit))
+(DFunDef false "mergeRefsGo" ((PVar "acc") (PCons (PTuple (PVar "n") (PVar "rs")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EVar "n")) (EApp (EVar "sortUniqS") (EBinOp "++" (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "n")) (EVar "acc")) (EVar "rs")))) (EVar "acc"))) (DoExpr (EApp (EApp (EVar "mergeRefsGo") (EVar "acc")) (EVar "rest")))))
 (DTypeSig false "identTokens" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "identTokens" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "identTokGo") (EVar "s")) (EVar "cs")) (EApp (EVar "arrayLength") (EVar "cs"))) (ELit (LInt 0))))))
 (DTypeSig false "identTokGo" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))))
@@ -4949,6 +4992,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DUse false (UseGroup ("frontend" "parser") ((mem "Positions" false) (mem "DeclPos" false) (mem "positionsDecls" false) (mem "declPosLine" false) (mem "declPosEndLine" false) (mem "parseWithPositions" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "Severity" true) (mem "Diag" true) (mem "ppSeverity" false) (mem "readFileSafe" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "anyList" false) (mem "allList" false) (mem "filterList" false) (mem "joinNl" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "splitNl" false) (mem "splitOnChar" false) (mem "joinWith" false) (mem "sortUniqS" false) (mem "startsWith" false) (mem "stringTrim" false) (mem "lookupAssoc" false) (mem "dedupBy" false))))
+(DUse false (UseGroup ("hash_map") ((mem "HashMap" false) (mem "new" false) (mem "set" false) (mem "has" false) (mem "findWithDefault" false))))
 (DUse false (UseGroup ("tools" "printer") ((mem "declToString" false) (mem "exprToString" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isAlnum" false) (mem "isLower" false) (mem "isUpper" false))))
 (DUse false (UseGroup ("ir" "sexp") ((mem "exprSexp" false) (mem "patSexp" false))))
@@ -5310,13 +5354,13 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "stdlibFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))
 (DFunDef false "stdlibFinding" ((PTuple (PVar "name") (PVar "loc"))) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameStdlibReimpl")) (fa "message" (EBinOp "++" (EBinOp "++" (ELit (LString "top-level '")) (EVar "name")) (ELit (LString "' shadows a stdlib function — use the stdlib version")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "ruleMissingSignature" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Finding")))))))
-(DFunDef false "ruleMissingSignature" (PWild PWild (PVar "pos") (PVar "prog")) (EApp (EApp (EMethodRef "map") (EVar "missingSigFinding")) (EApp (EApp (EVar "filterList") (EApp (EVar "missingSigPair") (EApp (EApp (EDictApp "flatMap") (EVar "topSigNameL")) (EVar "prog")))) (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EDictApp "flatMap") (EVar "topDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog")))))))
+(DFunDef false "ruleMissingSignature" (PWild PWild (PVar "pos") (PVar "prog")) (EApp (EApp (EMethodRef "map") (EVar "missingSigFinding")) (EApp (EApp (EVar "filterList") (EApp (EVar "missingSigPair") (EApp (EVar "nameSetOf") (EApp (EApp (EDictApp "flatMap") (EVar "topSigNameL")) (EVar "prog"))))) (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EDictApp "flatMap") (EVar "topDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog")))))))
 (DTypeSig false "topSigNameL" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "topSigNameL" ((PCon "DTypeSig" PWild (PVar "name") PWild)) (EListLit (EVar "name")))
 (DFunDef false "topSigNameL" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "topSigNameL") (EVar "d")))
 (DFunDef false "topSigNameL" (PWild) (EListLit))
-(DTypeSig false "missingSigPair" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
-(DFunDef false "missingSigPair" ((PVar "sigNames") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EBinOp "||" (EBinOp "==" (EVar "n") (ELit (LString "main"))) (EApp (EApp (EVar "contains") (EVar "n")) (EVar "sigNames")))))
+(DTypeSig false "missingSigPair" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
+(DFunDef false "missingSigPair" ((PVar "sigNames") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EBinOp "||" (EBinOp "==" (EVar "n") (ELit (LString "main"))) (EApp (EApp (EVar "has") (EVar "n")) (EVar "sigNames")))))
 (DTypeSig false "missingSigFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))
 (DFunDef false "missingSigFinding" ((PTuple (PVar "name") (PVar "loc"))) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameMissingSignature")) (fa "message" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "top-level '")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "' has no type signature. Add a `"))) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString " : …` declaration")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "irrefutablePat" (TyFun (TyCon "Oracle") (TyFun (TyCon "Pat") (TyCon "Bool"))))
@@ -6136,22 +6180,27 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "bindChainFinding" ((PVar "loc") PWild) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameBindChainToDo")) (fa "message" (ELit (LString "deep nested Result/Option passthrough-bind `match` chain (≥3 binds). Rewrite as a `do` block"))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "ruleDeadCode" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Finding")))))))
 (DFunDef false "ruleDeadCode" (PWild (PVar "src") (PVar "pos") (PVar "prog")) (EBlock (DoLet false false (PVar "reach") (EApp (EApp (EVar "reachableNames") (EVar "src")) (EVar "prog"))) (DoExpr (EApp (EApp (EMethodRef "map") (EVar "deadFinding")) (EApp (EApp (EVar "filterList") (EApp (EVar "deadPair") (EVar "reach"))) (EApp (EApp (EVar "privateDefLocs") (EVar "pos")) (EVar "prog")))))))
-(DTypeSig false "deadPair" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
-(DFunDef false "deadPair" ((PVar "reach") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "reach"))))
+(DTypeSig false "deadPair" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
+(DFunDef false "deadPair" ((PVar "reach") (PTuple (PVar "n") PWild)) (EApp (EVar "not") (EApp (EApp (EVar "has") (EVar "n")) (EVar "reach"))))
 (DTypeSig false "deadFinding" (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Finding")))
 (DFunDef false "deadFinding" ((PTuple (PVar "name") (PVar "loc"))) (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameDeadCode")) (fa "message" (EBinOp "++" (EBinOp "++" (ELit (LString "private top-level '")) (EVar "name")) (ELit (LString "' is unreachable from exports/main/doctests — remove it (dead code)")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EVar "loc")))))
 (DTypeSig false "privateDefLocs" (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))
-(DFunDef false "privateDefLocs" ((PVar "pos") (PVar "prog")) (EBlock (DoLet false false (PVar "exported") (EApp (EVar "exportedNames") (EVar "prog"))) (DoExpr (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EVar "filterList") (EApp (EVar "candidatePair") (EVar "exported"))) (EApp (EApp (EDictApp "flatMap") (EVar "allDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog"))))))))
+(DFunDef false "privateDefLocs" ((PVar "pos") (PVar "prog")) (EBlock (DoLet false false (PVar "exported") (EApp (EVar "nameSetOf") (EApp (EVar "exportedNames") (EVar "prog")))) (DoExpr (EApp (EVar "dedupeNamesLoc") (EApp (EApp (EVar "filterList") (EApp (EVar "candidatePair") (EVar "exported"))) (EApp (EApp (EDictApp "flatMap") (EVar "allDefNameL")) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "prog"))))))))
+(DTypeSig false "nameSetOf" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit"))))
+(DFunDef false "nameSetOf" ((PVar "names")) (EBlock (DoLet false false (PVar "s") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "nameSetInto") (EVar "names")) (EVar "s"))) (DoExpr (EVar "s"))))
+(DTypeSig false "nameSetInto" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyCon "Unit"))))
+(DFunDef false "nameSetInto" ((PList) PWild) (ELit LUnit))
+(DFunDef false "nameSetInto" ((PCons (PVar "n") (PVar "rest")) (PVar "s")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EVar "n")) (ELit LUnit)) (EVar "s"))) (DoExpr (EApp (EApp (EVar "nameSetInto") (EVar "rest")) (EVar "s")))))
 (DTypeSig false "allDefNameL" (TyFun (TyTuple (TyCon "Decl") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "allDefNameL" ((PTuple (PCon "DFunDef" PWild (PVar "name") PWild PWild) (PVar "loc"))) (EListLit (ETuple (EVar "name") (EVar "loc"))))
 (DFunDef false "allDefNameL" ((PTuple (PCon "DAttrib" PWild (PVar "d")) (PVar "loc"))) (EApp (EVar "allDefNameL") (ETuple (EVar "d") (EVar "loc"))))
 (DFunDef false "allDefNameL" (PWild) (EListLit))
-(DTypeSig false "candidatePair" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
-(DFunDef false "candidatePair" ((PVar "exported") (PTuple (PVar "n") PWild)) (EBinOp "&&" (EApp (EVar "isOrdinaryIdent") (EVar "n")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "exported")))))
+(DTypeSig false "candidatePair" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyCon "Bool"))))
+(DFunDef false "candidatePair" ((PVar "exported") (PTuple (PVar "n") PWild)) (EBinOp "&&" (EApp (EVar "isOrdinaryIdent") (EVar "n")) (EApp (EVar "not") (EApp (EApp (EVar "has") (EVar "n")) (EVar "exported")))))
 (DTypeSig false "isOrdinaryIdent" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isOrdinaryIdent" ((PVar "s")) (EIf (EBinOp "==" (EApp (EVar "stringLength") (EVar "s")) (ELit (LInt 0))) (EVar "False") (EIf (EVar "otherwise") (EApp (EVar "isIdentStart") (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EApp (EVar "stringToChars") (EVar "s")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "reachableNames" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "reachableNames" ((PVar "src") (PVar "prog")) (EBlock (DoLet false false (PVar "refMap") (EApp (EVar "mergeRefs") (EApp (EApp (EDictApp "flatMap") (EVar "defRefPair")) (EVar "prog")))) (DoLet false false (PVar "seed") (EBinOp "++" (EApp (EVar "exportedNames") (EVar "prog")) (EBinOp "::" (ELit (LString "main")) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EVar "nonDefRefL")) (EVar "prog")) (EApp (EVar "doctestIdents") (EVar "src")))))) (DoExpr (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EListLit)) (EVar "seed")))))
+(DTypeSig false "reachableNames" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")))))
+(DFunDef false "reachableNames" ((PVar "src") (PVar "prog")) (EBlock (DoLet false false (PVar "refMap") (EApp (EVar "mergeRefs") (EApp (EApp (EDictApp "flatMap") (EVar "defRefPair")) (EVar "prog")))) (DoLet false false (PVar "seed") (EBinOp "++" (EApp (EVar "exportedNames") (EVar "prog")) (EBinOp "::" (ELit (LString "main")) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EVar "nonDefRefL")) (EVar "prog")) (EApp (EVar "doctestIdents") (EVar "src")))))) (DoLet false false (PVar "visited") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EVar "seed"))) (DoExpr (EVar "visited"))))
 (DTypeSig false "defRefPair" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "defRefPair" ((PVar "d")) (EMatch (EApp (EVar "defNameOf") (EVar "d")) (arm (PCon "Some" (PVar "name")) () (EListLit (ETuple (EVar "name") (EApp (EVar "sortUniqS") (EApp (EVar "identTokens") (EApp (EVar "declToString") (EApp (EVar "unAttrib") (EVar "d")))))))) (arm (PCon "None") () (EListLit))))
 (DTypeSig false "defNameOf" (TyFun (TyCon "Decl") (TyApp (TyCon "Option") (TyCon "String"))))
@@ -6181,19 +6230,16 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "nonDefRefL" ((PVar "d")) (EApp (EVar "bodyIdents") (EVar "d")))
 (DTypeSig false "bodyIdents" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "bodyIdents" ((PVar "d")) (EApp (EVar "sortUniqS") (EApp (EVar "identTokens") (EApp (EVar "declToString") (EVar "d")))))
-(DTypeSig false "bfsReach" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
-(DFunDef false "bfsReach" (PWild (PVar "visited") (PList)) (EVar "visited"))
-(DFunDef false "bfsReach" ((PVar "refMap") (PVar "visited") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "visited")) (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EVar "rest")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EBinOp "::" (EVar "x") (EVar "visited"))) (EBinOp "++" (EApp (EApp (EVar "refsOf") (EVar "refMap")) (EVar "x")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "refsOf" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "refsOf" ((PVar "refMap") (PVar "n")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "refMap")) (arm (PCon "Some" (PVar "rs")) () (EVar "rs")) (arm (PCon "None") () (EListLit))))
-(DTypeSig false "mergeRefs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
-(DFunDef false "mergeRefs" ((PVar "pairs")) (EApp (EApp (EVar "mergeRefsGo") (EListLit)) (EVar "pairs")))
-(DTypeSig false "mergeRefsGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "mergeRefsGo" ((PVar "acc") (PList)) (EVar "acc"))
-(DFunDef false "mergeRefsGo" ((PVar "acc") (PCons (PTuple (PVar "n") (PVar "rs")) (PVar "rest"))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "acc")) (arm (PCon "Some" (PVar "existing")) () (EApp (EApp (EVar "mergeRefsGo") (EApp (EApp (EApp (EVar "replaceAssoc") (EVar "n")) (EApp (EVar "sortUniqS") (EBinOp "++" (EVar "existing") (EVar "rs")))) (EVar "acc"))) (EVar "rest"))) (arm (PCon "None") () (EApp (EApp (EVar "mergeRefsGo") (EBinOp "++" (EVar "acc") (EListLit (ETuple (EVar "n") (EVar "rs"))))) (EVar "rest")))))
-(DTypeSig false "replaceAssoc" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "replaceAssoc" (PWild PWild (PList)) (EListLit))
-(DFunDef false "replaceAssoc" ((PVar "n") (PVar "v") (PCons (PTuple (PVar "k") (PVar "old")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EBinOp "::" (ETuple (EVar "n") (EVar "v")) (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "k") (EVar "old")) (EApp (EApp (EApp (EVar "replaceAssoc") (EVar "n")) (EVar "v")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "bfsReach" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Unit")))))
+(DFunDef false "bfsReach" (PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "bfsReach" ((PVar "refMap") (PVar "visited") (PCons (PVar "x") (PVar "rest"))) (EIf (EApp (EApp (EVar "has") (EVar "x")) (EVar "visited")) (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EVar "rest")) (EIf (EVar "otherwise") (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EVar "x")) (ELit LUnit)) (EVar "visited"))) (DoExpr (EApp (EApp (EApp (EVar "bfsReach") (EVar "refMap")) (EVar "visited")) (EBinOp "++" (EApp (EApp (EVar "refsOf") (EVar "refMap")) (EVar "x")) (EVar "rest"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "refsOf" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "refsOf" ((PVar "refMap") (PVar "n")) (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "n")) (EVar "refMap")))
+(DTypeSig false "mergeRefs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "mergeRefs" ((PVar "pairs")) (EBlock (DoLet false false (PVar "m") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "mergeRefsGo") (EVar "m")) (EVar "pairs"))) (DoExpr (EVar "m"))))
+(DTypeSig false "mergeRefsGo" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyCon "Unit"))))
+(DFunDef false "mergeRefsGo" (PWild (PList)) (ELit LUnit))
+(DFunDef false "mergeRefsGo" ((PVar "acc") (PCons (PTuple (PVar "n") (PVar "rs")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EVar "n")) (EApp (EVar "sortUniqS") (EBinOp "++" (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "n")) (EVar "acc")) (EVar "rs")))) (EVar "acc"))) (DoExpr (EApp (EApp (EVar "mergeRefsGo") (EVar "acc")) (EVar "rest")))))
 (DTypeSig false "identTokens" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "identTokens" ((PVar "s")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "identTokGo") (EVar "s")) (EVar "cs")) (EApp (EVar "arrayLength") (EVar "cs"))) (ELit (LInt 0))))))
 (DTypeSig false "identTokGo" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "String")))))))
