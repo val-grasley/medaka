@@ -738,6 +738,94 @@ NEWLINE
 DEDENT
 NEWLINE
 EXPORT
+IDENT "stripPrefix"
+COLON
+UPPER "String"
+ARROW
+UPPER "String"
+ARROW
+UPPER "Option"
+UPPER "String"
+NEWLINE
+IDENT "stripPrefix"
+IDENT "prefix"
+IDENT "s"
+EQUAL
+INDENT
+IF
+IDENT "startsWith"
+IDENT "prefix"
+IDENT "s"
+THEN
+INDENT
+UPPER "Some"
+LPAREN
+IDENT "stringSlice"
+LPAREN
+IDENT "stringLength"
+IDENT "prefix"
+RPAREN
+LPAREN
+IDENT "stringLength"
+IDENT "s"
+RPAREN
+IDENT "s"
+RPAREN
+NEWLINE
+DEDENT
+ELSE
+INDENT
+UPPER "None"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
+IDENT "stripSuffix"
+COLON
+UPPER "String"
+ARROW
+UPPER "String"
+ARROW
+UPPER "Option"
+UPPER "String"
+NEWLINE
+IDENT "stripSuffix"
+IDENT "suffix"
+IDENT "s"
+EQUAL
+INDENT
+IF
+IDENT "endsWith"
+IDENT "suffix"
+IDENT "s"
+THEN
+INDENT
+UPPER "Some"
+LPAREN
+IDENT "stringSlice"
+INT 0
+LPAREN
+IDENT "stringLength"
+IDENT "s"
+MINUS
+IDENT "stringLength"
+IDENT "suffix"
+RPAREN
+IDENT "s"
+RPAREN
+NEWLINE
+DEDENT
+ELSE
+INDENT
+UPPER "None"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+EXPORT
 IDENT "contains"
 COLON
 UPPER "String"

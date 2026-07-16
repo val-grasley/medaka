@@ -272,6 +272,41 @@ endsWith suffix s =
   stringSlice (stringLength s - stringLength suffix) (stringLength s) s ==
     suffix
 
+{- | Remove `prefix` from the front of `s`, or `None` when `s` doesn't start
+   with it.  The `Option` is the point: unlike `drop (length prefix)` it tells
+   you whether the prefix was actually there.
+
+   > stripPrefix "he" "hello"
+   Some "llo"
+   > stripPrefix "xy" "hello"
+   None
+   > stripPrefix "" "hi"
+   Some "hi"
+   > stripPrefix "hello" "hello"
+   Some "" -}
+export stripPrefix : String -> String -> Option String
+stripPrefix prefix s =
+  if startsWith prefix s then
+    Some (stringSlice (stringLength prefix) (stringLength s) s)
+  else
+    None
+
+{- | Remove `suffix` from the end of `s`, or `None` when `s` doesn't end with
+   it.
+
+   > stripSuffix "lo" "hello"
+   Some "hel"
+   > stripSuffix "xy" "hello"
+   None
+   > stripSuffix "" "hi"
+   Some "hi" -}
+export stripSuffix : String -> String -> Option String
+stripSuffix suffix s =
+  if endsWith suffix s then
+    Some (stringSlice 0 (stringLength s - stringLength suffix) s)
+  else
+    None
+
 {- | True when `needle` occurs anywhere in `haystack` (the empty string is
    contained in everything).
 
