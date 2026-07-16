@@ -706,11 +706,13 @@ floatLocalsRef = Ref []
 -- #288: top-level nullary value bindings whose RHS is statically Float (e.g.
 -- `nan = 0.0 / 0.0`).  A `global.get` of such a binding carries no static Float
 -- tag at the USE site, so a `nan <= nan` comparison would fall to the poly
--- $mdk_value_cmp path (3-way -1/0/1) which cannot represent NaN's unorderedness —
--- `<=`/`>=` then wrongly report True on NaN.  Seeding these names (in emitRefProgram,
--- before any body emission) lets `cexprIsFloat` recognize the operand as Float so the
--- comparison lowers to inline `f64.le`/`f64.ge` (IEEE-correct, NaN → False), mirroring
--- native's `staticIsFloat`-reads-the-global fcmp path.
+-- runtime-dispatched path.  Seeding these names (in emitRefProgram, before any body
+-- emission) lets `cexprIsFloat` recognize the operand as Float so the comparison
+-- lowers to inline `f64.le`/`f64.ge` (IEEE-correct, NaN → False), mirroring native's
+-- `staticIsFloat`-reads-the-global fcmp path.
+-- (#305: the poly path is IEEE-correct at NaN too now — ordering there calls the
+-- per-op $mdk_value_lt/le/gt/ge rather than comparing a 3-way against 0 — so this
+-- seeding is a code-quality win (inline f64, no call), no longer a correctness fix.)
 floatGlobalsRef : Ref (List String)
 floatGlobalsRef = Ref []
 
@@ -2148,7 +2150,8 @@ emitRefProgram prog groups =
   -- #288: record the top-level nullary bindings whose RHS is statically Float, BEFORE
   -- any fn / init body emission, so `cexprIsFloat` recognizes a `global.get` of one as
   -- Float and a `<=`/`>=` over it lowers to inline `f64.le`/`f64.ge` (IEEE NaN → False)
-  -- rather than the poly $mdk_value_cmp path (which collapses NaN to EQ).
+  -- rather than the poly runtime-dispatched path (which since #305 is IEEE-correct at
+  -- NaN as well, via $mdk_value_lt/le/gt/ge — this is now a code-quality win).
   let _ = setRef floatGlobalsRef (floatValGlobalNames prog (filterList isValBind groups))
   -- Stage-2/3 (b′) WASMGC-TRMC: detect dispatch-graph TMC groups (the lexer's `scan`
   -- token spine, the offside-rule `layout` family, `intersperse`) BEFORE emitting fns,
@@ -4567,8 +4570,11 @@ emitValueCmpRef prog env d op l r =
   else if op == "!=" then
     lv ++ rv ++ ["call $mdk_value_eq", "ref.cast (ref i31)", "i31.get_u", "i32.eqz", "ref.i31"]
   else
-    -- ordering: $mdk_value_cmp -> i32 -1/0/1, then compare against 0.
-    lv ++ rv ++ ["call $mdk_value_cmp", "i32.const 0", wasmBinOp op, "ref.i31"]
+    -- #305: ordering calls the per-op IEEE predicate $mdk_value_lt/le/gt/ge,
+    -- which returns an i31 Bool directly.  It USED to be `$mdk_value_cmp` then
+    -- `i32.const 0` + compare — but a 3-way -1/0/1 cannot express NaN's
+    -- unorderedness, so `nan <= nan` read `0 <= 0` = True.
+    lv ++ rv ++ ["call $mdk_value_" ++ valueRelName op]
 
 -- A1 (poly-`Ord`-on-Float, string-free program): the num-only peer of emitValueCmpRef.
 -- `==`/`!=` go through $mdk_value_eq_num (-> i31 Bool); ordering through $mdk_value_cmp_num
@@ -4589,7 +4595,18 @@ emitValueCmpNumRef prog env d op l r =
       "ref.i31",
     ]
   else
-    lv ++ rv ++ ["call $mdk_value_cmp_num", "i32.const 0", wasmBinOp op, "ref.i31"]
+    -- #305: per-op IEEE predicate (num-only peer), returns an i31 Bool directly
+    -- — see the note at emitValueCmpRef.
+    lv ++ rv ++ ["call $mdk_value_" ++ valueRelName op ++ "_num"]
+
+-- #305: the $mdk_value_* suffix for an ordering op.  Only `<`/`>`/`<=`/`>=` reach
+-- the ordering arms — `==`/`!=` are routed to $mdk_value_eq(_num) before them.
+valueRelName : String -> String
+valueRelName "<" = "lt"
+valueRelName ">" = "gt"
+valueRelName "<=" = "le"
+valueRelName ">=" = "ge"
+valueRelName op = panic ("wasm: unsupported value ordering op " ++ op)
 
 -- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  `%` has no
 -- f64 instruction, so it calls $mdk_float_rem (exact power-of-two-reduction fmod == LLVM frem).
@@ -7653,25 +7670,16 @@ patVars _ = []
 
 -- ── operator tables (both modes) ─────────────────────────────────────────────
 
-wasmBinOp : String -> String
-wasmBinOp "+" = "i32.add"
-wasmBinOp "-" = "i32.sub"
-wasmBinOp "*" = "i32.mul"
-wasmBinOp "/" = "i32.div_s"
-wasmBinOp "%" = "i32.rem_s"
-wasmBinOp "==" = "i32.eq"
-wasmBinOp "!=" = "i32.ne"
-wasmBinOp "<" = "i32.lt_s"
-wasmBinOp ">" = "i32.gt_s"
-wasmBinOp "<=" = "i32.le_s"
-wasmBinOp ">=" = "i32.ge_s"
-wasmBinOp op =
-  gapS
-    ("unsupported binary operator '" ++ op ++ "' (`::`/`++` are list/string ops — W6/W7)")
-
--- layer-17 §2.1: the i64 peer of wasmBinOp for ref-mode Int arithmetic over the
--- box/unbox seam.  Division/modulo are i64 signed (i64.div_s/i64.rem_s) — matching
--- native's truncated-toward-zero div and sign-of-dividend rem (medaka_rt.c).
+-- Ref-mode Int arithmetic/comparison over the box/unbox seam (layer-17 §2.1):
+-- i64 throughout, so values outside +/-2^30 no longer truncate.  Division/modulo are
+-- i64 signed (i64.div_s/i64.rem_s) — matching native's truncated-toward-zero div and
+-- sign-of-dividend rem (medaka_rt.c).
+--
+-- (The i32 peer `wasmBinOp` was removed with #305: its last two callers were the
+-- ordering arms of emitValueCmpRef/emitValueCmpNumRef, which compared a 3-way
+-- -1/0/1 against 0 — the derivation that could not express NaN's unorderedness.
+-- Those now call the per-op IEEE $mdk_value_lt/le/gt/ge(_num) instead, and every
+-- surviving caller was already on wasmBinOp64.)
 wasmBinOp64 : String -> String
 wasmBinOp64 "+" = "i64.add"
 wasmBinOp64 "-" = "i64.sub"

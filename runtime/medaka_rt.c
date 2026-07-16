@@ -1183,16 +1183,15 @@ long long mdk_string_compare_raw(long long a, long long b) {
   return c < 0 ? -1 : c > 0 ? 1 : 0;
 }
 
-/* Polymorphic three-way compare for ORDERING operators (`<`/`>`/`<=`/`>=`) whose
- * operand static LTy the emitter could not recover — both default to LTInt, e.g.
- * a String/Float bound through a tuple destructure inside a recursive list walk
- * (`k <= k2` where `(k,_)`/`(k2,_)` came from `(String,String)` pair fields).  An
- * inline integer `icmp` there compares boxed-String/Float POINTERS as ints —
- * pointer-identity ordering, the heap-ADDRESS bug.  This is the ordering analog
- * of mdk_value_eq: discriminate at run time on the low bit / header tag and
- * return a PLAIN -1/0/1 i64 (like mdk_string_compare_raw), so the emitter keeps
- * its `icmp <pred> i64 raw, 0` shape.  Both operands of one Ord op share a type
- * (well-typed), so testing the LEFT operand suffices:
+/* Polymorphic three-way compare over operands whose static LTy the emitter could
+ * not recover — both default to LTInt, e.g. a String/Float bound through a tuple
+ * destructure inside a recursive list walk (`k <= k2` where `(k,_)`/`(k2,_)` came
+ * from `(String,String)` pair fields).  An inline integer `icmp` there compares
+ * boxed-String/Float POINTERS as ints — pointer-identity ordering, the heap-ADDRESS
+ * bug.  This is the ordering analog of mdk_value_eq: discriminate at run time on
+ * the low bit / header tag and return a PLAIN -1/0/1 i64 (like
+ * mdk_string_compare_raw).  Both operands of one Ord op share a type (well-typed),
+ * so testing the LEFT operand suffices:
  *   - boxed String cell (even pointer, header == MDK_STR_TAG) -> byte compare;
  *   - boxed Float cell  (even pointer, header == 2)           -> double compare;
  *   - otherwise (tagged immediate: Int/Bool/Char, or a ctor word) -> word compare
@@ -1200,7 +1199,13 @@ long long mdk_string_compare_raw(long long a, long long b) {
  * At a CONCRETE Int/Float/String type the emitter keeps its specialized inline
  * IR (the `==` peer is mdk_value_eq, which carries the same String/Float/word
  * arms — keep the two in lockstep), so this is reached only at a genuinely
- * type-unknown ordering site. */
+ * type-unknown site.
+ *
+ * ⚠️ #305: the Float arm is NOT IEEE — an unordered (NaN) pair collapses to 0,
+ * which reads as EQ.  A three-way -1/0/1 cannot express unorderedness at all, so
+ * this function MUST NOT back a relational operator: `<`/`<=`/`>`/`>=` go through
+ * mdk_value_lt/le/gt/ge, which take the Float arm themselves and only fall back
+ * here for the String/immediate shapes (where -1/0/1 is exact). */
 long long mdk_value_cmp_raw(long long a, long long b) {
   int a_str = ((a & 1) == 0) && ((const long long *)a)[0] == MDK_STR_TAG;
   if (a_str) return mdk_string_compare_raw(a, b);
@@ -1211,6 +1216,52 @@ long long mdk_value_cmp_raw(long long a, long long b) {
   }
   long long ia = a >> 1, ib = b >> 1;
   return ia < ib ? -1 : ia > ib ? 1 : 0;
+}
+
+/* #305 (S0) — IEEE relational predicates for the TYPE-LOST ordering path.
+ * EMITTER-SEMANTICS §4 N5/N6: `<` `<=` `>` `>=` at Float are PRIMITIVE IEEE
+ * predicates on EVERY path (all four FALSE at NaN) and must never be derived
+ * from `compare`/value_cmp.  The 3-way -1/0/1 Ordering that mdk_value_cmp_raw
+ * returns STRUCTURALLY CANNOT express NaN's unorderedness — its Float arm
+ * collapses an unordered pair to 0 (EQ), so a caller doing `cmp <= 0` read
+ * `nan <= nan` as TRUE.  These four answer the relational question DIRECTLY
+ * for a boxed-Float operand (the same f64 compare as the inline `fcmp ole`/…
+ * the emitter uses when it CAN see Float statically — so the type-lost and
+ * static paths now agree), and delegate every other shape (String cell /
+ * tagged immediate) to the 3-way, which is exact for those.  Returns a TAGGED
+ * Bool (3 = True, 1 = False), matching mdk_value_eq.
+ *
+ * mdk_value_cmp_raw KEEPS its Float arm: it is a three-way answer, still used
+ * for the non-Float shapes below.  But it is NOT IEEE at NaN and must never
+ * again be made to back a relational operator — that is exactly bug #305.
+ * (`compare`/`min`/`max`/`sort` never route here; they go through the Ord
+ * dict.  Whether `compare` at NaN should be IEEE totalOrder is issue #360.) */
+static int mdk_value_is_float(long long a) {
+  return ((a & 1) == 0) && ((const long long *)a)[0] == 2;
+}
+
+long long mdk_value_lt(long long a, long long b) {
+  if (mdk_value_is_float(a))
+    return ((const double *)a)[1] < ((const double *)b)[1] ? 3 : 1;
+  return mdk_value_cmp_raw(a, b) < 0 ? 3 : 1;
+}
+
+long long mdk_value_le(long long a, long long b) {
+  if (mdk_value_is_float(a))
+    return ((const double *)a)[1] <= ((const double *)b)[1] ? 3 : 1;
+  return mdk_value_cmp_raw(a, b) <= 0 ? 3 : 1;
+}
+
+long long mdk_value_gt(long long a, long long b) {
+  if (mdk_value_is_float(a))
+    return ((const double *)a)[1] > ((const double *)b)[1] ? 3 : 1;
+  return mdk_value_cmp_raw(a, b) > 0 ? 3 : 1;
+}
+
+long long mdk_value_ge(long long a, long long b) {
+  if (mdk_value_is_float(a))
+    return ((const double *)a)[1] >= ((const double *)b)[1] ? 3 : 1;
+  return mdk_value_cmp_raw(a, b) >= 0 ? 3 : 1;
 }
 
 /* slice 12: args + env ---------------------------------------------------- */

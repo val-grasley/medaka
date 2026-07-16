@@ -17,8 +17,33 @@
 -- now recognizes a top-level Float global so the compare lowers to inline `f64.le`/`f64.ge`
 -- (compiler/backend/wasm_emit.mdk).  These four lines pin run==build==value on the NaN
 -- `<=`/`>=` edge (all IEEE False) plus a NaN-vs-finite case.
+--
+-- #305 (S0 silent wrongness, now FIXED): the LAST NaN relational hole — a genuinely
+-- POLY `Ord a` forwarded through a HOF, so the emitter cannot see Float statically and
+-- routes to the runtime value-shape discriminator.  Native's mdk_value_cmp_raw and
+-- wasm's $mdk_value_cmp are THREE-WAY (-1/0/1), a model that structurally cannot
+-- express NaN's unorderedness: an unordered pair collapsed to 0 (EQ), and the caller's
+-- `cmp <= 0` then read `nan <= nan` as True on BOTH backends while `run` (eval) said
+-- False.  Fixed by giving the runtime PER-OP IEEE predicates (mdk_value_lt/le/gt/ge +
+-- the $mdk_value_lt/le/gt/ge WAT peers) that answer a boxed-Float operand with a direct
+-- f64 compare and use the 3-way only for the String/immediate shapes.
+-- EMITTER-SEMANTICS §4 N5/N6: `<` `<=` `>` `>=` at Float are PRIMITIVE IEEE predicates
+-- on EVERY path — never derived from `compare` — and all four are False at NaN.
+--
+-- The block below pins the DOMAIN, not just the headline repro (#476's lesson: a
+-- differential gate only covers what it samples): all four ops x NaN on the left, the
+-- right, and both, through the type-lost HOF — plus CONTROLS that must not regress
+-- (ordinary Floats and Int both through the same HOF).
 
 nan = 0.0 / 0.0
+
+-- type-lost: `f` is opaque at the emit site, so the operands' Float-ness is invisible
+-- and the comparison must fall to the runtime value-shape path.
+applyCmp f x y = f x y
+cmpLt a b = a < b
+cmpLe a b = a <= b
+cmpGt a b = a > b
+cmpGe a b = a >= b
 
 main =
   println (debug (nan != nan))   -- IEEE True  (the #285 bug: native gave False)
@@ -31,3 +56,29 @@ main =
   println (debug (nan >= nan))   -- IEEE False (#288: eval/wasm gave True)
   println (debug (nan <= 1.0))   -- IEEE False
   println (debug (1.0 >= nan))   -- IEEE False
+  -- #305: all four ops through the type-lost HOF, NaN both sides — all IEEE False.
+  println (debug (applyCmp cmpLt nan nan))  -- False
+  println (debug (applyCmp cmpLe nan nan))  -- False (#305: native+wasm gave True)
+  println (debug (applyCmp cmpGt nan nan))  -- False
+  println (debug (applyCmp cmpGe nan nan))  -- False (#305: native+wasm gave True)
+  -- #305: NaN on the LEFT only — all IEEE False.
+  println (debug (applyCmp cmpLt nan 1.0))  -- False
+  println (debug (applyCmp cmpLe nan 1.0))  -- False (#305: native+wasm gave True)
+  println (debug (applyCmp cmpGt nan 1.0))  -- False
+  println (debug (applyCmp cmpGe nan 1.0))  -- False
+  -- #305: NaN on the RIGHT only — all IEEE False.
+  println (debug (applyCmp cmpLt 1.0 nan))  -- False
+  println (debug (applyCmp cmpLe 1.0 nan))  -- False (#305: native+wasm gave True)
+  println (debug (applyCmp cmpGt 1.0 nan))  -- False
+  println (debug (applyCmp cmpGe 1.0 nan))  -- False
+  -- CONTROL: ordinary Floats through the SAME type-lost HOF must be unchanged.
+  println (debug (applyCmp cmpLt 1.0 2.0))  -- True
+  println (debug (applyCmp cmpLe 1.0 2.0))  -- True
+  println (debug (applyCmp cmpLe 2.0 1.0))  -- False
+  println (debug (applyCmp cmpGt 2.0 1.0))  -- True
+  println (debug (applyCmp cmpGe 1.0 1.0))  -- True
+  println (debug (applyCmp cmpLe 1.0 1.0))  -- True
+  -- CONTROL: Int poly-Ord through the SAME HOF must be unchanged.
+  println (debug (applyCmp cmpLt 1 2))      -- True
+  println (debug (applyCmp cmpLe 2 1))      -- False
+  println (debug (applyCmp cmpGe 2 2))      -- True
