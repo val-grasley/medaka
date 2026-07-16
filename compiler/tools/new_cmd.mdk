@@ -29,8 +29,13 @@ tomlTemplate name = stringConcat
 mainTemplate : String
 mainTemplate = "main : <IO> Unit\nmain = println \"Hello, Medaka\"\n"
 
+-- `.medaka/` holds `medaka lint --cache`'s per-file shard cache (#395) — derived
+-- data, regenerable by definition (a missing shard is a cache miss, which just
+-- re-lints the file), so a project must not commit it.  Listed here rather than
+-- left for the user to discover after their first `--cache` run puts a few MB of
+-- JSON in `git status`.
 gitignoreTemplate : String
-gitignoreTemplate = "_build/\n"
+gitignoreTemplate = "_build/\n.medaka/\n"
 
 readmeTemplate : String -> String
 readmeTemplate name = stringConcat ["# ", name, "\n\nA new Medaka project.\n"]
