@@ -449,6 +449,7 @@ freshEffvar : Unit -> Ref Effvar
 freshEffvarAt : Int -> Ref Effvar
 freshPerRun : Unit -> PerRun
 freshSubst : List Int -> List (Int, Mono)
+freshToggles : Unit -> Toggles
 freshTvMap : List String -> List (String, Mono)
 freshVar : Unit -> Mono
 freshVars : Int -> List Mono
@@ -1137,8 +1138,6 @@ superMsgFor : List Decl -> String -> List Ty -> List (String, Ty) -> Super -> Li
 superSlotOf : List (String, Int) -> Super -> List (String, Int)
 superSlotsOf : List Decl -> (String, Int) -> List (String, Int)
 supersFix : List String -> List String -> List String
-suppressArgStamp : Ref Bool
-suppressRLocalRecord : Ref Bool
 swapArgFix : Expr -> Expr -> String -> Option (Loc, String)
 tagAllLitLocs : Mono -> String -> Unit
 tagLitLocsWithRoot : Int -> String -> List (Mono, Loc) -> Unit
@@ -1155,6 +1154,7 @@ tcHelp : TcDiag -> Option String
 tcLoc : TcDiag -> Option Loc
 tcMsg : TcDiag -> String
 tcSeverity : TcDiag -> Int
+toggles : Ref Toggles
 transitiveImporterDecls : String -> List (String, List Decl) -> List Decl
 transitiveImporterIds : String -> List (String, List Decl) -> List String
 transitivelyImports : String -> String -> List (String, List Decl) -> Bool
