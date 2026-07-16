@@ -198,6 +198,7 @@ kebab-case; never renumber (append only).
 | `R-FIELD-NOT-IN-RECORD` | `FieldNotInRecord` |
 | `R-DUPLICATE-DEF` | `DuplicateDefinition` |
 | `R-UNKNOWN-INTERFACE` | `UnknownInterface` |
+| `R-CANNOT-DERIVE` | a `deriving (…)` name no deriver claims (#421). Emitted by `checkDerives` (`compiler/frontend/desugar.mdk`), pushed by the driver, so it accumulates like every other diagnostic. Distinct from `R-UNKNOWN-INTERFACE` on purpose: `deriving (Num)` names a REAL interface that simply has no deriver, so the message reports what was observed ("cannot derive 'Num' for 'Dist'; supported: …") rather than concluding the name is unknown. The supported list is `map fst` of the same deriver table the lookup uses, and `data` and `newtype` have separate tables — a newtype cannot derive `Generic` here, so it is not advertised on one |
 | `R-METHOD-NOT-IN-INTERFACE` | `MethodNotInInterface` |
 | `R-EXTERN-WITH-BODY` | `ExternWithBody` |
 | `R-PRIVATE-NAME` | `PrivateNameAccess` |

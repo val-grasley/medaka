@@ -21,6 +21,8 @@
 --     match total.
 
 import frontend.ast.{
+  DeriveRef(..),
+  deriveRefName,
   Lit(..),
   Ty(..),
   Constraint(..),
@@ -1477,7 +1479,7 @@ fieldTyDoc (Field fn ft) = Cat (text fn) (Cat (text " : ") (printType ft))
 -- last — output lines align 1:1 with the source field lines, so fmt's generic
 -- interior-comment splice re-attaches each field's trailing comment by source-line
 -- index.  Falls back to the plain renderer for any non-single-ConNamed shape.
-export printNamedFieldData : DataVis -> String -> List String -> List Variant -> List String -> Doc
+export printNamedFieldData : DataVis -> String -> List String -> List Variant -> List DeriveRef -> Doc
 printNamedFieldData vis n params [Variant cname (ConNamed fields nameOmitted)] derives =
   let eqPart = if nameOmitted then text " =" else Cat (text " = ") (text cname)
   let head = Cat (text "data ") (Cat (text n) (Cat (concatD (map (p => Cat (text " ") (text p)) params)) eqPart))
@@ -1490,10 +1492,12 @@ printNamedFieldData vis n params [Variant cname (ConNamed fields nameOmitted)] d
 printNamedFieldData vis n params variants derives =
   printDecl (DData vis n params variants derives)
 
-printDerives : List String -> Doc
+printDerives : List DeriveRef -> Doc
 printDerives [] = Nil
 printDerives derives =
-  Cat (text "deriving (") (Cat (text (joinWith ", " derives)) (text ")"))
+  Cat
+    (text "deriving (")
+    (Cat (text (joinWith ", " (map deriveRefName derives))) (text ")"))
 
 visPrefix : DataVis -> Doc
 visPrefix VisPublic = text "public export "
@@ -1526,7 +1530,7 @@ dataVariantDocs (v::vs) = Cat
 -- stays inline after it (`| Field String  -- .foo`).  Any non-empty entry forces
 -- the one-variant-per-line layout via `Hardline` (never the soft `Line`
 -- `dataVariantDocs` uses), so a documented `data` is never reflowed flat.
-export printDataDeclCommented : DataVis -> String -> List String -> List Variant -> List String -> List (List String, List String) -> Doc
+export printDataDeclCommented : DataVis -> String -> List String -> List Variant -> List DeriveRef -> List (List String, List String) -> Doc
 printDataDeclCommented vis n params variants derives vcomments =
   let head = Cat (text "data ") (Cat (text n) (concatD (map (p => Cat (text " ") (text p)) params)))
   let variantDocs = dataVariantDocsCommented variants vcomments
@@ -1617,7 +1621,7 @@ printDecl (DNewtype pub n params con fty derives) = Cat
               (text " ")
               (Cat
                 (printTypeAtom fty)
-                (if isEmptyL derives then Nil else Cat (text " deriving (") (Cat (text (joinWith ", " derives)) (text ")"))))))))))
+                (if isEmptyL derives then Nil else Cat (text " deriving (") (Cat (text (joinWith ", " (map deriveRefName derives))) (text ")"))))))))))
 printDecl (DInterface { pub, def, name, typarams, supers, methods }) = Cat
   (if pub then text "export " else Nil)
   (Cat

@@ -1,5 +1,5 @@
 # META
-source_lines=884
+source_lines=963
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted desugar stage — Stage 1 port of `lib/desugar.ml`.  Lowers surface
@@ -45,10 +45,13 @@ import frontend.ast.{
   Variant(..),
   Attr,
   Decl(..),
+  DeriveRef(..),
+  deriveRefName,
   Route(..),
 }
 import support.util.{
   listLen,
+  joinWith,
   contains,
   allList,
   fallthroughName,
@@ -342,8 +345,12 @@ anyRefutable (p::ps) = isRefutable p || anyRefutable ps
 -- a synthetic single-variant data deriver.  Generated bodies are core (no sugar),
 -- so they pass through the later passes unchanged.  Generated names are
 -- positional (`__a%d`/`__b%d`) — deterministic, matching the reference.
--- (Record derives, Arbitrary, and newtype Num/Generic are not exercised by the
--- corpus → deferred.)
+-- (Record derives, Arbitrary, and newtype Num/Generic remain deferred.  The old
+-- note here claimed they were "not exercised by the corpus"; that was FALSE —
+-- test/ported/test_eval_ported.mdk derives `Num` AND `Generic` on newtypes and
+-- only passes because the bindings that use them (`distRN`, `genNewtypeName`)
+-- are dead: no test forces them, and a top-level nullary is lazy.  `checkDerives`
+-- below now reports those sites instead of dropping them silently — #421.)
 expandDecl : Decl -> List Decl
 expandDecl (DData vis name params variants derives) =
   DData vis name params variants [] ::
@@ -360,44 +367,116 @@ attribHead : List Attr -> List Decl -> List Decl
 attribHead _ [] = []
 attribHead attrs (first::rest) = DAttrib attrs first :: rest
 
-deriveImpls : (String -> Option Decl) -> List String -> List Decl
+deriveImpls : (String -> Option Decl) -> List DeriveRef -> List Decl
 deriveImpls _ [] = []
-deriveImpls f (d::ds) = match f d
+deriveImpls f (d::ds) = match f (deriveRefName d)
   Some gen => gen :: deriveImpls f ds
   None => deriveImpls f ds
 
+-- Every `data` deriver, keyed by the name that selects it in `deriving (…)`.
+-- This list is THE single source of truth: `deriveForData` looks a name up here,
+-- and the "supported: …" copy in the unknown-derive diagnostic (#421) is
+-- `map fst` of this same list — so a deriver added later (#422's `Hashable`)
+-- both starts working AND starts being advertised by the message, with no
+-- hand-typed list to rot.
+-- The generator is a THUNK on purpose: Medaka is strict, so an eager
+-- `List (String, Decl)` would run all five derivers on every lookup.
+dataDerivers : String -> List String -> List Variant -> List (String, Unit -> Decl)
+dataDerivers name params variants = [
+  ("Eq", _ => applyDeriveParams name params (deriveEqData name variants)),
+  ("Ord", _ => applyDeriveParams name params (deriveOrdData name variants)),
+  (
+    "Debug",
+    _ => applyDeriveParams name params (deriveShowData "Debug" "debug" name variants),
+  ),
+  (
+    "Display",
+    _ => applyDeriveParams name params (deriveShowData "Display" "display" name variants),
+  ),
+  (
+    "Generic",
+    _ => applyDeriveParams name params (deriveGenericData name variants),
+  ),
+]
+
+-- Force the deriver `iface` selects, or None when no deriver claims the name.
+lookupDeriver : String -> List (String, Unit -> Decl) -> Option Decl
+lookupDeriver _ [] = None
+lookupDeriver n ((k, f)::rest)
+  | n == k = Some (f ())
+  | otherwise = lookupDeriver n rest
+
 deriveForData : String -> List String -> List Variant -> String -> Option Decl
-deriveForData name params variants "Eq" =
-  Some (applyDeriveParams name params (deriveEqData name variants))
-deriveForData name params variants "Debug" =
-  Some (applyDeriveParams
-    name
-    params
-    (deriveShowData "Debug" "debug" name variants))
-deriveForData name params variants "Display" =
-  Some (applyDeriveParams
-    name
-    params
-    (deriveShowData "Display" "display" name variants))
-deriveForData name params variants "Generic" =
-  Some (applyDeriveParams name params (deriveGenericData name variants))
-deriveForData name params variants "Ord" =
-  Some (applyDeriveParams name params (deriveOrdData name variants))
-deriveForData _ _ _ _ = None
+deriveForData name params variants iface =
+  lookupDeriver iface (dataDerivers name params variants)
 
 -- A newtype is structurally a single-constructor, single-field data type, so the
 -- data derivers produce the right tagged rendering via a synthetic variant.
 -- (Num/Generic use specialized derivers in lib/desugar.ml — not exercised by the
 -- corpus, so deferred; the corpus only derives Eq/Ord/Debug/Display.)
+-- The newtype deriver table — the newtype counterpart of `dataDerivers`, and
+-- likewise the single source of both the lookup and the diagnostic's copy.
+-- It is deliberately SHORTER than `dataDerivers`: `Generic` (and `Num`) go
+-- through specialized newtype derivers in lib/desugar.ml that this port has not
+-- taken, so a newtype genuinely cannot derive them here.  Keeping the two tables
+-- separate is what stops the diagnostic from advertising `Generic` on a newtype
+-- that cannot have it.
+newtypeDerivers : String -> List String -> String -> Ty -> List (String, Unit -> Decl)
+newtypeDerivers name params con fty =
+  let synthetic = [Variant con (ConPos [fty])]
+  [
+    ("Eq", _ => applyDeriveParams name params (deriveEqData name synthetic)),
+    ("Ord", _ => applyDeriveParams name params (deriveOrdData name synthetic)),
+    (
+      "Debug",
+      _ => applyDeriveParams name params (deriveShowData "Debug" "debug" name synthetic),
+    ),
+    (
+      "Display",
+      _ => applyDeriveParams name params (deriveShowData "Display" "display" name synthetic),
+    ),
+  ]
+
 deriveForNewtype : String -> List String -> String -> Ty -> String -> Option Decl
 deriveForNewtype name params con fty iface =
-  let synthetic = [Variant con (ConPos [fty])]
-  match iface
-    "Eq" => Some (applyDeriveParams name params (deriveEqData name synthetic))
-    "Ord" => Some (applyDeriveParams name params (deriveOrdData name synthetic))
-    "Debug" => Some (applyDeriveParams name params (deriveShowData "Debug" "debug" name synthetic))
-    "Display" => Some (applyDeriveParams name params (deriveShowData "Display" "display" name synthetic))
-    _ => None
+  lookupDeriver iface (newtypeDerivers name params con fty)
+
+-- ── Pass: unknown `deriving (…)` names (standalone, pre-desugar) ─────────────
+-- `expandDecl` DROPS any derive name it has no deriver for, so `deriving (Banana)`
+-- generated nothing and said nothing (#421): the failure surfaced later and
+-- elsewhere as "No impl of Banana for X" at the first use site — or never, when the
+-- impl was only needed on a rare path.  This standalone pass reports each such
+-- name.  It must run on the RAW pre-desugar AST because that is the only tree that
+-- still HAS the derives (`expandDecl` clears the field), exactly like
+-- `checkGuardExhaustiveness`'s standalone pass over the surface `EGuards` shape.
+-- Pure: it returns messages + locs and the driver pushes them, so errors keep
+-- accumulating rather than raising here.
+export checkDerives : List Decl -> List (String, Option Loc)
+checkDerives decls = flatMap declDeriveErrors decls
+
+-- The `match derives` guard is load-bearing, not style: Medaka is strict, so
+-- passing `map fst (dataDerivers …)` to a decl with NO derives would still build
+-- the deriver table for every `data` in the program.
+declDeriveErrors : Decl -> List (String, Option Loc)
+declDeriveErrors (DData _ name params variants derives) = match derives
+  [] => []
+  _ => flatMap (unknownDerive name (map fst (dataDerivers name params variants))) derives
+declDeriveErrors (DNewtype _ name params con fty derives) = match derives
+  [] => []
+  _ => flatMap (unknownDerive name (map fst (newtypeDerivers name params con fty))) derives
+declDeriveErrors (DAttrib _ d) = declDeriveErrors d
+declDeriveErrors _ = []
+
+unknownDerive : String -> List String -> DeriveRef -> List (String, Option Loc)
+unknownDerive tyName supported (DeriveRef n loc)
+  | contains n supported = []
+  | otherwise = [(cannotDeriveMsg tyName supported n, loc)]
+
+-- Reports what was OBSERVED (no deriver claims this name), not a conclusion
+-- ("unknown interface") — `Num` IS a real interface, it just has no deriver here.
+cannotDeriveMsg : String -> List String -> String -> String
+cannotDeriveMsg tyName supported n =
+  "cannot derive '\{n}' for '\{tyName}'; supported: \{joinWith ", " supported}"
 
 -- rewrite a generated impl's head/constraints for the type's params:
 -- `data Box a deriving Eq` → `impl Eq (Box a) requires Eq a`
@@ -887,8 +966,8 @@ desugar prog = qualifyAliasRefs prog
   |> mapProg rewriteAssignIndex
   |> mapProg rewriteSugar
 # DESUGAR
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "Loc" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Attr" false) (mem "Decl" true) (mem "Route" true))))
-(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "contains" false) (mem "allList" false) (mem "fallthroughName" false) (mem "filterList" false) (mem "anyList" false))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "Loc" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Attr" false) (mem "Decl" true) (mem "DeriveRef" true) (mem "deriveRefName" false) (mem "Route" true))))
+(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "joinWith" false) (mem "contains" false) (mem "allList" false) (mem "fallthroughName" false) (mem "filterList" false) (mem "anyList" false))))
 (DTypeSig true "mapExpr" (TyFun (TyFun (TyCon "Expr") (TyCon "Expr")) (TyFun (TyCon "Expr") (TyCon "Expr"))))
 (DFunDef false "mapExpr" ((PVar "f") (PVar "e")) (EApp (EVar "f") (EApp (EApp (EVar "mapKids") (EVar "f")) (EVar "e"))))
 (DTypeSig false "mapKids" (TyFun (TyFun (TyCon "Expr") (TyCon "Expr")) (TyFun (TyCon "Expr") (TyCon "Expr"))))
@@ -1064,18 +1143,31 @@ desugar prog = qualifyAliasRefs prog
 (DTypeSig false "attribHead" (TyFun (TyApp (TyCon "List") (TyCon "Attr")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "attribHead" (PWild (PList)) (EListLit))
 (DFunDef false "attribHead" ((PVar "attrs") (PCons (PVar "first") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "DAttrib") (EVar "attrs")) (EVar "first")) (EVar "rest")))
-(DTypeSig false "deriveImpls" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Decl")))))
+(DTypeSig false "deriveImpls" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))) (TyFun (TyApp (TyCon "List") (TyCon "DeriveRef")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "deriveImpls" (PWild (PList)) (EListLit))
-(DFunDef false "deriveImpls" ((PVar "f") (PCons (PVar "d") (PVar "ds"))) (EMatch (EApp (EVar "f") (EVar "d")) (arm (PCon "Some" (PVar "gen")) () (EBinOp "::" (EVar "gen") (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))) (arm (PCon "None") () (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))))
+(DFunDef false "deriveImpls" ((PVar "f") (PCons (PVar "d") (PVar "ds"))) (EMatch (EApp (EVar "f") (EApp (EVar "deriveRefName") (EVar "d"))) (arm (PCon "Some" (PVar "gen")) () (EBinOp "::" (EVar "gen") (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))) (arm (PCon "None") () (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))))
+(DTypeSig false "dataDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl"))))))))
+(DFunDef false "dataDerivers" ((PVar "name") (PVar "params") (PVar "variants")) (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Generic")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants")))))))
+(DTypeSig false "lookupDeriver" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyCon "Decl")))))
+(DFunDef false "lookupDeriver" (PWild (PList)) (EVar "None"))
+(DFunDef false "lookupDeriver" ((PVar "n") (PCons (PTuple (PVar "k") (PVar "f")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "k")) (EApp (EVar "Some") (EApp (EVar "f") (ELit LUnit))) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupDeriver") (EVar "n")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "deriveForData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl")))))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Eq"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Debug"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Display"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Generic"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Ord"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" (PWild PWild PWild PWild) (EVar "None"))
+(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EVar "dataDerivers") (EVar "name")) (EVar "params")) (EVar "variants"))))
+(DTypeSig false "newtypeDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))))))))
+(DFunDef false "newtypeDerivers" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic")))))))))
 (DTypeSig false "deriveForNewtype" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))))))))
-(DFunDef false "deriveForNewtype" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "iface")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EMatch (EVar "iface") (arm (PLit (LString "Eq")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (arm (PLit (LString "Ord")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (arm (PLit (LString "Debug")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (arm (PLit (LString "Display")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic"))))) (arm PWild () (EVar "None"))))))
+(DFunDef false "deriveForNewtype" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EApp (EVar "newtypeDerivers") (EVar "name")) (EVar "params")) (EVar "con")) (EVar "fty"))))
+(DTypeSig true "checkDerives" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
+(DFunDef false "checkDerives" ((PVar "decls")) (EApp (EApp (EVar "flatMap") (EVar "declDeriveErrors")) (EVar "decls")))
+(DTypeSig false "declDeriveErrors" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
+(DFunDef false "declDeriveErrors" ((PCon "DData" PWild (PVar "name") (PVar "params") (PVar "variants") (PVar "derives"))) (EMatch (EVar "derives") (arm (PList) () (EListLit)) (arm PWild () (EApp (EApp (EVar "flatMap") (EApp (EApp (EVar "unknownDerive") (EVar "name")) (EApp (EApp (EVar "map") (EVar "fst")) (EApp (EApp (EApp (EVar "dataDerivers") (EVar "name")) (EVar "params")) (EVar "variants"))))) (EVar "derives")))))
+(DFunDef false "declDeriveErrors" ((PCon "DNewtype" PWild (PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "derives"))) (EMatch (EVar "derives") (arm (PList) () (EListLit)) (arm PWild () (EApp (EApp (EVar "flatMap") (EApp (EApp (EVar "unknownDerive") (EVar "name")) (EApp (EApp (EVar "map") (EVar "fst")) (EApp (EApp (EApp (EApp (EVar "newtypeDerivers") (EVar "name")) (EVar "params")) (EVar "con")) (EVar "fty"))))) (EVar "derives")))))
+(DFunDef false "declDeriveErrors" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "declDeriveErrors") (EVar "d")))
+(DFunDef false "declDeriveErrors" (PWild) (EListLit))
+(DTypeSig false "unknownDerive" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "DeriveRef") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DFunDef false "unknownDerive" ((PVar "tyName") (PVar "supported") (PCon "DeriveRef" (PVar "n") (PVar "loc"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "supported")) (EListLit) (EIf (EVar "otherwise") (EListLit (ETuple (EApp (EApp (EApp (EVar "cannotDeriveMsg") (EVar "tyName")) (EVar "supported")) (EVar "n")) (EVar "loc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "cannotDeriveMsg" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String")))))
+(DFunDef false "cannotDeriveMsg" ((PVar "tyName") (PVar "supported") (PVar "n")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "cannot derive '")) (EApp (EVar "display") (EVar "n"))) (ELit (LString "' for '"))) (EApp (EVar "display") (EVar "tyName"))) (ELit (LString "'; supported: "))) (EApp (EVar "display") (EApp (EApp (EVar "joinWith") (ELit (LString ", "))) (EVar "supported")))) (ELit (LString ""))))
 (DTypeSig false "applyDeriveParams" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Decl") (TyCon "Decl")))))
 (DFunDef false "applyDeriveParams" ((PVar "name") (PVar "params") (PAs "d" (PRec "DImpl" ((rf "iface" None)) true))) (EVariantUpdate "DImpl" (EVar "d") ((fa "tys" (EListLit (EApp (EApp (EVar "appliedHead") (EVar "name")) (EVar "params")))) (fa "reqs" (EApp (EApp (EVar "paramRequires") (EVar "iface")) (EVar "params"))))))
 (DFunDef false "applyDeriveParams" (PWild PWild (PVar "d")) (EVar "d"))
@@ -1284,8 +1376,8 @@ desugar prog = qualifyAliasRefs prog
 (DTypeSig true "desugar" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "desugar" ((PVar "prog")) (EBinOp "|>" (EBinOp "|>" (EBinOp "|>" (EBinOp "|>" (EBinOp "|>" (EBinOp "|>" (EBinOp "|>" (EBinOp "|>" (EApp (EVar "qualifyAliasRefs") (EVar "prog")) (EVar "mergeIfaceDefaults")) (EVar "fillImplDefaults")) (EApp (EVar "concatMapDecl") (EVar "expandDecl"))) (EVar "desugarRecordPuns")) (EVar "lowerContainerLiterals")) (EApp (EVar "mapProg") (EVar "rewriteDo"))) (EApp (EVar "mapProg") (EVar "rewriteAssignIndex"))) (EApp (EVar "mapProg") (EVar "rewriteSugar"))))
 # MARK
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "Loc" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Attr" false) (mem "Decl" true) (mem "Route" true))))
-(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "contains" false) (mem "allList" false) (mem "fallthroughName" false) (mem "filterList" false) (mem "anyList" false))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "Loc" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Attr" false) (mem "Decl" true) (mem "DeriveRef" true) (mem "deriveRefName" false) (mem "Route" true))))
+(DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "joinWith" false) (mem "contains" false) (mem "allList" false) (mem "fallthroughName" false) (mem "filterList" false) (mem "anyList" false))))
 (DTypeSig true "mapExpr" (TyFun (TyFun (TyCon "Expr") (TyCon "Expr")) (TyFun (TyCon "Expr") (TyCon "Expr"))))
 (DFunDef false "mapExpr" ((PVar "f") (PVar "e")) (EApp (EVar "f") (EApp (EApp (EVar "mapKids") (EVar "f")) (EVar "e"))))
 (DTypeSig false "mapKids" (TyFun (TyFun (TyCon "Expr") (TyCon "Expr")) (TyFun (TyCon "Expr") (TyCon "Expr"))))
@@ -1461,18 +1553,31 @@ desugar prog = qualifyAliasRefs prog
 (DTypeSig false "attribHead" (TyFun (TyApp (TyCon "List") (TyCon "Attr")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "attribHead" (PWild (PList)) (EListLit))
 (DFunDef false "attribHead" ((PVar "attrs") (PCons (PVar "first") (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "DAttrib") (EVar "attrs")) (EVar "first")) (EVar "rest")))
-(DTypeSig false "deriveImpls" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Decl")))))
+(DTypeSig false "deriveImpls" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))) (TyFun (TyApp (TyCon "List") (TyCon "DeriveRef")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "deriveImpls" (PWild (PList)) (EListLit))
-(DFunDef false "deriveImpls" ((PVar "f") (PCons (PVar "d") (PVar "ds"))) (EMatch (EApp (EVar "f") (EVar "d")) (arm (PCon "Some" (PVar "gen")) () (EBinOp "::" (EVar "gen") (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))) (arm (PCon "None") () (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))))
+(DFunDef false "deriveImpls" ((PVar "f") (PCons (PVar "d") (PVar "ds"))) (EMatch (EApp (EVar "f") (EApp (EVar "deriveRefName") (EVar "d"))) (arm (PCon "Some" (PVar "gen")) () (EBinOp "::" (EVar "gen") (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))) (arm (PCon "None") () (EApp (EApp (EVar "deriveImpls") (EVar "f")) (EVar "ds")))))
+(DTypeSig false "dataDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl"))))))))
+(DFunDef false "dataDerivers" ((PVar "name") (PVar "params") (PVar "variants")) (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants"))))) (ETuple (ELit (LString "Generic")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants")))))))
+(DTypeSig false "lookupDeriver" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyCon "Decl")))))
+(DFunDef false "lookupDeriver" (PWild (PList)) (EVar "None"))
+(DFunDef false "lookupDeriver" ((PVar "n") (PCons (PTuple (PVar "k") (PVar "f")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "k")) (EApp (EVar "Some") (EApp (EVar "f") (ELit LUnit))) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupDeriver") (EVar "n")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "deriveForData" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl")))))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Eq"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Debug"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Display"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Generic"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveGenericData") (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PLit (LString "Ord"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "variants")))))
-(DFunDef false "deriveForData" (PWild PWild PWild PWild) (EVar "None"))
+(DFunDef false "deriveForData" ((PVar "name") (PVar "params") (PVar "variants") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EVar "dataDerivers") (EVar "name")) (EVar "params")) (EVar "variants"))))
+(DTypeSig false "newtypeDerivers" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyFun (TyCon "Unit") (TyCon "Decl")))))))))
+(DFunDef false "newtypeDerivers" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EListLit (ETuple (ELit (LString "Eq")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Ord")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Debug")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (ETuple (ELit (LString "Display")) (ELam (PWild) (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic")))))))))
 (DTypeSig false "deriveForNewtype" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Decl"))))))))
-(DFunDef false "deriveForNewtype" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "iface")) (EBlock (DoLet false false (PVar "synthetic") (EListLit (EApp (EApp (EVar "Variant") (EVar "con")) (EApp (EVar "ConPos") (EListLit (EVar "fty")))))) (DoExpr (EMatch (EVar "iface") (arm (PLit (LString "Eq")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveEqData") (EVar "name")) (EVar "synthetic"))))) (arm (PLit (LString "Ord")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EVar "deriveOrdData") (EVar "name")) (EVar "synthetic"))))) (arm (PLit (LString "Debug")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Debug"))) (ELit (LString "debug"))) (EVar "name")) (EVar "synthetic"))))) (arm (PLit (LString "Display")) () (EApp (EVar "Some") (EApp (EApp (EApp (EVar "applyDeriveParams") (EVar "name")) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "deriveShowData") (ELit (LString "Display"))) (ELit (LString "display"))) (EVar "name")) (EVar "synthetic"))))) (arm PWild () (EVar "None"))))))
+(DFunDef false "deriveForNewtype" ((PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "iface")) (EApp (EApp (EVar "lookupDeriver") (EVar "iface")) (EApp (EApp (EApp (EApp (EVar "newtypeDerivers") (EVar "name")) (EVar "params")) (EVar "con")) (EVar "fty"))))
+(DTypeSig true "checkDerives" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
+(DFunDef false "checkDerives" ((PVar "decls")) (EApp (EApp (EDictApp "flatMap") (EVar "declDeriveErrors")) (EVar "decls")))
+(DTypeSig false "declDeriveErrors" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
+(DFunDef false "declDeriveErrors" ((PCon "DData" PWild (PVar "name") (PVar "params") (PVar "variants") (PVar "derives"))) (EMatch (EVar "derives") (arm (PList) () (EListLit)) (arm PWild () (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EVar "unknownDerive") (EVar "name")) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EApp (EApp (EApp (EVar "dataDerivers") (EVar "name")) (EVar "params")) (EVar "variants"))))) (EVar "derives")))))
+(DFunDef false "declDeriveErrors" ((PCon "DNewtype" PWild (PVar "name") (PVar "params") (PVar "con") (PVar "fty") (PVar "derives"))) (EMatch (EVar "derives") (arm (PList) () (EListLit)) (arm PWild () (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EVar "unknownDerive") (EVar "name")) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EApp (EApp (EApp (EApp (EVar "newtypeDerivers") (EVar "name")) (EVar "params")) (EVar "con")) (EVar "fty"))))) (EVar "derives")))))
+(DFunDef false "declDeriveErrors" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "declDeriveErrors") (EVar "d")))
+(DFunDef false "declDeriveErrors" (PWild) (EListLit))
+(DTypeSig false "unknownDerive" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "DeriveRef") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DFunDef false "unknownDerive" ((PVar "tyName") (PVar "supported") (PCon "DeriveRef" (PVar "n") (PVar "loc"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "supported")) (EListLit) (EIf (EVar "otherwise") (EListLit (ETuple (EApp (EApp (EApp (EVar "cannotDeriveMsg") (EVar "tyName")) (EVar "supported")) (EVar "n")) (EVar "loc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "cannotDeriveMsg" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String")))))
+(DFunDef false "cannotDeriveMsg" ((PVar "tyName") (PVar "supported") (PVar "n")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "cannot derive '")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString "' for '"))) (EApp (EMethodRef "display") (EVar "tyName"))) (ELit (LString "'; supported: "))) (EApp (EMethodRef "display") (EApp (EApp (EVar "joinWith") (ELit (LString ", "))) (EVar "supported")))) (ELit (LString ""))))
 (DTypeSig false "applyDeriveParams" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Decl") (TyCon "Decl")))))
 (DFunDef false "applyDeriveParams" ((PVar "name") (PVar "params") (PAs "d" (PRec "DImpl" ((rf "iface" None)) true))) (EVariantUpdate "DImpl" (EVar "d") ((fa "tys" (EListLit (EApp (EApp (EVar "appliedHead") (EVar "name")) (EVar "params")))) (fa "reqs" (EApp (EApp (EVar "paramRequires") (EVar "iface")) (EVar "params"))))))
 (DFunDef false "applyDeriveParams" (PWild PWild (PVar "d")) (EVar "d"))
