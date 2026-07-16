@@ -38,9 +38,14 @@ public export data HashMap k v = HashMap (Ref (Array (List (k, v)))) (Ref Int)
 initialCapacity : Int
 initialCapacity = 8
 
--- Bucket index of a key at a given capacity (hash is non-negative, cap > 0).
+{- Bucket index of a key at a given capacity (cap > 0). The `Hashable` contract
+   requires only eq-agreement, NOT a non-negative hash, so a contract-compliant
+   user impl may hand us any `Int` — and `%` on a negative dividend is negative,
+   which would index the bucket array out of bounds (issue #416: an OOB
+   `arrayGetUnsafe`). Clearing the sign bit maps every `Int`, `intMinBound`
+   included, into `[0, intMaxBound]` before the `%`. -}
 slotOf : Hashable k => k -> Int -> Int
-slotOf key cap = hash key % cap
+slotOf key cap = bitAnd (hash key) intMaxBound % cap
 
 -- ── Construction ────────────────────────────────────────────────────────
 

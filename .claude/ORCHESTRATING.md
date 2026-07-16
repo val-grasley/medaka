@@ -823,6 +823,17 @@ an emitter-graph file does NOT invalidate the seed (emitted IR is identical); an
   the staler the emitter's origin, the FRESHER its copy time, the rebuild was skipped, and the ancient
   binary died on syntax it predated. A **provenance stamp** (`.medaka_emitter.srcstamp`, hashed from the
   compiler sources, never travels with a `cp`) fixed it; the `cp` is now a safe ~4 s speedup.
+  **⚠️ But do NOT put that `cp` in a SUBAGENT's prompt, and tell isolated agents not to reach for
+  it.** Safe-for-you ≠ safe-for-them: the `cp` *reads* another tree, which trips the auto-mode
+  isolation classifier, and **the denial is stateful** — it carries forward and blocks every later
+  `make` the agent attempts, *including a clean cold-bootstrap wholly inside its own worktree*. An
+  Opus agent lost a full session to this on 2026-07-16 and could not build at all; its read-only
+  diagnosis survived only because reads were unaffected. ⚠️ **It is not deterministic** — a second
+  subagent in that same session did the identical `cp` and was never blocked, so you cannot predict
+  it or test for it; you can only avoid it. `AGENTS.md` recommends the `cp` in the
+  build section, so agents find it on their own — **pre-empt it explicitly in the prompt** ("do NOT
+  cp an emitter from any other tree; plain `make -C <your-worktree> medaka` cold-bootstraps and is
+  correct"). Cost of not borrowing: ~4 s. Cost of borrowing: the agent.
 - **A construct-removal census MUST scan the always-loaded prelude (`stdlib/core.mdk`) for REAL uses** (not
   just doc-comment/string matches). A missed prelude use makes the *compiled* binary fail to load the
   prelude → it errors on EVERY program, mimicking a codegen/DCE miscompile (an Opus agent spent a 12-build

@@ -221,7 +221,16 @@ ioRuntimeLines = [
   "      (then (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $v)))))",
   "      (else (struct.get $boxint 0 (ref.cast (ref $boxint) (local.get $v))))))",
   "  ;; box an i64 Int: in [-2^30, 2^30) -> i31 immediate; else -> $boxint struct.",
+  "  ;; N1/WP2: an Int is 63-bit two's complement and WRAPS.  Native gets that for free",
+  "  ;; (its immediates are `(n << 1) | 1`, so every re-tag drops bit 63); wasm has no tag,",
+  "  ;; so the wrap must be explicit.  Renormalize by sign-extending from bit 62 — the",
+  "  ;; `(x << 1) >> 1` arithmetic-shift pair, which mirrors native's tag/untag exactly and",
+  "  ;; is a no-op on any already-63-bit value.  This is the SOLE producer of $boxint, so",
+  "  ;; it makes `every (ref eq) Int holds a 63-bit value` a representation invariant, and",
+  "  ;; with it INT64_MIN is unreachable — which is what re-grounds the R5 `INT_MIN / -1`",
+  "  ;; claim (i64.div_s can no longer engine-trap on a normalized pair).",
   "  (func $mdk_box_int (param $n i64) (result (ref eq))",
+  "    (local.set $n (i64.shr_s (i64.shl (local.get $n) (i64.const 1)) (i64.const 1)))",
   "    (if (result (ref eq))",
   "        (i32.and (i64.ge_s (local.get $n) (i64.const -1073741824))",
   "                 (i64.lt_s (local.get $n) (i64.const 1073741824)))",
@@ -957,26 +966,30 @@ mathHostImportLines = [
 ]
 
 -- stringToFloat host seam: the guest pushes the string's bytes via the path channel
--- (mdk_path_reset + mdk_path_push, shared with IO) then calls mdk_str_to_float which
--- reads pathBuf as a UTF-8 string and returns Number(str) as an f64.  run.js implements
--- mdk_str_to_float using JavaScript's Number() which is byte-identical to C strtod on
--- the valid-decimal subset that medaka float literals and json.mdk produce.  Gated on
--- useFloatStrRef (set by noteW8Extern when "stringToFloat" is referenced).
+-- (mdk_path_reset + mdk_path_push, shared with IO) then calls mdk_str_to_float, which
+-- reads pathBuf as a UTF-8 string, parses it with the strtod acceptance set and returns
+-- the f64; mdk_str_to_float_ok then reports whether that parse SUCCEEDED.
+-- #370: two channels, not one.  `Some nan` is a legal strtod result ("nan" parses), so
+-- NaN cannot double as the failure signal — the old single-f64 seam mapped every NaN to
+-- None and lost it.  The host parser (test/wasm/run.js + playground/worker.js, kept
+-- byte-identical per WH3) reproduces medaka_rt.c mdk_string_to_float: strtod + a full-
+-- consumption endptr check + an empty-string reject.  Gated on useFloatStrRef (set by
+-- noteW8Extern when "stringToFloat" is referenced).
 export floatStrImportLines : List String
 floatStrImportLines = [
-  "  ;; -- stringToFloat host seam (Number() JS-side, see run.js) --",
+  "  ;; -- stringToFloat host seam (strtod acceptance set JS-side, see run.js) --",
   "  (import \"env\" \"mdk_str_to_float\" (func $mdk_str_to_float (result f64)))",
+  "  (import \"env\" \"mdk_str_to_float_ok\" (func $mdk_str_to_float_ok (result i32)))",
 ]
 
 -- $mdk_string_to_float : (ref $str) -> (ref eq)  (= Option Float = Some(boxed $float) | None)
--- Protocol: reset the path buffer, push each UTF-8 byte of the string, call the host
--- import (which parses via Number()), box the f64 into a $float, wrap in Some.
--- Returns None (i31 ordinal 1) if the host returns NaN AND the input wasn't "nan"
--- (matching strtod's Option contract: only valid parses return Some).
--- NOTE: JavaScript Number("nan"/"inf"/"-inf") returns NaN/Infinity/-Infinity, matching
--- medaka_rt.c strtod behaviour; Number("") -> 0.0 but strtod("",NULL) -> 0.0 too.
--- We return Some for every non-NaN result and None for NaN (unless the string IS "nan").
--- The host-side function sees the pushed bytes via the shared pathBuf.
+-- Protocol: reset the path buffer, push each UTF-8 byte of the string, call
+-- mdk_str_to_float (which parses the pathBuf bytes and LATCHES an ok flag), then
+-- mdk_str_to_float_ok.  ok=0 -> None (i31 ordinal 1); ok=1 -> Some(boxed f64), even
+-- when that f64 is NaN.  The host sees the pushed bytes via the shared pathBuf.
+-- #370: the ok channel exists because the acceptance set and the value are independent
+-- — strtod("nan") SUCCEEDS with a NaN value, while strtod("") and strtod("1.5 ") fail.
+-- Testing the f64 for NaN can distinguish neither.
 export floatStrRuntimeLines : List String
 floatStrRuntimeLines = [
   "  ;; stringToFloat : $str -> Option Float (ref eq).",
@@ -992,13 +1005,10 @@ floatStrRuntimeLines = [
   "      (local.set $i (i32.add (local.get $i) (i32.const 1)))",
   "      (br $loop)))",
   "    (local.set $d (call $mdk_str_to_float))",
-  "    ;; Return Some(boxed f64) always — JS Number() returns NaN for unparseable,",
-  "    ;; and medaka_rt.c strtod returns Some(NaN) for \"nan\" and None for truly",
-  "    ;; unparseable strings.  We mirror: if the result is NaN, return None; if nan",
-  "    ;; the string is \"nan\" strtod returns Some(NaN) — but for the medaka use cases",
-  "    ;; (float literals, json.mdk numeric strings) the host never returns NaN for",
-  "    ;; a valid parse, so a simple NaN->None mapping is correct.",
-  "    (if (result (ref eq)) (f64.ne (local.get $d) (local.get $d))",
+  "    ;; #370: the host latched an ok flag during that call; ask it, rather than",
+  "    ;; testing $d for NaN — strtod(\"nan\") legitimately yields Some(NaN), and",
+  "    ;; strtod(\"\")/strtod(\"1.5 \") legitimately FAIL with a non-NaN value.",
+  "    (if (result (ref eq)) (i32.eqz (call $mdk_str_to_float_ok))",
   "      (then (ref.i31 (i32.const 1)))",
   "      (else (struct.new $C_Some (i32.const 0) (struct.new $float (local.get $d)))))",
   "  )",

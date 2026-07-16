@@ -1001,7 +1001,7 @@ isStrExternW name = contains name [
   -- reuses $mdk_cp_count + $mdk_char_to_str, both in strLeafRuntimeLines).
   "debugStringLit", "debugCharLit",
   -- layer-6: stringToFloat : String -> Option Float.  Reads the $str, pushes bytes
-  -- via the IO path channel, calls mdk_str_to_float (JS Number()) -> f64 -> $float.
+  -- via the IO path channel, calls mdk_str_to_float (host strtod) -> f64 -> $float.
   "stringToFloat"]
 
 -- ── W8: RNG + hash LEAF externs (no `$str` dependency on their own) ──────────
@@ -1385,7 +1385,7 @@ noteW8Extern name =
   -- floatToString needs the $str rep to build its result string.
   let _ = if name == "floatToString" then setRef useStrRef True else ()
   -- layer-6: stringToFloat : String -> Option Float.  Pushes bytes via the IO path
-  -- channel then calls mdk_str_to_float (JS Number()).  Forces floatStr, float, str,
+  -- channel then calls mdk_str_to_float (host strtod acceptance set, #370).  Forces floatStr, float, str,
   -- and IO (for mdk_path_reset/mdk_path_push).  The $C_Some ctor is in ref-type-section
   -- which is always present when useStrRef/useFloatRef forces ref-mode.
   let _ = if name == "stringToFloat"
@@ -2024,10 +2024,27 @@ emitVarI32 fnNames valNames env x =
   else
     gapUnboundLTy ("unbound variable '" ++ x ++ "' (scalar mode: not a local, global value, or known function)")
 
+-- N1/WP2: sign-extend the i64 on the stack from bit 62, wrapping it into the 63-bit
+-- Int range — the `(x << 1) >> 1` pair that mirrors native's tag/untag shift.  Ref mode
+-- gets this inside `$mdk_box_int` (it re-boxes after every arith op), but SCALAR mode
+-- (`useRef == False`: a pure-Int program, no ADT/closure/string) never boxes — its
+-- values live as raw i64 on the wasm stack from literal to `$mdk_print_int` — so the
+-- wrap has to be emitted at each producing op or 64-bit intermediates escape.
+normInt64 : List String
+normInt64 = ["i64.const 1", "i64.shl", "i64.const 1", "i64.shr_s"]
+
+-- Which scalar-mode i64 ops can carry a result out of the 63-bit range, given operands
+-- already in it?  `+ - *` overflow; `/` only at (-2^62)/(-1) → +2^62 (which is also the
+-- only i64.div_s that could engine-trap once INT64_MIN is unreachable — normalizing here
+-- means the wrap happens instead, matching native).  `%` and the comparisons cannot.
+scalarNeedsNorm : String -> Bool
+scalarNeedsNorm op = contains op ["+", "-", "*", "/"]
+
 emitBinI32 : List String -> List String -> List String -> String -> CExpr -> CExpr -> (List String, WTy)
 emitBinI32 fnNames valNames env op l r =
   let (li, _) = emitScalarExpr fnNames valNames env l
   let (ri, _) = emitScalarExpr fnNames valNames env r
+  let nrm = if scalarNeedsNorm op then normInt64 else []
   -- layer-17 §2.1: i64 arithmetic.  A comparison yields wasm i32 0/1, so extend it
   -- back to the uniform i64 value rep.
   if isCmpOp op then (li ++ ri ++ [wasmBinOp64 op, "i64.extend_i32_u"], binOpTy op)
@@ -2035,13 +2052,14 @@ emitBinI32 fnNames valNames env op l r =
   -- ref mode (single function-scope $__sdivr i64 scratch; reuse across nested divs is
   -- safe — each store-then-immediately-use completes before the next).
   else if (op == "/" || op == "%") then
-    (li ++ ri ++ emitDivZeroGuard op "$__sdivr" ++ [wasmBinOp64 op], binOpTy op)
-  else (li ++ ri ++ [wasmBinOp64 op], binOpTy op)
+    (li ++ ri ++ emitDivZeroGuard op "$__sdivr" ++ [wasmBinOp64 op] ++ nrm, binOpTy op)
+  else (li ++ ri ++ [wasmBinOp64 op] ++ nrm, binOpTy op)
 
 emitUnI32 : List String -> List String -> List String -> String -> CExpr -> (List String, WTy)
 emitUnI32 fnNames valNames env "-" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
-  (["i64.const 0"] ++ xi ++ ["i64.sub"], WInt)
+  -- N1: negation overflows at exactly -2^62 (0 - (-2^62) = +2^62), so it wraps too.
+  (["i64.const 0"] ++ xi ++ ["i64.sub"] ++ normInt64, WInt)
 emitUnI32 fnNames valNames env "!" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
   -- i64 Bool -> negate: i64.eqz yields i32, extend back to i64.
@@ -2120,7 +2138,7 @@ emitRefProgram prog groups =
     ++ (if useFloatRef.value then floatFmtImportLines else [])
     -- #101: the libm transcendentals / pow / atan2 / hypot are JS Math.* host imports.
     ++ (if useMathRef.value then mathHostImportLines else [])
-    -- layer-6: stringToFloat is a host import (mdk_str_to_float uses JS Number()).
+    -- layer-6: stringToFloat is a host import (mdk_str_to_float = the host strtod parser).
     ++ (if useFloatStrRef.value then floatStrImportLines else [])
     -- W12: the IO host surface (readFile/fileExists/args/getEnv/exit) host imports.
     ++ (if useIORef.value then ioHostImportLines else [])
@@ -3386,7 +3404,7 @@ emitDictRef prog env d name routes args =
 -- is a plain value — keep the immediate saturated dispatch.
 emitMethodValueRef : Prog -> List String -> Int -> String -> Route -> List Route -> List Route -> List String
 emitMethodValueRef prog env d name route implRoutes methRoutes =
-  let arity = methodValArity prog name
+  let arity = methodValArity prog name route
   if arity <= 0 then emitMethodRef prog env d name route implRoutes methRoutes []
   else
     let names = etaValNames arity
@@ -3394,13 +3412,35 @@ emitMethodValueRef prog env d name route implRoutes methRoutes =
     let body = applyArgsC (CMethod name route implRoutes methRoutes) (map (n => CVar n AGlobal) names)
     emitClosure prog env d ps body
 
--- the method's USER arity for an eta-value closure.  Prefer the installed iface table
--- (methodArityOf, the modules path); when absent (the prelude-free W5/typed path never
--- installs it → methodArityOf 0) fall back to the method's impl clause arity (these
--- prelude-free fixtures define simple `requires`-free impls, so the clause arity IS the
--- user arity — no leading requires-dict params to subtract).
-methodValArity : Prog -> String -> Int
-methodValArity prog name =
+-- the method's USER arity for an eta-value closure.
+--
+-- #410 (wasm peer of llvm_emit's `methValArity`): an RLocal route is NOT a method
+-- dispatch — it is a definer SHADOW forwarding to a standalone top-level (see
+-- `emitMethodRef`'s RLocal arm), so the closure must expose the STANDALONE's value
+-- arity.  Deriving it from the method NAME instead is a lie whenever the two arities
+-- differ: the closure advertises N args but its body calls an M-arg function, so a HOF
+-- applying M args gets a PARTIAL APPLICATION back instead of a value (LLVM's symptom
+-- was a list of PAP heap pointers printed as Ints at exit 0 — silent wrongness).
+-- `progFnArity` is dict-INCLUSIVE (the dict-pass widened it with the leading dict
+-- params), so subtract the route's dicts to get the VALUE arity — exactly as the
+-- sibling `emitDictValueRef` already does for a CDict value.
+--
+-- Every non-RLocal route really is dispatching the method, so it keeps the name-derived
+-- arity: prefer the installed iface table (methodArityOf, the modules path); when absent
+-- (the prelude-free W5/typed path never installs it → methodArityOf 0) fall back to the
+-- method's impl clause arity (these prelude-free fixtures define simple `requires`-free
+-- impls, so the clause arity IS the user arity — no leading requires-dict params to
+-- subtract).
+methodValArity : Prog -> String -> Route -> Int
+methodValArity prog name (RLocal sym dicts) =
+  let target = if sym == "" then name else sym
+  let a = progFnArity prog target - listLen dicts
+  if a <= 0 then methodValArityByName prog name else a
+methodValArity prog name _ = methodValArityByName prog name
+
+-- the name-derived (non-shadow) method arity — the pre-#410 behaviour, unchanged.
+methodValArityByName : Prog -> String -> Int
+methodValArityByName prog name =
   let viaTable = methodArityOf name
   if viaTable > 0 then viaTable
   else match methodImpls prog name
@@ -4258,9 +4298,16 @@ emitVarRefPlain prog env d x =
   else if x == "True" then ["i32.const 1", "ref.i31"]
   else if x == "False" then ["i32.const 0", "ref.i31"]
   else if x == "otherwise" then ["i32.const 1", "ref.i31"]
-  -- W9: builtin Char bounds fit in an i31 → emit directly (codepoints 1 / 0x21FFFF).
-  else if x == "charMinBound" then ["i32.const 1", "ref.i31"]
-  else if x == "charMaxBound" then ["i32.const 2228223", "ref.i31"]
+  -- W9: builtin Char bounds fit in an i31 → emit directly.  These are the RAW
+  -- codepoints (0 / 0x10FFFF), because an i31 payload is UNTAGGED — the same rep as
+  -- `emitLitRef (LChar _)` and the `True`/`False` arms above, and what `charCode`
+  -- (an identity in ref mode) and every `i31.get_u` pattern test read back.
+  -- ⚠️ llvm_emit's peer constants are 1 / 2228223 and are NOT wrong there — native's
+  -- word is TAGGED (`2·cp+1`).  Do NOT copy that table here: pasting the tagged words
+  -- into an untagged i31 leaks the tag out as a value (#373 — `charCode charMaxBound`
+  -- printed 2228223, and range checks against the bounds were silently wrong).
+  else if x == "charMinBound" then ["i32.const 0", "ref.i31"]
+  else if x == "charMaxBound" then ["i32.const 1114111", "ref.i31"]
   -- W8b: the Float math constants pi/e are boxed (struct $float) — the SAME decimal
   -- text the LLVM oracle boxes (3.141592653589793 / 2.718281828459045).
   else if x == "pi" then ["f64.const 3.141592653589793", "struct.new $float"]

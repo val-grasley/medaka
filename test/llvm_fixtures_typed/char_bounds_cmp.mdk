@@ -1,0 +1,57 @@
+-- #373 frontier: COMPARISONS against the Char bounds, not just `charCode` of them.
+--
+-- `char_max`/`char_min` (test/llvm_fixtures/) pin `charCode charMaxBound` = 1114111 and
+-- `charCode charMinBound` = 0.  That is the *printing* symptom.  The wasm bug underneath
+-- (`wasm_emit.mdk` emitted native's TAGGED words 2228223/1 into an UNTAGGED i31) also
+-- made range checks against the bounds silently wrong, and a `charCode`-only probe does
+-- not pin that.
+--
+-- ⚠️ Choosing the probes takes care: the OBVIOUS comparisons do NOT discriminate.  With
+-- the tagged constants in place `charMinBound <= 'A'` and `'A' <= charMaxBound` both
+-- still answered True (1 <= 65 <= 2228223 holds by luck), so a fixture built from those
+-- would have gone GREEN on the broken emitter.  The bounds must be compared against
+-- chars sitting exactly ON them.
+--
+-- Shape constraints (all three bit a draft of this fixture):
+--   * `main` must reduce to a scalar Int/Bool/Float — the `llvm_emit_typed_main` probe
+--     rejects an ADT-valued main ("llvm spike: cannot print an ADT value"), so no List.
+--   * a scalar `Bool` main is itself a ledgered wasm auto-print divergence
+--     (`fn_bool_return` renders True as `1`), so the result is packed into an Int.
+--   * `diff_compiler_llvm_typed.sh` emits this corpus with `runtime.mdk` ONLY (no
+--     `core.mdk` prelude), so no prelude helper is in scope — hence the local `unwrap`
+--     rather than the prelude's `fromOption`.
+--
+-- `lo`/`hi` go through `charFromCode` rather than char literals on purpose: `fmt`
+-- normalizes `'\u{10FFFF}'` into a RAW U+10FFFF byte sequence in the source, which is
+-- unprintable, invisible in a diff, and easy to corrupt. `charFromCode 1114111` keeps the
+-- fixture ASCII and states the codepoint in the open.
+--
+-- Packing keeps each probe individually identifiable — a failure names the bit, not just
+-- "something differs":
+--
+--   bit 1  charMinBound <= lo   was 0 on wasm pre-fix (1 <= 0 fails)  -- the validator bug
+--   bit 2  charMinBound == lo   was 0 on wasm pre-fix (1 /= 0)
+--   bit 4  charMaxBound == hi   was 0 on wasm pre-fix (2228223 /= 1114111)
+--   bit 8  hi <= charMaxBound   was 1 on wasm pre-fix (1114111 <= 2228223, by luck) — not
+--          a regression witness itself, but it pins the upper range check against a
+--          future over-correction that lowers the bound.
+--
+-- Expected on all three engines: 15.  The broken emitter scored 8.
+bit : Int -> Bool -> Int
+bit w c = if c then w else 0
+
+-- `charFromCode` returns `Option Char`; both codepoints below are valid scalars, so the
+-- None arm is unreachable and its value never reaches the result.
+unwrap : Option Char -> Char
+unwrap (Some c) = c
+unwrap None = 'x'
+
+lo : Char
+lo = unwrap (charFromCode 0)
+
+hi : Char
+hi = unwrap (charFromCode 1114111)
+
+main =
+  bit 1 (charMinBound <= lo) + bit 2 (charMinBound == lo) + bit 4 (charMaxBound == hi) +
+    bit 8 (hi <= charMaxBound)

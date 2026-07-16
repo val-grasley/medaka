@@ -181,6 +181,24 @@ emitter was built from into `.medaka_emitter.srcstamp` and rebuilds any emitter 
 or mismatched provenance. (It used to decide this by **mtime**, which `cp` inverts — that
 is where the spurious "lagging seed" scares came from.)
 
+> ### 🚨 …but if you are a WORKTREE-ISOLATED SUBAGENT, do NOT borrow it. Cold-bootstrap.
+>
+> The paragraph above is written for a human (or an orchestrator) working in their own checkout.
+> **For an isolated subagent it can cost you your whole session — and the failure is not reliable
+> enough to predict.** `cp <other-tree>/medaka_emitter .` *reads* from a tree that is not yours,
+> which can trip the auto-mode isolation classifier — and the denial is **stateful**: it carries
+> forward and blocks every later `make` you attempt, *including a clean cold-bootstrap entirely
+> inside your own worktree*. In the same 2026-07-16 session, one subagent tripped the classifier on
+> this exact `cp` and **never built again** (its stated reasons for the successive denials even
+> contradicted each other — "you are in another agent's worktree" → "bare `make` risks the shared
+> main checkout"), while another warm-started from a borrowed emitter with no issue.
+> **Don't gamble the session on a coin-flip to save 4 seconds.**
+>
+> **Just run `make -C <your-absolute-worktree-path> medaka`.** A fresh worktree has NO
+> `./medaka_emitter` and **that is FINE** — it cold-bootstraps from `compiler/seed/emitter.ll.gz`
+> and works. The entire cost of not borrowing is ~4 s. **Never read from another tree; the speedup
+> is not worth the session.**
+
 **Environment.** opam/dune are NOT needed. The native build uses only **clang + Boehm GC**
 (Debian: `clang` + system `libgc-dev`, found via plain `-lgc`; macOS: Apple clang + `brew
 install bdw-gc`). `node` ≥ 24 is needed only for the wasm/sqlite/playground gates. If clang
@@ -319,6 +337,33 @@ move when wording changes.
 When **writing** a diagnostic, follow `compiler/ERROR-QUALITY.md` (the rubric) and add the
 code to `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
 
+**To see the TYPED, DICT-PASSED Core IR — the routes and `$dict` params themselves — run
+`compiler/entries/core_ir_typed_modules_dump_main.mdk`.** This is the probe for *any* dispatch,
+dict-routing, or `requires` bug, and it is the one that answers "which impl did it actually pick,
+and what dicts did it actually pass?" It mirrors `llvm_emit_modules_main.mdk` exactly
+(`driveModules → runEmitWith → mangle → elaborateModules → dceFilter → lowerProgramEmit`) but
+prints `cprogramToSexp` instead of emitting LLVM. An agent chasing a run-path dict bug on
+2026-07-16 called it *"the single highest-value tool here — it turned three days of plausible
+speculation into a 10-minute proof"*, and it is what disproved a wrong root cause I had briefed.
+**Reach for it BEFORE reasoning about routes from the source.**
+⚠️ **Do NOT reach for `core_ir_dump_main.mdk` instead — the obvious name is a TRAP.** It is
+**prelude-free and typecheck-free**, so it never shows a `$dict` param or a `CDict`/`CMethod`
+route: it will show you a clean tree and "confirm" there is no bug. (Its typed sibling's own
+header says exactly this — it just wasn't reachable from here.)
+
+**To see the emitted LLVM IR — `medaka build --keep-ir <file>` (or `MEDAKA_KEEP_IR=1`)**, which
+copies the IR to a predictable path and prints it (`effectiveKeepIr`,
+`compiler/driver/build_cmd.mdk:312`). Reach for this the moment a bug is "check/run are green but
+the built binary is wrong": it is the only way to see what the backend *actually* emitted, and it
+settles dispatch/arity/calling-convention questions that are pure speculation from the source. An
+agent debugging a dict-routing S0 on 2026-07-16 called it the single highest-value tool in the
+investigation — it turned "I think the wrong impl is selected" into `call
+@mdk_impl_S__List_a___s` on the screen, which disproved the filed root cause outright.
+⚠️ **`./medaka_emitter <file>` is NOT the way to get IR** — given too few args it prints a usage
+message to **stderr**, but still exits **0** with **empty stdout** (issue #440). A harness that
+redirects stdout to a file, or discards/merges stderr the usual way (`2>/dev/null`), sees a silent
+no-op: empty IR + apparent success, not an empty program.
+
 **Playground e2e:** `playground/e2e/` is a Playwright harness driving a real browser against
 the built CM6 playground (`cd playground/e2e && ./run.sh`). Needs **node v24+** and a
 pre-built `playground/dist/playground.wasm`; uses the **system** Chrome. See
@@ -356,17 +401,42 @@ narrative lives at the link.
   `map`'s arity-5 `Bin` vs `set`'s arity-4 `Bin` collapse into one cell). The fix shape is a
   per-module **local** ctor frame that shadows the global.
 - ⚠️ **A FIXTURE DIRECTORY IS A SHARED CORPUS.** Adding, moving, or deleting a fixture
-  silently enrolls (or de-enrolls) you in gates you never named. Before touching one, find
-  every consumer — `grep -rl '<fixture_dir>' test/` — then run **all** of them. Known
-  multi-consumer dirs: `test/eval_modules_fixtures/*/` → `diff_compiler_eval_modules.sh`
-  **and** `diff_compiler_core_ir_modules.sh` (P0-9 shipped "green" having run only the first);
-  `test/wasm/fixtures/` → **four** consumers (`diff_wasm.sh`, `diff_compiler_engines.sh`,
-  `tmc_census.sh`, and the keys of `test/engine_divergence.txt`).
+  silently enrolls (or de-enrolls) you in gates you never named. Before touching one,
+  **ENUMERATE every consumer, then run all of them.**
+  ⚠️ **Do not trust any count — including this sentence — and WORD-BOUND your grep.** Both
+  halves of that matter, and this bullet has been wrong in both directions:
+  - It used to say `test/wasm/fixtures/` had *"four"* consumers. That was wrong (it missed
+    `diff_compiler_prelude_obj.sh`). A **"correction" to eight was also wrong** — a naive
+    `grep -rl 'wasm/fixtures' test/` matches the **real sibling corpora**
+    `test/wasm/fixtures_typed/` (9 files) and `test/wasm/fixtures_modules/` (36), which
+    `diff_wasm_typed.sh`/`diff_wasm_modules.sh`/`build_wasm_cmd.sh` read *instead* of this
+    directory. **The true count is five.** ⚠️ `test/preflight.sh` (grep `Word-boundaries`)
+    already solves this — *"Word-boundaries on both sides so `llvm_fixtures` cannot match
+    `llvm_fixtures_modules`/`llvm_fixtures_typed` (real sibling corpora in this tree)"* — so
+    bound your pattern the same way, or the recipe this bullet hands you lies to you.
+  - **That two successive "verified" recounts each produced a different wrong number is the
+    point**, not an embarrassing footnote: a count is an encoded fact with no derivation and no
+    expiry, while the enumeration is one command away. Write the command, never the number. An
+    agent obeying a count literally runs a subset and believes it was exhaustive — the count
+    manufactures the very confidence this warning exists to prevent. It is *"check the SET, not
+    one member"* failing inside the sentence that teaches it.
+
+  Cautionary example, not a list to trust: `test/eval_modules_fixtures/*/` feeds
+  `diff_compiler_eval_modules.sh` **and** `diff_compiler_core_ir_modules.sh` — **P0-9 shipped
+  "green" having run only the first.** ⚠️ Also note `test/wasm/diff_wasm.sh` and its `test/wasm/`
+  siblings (`diff_wasm_typed.sh`, `diff_wasm_modules.sh`, `diff_sqlite.sh` — all wired directly in
+  `ci.yml`) live in the `wasm/` subdir, **not** beside the other gates; assuming the flat path cost
+  an agent two failed invocations on 2026-07-16.
 - ⚠️ **The compiler's own sources are IN the snapshot corpus, so a source change MOVES ITS
   OWN GOLDEN. Bless it in the SAME commit.** Push the source without the golden and `main`
   goes red, and the hook then forces the *next* agent to bless a file they never touched —
   the exact "rubber-stamp someone else's regression" hazard blessing exists to prevent. Bless
   by NAMING the path; `--bless` refuses to rubber-stamp a whole corpus.
+  ⚠️ **Bless via the GATE, not the CLI:** `sh test/diff_compiler_snapshot_<suite>.sh --bless <path>`
+  (e.g. `…_frontend.sh`, `…_eval.sh`, `…_types.sh`). **`medaka snapshot --bless <compiler source>`
+  is a dead end** — it looks for the `.md` next to the source and fails with *"no snapshot …
+  `--bless` never creates one — run `medaka snapshot --new` first"* (exit 1). Two agents lost time
+  to this on 2026-07-16 because this bullet said *what* to do and never *which command*.
 - **The compiler MAY import `stdlib/`** — deliberately, per module (policy changed
   2026-06-29; the old blanket ban is retired). **Weigh it per module, don't import
   reflexively.** Measured:

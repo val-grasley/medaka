@@ -953,9 +953,11 @@ parser) is local.
 - 12 doctests; nested round-trip identity, escapes, `\u` decoding, floats, and
   error cases validated via a `run` probe.
 
-**Not handled (v1):** `\uXXXX` surrogate pairs (astral codepoints); strict
-leading-zero / number-grammar rejection (the number scan is lenient on input —
-output is always valid); `Infinity`/`NaN` floats (not representable in JSON).
+**Not handled (v1):** strict leading-zero / number-grammar rejection (the
+number scan is lenient on input — output is always valid); `Infinity`/`NaN`
+floats (not representable in JSON). `\uXXXX` surrogate pairs (astral
+codepoints) ARE handled: a valid high/low pair decodes to its astral scalar
+value, and a lone (unpaired) surrogate is a parse error, not silent corruption.
 **Possible follow-ups:** a pretty-printer (indented output); `ToJson`/`FromJson`
 encode/decode interfaces for user types (a strong interface/`deriving` tire-kick).
 
