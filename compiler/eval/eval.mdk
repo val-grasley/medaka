@@ -291,14 +291,22 @@ takeN n _
 takeN _ [] = []
 takeN n (x::rest) = x :: takeN (n - 1) rest
 
-lookupMethodReqCount : String -> String -> Int
-lookupMethodReqCount mname tag =
+-- #413: Option-returning.  A MISSING entry (no ImplMethod for this (method, tag) —
+-- an interface DEFAULT method, or a tag the route never narrowed) must stay
+-- distinguishable from a genuine reqCount of 0: 0 means "this impl method declares
+-- NO leading dict params, so drop the call site's", while None means "unknown callee
+-- — keep the pre-existing behaviour".  Collapsing the two would silently strip the
+-- dicts a default method's lifted body needs.
+-- This scans methodReqCountRef, so it is once-per-dispatch on the hot path: callers
+-- take the Option ONCE and derive every consumer from it (see applyMethodDicts).
+lookupMethodReqCountOpt : String -> String -> Option Int
+lookupMethodReqCountOpt mname tag =
   lookupReqCount mname tag methodReqCountRef.value
 
-lookupReqCount : String -> String -> List ((String, String), Int) -> Int
-lookupReqCount _ _ [] = 0
+lookupReqCount : String -> String -> List ((String, String), Int) -> Option Int
+lookupReqCount _ _ [] = None
 lookupReqCount mname tag (((m, t), c)::rest)
-  | m == mname && t == tag = c
+  | m == mname && t == tag = Some c
   | otherwise = lookupReqCount mname tag rest
 
 export buildCtorFieldOrders : List Decl -> List (String, List String)
@@ -1108,24 +1116,63 @@ evalMethodAt env name (RLocal sym dicts) _ _ =
 evalMethodAt env name route implRoutes methodRoutes =
   let lm = lookupMethod env name
   let (narrowed, fwdReqs0) = methodAtNarrow env lm route
-  let fwdReqs = takeN (lookupMethodReqCount name (routeTag env route)) fwdReqs0
+  applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes
+
+-- SHARED by eval.mdk's EMethodAt arm and core_ir_eval.mdk's CMethod arm.  The two
+-- parallel interpreters MUST agree here value-for-value (DICT-SEMANTICS §7), and
+-- they had ALREADY drifted: the CMethod arm's comment claimed it "mirrors eval.mdk
+-- exactly" while carrying neither the awaitsArgs guard nor the fwdReqs truncation.
+-- Single implementation ⇒ they cannot drift again.
+--
+-- ARGSTAMP-UNIFY / genuine #21 (the `fwdReqs` truncation): the forwarding dict can be
+-- OVER-provisioned (a List-tagged dict may carry an element req that THIS method's
+-- List impl does not consume — two interfaces sharing the head tag, only one with
+-- `requires`).  Emit tolerates this by loading only the matched impl's reqCount
+-- dicts; mirror that — forward only the first reqCount of the dict's reqs
+-- (reqCount=0 ⇒ none).
+--
+-- Phase 103 (the `awaitsArgs` guard): only fold method-/impl-dicts and forwarded
+-- requires onto a value still awaiting application.  A terminal NULLARY
+-- return-position impl body (`def = []`, stripped to a bare value by stripResolved)
+-- takes no dict params — dict_pass's usesImplDict gate adds none — so applying the
+-- route's dicts would over-apply to a constructor/scalar ("applied non-function").
+-- Drop them when the narrowed value awaits no args.  NOTE this guard is a NECESSARY
+-- but not SUFFICIENT proxy for "the callee declares dict params" — a terminal body
+-- that still takes VALUE params awaits args and slips through it; that is #413, which
+-- implDictRoutes (below) closes properly by consulting the declared count.
+export applyMethodDicts : EvalEnv (Value e) -> String -> Route -> Value e -> List (Value e) -> List Route -> List Route -> <e> Value e
+applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes =
+  let tag = routeTag env route
+  -- ONE scan of methodReqCountRef per dispatch.  Both consumers below derive from
+  -- this single Option: fwdReqs wants it as a count (absent ⇒ 0), implDictRoutes
+  -- wants the absent/present distinction.  Looking it up twice doubled a
+  -- linear-in-impl-count scan on a runtime dispatch hot path for nothing.
+  let reqCount = lookupMethodReqCountOpt name tag
+  let fwdReqs = takeN (fromOption 0 reqCount) fwdReqs0
   if awaitsArgs narrowed then
     let v1 = applyDicts env narrowed methodRoutes
-    let v2 = applyDicts env v1 implRoutes
+    let v2 = applyDicts env v1 (implDictRoutes reqCount methodRoutes implRoutes)
     applyValues v2 fwdReqs
   else narrowed
--- ARGSTAMP-UNIFY / genuine #21: the forwarding dict can be OVER-provisioned (a
--- List-tagged dict may carry an element req that THIS method's List impl does not
--- consume — two interfaces sharing the head tag, only one with `requires`).  Emit
--- tolerates this by loading only the matched impl's reqCount dicts; mirror that —
--- forward only the first reqCount of the dict's reqs (reqCount=0 ⇒ none).
 
--- Mirror lib/eval.ml:869-873 (Phase 103): only fold method-/impl-dicts and
--- forwarded requires onto a value still awaiting application. A terminal
--- nullary return-position impl body (`def = []`, stripped to a bare value by
--- stripResolved) takes no dict params — dict_pass's usesImplDict gate adds none
--- — so applying the route's dicts would over-apply to a constructor/scalar
--- ("applied non-function"). Drop them when the narrowed value awaits no args.
+-- #413: a call site stamps the impl-`requires` dict routes UNCONDITIONALLY, but
+-- dict_pass only gives the impl method matching PARAMS when its body actually reads
+-- one (usesImplDict) — a terminal body like `impl S (List a) requires S a where
+-- s _ = 2` declares none.  Applying the route's dicts anyway feeds the DICT into the
+-- body's first value param (`s _ = 2` returns 2, then the real argument is applied to
+-- 2 → "applied non-function: 2").  The `awaitsArgs` guard above only rescues a
+-- NULLARY terminal body; one that still takes value params slips through.
+-- Emit never had this bug because it sizes the call from the DEFINITION (llvm_emit's
+-- dispatch chain loads only the matched impl's reqCount dicts).  Mirror that: keep
+-- only as many impl dicts as this impl method actually declared, i.e. reqCount
+-- (= impl pats − declared interface arity) minus the method-level dicts already
+-- applied.  None (unknown callee — a default method has no ImplMethod entry) ⇒
+-- unchanged.  Takes the already-looked-up count so the hot path scans the table
+-- once, not once per consumer.
+implDictRoutes : Option Int -> List Route -> List Route -> List Route
+implDictRoutes (Some reqCount) methodRoutes implRoutes =
+  takeN (subClampZero reqCount (listLen methodRoutes)) implRoutes
+implDictRoutes None _ implRoutes = implRoutes
 
 -- Retained for the Core-IR interpreter's CIndex/CStringIndex/CListIndex arms
 -- (see the note on listNthAt above): the EIndex eval arm is gone (desugared to
