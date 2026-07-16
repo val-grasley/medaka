@@ -3,10 +3,11 @@
 -- ("divide by zero"). `divP`'s params are a generic `Num a` (isPolyNumBinop routes
 -- them through the runtime value-tag-dispatched helper, wasm_emit.mdk), so this
 -- exercises the poly path, not the concrete-Int static fallback (see
--- polynum_divmod_int.mdk for that control). diff_wasm_modules.sh asserts the exact
--- stderr bytes for this fixture by name (DIVZERO-ASSERT) — the stdout-only compare
--- every other fixture gets ("before" == "before") cannot tell a coded trap from a
--- bare engine trap, so it alone would prove nothing.
+-- polynum_divmod_int.mdk for that control). Since #531, diff_wasm_modules.sh
+-- compares stderr and exit code (not just stdout) for EVERY fixture generically,
+-- so this no longer needs a bespoke per-fixture assert to tell a coded trap from a
+-- bare engine trap — the stdout-only compare every other fixture used to get
+-- ("before" == "before") could not, which is exactly why one existed here before.
 divP a b = a / b
 
 main =
