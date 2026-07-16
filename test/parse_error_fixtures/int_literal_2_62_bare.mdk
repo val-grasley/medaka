@@ -1,0 +1,14 @@
+-- #171 (S0, silent wrongness): a BARE 2^62 integer literal is rejected.
+-- Int is 63-bit, spanning [-2^62, 2^62-1], so 2^62 is in range as a negative
+-- and OUT of range as a positive. The lexer's magnitude guard must admit 2^62
+-- to keep the minimum -2^62 writable (it sees only unsigned digits — the `-` is
+-- a separate token), so before the fix this literal PASSED and silently wrapped
+-- to intMinBound: `println 4611686018427387904` printed -4611686018427387904,
+-- exit 0, no diagnostic. All three engines agreed on the wrong answer, so no
+-- parity gate could see it — this fixture pins the DIAGNOSTIC instead.
+-- The sign only exists in the parser, which is where the rejection now lives.
+-- Self-hosted reference: parse error (the parse_main oracle panics with the bare
+-- "parse error"; this is a PARSER rejection, not a lexer one, so the corpus
+-- convention applies — the exact wording is pinned by check_json_fixtures/
+-- int_literal_2_62_bare and the location by parse_error_loc_fixtures/ same name).
+x = 4611686018427387904
