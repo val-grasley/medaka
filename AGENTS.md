@@ -424,8 +424,9 @@ narrative lives at the link.
   Cautionary example, not a list to trust: `test/eval_modules_fixtures/*/` feeds
   `diff_compiler_eval_modules.sh` **and** `diff_compiler_core_ir_modules.sh` — **P0-9 shipped
   "green" having run only the first.** ⚠️ Also note `test/wasm/diff_wasm.sh` and its `test/wasm/`
-  siblings live under `test/wasm/`, not at `test/diff_wasm.sh`; guessing cost an agent two failed
-  invocations on 2026-07-16.
+  siblings (`diff_wasm_typed.sh`, `diff_wasm_modules.sh`, `diff_sqlite.sh` — all wired directly in
+  `ci.yml`) live in the `wasm/` subdir, **not** beside the other gates; assuming the flat path cost
+  an agent two failed invocations on 2026-07-16.
 - ⚠️ **The compiler's own sources are IN the snapshot corpus, so a source change MOVES ITS
   OWN GOLDEN. Bless it in the SAME commit.** Push the source without the golden and `main`
   goes red, and the hook then forces the *next* agent to bless a file they never touched —
