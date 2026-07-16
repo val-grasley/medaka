@@ -130,7 +130,7 @@ golden native agrees with, and no gate ever ran eval on these fixtures. The froz
 golden was laundering the bug. This is the circularity of §1, caught on the first run
 of the new gate.
 
-### 3.2 `wasm:codegen-bug` — 7 fixtures. The WasmGC backend is wrong.
+### 3.2 `wasm:codegen-bug` — 5 fixtures. The WasmGC backend is wrong.
 
 > **`rng_int_big` FIXED 2026-07-15 (#179).** A later `wasm:codegen-bug` row (added by
 > #98) — `randomInt 0 1000000000000000` drew 457532755261734, which the old lowering
@@ -138,20 +138,39 @@ of the new gate.
 > i64→i64 and the result reboxes through the `$mdk_box_int` seam (i31 / `$boxint`), so a
 > draw above ±2^30 is representable. eval == native == wasm; row promoted out of the ledger.
 
-All seven are from `test/llvm_fixtures/` — a corpus the wasm backend had never seen.
+> **`char_max` / `char_min` FIXED 2026-07-16 (#373).** The two rows blamed `charCode`
+> for "leaking the i31 tag". **That diagnosis was wrong** — `charCode` is an identity in
+> ref mode (`wasm_emit.mdk:emitLeafExternRef "charCode"`) and never touched a tag. The
+> leak was in the bound CONSTANTS: `emitVarRefPlain` emitted `i32.const 1` /
+> `i32.const 2228223` — llvm_emit's peer constants, which are correct THERE because
+> native's word is tagged (`2·cp+1`) — into a wasm `ref.i31`, whose payload is
+> **untagged**. So the tag arrived as part of the value. Now `i32.const 0` /
+> `i32.const 1114111`, matching `emitLitRef (LChar _)` and every `i31.get_u` pattern
+> test. eval == native == wasm; both rows promoted out of the ledger, and both fixtures
+> gained absolute value pins (`test/engine_value_pins/llvm/char_{max,min}.pin`) so a
+> future unanimous-but-wrong answer cannot hide behind the differential.
+>
+> The symptom the rows recorded (`charCode charMaxBound` printing 2228223) was only the
+> printing half. Comparisons against the bounds were silently wrong too —
+> `charMinBound <= c` was False for `c` = U+0000, i.e. every lower range check /
+> validator. That frontier is now pinned by `llvmT/char_bounds_cmp`, which deliberately
+> avoids the obvious probes: `charMinBound <= 'A'` and `'A' <= charMaxBound` both
+> answered True on the BROKEN emitter (1 ≤ 65 ≤ 2228223 holds by luck), so a fixture
+> built from those would have gone green.
+
+All five are from `test/llvm_fixtures/` — a corpus the wasm backend had never seen.
 
 | fixture | eval | native | wasm | diagnosis |
 |---|---|---|---|---|
-| `llvm/char_max` | 1114111 | 1114111 | **2228223** | **i31 tag leak**: `2·1114111+1`. `charCode` returns the *tagged* word instead of untagging it. |
-| `llvm/char_min` | 0 | 0 | **1** | Same bug: `2·0+1`. |
 | `llvm/fn_float_chain` | 10.0 | 10.0 | **trap** | `illegal cast`. **Verified**: adding `f : Float -> Float` signatures makes it emit and run correctly. The wasm float detection is *signature-driven* (`declSigTypeNames`, per the 2026-06-30 float hardening), so an **unsignatured** float function is mis-typed as Int and the `ref.cast` traps. eval and native both infer it correctly. |
 | `llvm/debug_charlit` | `'\n'` | `'\n'` | **trap** | `illegal cast` in `debugCharLit`. |
 | `llvm/debug_strlit` | `"a\tb\"c"` | `"a\tb\"c"` | **trap** | `illegal cast` in `debugStringLit`. |
 | `llvm/fn_bool_return` | True | True | **1** | The wasm scalar auto-print renders a `Bool` main as `1`. Formatting, not a value bug. |
 | `llvm/arr_set_unit` | *(empty)* | *(empty)* | **0** | The wasm scalar auto-print renders a `Unit` main as `0`; the other two correctly print nothing. |
 
-The first five are genuine codegen bugs. All seven exist **only** because the two
-backends' corpora were disjoint — which is precisely the thesis this gate tests.
+The first three are genuine codegen bugs; the last two are auto-print formatting. All
+five exist **only** because the two backends' corpora were disjoint — which is precisely
+the thesis this gate tests.
 
 ---
 

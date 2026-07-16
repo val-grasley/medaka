@@ -502,7 +502,15 @@ jobs:
             # for COST, not theme — see the shard-scheduling note above. frontend's own 15
             # gates are 12 CPU-s combined, i.e. this shard was ~130s of oracle build and then
             # nothing. It has the room; `engines` and `backend` do not.
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_fmt' 'diff_compiler_fmt_roundtrip' 'native_fixtures/run' 'build_construct_coverage'"
+            #
+            # 'diff_compiler_wasm_shim_parity' (#370): a WASM gate parked here, again for
+            # COST not theme — it is a text diff of the two JS hosts (run.js vs
+            # playground/worker.js, WASM-SEMANTICS WH3) and needs no compiler, no oracle
+            # and no wasm toolchain, so it costs ~0 CPU-s wherever it lands. It is in a
+            # REQUIRED shard on purpose: the `wasm` job is advisory (not a required
+            # context), so a shim-only PR could otherwise break playground/runner parity
+            # and still go green.
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_fmt' 'diff_compiler_fmt_roundtrip' 'diff_compiler_wasm_shim_parity' 'native_fixtures/run' 'build_construct_coverage'"
           - name: types
             # 'diff_compiler_shadow_semantics': the SHADOW-SEMANTICS.md decision matrix
             # (standalone fn ⇄ interface-method shadowing). It lives here rather than in
