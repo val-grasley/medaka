@@ -77,10 +77,30 @@ import tools.prop_runner.{
 
 -- ── protocol / server identity ──────────────────────────────────────────────
 
--- The MCP protocol revision this server implements.  Date-stamped per the MCP
--- spec's versioning; bump when adopting a newer revision.
-mcpProtocolVersion : String
-mcpProtocolVersion = "2024-11-05"
+-- Protocol revisions this server negotiates, oldest first.  This server is a
+-- basic tools-only server (no resources/prompts/sampling), so its wire shape
+-- has been protocol-compatible across every revision the SDK has shipped —
+-- there's nothing here that changed shape between "2024-11-05" and
+-- "2025-11-25". Listed explicitly (rather than derived) per the MCP spec's
+-- negotiation rule: echo the client's requested version if it's in this set,
+-- else fall back to the newest.
+mcpSupportedVersions : List String
+mcpSupportedVersions = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
+
+-- The newest supported revision — returned when the client's requested
+-- version is missing or not in `mcpSupportedVersions`.
+mcpLatestVersion : String
+mcpLatestVersion = "2025-11-25"
+
+-- Negotiate the protocol version for an `initialize` request: echo the
+-- client's `params.protocolVersion` back if the server supports it, else
+-- fall back to `mcpLatestVersion` (also covers a missing/non-string field).
+negotiateVersion : Json -> String
+negotiateVersion msg =
+  let params = fieldOr "params" msg
+  match fieldStr "protocolVersion" params
+    Some v => if elem v mcpSupportedVersions then v else mcpLatestVersion
+    None => mcpLatestVersion
 
 -- Mirrors medakaVersion in compiler/driver/medaka_cli.mdk (kept in sync by hand;
 -- medaka_cli is the top of the graph and cannot be imported here).
@@ -148,10 +168,10 @@ logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
 
 -- ── handshake result values ──────────────────────────────────────────────────
 
-initializeResult : Json
-initializeResult = jObject
+initializeResultFor : String -> Json
+initializeResultFor version = jObject
   [
-    ("protocolVersion", JString mcpProtocolVersion),
+    ("protocolVersion", JString version),
     ("capabilities", jObject [("tools", jObject [])]),
     (
       "serverInfo",
@@ -850,7 +870,8 @@ dispatchMsg runtimeSrc coreSrc stdlibDir msg = match asArray msg
       else match lookup "id" msg
         None => unit -- notification: no response for ANY method
         Some idJson =>
-          if meth == "initialize" then writeMessage (responseMsg idJson initializeResult)
+          if meth == "initialize" then
+            writeMessage (responseMsg idJson (initializeResultFor (negotiateVersion msg)))
           else
             if meth == "ping" then writeMessage (responseMsg idJson (jObject []))
             else

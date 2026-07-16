@@ -1,4 +1,4 @@
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"medaka","version":"0.1.0-preview"}}}
 {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"[{\"uri\":\"test/mcp_fixtures/type_at_single.mdk\",\"range\":{\"start\":{\"line\":4,\"character\":0},\"end\":{\"line\":4,\"character\":0}}}]"}],"isError":false}}
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"null"}],"isError":false}}
 {"jsonrpc":"2.0","id":4,"result":{}}
