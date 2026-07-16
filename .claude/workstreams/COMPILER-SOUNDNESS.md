@@ -124,6 +124,8 @@ discarded stdout on panic**, so a `println` probe returned nothing whether the p
 - `compiler/SHADOW-INVERSION-DESIGN.md` — the design for **#50** (a standalone must WIN over a
   same-named method). *The compiler is obeying the spec; the SPEC is the bug.*
 - `docs/spec/DICT-SEMANTICS.md` — dictionary-passing semantics (D1–D10, all closed).
+- `docs/spec/EMITTER-SEMANTICS.md` — the native-backend refinement contract (observation
+  preservation, value rep, numeric/trap laws, determinism); §9 is the live conformance table.
 - `test/diff_compiler_shadow_semantics.sh` — pins every shadow cell, **including the KNOWN-BAD ones**.
   A fix must update the pin **in the same PR**.
 </content>

@@ -70,6 +70,7 @@ that duplicates it will drift from it.
 | [LANGUAGE.md](LANGUAGE.md) | surface syntax + semantics, lexer → typecheck | `compiler/frontend/`, `compiler/types/` |
 | [TOOLING.md](TOOLING.md) | `fmt` / `lint` / `test` / `doc` / CLI ergonomics | `compiler/tools/`, `compiler/driver/` |
 | [WASM.md](WASM.md) | the WasmGC backend + its gates | `compiler/backend/wasm_emit.mdk`, `test/wasm/` |
+| [EMITTER.md](EMITTER.md) | the native LLVM backend: `EMITTER-SEMANTICS` conformance + consolidation arc | `compiler/backend/llvm_emit.mdk`, `runtime/medaka_rt.c` |
 | [DIAGNOSTICS.md](DIAGNOSTICS.md) | error-message quality + source locations | `compiler/driver/diagnostics.mdk`, `compiler/frontend/` |
 | [TESTING.md](TESTING.md) | gates, goldens, oracles, CI | `test/`, `.github/` |
 | [RELEASE.md](RELEASE.md) 🚢 | the 0.1.0 public preview | `docs/`, packaging, `playground/` |
@@ -100,6 +101,10 @@ The unit of collision is a **file**, not a topic.
   `llvm_emit.mdk`, you own the wasm arm too.**
 - **PERF × SOUNDNESS.** `resolve.mdk` (PERF) and `typecheck.mdk`/`llvm_emit.mdk` (SOUNDNESS) usually
   merge cleanly — but see rule 1.
+- **EMITTER × SOUNDNESS × WASM all reach `llvm_emit.mdk` (and a semantics fix there owns the wasm
+  arm too).** EMITTER is the consolidation arc for that file — while one of its PRs is in flight,
+  treat `compiler/backend/llvm_emit.mdk` as locked for the other workstreams, exactly as TYPECHECK
+  locks `typecheck.mdk`. Emitter changes also perturb the SEED — batch re-mint units.
 - **STDLIB × everything.** `stdlib/core.mdk` is the **prelude**. Touching it moves every snapshot
   golden, the LSP completion list, and the doctest line numbers, and it perturbs the fixpoint. Land
   core changes **at a checkpoint, alone**.
