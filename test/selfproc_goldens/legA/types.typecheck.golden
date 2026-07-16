@@ -695,6 +695,7 @@ letRecNonFunctionMsg : String -> String
 letters : String
 litType : Lit -> Mono
 liveNumVarGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> Option Mono
+loadDataUniverse : Unit -> Unit
 locEq : Loc -> Loc -> Bool
 lookupAssocI : Int -> List (Int, a) -> Option a
 lookupAssocS : String -> List (String, List String) -> Option (List String)
@@ -1059,12 +1060,15 @@ scopeShadowsForGroup : List String -> Unit
 scopeShadowsUser : Unit -> Unit
 seedAbstractRecordTypes : List Decl -> List (String, List Decl) -> Unit
 seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
+seedAndCheckSplit : List Decl -> List Decl -> List Decl -> List (String, Scheme)
+seedCheckRun : List Decl -> Unit
 seedEffectDomains : Unit -> Unit
 selectImplEntryByIface : Map String (List KeyEntry) -> String -> Mono -> Option KeyEntry
 selectReqImpl : Map String (List KeyEntry) -> Map String (List ImplEntry) -> String -> String -> Mono -> Option (Ty, List Require)
 selfBinding : String -> (String, String)
 setCardCap : Int
 setCoherenceUserDecls : List Decl -> Unit
+setDictEligible : List String -> Unit
 setLocIfSome : Option Loc -> Unit
 setNumlitFloats : Unit -> Unit
 setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> Unit
@@ -1107,6 +1111,7 @@ standaloneShadowScheme : String -> Option Mono
 standaloneShadowSigTy : String -> String -> Option Ty
 standaloneShadowsFromSet : Map String Unit -> Map String Unit -> List Decl -> List String
 standaloneValuePinned : String -> Bool
+storeDataUniverse : Unit -> Unit
 strHasSlash : String -> Bool
 strHasSlashGo : String -> Int -> Int -> Bool
 stripArrows : Mono -> Mono

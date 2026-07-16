@@ -1079,9 +1079,11 @@ declaredEffects _ = []
 -- update / patterns can look records up without threading an env field.
 public export data RecordInfo = RecordInfo (List Int) Mono (List (String, Mono))
 
--- Keyed indices over `recordsRef`, maintained in lockstep at every registration
--- (registerRecordInfoKeyed) and cleared with it (resetState) — so the hot
--- per-field-access read paths never walk the full registry (issue #149).
+-- Keyed indices over `recordsRef` — so the hot per-field-access read paths never walk the
+-- full registry (issue #149).  #415 item 3: the lockstep is structural, not an obligation.
+-- `registerRecordInfoKeyed` is the SOLE registration writer of all three; they are cleared
+-- together by resetState; and the cross-module universe copy goes through the single
+-- loadDataUniverse/storeDataUniverse inverse pair.
 --   recordByNameRef : registry KEY → RecordInfo.  omInsert is last-write-wins and
 --     the register site inserts in registration order, so it reproduces the old
 --     prepend-list first-match (latest-registered wins) for lookupRecordByName.
@@ -1996,9 +1998,10 @@ sitesFor fn idx = fromOption [] (omLookup fn idx)
 -- reads it to decide the empty-case short-circuit vs the discard-and-fallback.  Set
 -- to [] by elaborateModules before the sweep; NOT touched by resetState.
 
--- O(log n) membership mirror of dictEligibleRef (set in lockstep at both set
--- sites).  maybeInferConstraint tests it per SCC member per discovery pass — an
--- O(members × eligible) scan over the whole program when it was a list.
+-- O(log n) membership index of dictEligibleRef.  #415 item 3: DERIVED from the list by
+-- `setDictEligible`, the single writer of both — not mirrored at each set site, so the
+-- two cannot drift.  maybeInferConstraint tests it per SCC member per discovery pass —
+-- an O(members × eligible) scan over the whole program when it was a list.
 
 -- Whether checkProgramSeeded ALSO infers each parametric impl's return-position
 -- method bodies (instance-`requires` dict-passing, Phase 83/84 single-level).  ON
@@ -7305,11 +7308,20 @@ elaborateOne runtimeDecls coreDecls (rootId, prog) =
 -- pass), then mark + typecheck + route + dict_pass the final set.  In the RKey
 -- rewrite, each occurrence of a name in the final set becomes an EDictAt (routes
 -- filled after inference) and its def gets matching leading dict params.
+-- #415 item 3: the ONLY writer of dictEligibleRef / dictEligibleSetRef.  The set is
+-- DERIVED from the list here rather than mirrored at each set site, so the two cannot
+-- drift: there is no longer a second side for a future edit to be absent from.  (Both
+-- former sites hand-wrote `namesToSet <names> omEmpty` next to the list store; the
+-- module site additionally recomputed `moduleUserFnNames modules` for the mirror.)
+setDictEligible : List String -> Unit
+setDictEligible names =
+  let _ = setRef driverState.value.dictEligibleRef names
+  setRef driverState.value.dictEligibleSetRef (namesToSet names omEmpty)
+
 export elaborateDict : List Decl -> List String -> List String -> List Decl -> List Decl
 elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = setRef driverState.value.superDeclsRef prog
-  let _ = setRef driverState.value.dictEligibleRef eligibleNames
-  let _ = setRef driverState.value.dictEligibleSetRef (namesToSet eligibleNames omEmpty)
+  let _ = setDictEligible eligibleNames
   let _ = setRef driverState.value.implInferEnabled True
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
   let _ = setRef driverState.value.argDispatchIdxRef (argDispatchIndices prog)
@@ -8048,9 +8060,18 @@ implExistsForHeadGo ((KeyEntry methods tag2 _ _ _ _ _)::rest) name tag
 -- obligations — IS routed through the one engine: every RLocal payload is filled by routesOfMonosTop
 -- → entail (EKNestedTop).  So the single-entailment-function law holds at 4-of-5 BY CONSTRUCTION; what
 -- stays out is exactly the binding-selection axis §3 never claimed (cf. §8 I1: identity keyed by
--- binding, not bare name).  ⚠️ implExistsForHead MUST read the same KeyBuckets table entailInst's
--- keyForSite keys on — a drift between "does an impl exist" and "which impl entails" would be a real
--- dispatch bug.
+-- binding, not bare name).  "Does an impl exist" and "which impl entails" must agree on ONE
+-- KeyBuckets table — a drift between them would be a real dispatch bug.  #415 item 2: that
+-- agreement is STRUCTURAL, not a standing obligation.  Both reads consume this function's single
+-- [keyTable] param: `implExistsForHead keyTable` directly, and `keyForSite` via
+-- routesOfMonosTop keyTable → routeOf → entail (EKNestedTop keyTable) → entailInst.  There is no
+-- second table in scope to drift TO; each resolver group threads one `buildKeyTable` result to
+-- all five stampers (elaborateDict:7323, elabModuleStamp:14711).  Re-introducing the hazard would
+-- take adding a parameter or reaching for a global — so keep both reads on [keyTable].
+-- (The separate `implExistsForHead perRun.value.shadowKeyTableRef.value` reads in inferShadowApp
+-- are NOT this table and NOT a drift: that universe is GLOBAL by design — local ∪ imported ∪
+-- prelude, see the P0-19 d8 note — and answers the inference-time binding question, not which
+-- impl a route stamps.)
 resolveRLocalSites : List Decl -> ImplBuckets -> KeyBuckets -> List PendingEntry -> Unit
 resolveRLocalSites _ _ _ [] = ()
 resolveRLocalSites prog implTable keyTable ((PendingEntry name tagRef am _ kind)::rest) =
@@ -10661,11 +10682,7 @@ checkBodyImpl seed mode prog0 =
   let dataEnv = match mode
     Flat _ => registerAllData initialEnv prog
     Module _ _ _ =>
-      let _ = setRef perRun.value.recordsRef crossRun.value.universeRecords.value
-      let _ = setRef perRun.value.recordByNameRef crossRun.value.universeRecordByName.value
-      let _ = setRef perRun.value.fieldOwnersRef crossRun.value.universeFieldOwners.value
-      let _ = setRef perRun.value.dataParamKindsRef crossRun.value.universeDataParamKinds.value
-      let _ = setRef perRun.value.aliasTableRef crossRun.value.universeAliasTable.value
+      let _ = loadDataUniverse ()
       registerAllData crossRun.value.universeDataEnv.value prog0
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
@@ -12997,6 +13014,36 @@ checkToLines prog =
 -- coherence over the WHOLE prog: this path (typecheck_main single-arg) is
 -- prelude-free, so every impl is a user impl (mirrors check_program_no_prelude).
 
+-- #415 item 1: the seeding PREAMBLE every runtime-seeded entry point runs before its
+-- typecheck pass — the head half of the sandwich whose tail is `runFinalChecks`.
+-- [oracleDecls] is the decl set the ctor oracle is built from: the ONE axis the callers
+-- legitimately differ on (the flat paths pass `prog`; checkModuleFullDiags passes
+-- `prog ++ accData` own-module-FIRST — see the P0-9 note there, that order is load-bearing).
+-- matchWarnings is cleared explicitly because resetState does NOT clear it.
+-- Call ORDER is preserved from the four bodies this replaces.
+seedCheckRun : List Decl -> Unit
+seedCheckRun oracleDecls =
+  let _ = setRef driverState.value.implInferEnabled False
+  let _ = setRef driverState.value.matchWarnings []
+  setRef driverState.value.matchOracle (buildOracle oracleDecls)
+
+-- #415 item 1: seed-and-run for the three FLAT runtime-seeded entry points
+-- (checkToLinesWithRuntime / checkErrorsWithRuntime / checkProgramDiags).  All three
+-- used to repeat this body verbatim under a "Mirrors checkToLinesWithRuntime's
+-- side-effects EXACTLY" comment — a mirror obligation enforced only by that comment.
+-- They now differ ONLY in what they HARVEST from the accumulators afterwards, so the
+-- seeding+coherence they share has exactly one body and cannot drift.
+-- ⚠️ trap #5, same as runFinalChecks: coherence sees the driver-staged USER decls only,
+-- NEVER `prog`.  A user impl deliberately overrides a seeded prelude impl, so feeding
+-- the seeded set to checkCoherence false-positives on the stdlib itself.
+seedAndCheckSplit : List Decl -> List Decl -> List Decl -> List (String, Scheme)
+seedAndCheckSplit runtimeDecls coreProg userProg =
+  let prog = coreProg ++ userProg
+  let _ = seedCheckRun prog
+  let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
+  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  schemes
+
 -- like checkToLines but seeds runtime.mdk's externs (for typechecking core.mdk,
 -- which references putStrLn / etc. declared in runtime.mdk).  [coreProg] is the PRELUDE
 -- the caller would otherwise have pre-concatenated onto [userProg]; keeping the two
@@ -13004,12 +13051,7 @@ checkToLines prog =
 -- see flatShadowScopingRef).  Prelude-free callers pass [].
 export checkToLinesWithRuntime : List Decl -> List Decl -> List Decl -> String
 checkToLinesWithRuntime runtimeDecls coreProg userProg =
-  let prog = coreProg ++ userProg
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
-  let _ = setRef driverState.value.matchOracle (buildOracle prog)
-  let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  let schemes = seedAndCheckSplit runtimeDecls coreProg userProg
   let errs = reverseL perRun.value.typeErrors.value
   let warns = map tcMsg (reverseL driverState.value.matchWarnings.value)
   match errs
@@ -13023,19 +13065,14 @@ checkToLinesWithRuntime runtimeDecls coreProg userProg =
 -- driver staged nothing (golden/profile paths) ⇒ no check, byte-identical.
 
 -- G1 (SOUNDNESS): does the runtime-seeded typecheck pass produce any TYPE ERROR?
--- Mirrors checkToLinesWithRuntime's side-effects EXACTLY (same seeding + coherence
--- over the same staged user decls) but returns a Bool keyed on the typeErrors
--- accumulator, ignoring the success-path scheme dump and the match WARNINGS (which
--- are not errors).  Used by check.mdk's checkHasErrors to gate the CLI exit code
+-- Shares checkToLinesWithRuntime's seeding + coherence BY CONSTRUCTION (the one
+-- seedAndCheckSplit body), and differs only in the harvest: a Bool keyed on the
+-- typeErrors accumulator, ignoring the success-path scheme dump and the match WARNINGS
+-- (which are not errors).  Used by check.mdk's checkHasErrors to gate the CLI exit code
 -- WITHOUT altering runCheck's reported stdout.
 export checkErrorsWithRuntime : List Decl -> List Decl -> List Decl -> Bool
 checkErrorsWithRuntime runtimeDecls coreProg userProg =
-  let prog = coreProg ++ userProg
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
-  let _ = setRef driverState.value.matchOracle (buildOracle prog)
-  let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  let _ = seedAndCheckSplit runtimeDecls coreProg userProg
   match perRun.value.typeErrors.value
     [] => False
     _ => True
@@ -13061,12 +13098,7 @@ checkMatchToLines runtimeDecls prog =
 -- so diagnostics.mdk maps them straight to structured `Diag` values.
 export checkProgramDiags : List Decl -> List Decl -> List Decl -> (List TcDiag, List TcDiag)
 checkProgramDiags runtimeDecls coreProg userProg =
-  let prog = coreProg ++ userProg
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
-  let _ = setRef driverState.value.matchOracle (buildOracle prog)
-  let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  let _ = seedAndCheckSplit runtimeDecls coreProg userProg
   (
     reverseL perRun.value.typeErrors.value,
     reverseL driverState.value.matchWarnings.value,
@@ -13283,19 +13315,36 @@ appendUniverseAccums prog =
 -- decl exactly ONCE across the whole run — the O(N) replacing the Module arm's old
 -- per-module O(|accData|) re-registration.  Only publicDataDecls are folded in (private data
 -- stays module-local), matching foldModules' `accData ++ publicDataDecls prog` threading.
-appendDataUniverse : List Decl -> Unit
-appendDataUniverse pubDecls =
+-- #415 item 3: the cross-module DATA universe ⇄ per-run working tables copy, which was
+-- open-coded as a 5-way lockstep mirror at THREE sites (the Module arm of the data-env
+-- setup + appendDataUniverse's load and its store-back).  Adding a sixth universe table
+-- meant remembering all three — the "silently absent from the other side" shape.  It now
+-- has one body per direction, and the two are exact inverses of each other.
+-- ⚠️ universeDataEnv is deliberately NOT copied here: it is threaded through
+-- `registerAllData` by the CALLER (it is that call's env argument and its result), so it
+-- has no meaning as a blind copy.
+loadDataUniverse : Unit -> Unit
+loadDataUniverse _ =
   let _ = setRef perRun.value.recordsRef crossRun.value.universeRecords.value
   let _ = setRef perRun.value.recordByNameRef crossRun.value.universeRecordByName.value
   let _ = setRef perRun.value.fieldOwnersRef crossRun.value.universeFieldOwners.value
   let _ = setRef perRun.value.dataParamKindsRef crossRun.value.universeDataParamKinds.value
-  let _ = setRef perRun.value.aliasTableRef crossRun.value.universeAliasTable.value
-  let env2 = registerAllData crossRun.value.universeDataEnv.value pubDecls
+  setRef perRun.value.aliasTableRef crossRun.value.universeAliasTable.value
+
+-- the exact inverse of loadDataUniverse (same five tables, same order).
+storeDataUniverse : Unit -> Unit
+storeDataUniverse _ =
   let _ = setRef crossRun.value.universeRecords perRun.value.recordsRef.value
   let _ = setRef crossRun.value.universeRecordByName perRun.value.recordByNameRef.value
   let _ = setRef crossRun.value.universeFieldOwners perRun.value.fieldOwnersRef.value
   let _ = setRef crossRun.value.universeDataParamKinds perRun.value.dataParamKindsRef.value
-  let _ = setRef crossRun.value.universeAliasTable perRun.value.aliasTableRef.value
+  setRef crossRun.value.universeAliasTable perRun.value.aliasTableRef.value
+
+appendDataUniverse : List Decl -> Unit
+appendDataUniverse pubDecls =
+  let _ = loadDataUniverse ()
+  let env2 = registerAllData crossRun.value.universeDataEnv.value pubDecls
+  let _ = storeDataUniverse ()
   setRef crossRun.value.universeDataEnv env2
 
 -- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
@@ -13970,9 +14019,10 @@ checkModules runtimeDecls coreDecls modules =
     modules
 
 -- ── per-module ISOLATED diagnostics (the analyzeProject typecheck stage) ────
--- Like checkModuleFull but ALSO harvests THIS module's type diagnostics: it
--- mirrors checkProgramDiags's side-effects (matchOracle/matchWarnings seeded,
--- coherence over the module's OWN decls) while keeping the module ISOLATED — only
+-- Like checkModuleFull but ALSO harvests THIS module's type diagnostics: it shares the
+-- flat paths' seeding via `seedCheckRun` (#415 item 1 — matchOracle/matchWarnings/
+-- implInferEnabled) and runs coherence over the module's OWN decls, while keeping the
+-- module ISOLATED — only
 -- PUBLIC schemes/data of earlier modules are seeded (via seedVars/accData), so a
 -- private same-named helper in another module never collides (the bug the old
 -- flat prefix-concat diagnostics path had).  checkModuleFull calls resetState (),
@@ -13991,8 +14041,8 @@ checkModules runtimeDecls coreDecls modules =
 -- standalone caller that skips it would leak the previous run's universe into this one.
 export checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModuleFullDiags seedVars accData accAll prog =
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
+  -- #415 item 1: same seeding preamble as the flat entry points (one body), but the
+  -- oracle decls are THIS module's own first.
   -- P0-9: THIS module's own decls (`prog`) come FIRST so its constructors win
   -- the oracle's first-wins bare-name tables.  Another loaded module (in accData)
   -- can define a same-named ctor at a different arity (`map`'s arity-5 `Bin` vs
@@ -14000,7 +14050,7 @@ checkModuleFullDiags seedVars accData accAll prog =
   -- the WRONG arity/type for this module's own `Bin` in a match and false-warns
   -- W-NONEXHAUSTIVE.  buildOracle is duplicate-tolerant, and accData still
   -- supplies prelude Option/Result ctors (this module never redefines them).
-  let _ = setRef driverState.value.matchOracle (buildOracle (prog ++ accData))
+  let _ = seedCheckRun (prog ++ accData)
   -- Bug C: pass the cumulative full impl universe (core + earlier modules) as
   -- implDecls (was checkModuleFull, i.e. implDecls=[]) so buildStandaloneShadows sees
   -- an imported standalone funDef that shadows an interface method (`map`'s `toList`
@@ -14244,8 +14294,7 @@ elaborateModules runtimeDecls coreDecls modulesIn =
   let rpNames = returnPosMethodNames allDecls
   let _ = setRef driverState.value.argDispatchIdxRef (argDispatchIndices allDecls)
   let argNames = map fst driverState.value.argDispatchIdxRef.value
-  let _ = setRef driverState.value.dictEligibleRef (moduleUserFnNames modules)
-  let _ = setRef driverState.value.dictEligibleSetRef (namesToSet (moduleUserFnNames modules) omEmpty)
+  let _ = setDictEligible (moduleUserFnNames modules)
   -- #194: eliminate the redundant MANDATORY promotion-discovery whole-program
   -- typecheck.  Direct-promotion == ∅ ⟹ full-promoted == ∅ (inherited promotion needs a
   -- leaf direct promotion to inherit from), so a SINGLE bare-dict elaboration sweep that
