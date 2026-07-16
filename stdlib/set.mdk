@@ -260,6 +260,74 @@ foldlSet : (b -> a -> <e> b) -> b -> Set a -> <e> b
 foldlSet f z Tip = z
 foldlSet f z (Bin _ x l r) = foldlSet f (f (foldlSet f z l) x) r
 
+-- ── Split / join ────────────────────────────────────────────────────────
+
+{- The join-based kit (Adams 1992; Blelloch, Ferizovic & Sun 2016) — the mirror
+   of the one in map.mdk; see that module for the full rationale.  `balance`
+   above only repairs a one-element imbalance, which is all an insert or delete
+   can create; combining two whole sets needs primitives that cope with
+   subtrees of wildly different weights:
+
+     • `link x l r` — rebuild `l < x < r` into one balanced set, any weights.
+     • `link2 l r`  — the same without a dividing element, for when that
+                      element is being dropped (`difference`).
+
+   With `splitAt`, every operation below divides and conquers over the tree
+   *structure* rather than re-inserting every element one at a time. -}
+
+insertMin : a -> Set a -> Set a
+insertMin x Tip = singleton x
+insertMin x (Bin _ y l r) = balance y (insertMin x l) r
+
+insertMax : a -> Set a -> Set a
+insertMax x Tip = singleton x
+insertMax x (Bin _ y l r) = balance y l (insertMax x r)
+
+-- Join `l < x < r` for arbitrarily unbalanced `l`/`r`: descend the heavy side
+-- until the weights are within `delta`, rebalancing on the way out.
+link : a -> Set a -> Set a -> Set a
+link x Tip r = insertMin x r
+link x l Tip = insertMax x l
+link x (l@(Bin sl xl ll rl)) (r@(Bin sr xr lr rr))
+  | 3 * sl < sr = balance xr (link x l lr) rr
+  | 3 * sr < sl = balance xl ll (link x rl r)
+  | otherwise = bin x l r
+
+-- `link` with no dividing element — every element of `l` is below every
+-- element of `r`.  Falls back to `glue` once the weights are comparable.
+link2 : Set a -> Set a -> Set a
+link2 Tip r = r
+link2 l Tip = l
+link2 (l@(Bin sl xl ll rl)) (r@(Bin sr xr lr rr))
+  | 3 * sl < sr = balance xr (link2 l lr) rr
+  | 3 * sr < sl = balance xl ll (link2 rl r)
+  | otherwise = glue l r
+
+-- Split a set around an element: everything below it, everything above it.
+-- The element itself (if present) is dropped -- `splitMember` reports it.
+splitAt : Ord a => a -> Set a -> (Set a, Set a)
+splitAt x Tip = (Tip, Tip)
+splitAt x (Bin _ y l r) = match compare x y
+  Lt =>
+    let (below, above) = splitAt x l
+    (below, link y above r)
+  Gt =>
+    let (below, above) = splitAt x r
+    (link y l below, above)
+  Eq => (l, r)
+
+-- `splitAt` that also reports whether the split element was present.
+splitMember : Ord a => a -> Set a -> (Set a, Bool, Set a)
+splitMember x Tip = (Tip, False, Tip)
+splitMember x (Bin _ y l r) = match compare x y
+  Lt =>
+    let (below, found, above) = splitMember x l
+    (below, found, link y above r)
+  Gt =>
+    let (below, found, above) = splitMember x r
+    (link y l below, found, above)
+  Eq => (l, True, r)
+
 -- ── Set algebra ─────────────────────────────────────────────────────────
 
 {- | Union — every element in either set.
@@ -274,7 +342,12 @@ foldlSet f z (Bin _ x l r) = foldlSet f (f (foldlSet f z l) x) r
    > toList (union (fromList [1, 2, 3]) (fromList [2]))
    [1, 2, 3] -}
 export union : Ord a => Set a -> Set a -> Set a
-union a b = foldrSet (x acc => insert x acc) b a
+union Tip b = b
+union a Tip = a
+union (Bin _ x l r) b =
+  let (bl, br) = splitAt x b
+  -- `x`'s counterpart in `b` was dropped by `splitAt`, so the left set wins.
+  link x (union l bl) (union r br)
 
 {- | Intersection — elements in both sets.
 
@@ -288,10 +361,13 @@ union a b = foldrSet (x acc => insert x acc) b a
    > toList (intersection (fromList [1, 2, 3]) (fromList [2]))
    [2] -}
 export intersection : Ord a => Set a -> Set a -> Set a
-intersection a b = foldrSet (intersectStep b) Tip a
-
-intersectStep : Ord a => Set a -> a -> Set a -> Set a
-intersectStep b x acc = if has x b then insert x acc else acc
+intersection Tip b = Tip
+intersection a Tip = Tip
+intersection (Bin _ x l r) b =
+  let (bl, found, br) = splitMember x b
+  let l2 = intersection l bl
+  let r2 = intersection r br
+  if found then link x l2 r2 else link2 l2 r2
 
 {- | Difference — elements in the first set but not the second.
 
@@ -305,7 +381,12 @@ intersectStep b x acc = if has x b then insert x acc else acc
    > toList (difference (fromList [1, 2, 3]) (fromList [1, 2, 3]))
    [] -}
 export difference : Ord a => Set a -> Set a -> Set a
-difference a b = foldrSet (x acc => delete x acc) a b
+difference Tip b = Tip
+difference a Tip = a
+difference a (Bin _ x l r) =
+  let (al, ar) = splitAt x a
+  -- `splitAt` already dropped `x` from both halves, so it is simply not rebuilt.
+  link2 (difference al l) (difference ar r)
 
 {- | `True` when every element of the first set is in the second.
 
@@ -314,7 +395,22 @@ difference a b = foldrSet (x acc => delete x acc) a b
    > isSubsetOf (fromList [1, 4]) (fromList [1, 2, 3])
    False -}
 export isSubsetOf : Ord a => Set a -> Set a -> Bool
-isSubsetOf a b = foldrSet (x acc => acc && has x b) True a
+isSubsetOf a b = size a <= size b && subsetGo a b
+
+{- The size test above is an O(1) reject that settles the commonest `False`.
+   Past it, `subsetGo` splits `b` around `a`'s root and recurses -- so a missing
+   element aborts the whole walk through `&&` instead of being folded over the
+   rest of `a`.  (The old `foldrSet (x acc => acc && has x b) True a`
+   short-circuited each individual `has`, but the fold still visited every
+   element of `a` after the answer was already known.)  Splitting also shrinks
+   `b` on the way down, giving O(|a|·log(|b|/|a| + 1)) rather than a fixed
+   O(|a|·log|b|). -}
+subsetGo : Ord a => Set a -> Set a -> Bool
+subsetGo Tip b = True
+subsetGo a Tip = False
+subsetGo (Bin _ x l r) b =
+  let (bl, found, br) = splitMember x b
+  found && subsetGo l bl && subsetGo r br
 
 -- ── Typeclass instances ─────────────────────────────────────────────────
 
@@ -482,3 +578,72 @@ prop "difference elements stay in the first set" (xs : List Int) (ys : List Int)
 
 prop "deleting a member removes it" (x : Int) (xs : List Int) =
   not (has x (delete x (insert x (fromList xs))))
+
+{- The naive fold-insert bodies the join-based set algebra replaced (#423).
+   Obviously correct and obviously slow, which makes them the differential
+   oracle for the fast versions: the properties below assert the two agree
+   element-for-element on random inputs.  A join-based operation that silently
+   corrupted the weight-balance invariant would still answer every doctest
+   correctly, so `wellFormed` is asserted alongside each one. -}
+
+naiveUnion : Ord a => Set a -> Set a -> Set a
+naiveUnion a b = foldrSet (x acc => insert x acc) b a
+
+naiveIntersection : Ord a => Set a -> Set a -> Set a
+naiveIntersection a b = foldrSet (naiveIntersectStep b) Tip a
+
+naiveIntersectStep : Ord a => Set a -> a -> Set a -> Set a
+naiveIntersectStep b x acc = if has x b then insert x acc else acc
+
+naiveDifference : Ord a => Set a -> Set a -> Set a
+naiveDifference a b = foldrSet (x acc => delete x acc) a b
+
+naiveIsSubsetOf : Ord a => Set a -> Set a -> Bool
+naiveIsSubsetOf a b = foldrSet (x acc => acc && has x b) True a
+
+prop "union agrees with naive fold-insert and stays well-formed" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = union a b
+  eq (toList got) (toList (naiveUnion a b)) && wellFormed got
+
+prop "union elements stay strictly ascending" (xs : List Int) (ys : List Int) =
+  ascending (toList (union (fromList xs) (fromList ys)))
+
+prop "intersection agrees with naive and stays well-formed" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = intersection a b
+  eq (toList got) (toList (naiveIntersection a b)) && wellFormed got
+
+prop "difference agrees with naive and stays well-formed" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = difference a b
+  eq (toList got) (toList (naiveDifference a b)) && wellFormed got
+
+prop "isSubsetOf agrees with the naive fold" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  eq (isSubsetOf a b) (naiveIsSubsetOf a b)
+
+prop "a subset of a union is recognised" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  isSubsetOf a (union a (fromList ys))
+
+prop "splitAt partitions around the element and both halves stay well-formed" (x : Int) (xs : List Int) =
+  let (below, above) = splitAt x (fromList xs)
+  wellFormed below
+    && wellFormed above
+    && allElems (b => lt b x) below
+    && allElems (a => gt a x) above
+
+prop "link rebuilds a well-formed set from a split" (x : Int) (xs : List Int) =
+  let (below, above) = splitAt x (fromList xs)
+  let rebuilt = link x below above
+  wellFormed rebuilt && has x rebuilt
+
+prop "link2 rejoins a split without its element" (x : Int) (xs : List Int) =
+  let (below, above) = splitAt x (fromList xs)
+  let rebuilt = link2 below above
+  wellFormed rebuilt && eq (toList rebuilt) (toList (delete x (fromList xs)))

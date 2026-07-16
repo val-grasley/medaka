@@ -370,15 +370,94 @@ export mapWithKey : (k -> v -> <e> w) -> Map k v -> <e> Map k w
 mapWithKey f Tip = Tip
 mapWithKey f (Bin s k v l r) = Bin s k (f k v) (mapWithKey f l) (mapWithKey f r)
 
+-- ── Split / join ────────────────────────────────────────────────────────
+
+{- The join-based kit (Adams 1992; Blelloch, Ferizovic & Sun 2016).  `balance`
+   above only ever repairs an imbalance of *one* element, which is all an
+   insert or a delete can create.  Combining two whole maps needs two stronger
+   primitives that cope with subtrees of wildly different weights:
+
+     • `link k v l r`  — rebuild `l < k < r` into one balanced map, for any
+                         weights of `l` and `r`.  Adams' `concat3`.
+     • `link2 l r`     — the same without a dividing key, for when that key is
+                         being dropped (`difference`, `filterWithKey`).
+
+   Both descend the heavier side until the two weights are within `delta`, then
+   hand back to `balance` on the way out — so each is O(|log |l| - log |r||).
+   With `splitAt`, every combining operation below becomes a divide-and-conquer
+   over the *structure* instead of a re-insert of every element, which is what
+   turns O(m·log(n+m)) into O(m·log(n/m + 1)).
+
+   None of these need `Ord` except `splitAt`/`splitLookup`, which compare keys. -}
+
+-- Insert at the far left / far right.  Used when one side of a `link` is empty:
+-- the key still has to be pushed down to its extreme and rebalanced.
+insertMin : k -> v -> Map k v -> Map k v
+insertMin k v Tip = singleton k v
+insertMin k v (Bin _ k2 v2 l r) = balance k2 v2 (insertMin k v l) r
+
+insertMax : k -> v -> Map k v -> Map k v
+insertMax k v Tip = singleton k v
+insertMax k v (Bin _ k2 v2 l r) = balance k2 v2 l (insertMax k v r)
+
+{- `link` joins `l < k,v < r` for arbitrarily unbalanced `l`/`r`.  When one side
+   outweighs the other by more than `delta` we cannot just `bin` them: we
+   recurse into the heavy side's inner subtree, which brings the weights into
+   range, and rebalance on the way back out. -}
+link : k -> v -> Map k v -> Map k v -> Map k v
+link k v Tip r = insertMin k v r
+link k v l Tip = insertMax k v l
+link k v (l@(Bin sl kl vl ll rl)) (r@(Bin sr kr vr lr rr))
+  | 3 * sl < sr = balance kr vr (link k v l lr) rr
+  | 3 * sr < sl = balance kl vl ll (link k v rl r)
+  | otherwise = bin k v l r
+
+{- `link2` is `link` with no dividing key — every key in `l` is below every key
+   in `r`.  Once the weights are comparable it falls back to `glue`, which
+   promotes an extreme element to be the new root. -}
+link2 : Map k v -> Map k v -> Map k v
+link2 Tip r = r
+link2 l Tip = l
+link2 (l@(Bin sl kl vl ll rl)) (r@(Bin sr kr vr lr rr))
+  | 3 * sl < sr = balance kr vr (link2 l lr) rr
+  | 3 * sr < sl = balance kl vl ll (link2 rl r)
+  | otherwise = glue l r
+
+{- Split a map around a key: every entry below `k`, and every entry above it.
+   The entry *at* `k` (if any) is dropped -- `splitLookup` hands it back. -}
+splitAt : Ord k => k -> Map k v -> (Map k v, Map k v)
+splitAt k Tip = (Tip, Tip)
+splitAt k (Bin _ k2 v2 l r) = match compare k k2
+  Lt =>
+    let (below, above) = splitAt k l
+    (below, link k2 v2 above r)
+  Gt =>
+    let (below, above) = splitAt k r
+    (link k2 v2 l below, above)
+  Eq => (l, r)
+
+-- `splitAt` that also reports the value that sat at the split key.
+splitLookup : Ord k => k -> Map k v -> (Map k v, Option v, Map k v)
+splitLookup k Tip = (Tip, None, Tip)
+splitLookup k (Bin _ k2 v2 l r) = match compare k k2
+  Lt =>
+    let (below, found, above) = splitLookup k l
+    (below, found, link k2 v2 above r)
+  Gt =>
+    let (below, found, above) = splitLookup k r
+    (link k2 v2 l below, found, above)
+  Eq => (l, Some v2, r)
+
 {- | Keep only the entries whose key/value satisfy the predicate.
 
    > keys (filterWithKey (k v => v > 15) (fromList [(1, 10), (2, 20), (3, 30)]))
    [2, 3] -}
 export filterWithKey : Ord k => (k -> v -> <e> Bool) -> Map k v -> <e> Map k v
-filterWithKey p m = foldrWithKey (filterStep p) Tip m
-
-filterStep : Ord k => (k -> v -> <e> Bool) -> k -> v -> Map k v -> <e> Map k v
-filterStep p k v acc = if p k v then set k v acc else acc
+filterWithKey p Tip = Tip
+filterWithKey p (Bin _ k v l r) =
+  let l2 = filterWithKey p l
+  let r2 = filterWithKey p r
+  if p k v then link k v l2 r2 else link2 l2 r2
 
 -- ── Combining ───────────────────────────────────────────────────────────
 
@@ -389,33 +468,53 @@ filterStep p k v acc = if p k v then set k v acc else acc
    > size (union (fromList [(1, 1)]) (fromList [(1, 2), (2, 2)]))
    2 -}
 export union : Ord k => Map k v -> Map k v -> Map k v
-union a b = foldrWithKey (k v acc => set k v acc) b a
+union Tip b = b
+union a Tip = a
+union (Bin _ k v l r) b =
+  let (bl, br) = splitAt k b
+  -- `k`'s own entry in `b` was dropped by `splitAt`, so the left map wins.
+  link k v (union l bl) (union r br)
 
 {- | Union with a combining function for shared keys: `f leftValue rightValue`.
 
    > findWithDefault 0 1 (unionWith (x y => x + y) (fromList [(1, 1)]) (fromList [(1, 2)]))
    3 -}
 export unionWith : Ord k => (v -> v -> v) -> Map k v -> Map k v -> Map k v
-unionWith f a b = foldrWithKey (k v acc => insertWith f k v acc) b a
+unionWith f Tip b = b
+unionWith f a Tip = a
+unionWith f (Bin _ k v l r) b =
+  let (bl, found, br) = splitLookup k b
+  let v2 = match found
+    None => v
+    Some w => f v w
+  link k v2 (unionWith f l bl) (unionWith f r br)
 
 {- | Keys present in the first map but not the second (values from the first).
 
    > keys (difference (fromList [(1, 0), (2, 0), (3, 0)]) (fromList [(2, 0)]))
    [1, 3] -}
 export difference : Ord k => Map k v -> Map k w -> Map k v
-difference a b = foldrWithKey (k _ acc => delete k acc) a b
+difference Tip b = Tip
+difference a Tip = a
+difference a (Bin _ k _ l r) =
+  let (al, ar) = splitAt k a
+  -- `splitAt` already dropped `k` from both halves, so it is simply not rebuilt.
+  link2 (difference al l) (difference ar r)
 
 {- | Keys present in both maps, combined with `f leftValue rightValue`.
 
    > toList (intersectionWith (x y => x + y) (fromList [(1, 10), (2, 20)]) (fromList [(2, 2), (3, 3)]))
    [(2, 22)] -}
 export intersectionWith : Ord k => (v -> w -> x) -> Map k v -> Map k w -> Map k x
-intersectionWith f a b = foldrWithKey (intersectStep f b) Tip a
-
-intersectStep : Ord k => (v -> w -> x) -> Map k w -> k -> v -> Map k x -> Map k x
-intersectStep f b k v acc = match get k b
-  None => acc
-  Some w => set k (f v w) acc
+intersectionWith f Tip b = Tip
+intersectionWith f a Tip = Tip
+intersectionWith f (Bin _ k v l r) b =
+  let (bl, found, br) = splitLookup k b
+  let l2 = intersectionWith f l bl
+  let r2 = intersectionWith f r br
+  match found
+    None => link2 l2 r2
+    Some w => link k (f v w) l2 r2
 
 -- ── Typeclass instances ─────────────────────────────────────────────────
 
@@ -552,3 +651,82 @@ prop "union is left-biased on shared keys" (k : Int) (xs : List (Int, Int)) =
   let l = set k 1 (fromList xs)
   let r = set k 2 (fromList xs)
   eq (get k (union l r)) (Some 1)
+
+{- The naive fold-insert bodies the join-based combining operations replaced
+   (#423).  They are obviously correct and obviously slow, which makes them the
+   differential oracle for the fast versions: the properties below assert the
+   two agree entry-for-entry on random inputs.  A join-based operation that
+   silently corrupted the weight-balance invariant would still answer every
+   doctest correctly, so `wellFormed` is asserted alongside each one. -}
+
+naiveUnion : Ord k => Map k v -> Map k v -> Map k v
+naiveUnion a b = foldrWithKey (k v acc => set k v acc) b a
+
+naiveUnionWith : Ord k => (v -> v -> v) -> Map k v -> Map k v -> Map k v
+naiveUnionWith f a b = foldrWithKey (k v acc => insertWith f k v acc) b a
+
+naiveDifference : Ord k => Map k v -> Map k w -> Map k v
+naiveDifference a b = foldrWithKey (k _ acc => delete k acc) a b
+
+naiveIntersectionWith : Ord k => (v -> w -> x) -> Map k v -> Map k w -> Map k x
+naiveIntersectionWith f a b = foldrWithKey (naiveIntersectStep f b) Tip a
+
+naiveIntersectStep : Ord k => (v -> w -> x) -> Map k w -> k -> v -> Map k x -> Map k x
+naiveIntersectStep f b k v acc = match get k b
+  None => acc
+  Some w => set k (f v w) acc
+
+naiveFilterWithKey : Ord k => (k -> v -> Bool) -> Map k v -> Map k v
+naiveFilterWithKey p m = foldrWithKey (naiveFilterStep p) Tip m
+
+naiveFilterStep : Ord k => (k -> v -> Bool) -> k -> v -> Map k v -> Map k v
+naiveFilterStep p k v acc = if p k v then set k v acc else acc
+
+prop "union agrees with naive fold-insert" (xs : List (Int, Int)) (ys : List (Int, Int)) =
+  let a = fromList xs
+  let b = fromList ys
+  eq (toList (union a b)) (toList (naiveUnion a b))
+
+prop "union keys stay strictly ascending" (xs : List (Int, Int)) (ys : List (Int, Int)) = ascending (keys (union (fromList xs) (fromList ys)))
+
+prop "unionWith agrees with naive and stays well-formed" (xs : List (Int, Int)) (ys : List (Int, Int)) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = unionWith (x y => x + y) a b
+  eq (toList got) (toList (naiveUnionWith (x y => x + y) a b)) && wellFormed got
+
+prop "difference agrees with naive and stays well-formed" (xs : List (Int, Int)) (ys : List (Int, Int)) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = difference a b
+  eq (toList got) (toList (naiveDifference a b)) && wellFormed got
+
+prop "intersectionWith agrees with naive and stays well-formed" (xs : List (Int, Int)) (ys : List (Int, Int)) =
+  let a = fromList xs
+  let b = fromList ys
+  let got = intersectionWith (x y => x + y) a b
+  eq (toList got) (toList (naiveIntersectionWith (x y => x + y) a b))
+    && wellFormed got
+
+prop "filterWithKey agrees with naive and stays well-formed" (xs : List (Int, Int)) =
+  let m = fromList xs
+  let got = filterWithKey (k v => v > 0) m
+  eq (toList got) (toList (naiveFilterWithKey (k v => v > 0) m))
+    && wellFormed got
+
+prop "splitAt partitions around the key and both halves stay well-formed" (k : Int) (xs : List (Int, Int)) =
+  let (below, above) = splitAt k (fromList xs)
+  wellFormed below
+    && wellFormed above
+    && allKeys (bk => lt bk k) below
+    && allKeys (ak => gt ak k) above
+
+prop "link rebuilds a well-formed map from a split" (k : Int) (xs : List (Int, Int)) =
+  let (below, above) = splitAt k (fromList xs)
+  let rebuilt = link k 0 below above
+  wellFormed rebuilt && eq (get k rebuilt) (Some 0)
+
+prop "link2 rejoins a split without its key" (k : Int) (xs : List (Int, Int)) =
+  let (below, above) = splitAt k (fromList xs)
+  let rebuilt = link2 below above
+  wellFormed rebuilt && eq (toList rebuilt) (toList (delete k (fromList xs)))
