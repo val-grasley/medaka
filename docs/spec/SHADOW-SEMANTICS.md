@@ -313,9 +313,11 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 18 | importer · no-impl recv · third-module interface | S6 | RLocal → 4 | `i3_importer_imported_iface/` | 4 | 4 | accept | **OK** |
 | 19 | importer · no-impl own type · PRELUDE interface (the stdlib shape) | S2 | standalone → True/False | `i4_importer_prelude_iface/` | T,F | T,F | accept | **OK** |
 | 20 | importer · LIVE prelude impl recv (`isEmpty [1,2]`) alongside the shadow | S2 | method → False/True | `i4_importer_prelude_iface/` | F,T | F,T | accept | **OK** |
-| 21 | importer · value position | S4 | standalone | — | — | — | — | UNTESTED-NO-FIXTURE (expected ≡ row 9) |
-| 22 | importer · N-way | S3 | per-receiver | — | — | — | — | UNTESTED-NO-FIXTURE (expected ≡ row 6) |
-| 23 | return-position method shadow (no receiver param, e.g. `pure`-like) | S4 | value-position rule → standalone | — | — | — | — | UNTESTED-NO-FIXTURE |
+| 21a | importer · value position · no-impl elements | S4 | standalone → [2, 3, 4] | `i6_importer_value_pos/` | [2,3,4] | [2,3,4] | accept | **OK** (fixed #411 2026-07-16; was a LOUD S7 split — check+run gave `[2, 3, 4]` but `build` died `no impl of method 'size' for type 'Int' (slice 6)`, no binary, on a valid program) |
+| 21b | importer · value position · LIVE-impl elements | S4 | located REJECT | `i7_importer_value_pos_liveimpl/` | reject `Int vs Box` | reject | reject | **OK** (fixed #411 2026-07-16; was the SILENT half — check reported zero diagnostics and run AND build both printed `[1, 2]`, all three engines agreeing on the answer S4 forbids. The exact S7 trap: no differential gate could see it) |
+| 22 | importer · N-way | S3 | per-receiver → 3, 30, 4 | `i8_importer_nway/` | 3,30,4 | 3,30,4 | accept | **OK** (probed while fixing #411; already conformant). ⚠️ This row formerly read "expected ≡ row 6" — **stale**: row 6 FLIPPED to REJECT when S3 became vacuous for *definer* shadows, but S3 is explicitly *"Unchanged for importer shadows"* (Fork 1). Per-receiver is the expectation; the fixture is Fork 1's control at N-way width |
+| 23a | return-position method shadow (no receiver param, e.g. `pure`-like) · DEFINER | S4 | value-position rule → standalone → 4 | `d13_definer_return_pos.mdk` | 4 | 4 | accept | **OK** (probed while fixing #411; already conformant) |
+| 23b | return-position method shadow · IMPORTER | S4 | value-position rule → standalone → 4 | `i9_importer_return_pos/` | 4 | 4 | accept | **OK** (probed while fixing #411; already conformant) |
 | 24 | operator-named shadow (`==` etc.) | — | n/a — operator occurrences resolve through the desugared method-call path, not bare-`EVar` funDef intersection | — | — | — | — | UNREACHABLE |
 | 25 | definer · **CONSTRAINED** standalone (`size : Num a => a -> a`) · no-impl recv | S9 | RLocal **carrying the standalone's dicts** → 4 | `d10_definer_constrained.mdk` | 4 | 4 | accept | **OK** (fixed 2026-07-13, S-1 / clause S9; was `check` green + `run` E-PANIC + `build` printing a raw heap pointer) |
 | 26 | definer · method of a **multi-TYPARAM interface** (`interface Ix a i`) · applied | S8 (does not cover it) | dispatch 4; standalone 3 | `d11_definer_multityparam_iface.mdk` | **E-PANIC `unknown op '*'`** | 4,3 | accepts | **BUG** (**S-3**; `run` diverges from check+build — an S7 violation. Every entry point gates on `singleParamIfaceMethod`, which counts interface TYPE PARAMS, not method params, so this shadow bypasses the machinery entirely. `check`/`build` happen to be per-receiver CORRECT. Pinned KNOWN-BAD by the gate.) |
@@ -647,6 +649,22 @@ this row's `build` failure (it saw a GC OOM) to the missing dict.
 > repro.** Do not spend time chasing it from this text alone; `d4` now pins the
 > working behavior, so if it is a live latent bug the gate will catch it the
 > moment it bites.
+
+> ⚠️ **UPDATE 2026-07-16 (#411): the DEFINER shape above still does not reproduce — but
+> its IMPORTER twin DID, and is now fixed.** `map size [1,2,3]` where `size` is
+> **imported** rather than defined locally failed at `build` for real: not a SIGSEGV but
+> `E-PANIC: no impl of method 'size' for type 'Int' (slice 6)`, exit 1, no binary.
+> **The mechanism was NOT the one this entry names** — nothing to do with
+> `emitMethodValue`'s arity, and no line of `llvm_emit.mdk` was touched to fix it. The
+> bug was entirely in `typecheck.mdk`: `standaloneShadowsFromSet` (the importer
+> shadow-set builder) lacked the `mangledShadowMapRef` recovery arm its definer peer
+> `definerShadowsFromSet` has carried since P0-18, so on the EMIT path — where every
+> funDef is mangled (`prov__size`) — the importer shadow set came back **empty**.
+> `recordRLocalSite` therefore never recorded a site, and `resolveArgStamp`'s `RKey Int`
+> **clobbered the mark pass's correct `RLocal prov__size` seed**, landing in
+> `emitDefaultRKey`'s no-impl arm. That asymmetry is precisely why the definer shape
+> never reproduced while the importer one always did — this entry's "value-position
+> lift" theory was looking at the wrong half of the pipeline. Rows 21a/21b pin both.
 
 ### S1-RESIDUAL-B — importer shadow on an UNGROUNDED receiver — ✅ **CLOSED 2026-07-14**
 
