@@ -1,0 +1,6 @@
+-- N1/R5: with the 63-bit wrap in force, i64 INT64_MIN is UNREACHABLE, so `intMinBound /
+-- -1` wraps to intMinBound instead of engine-trapping ("divide result unrepresentable").
+-- Pins the R5 corollary of the wrap: the only i64.div_s that could trap is now
+-- structurally impossible.  (Prelude-free corpus, so intMinBound is spelled out; it is
+-- built by subtraction because the literal 2^62 itself is not writable.)
+main = (0 - 4611686018427387903 - 1) / (0 - 1)

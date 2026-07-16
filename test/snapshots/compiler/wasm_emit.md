@@ -1,5 +1,5 @@
 # META
-source_lines=8300
+source_lines=8318
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -2028,10 +2028,27 @@ emitVarI32 fnNames valNames env x =
   else
     gapUnboundLTy ("unbound variable '" ++ x ++ "' (scalar mode: not a local, global value, or known function)")
 
+-- N1/WP2: sign-extend the i64 on the stack from bit 62, wrapping it into the 63-bit
+-- Int range — the `(x << 1) >> 1` pair that mirrors native's tag/untag shift.  Ref mode
+-- gets this inside `$mdk_box_int` (it re-boxes after every arith op), but SCALAR mode
+-- (`useRef == False`: a pure-Int program, no ADT/closure/string) never boxes — its
+-- values live as raw i64 on the wasm stack from literal to `$mdk_print_int` — so the
+-- wrap has to be emitted at each producing op or 64-bit intermediates escape.
+normInt64 : List String
+normInt64 = ["i64.const 1", "i64.shl", "i64.const 1", "i64.shr_s"]
+
+-- Which scalar-mode i64 ops can carry a result out of the 63-bit range, given operands
+-- already in it?  `+ - *` overflow; `/` only at (-2^62)/(-1) → +2^62 (which is also the
+-- only i64.div_s that could engine-trap once INT64_MIN is unreachable — normalizing here
+-- means the wrap happens instead, matching native).  `%` and the comparisons cannot.
+scalarNeedsNorm : String -> Bool
+scalarNeedsNorm op = contains op ["+", "-", "*", "/"]
+
 emitBinI32 : List String -> List String -> List String -> String -> CExpr -> CExpr -> (List String, WTy)
 emitBinI32 fnNames valNames env op l r =
   let (li, _) = emitScalarExpr fnNames valNames env l
   let (ri, _) = emitScalarExpr fnNames valNames env r
+  let nrm = if scalarNeedsNorm op then normInt64 else []
   -- layer-17 §2.1: i64 arithmetic.  A comparison yields wasm i32 0/1, so extend it
   -- back to the uniform i64 value rep.
   if isCmpOp op then (li ++ ri ++ [wasmBinOp64 op, "i64.extend_i32_u"], binOpTy op)
@@ -2039,13 +2056,14 @@ emitBinI32 fnNames valNames env op l r =
   -- ref mode (single function-scope $__sdivr i64 scratch; reuse across nested divs is
   -- safe — each store-then-immediately-use completes before the next).
   else if (op == "/" || op == "%") then
-    (li ++ ri ++ emitDivZeroGuard op "$__sdivr" ++ [wasmBinOp64 op], binOpTy op)
-  else (li ++ ri ++ [wasmBinOp64 op], binOpTy op)
+    (li ++ ri ++ emitDivZeroGuard op "$__sdivr" ++ [wasmBinOp64 op] ++ nrm, binOpTy op)
+  else (li ++ ri ++ [wasmBinOp64 op] ++ nrm, binOpTy op)
 
 emitUnI32 : List String -> List String -> List String -> String -> CExpr -> (List String, WTy)
 emitUnI32 fnNames valNames env "-" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
-  (["i64.const 0"] ++ xi ++ ["i64.sub"], WInt)
+  -- N1: negation overflows at exactly -2^62 (0 - (-2^62) = +2^62), so it wraps too.
+  (["i64.const 0"] ++ xi ++ ["i64.sub"] ++ normInt64, WInt)
 emitUnI32 fnNames valNames env "!" x =
   let (xi, _) = emitScalarExpr fnNames valNames env x
   -- i64 Bool -> negate: i64.eqz yields i32, extend back to i64.
@@ -8823,10 +8841,14 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitLitI32" ((PCon "LChar" PWild)) (EApp (EVar "gapLTy") (ELit (LString "Char literal is W6 (string/unicode slice)"))))
 (DTypeSig false "emitVarI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy")))))))
 (DFunDef false "emitVarI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "env")) (ETuple (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "x")))) (EVar "WInt")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "valNames")) (ETuple (EListLit (EBinOp "++" (ELit (LString "global.get $")) (EApp (EVar "gname") (EVar "x")))) (EVar "WInt")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "fnNames")) (ETuple (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "x")))) (EVar "WInt")) (EApp (EVar "gapUnboundLTy") (EBinOp "++" (EBinOp "++" (ELit (LString "unbound variable '")) (EVar "x")) (ELit (LString "' (scalar mode: not a local, global value, or known function)"))))))))
+(DTypeSig false "normInt64" (TyApp (TyCon "List") (TyCon "String")))
+(DFunDef false "normInt64" () (EListLit (ELit (LString "i64.const 1")) (ELit (LString "i64.shl")) (ELit (LString "i64.const 1")) (ELit (LString "i64.shr_s"))))
+(DTypeSig false "scalarNeedsNorm" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "scalarNeedsNorm" ((PVar "op")) (EApp (EApp (EVar "contains") (EVar "op")) (EListLit (ELit (LString "+")) (ELit (LString "-")) (ELit (LString "*")) (ELit (LString "/")))))
 (DTypeSig false "emitBinI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy")))))))))
-(DFunDef false "emitBinI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PTuple (PVar "li") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "l"))) (DoLet false false (PTuple (PVar "ri") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "r"))) (DoExpr (EIf (EApp (EVar "isCmpOp") (EVar "op")) (ETuple (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "i64.extend_i32_u")))) (EApp (EVar "binOpTy") (EVar "op"))) (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (ELit (LString "$__sdivr")))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EApp (EVar "binOpTy") (EVar "op"))) (ETuple (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EApp (EVar "binOpTy") (EVar "op"))))))))
+(DFunDef false "emitBinI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PTuple (PVar "li") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "l"))) (DoLet false false (PTuple (PVar "ri") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "nrm") (EIf (EApp (EVar "scalarNeedsNorm") (EVar "op")) (EVar "normInt64") (EListLit))) (DoExpr (EIf (EApp (EVar "isCmpOp") (EVar "op")) (ETuple (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "i64.extend_i32_u")))) (EApp (EVar "binOpTy") (EVar "op"))) (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (ELit (LString "$__sdivr")))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EVar "nrm")) (EApp (EVar "binOpTy") (EVar "op"))) (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EVar "nrm")) (EApp (EVar "binOpTy") (EVar "op"))))))))
 (DTypeSig false "emitUnI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy"))))))))
-(DFunDef false "emitUnI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PLit (LString "-")) (PVar "x")) (EBlock (DoLet false false (PTuple (PVar "xi") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "x"))) (DoExpr (ETuple (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "i64.const 0"))) (EVar "xi")) (EListLit (ELit (LString "i64.sub")))) (EVar "WInt")))))
+(DFunDef false "emitUnI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PLit (LString "-")) (PVar "x")) (EBlock (DoLet false false (PTuple (PVar "xi") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "x"))) (DoExpr (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "i64.const 0"))) (EVar "xi")) (EListLit (ELit (LString "i64.sub")))) (EVar "normInt64")) (EVar "WInt")))))
 (DFunDef false "emitUnI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PLit (LString "!")) (PVar "x")) (EBlock (DoLet false false (PTuple (PVar "xi") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "x"))) (DoExpr (ETuple (EBinOp "++" (EVar "xi") (EListLit (ELit (LString "i64.eqz")) (ELit (LString "i64.extend_i32_u")))) (EVar "WBool")))))
 (DFunDef false "emitUnI32" (PWild PWild PWild (PVar "op") PWild) (EApp (EVar "gapLTy") (EBinOp "++" (EBinOp "++" (ELit (LString "scalar-mode: unsupported unary op '")) (EVar "op")) (ELit (LString "'")))))
 (DTypeSig false "emitIfI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy")))))))))
@@ -10927,10 +10949,14 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "emitLitI32" ((PCon "LChar" PWild)) (EApp (EVar "gapLTy") (ELit (LString "Char literal is W6 (string/unicode slice)"))))
 (DTypeSig false "emitVarI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy")))))))
 (DFunDef false "emitVarI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "env")) (ETuple (EListLit (EBinOp "++" (ELit (LString "local.get $")) (EApp (EVar "gname") (EVar "x")))) (EVar "WInt")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "valNames")) (ETuple (EListLit (EBinOp "++" (ELit (LString "global.get $")) (EApp (EVar "gname") (EVar "x")))) (EVar "WInt")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "fnNames")) (ETuple (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EVar "gname") (EVar "x")))) (EVar "WInt")) (EApp (EVar "gapUnboundLTy") (EBinOp "++" (EBinOp "++" (ELit (LString "unbound variable '")) (EVar "x")) (ELit (LString "' (scalar mode: not a local, global value, or known function)"))))))))
+(DTypeSig false "normInt64" (TyApp (TyCon "List") (TyCon "String")))
+(DFunDef false "normInt64" () (EListLit (ELit (LString "i64.const 1")) (ELit (LString "i64.shl")) (ELit (LString "i64.const 1")) (ELit (LString "i64.shr_s"))))
+(DTypeSig false "scalarNeedsNorm" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "scalarNeedsNorm" ((PVar "op")) (EApp (EApp (EVar "contains") (EVar "op")) (EListLit (ELit (LString "+")) (ELit (LString "-")) (ELit (LString "*")) (ELit (LString "/")))))
 (DTypeSig false "emitBinI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy")))))))))
-(DFunDef false "emitBinI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PTuple (PVar "li") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "l"))) (DoLet false false (PTuple (PVar "ri") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "r"))) (DoExpr (EIf (EApp (EVar "isCmpOp") (EVar "op")) (ETuple (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "i64.extend_i32_u")))) (EApp (EVar "binOpTy") (EVar "op"))) (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (ELit (LString "$__sdivr")))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EApp (EVar "binOpTy") (EVar "op"))) (ETuple (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EApp (EVar "binOpTy") (EVar "op"))))))))
+(DFunDef false "emitBinI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PTuple (PVar "li") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "l"))) (DoLet false false (PTuple (PVar "ri") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "nrm") (EIf (EApp (EVar "scalarNeedsNorm") (EVar "op")) (EVar "normInt64") (EListLit))) (DoExpr (EIf (EApp (EVar "isCmpOp") (EVar "op")) (ETuple (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "i64.extend_i32_u")))) (EApp (EVar "binOpTy") (EVar "op"))) (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (ELit (LString "$__sdivr")))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EVar "nrm")) (EApp (EVar "binOpTy") (EVar "op"))) (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")))) (EVar "nrm")) (EApp (EVar "binOpTy") (EVar "op"))))))))
 (DTypeSig false "emitUnI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy"))))))))
-(DFunDef false "emitUnI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PLit (LString "-")) (PVar "x")) (EBlock (DoLet false false (PTuple (PVar "xi") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "x"))) (DoExpr (ETuple (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "i64.const 0"))) (EVar "xi")) (EListLit (ELit (LString "i64.sub")))) (EVar "WInt")))))
+(DFunDef false "emitUnI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PLit (LString "-")) (PVar "x")) (EBlock (DoLet false false (PTuple (PVar "xi") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "x"))) (DoExpr (ETuple (EBinOp "++" (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "i64.const 0"))) (EVar "xi")) (EListLit (ELit (LString "i64.sub")))) (EVar "normInt64")) (EVar "WInt")))))
 (DFunDef false "emitUnI32" ((PVar "fnNames") (PVar "valNames") (PVar "env") (PLit (LString "!")) (PVar "x")) (EBlock (DoLet false false (PTuple (PVar "xi") PWild) (EApp (EApp (EApp (EApp (EVar "emitScalarExpr") (EVar "fnNames")) (EVar "valNames")) (EVar "env")) (EVar "x"))) (DoExpr (ETuple (EBinOp "++" (EVar "xi") (EListLit (ELit (LString "i64.eqz")) (ELit (LString "i64.extend_i32_u")))) (EVar "WBool")))))
 (DFunDef false "emitUnI32" (PWild PWild PWild (PVar "op") PWild) (EApp (EVar "gapLTy") (EBinOp "++" (EBinOp "++" (ELit (LString "scalar-mode: unsupported unary op '")) (EVar "op")) (ELit (LString "'")))))
 (DTypeSig false "emitIfI32" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "WTy")))))))))
