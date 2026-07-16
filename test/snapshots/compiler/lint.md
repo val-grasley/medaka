@@ -1,5 +1,5 @@
 # META
-source_lines=3671
+source_lines=3821
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/lint.mdk — the `medaka lint` framework + seed rules.
@@ -698,17 +698,30 @@ findingLine f = "\{ppSeverity f.severity}: [\{f.rule}] \{f.message}"
 -- start line, stamped by `declLocList`); a finding without a `loc` can only be
 -- silenced by a whole-file directive.
 
-data DirScope = DScopeLine Int | DScopeFile
+-- `public export` (not bare `data`) because a Directive is one of the four
+-- things `medaka lint --cache` persists per file (#395): the cache round-trips
+-- these values through JSON, so tools/lint_cache.mdk needs the constructors.
+public export data DirScope = DScopeLine Int | DScopeFile
 
 -- one parsed directive: which source lines it covers + which rule ids it names
 -- (empty list = all rules).
-data Directive = Directive DirScope (List String)
+public export data Directive = Directive DirScope (List String)
 
 -- Filter out every finding covered by an inline-suppression directive found in
 -- the source's comment side channel.
 export applySuppressions : String -> List Finding -> List Finding
 applySuppressions src findings =
-  let dirs = collectDirectives src
+  applySuppressionsDirs (collectDirectives src) findings
+
+-- The same filter, but taking the file's ALREADY-PARSED directives instead of
+-- re-deriving them from source.  `--cache` (#395) stores a file's directives in
+-- its shard, so a cache hit has them in hand and must not re-run
+-- `collectDirectives` (which re-lexes the file — the very cost the cache
+-- exists to skip).  `applySuppressions` is this function plus the parse, so the
+-- cached and uncached paths share ONE suppression implementation and cannot
+-- drift apart.
+export applySuppressionsDirs : List Directive -> List Finding -> List Finding
+applySuppressionsDirs dirs findings =
   filterList (f => not (isSuppressed dirs f)) findings
 
 -- Cross-file variant: findings anchor to DIFFERENT files, so a single `src`
@@ -718,7 +731,13 @@ applySuppressions src findings =
 -- cross-file rule; the cross-file report path calls this before flag filters.
 export applySuppressionsMulti : List (String, String) -> List Finding -> List Finding
 applySuppressionsMulti srcs findings =
-  let dirTable = map fileDirectivesOf srcs
+  applySuppressionsMultiDirs (map fileDirectivesOf srcs) findings
+
+-- Pre-parsed-directive counterpart of `applySuppressionsMulti`, for the same
+-- reason `applySuppressionsDirs` exists: a `--cache` run already holds every
+-- file's directives and must not re-lex to recover them.
+export applySuppressionsMultiDirs : List (String, List Directive) -> List Finding -> List Finding
+applySuppressionsMultiDirs dirTable findings =
   filterList (f => not (findingSuppressedMulti dirTable f)) findings
 
 fileDirectivesOf : (String, String) -> (String, List Directive)
@@ -742,7 +761,7 @@ lookupDirs path ((p, ds)::rest) =
   else
     lookupDirs path rest
 
-collectDirectives : String -> List Directive
+export collectDirectives : String -> List Directive
 collectDirectives src =
   flatMap (c => dirToList (parseDirective c)) (collectComments src)
 
@@ -3559,6 +3578,45 @@ runCrossRuleOn only disable files r
     map (restampSeverity r.severity) (r.check files)
   | otherwise = []
 
+-- ── the cross-file tier, reached from CACHED per-file inputs (#395) ────────────
+-- `runCrossFileRules` needs every file's `(path, Positions, decls)` — i.e. a
+-- PARSE of every target, which is exactly what `--cache` skips.  So a cached run
+-- reaches the tier through the occurrence lists it persisted per file instead.
+--
+-- ⚠️ THE SOUNDNESS SEAM.  `fileDupOccs` is the per-file input of ONE rule.  This
+-- entry point is therefore only equivalent to `runCrossFileRules` while
+-- `allCrossFileRules` is exactly `[duplicateBodyRule]` — a second cross-file
+-- rule would have its own per-file inputs, which nothing here caches or feeds
+-- it, and it would SILENTLY NOT RUN under `--cache`.  That is a whole rule
+-- reporting nothing while exiting 0: this repo's defining failure mode.
+--
+-- Rather than trust a future agent to read this comment, `crossFileCacheSound`
+-- DERIVES the answer from the live registry, and the CLI refuses `--cache`
+-- (falling back to a full uncached run) when it goes False.  Adding a cross-file
+-- rule then costs a slower lint, never a wrong one — the #395 invariant: a miss
+-- is always safe, a wrong hit is silent wrongness.
+export crossFileCacheSound : Bool
+crossFileCacheSound = match allCrossFileRules
+  [r] => r.name == ruleNameDuplicateBody
+  _ => False
+
+-- Cached counterpart of `runCrossFileRules`: same --only/--disable gating, same
+-- severity restamp, same join — but fed occurrences instead of parses.  Callers
+-- MUST check `crossFileCacheSound` first (see above).
+export runCrossFileRulesFromOccs : List String -> List String -> List (String, Int, String, String) -> List Finding
+runCrossFileRulesFromOccs only disable occs =
+  flatMap (runCrossRuleFromOccs only disable occs) allCrossFileRules
+
+-- The `r.name == ruleNameDuplicateBody` conjunct is belt-and-braces behind the
+-- CLI's `crossFileCacheSound` check: it means a caller that ignores that check
+-- still cannot run `dupJoin` under some OTHER rule's name and severity — it just
+-- gets the dup rule alone, which is what the guard would have caught anyway.
+runCrossRuleFromOccs : List String -> List String -> List (String, Int, String, String) -> CrossFileRule -> List Finding
+runCrossRuleFromOccs only disable occs r
+  | crossRuleActive only disable r && r.name == ruleNameDuplicateBody =
+    map (restampSeverity r.severity) (dupJoin occs)
+  | otherwise = []
+
 crossRuleActive : List String -> List String -> CrossFileRule -> Bool
 crossRuleActive only disable r = r.enabled
   && (isEmptyL only || contains r.name only)
@@ -3599,13 +3657,102 @@ countOpenParens cs n i acc
   | otherwise = countOpenParens cs n (i + 1) acc
 
 ruleDuplicateBody : List (String, Positions, List Decl) -> List Finding
-ruleDuplicateBody files =
-  let occs = flatMap fileDupOccs files
-  let keys = sortUniqS (map occKey occs)
-  flatMap (emitDupGroup occs) keys
+ruleDuplicateBody files = dupJoin (flatMap fileDupOccs files)
+
+-- THE join: occurrences (from every file) → findings.  Split out of
+-- `ruleDuplicateBody` for #395's `--cache`, which reaches the same join from
+-- occurrences it deserialized rather than from freshly-parsed decls.  Both
+-- callers run THIS function, so a cached run's cross-file findings are computed
+-- by the identical code an uncached one runs.
+--
+-- ⚠️ This split is the whole correctness story of the lint cache.  A cache MUST
+-- store the per-file INPUTS to this join (`fileDupOccs`) and re-run it every
+-- time — never the findings it returns.  A finding here names file A *because
+-- of* file B, so a cached A-finding survives an edit to B that should have
+-- retracted it: the finding silently lingers (or, symmetrically, never
+-- appears).  Re-running the join is cheap — it measures LINEAR at occs≈10k, as
+-- `emitDupGroup`'s scan short-circuits at char 0 on distinct keys — so there is
+-- no efficiency argument for caching its output either.  Scenario 3 of
+-- test/diff_compiler_lint_cache.sh exists to fail loudly if someone ever tries.
+--
+-- ⚠️ PERFORMANCE, and a debunking that was itself half-wrong.  This join used to
+-- read:
+--
+--     let keys = sortUniqS (map occKey occs)
+--     flatMap (emitDupGroup occs) keys        -- emitDupGroup filters ALL occs
+--
+-- i.e. for each of ~10k distinct keys, a `filterList` over all ~10k occurrences:
+-- 100M string comparisons, QUADRATIC in occurrence count.  #395's spike graded
+-- that shape "measured LINEAR at occs=8000" — but what it actually established
+-- is that each comparison is O(1) rather than O(key length), because distinct
+-- sexp keys mismatch at char 0.  The comparisons are cheap; there are n² of
+-- them.  MEASURED here at N vs 2N with a warm cache (which removes the parse and
+-- leaves the join exposed): 0.115 s → 0.416 s, a 3.6x growth for 2x the input —
+-- quadratic, not the 2.0x of linear.  It cost 0.6 s of a 0.97 s warm run.
+--
+-- It hid for the same two reasons this repo keeps rediscovering: it was dwarfed
+-- by the parse it sat behind (so it never showed up cold), and a pure `List`
+-- scan ALLOCATES NOTHING, so `diff_compiler_perf_scaling` — which grades
+-- allocation growth, deliberately, because GC bytes are machine-independent —
+-- is blind to it (issue #110's class).
+--
+-- Now: bucket the occurrences by key ONCE (linear), then emit only from the
+-- groups that can actually fire.  A group needs ≥2 occurrences across ≥2 files,
+-- which in a clean tree is a handful out of ~10k — so the `sortUniqS` that
+-- orders the output for determinism now sorts that handful rather than every
+-- key.  Same findings, same order.
+export dupJoin : List (String, Int, String, String) -> List Finding
+dupJoin occs =
+  let groups = groupOccsByKey occs
+  let live = filterList (k => dupGroupFires (findWithDefault [] k groups)) (dupDistinctKeys occs)
+  flatMap
+    (k => emitDupGroup (reverseL (findWithDefault [] k groups)))
+    (sortUniqS live)
+
+-- key → its occurrences, in one linear pass.  Each bucket accumulates REVERSED
+-- (prepend is O(1)); `dupJoin` reverses on the way out so the occurrence order
+-- reaching `emitDupGroup` matches the old filter-in-input-order behaviour.
+-- (`sortDupOccs` sorts them anyway — this only keeps the pre-sort list identical
+-- so the two implementations are diffable.)
+groupOccsByKey : List (String, Int, String, String) -> HashMap String (List (String, Int, String, String))
+groupOccsByKey occs =
+  let m = new ()
+  let _ = groupOccsGo m occs
+  m
+
+groupOccsGo : HashMap String (List (String, Int, String, String)) -> List (String, Int, String, String) -> Unit
+groupOccsGo _ [] = ()
+groupOccsGo m (o::rest) =
+  let _ = set (occKey o) (o :: findWithDefault [] (occKey o) m) m
+  groupOccsGo m rest
+
+-- Distinct keys in first-appearance order.  `keys` on the HashMap would do this
+-- too, but its order is bucket order — a function of the hash, so it would make
+-- the output depend on table internals.  This is deterministic by construction,
+-- and `dupJoin` sorts the survivors regardless.  (A `HashMap String Unit` as the
+-- seen-set, rather than a HashSet, only because hash_set's `new`/`has` would
+-- collide with hash_map's under this module's flat import list.)
+dupDistinctKeys : List (String, Int, String, String) -> List String
+dupDistinctKeys occs =
+  let seen = new ()
+  dupDistinctGo seen occs
+
+dupDistinctGo : HashMap String Unit -> List (String, Int, String, String) -> List String
+dupDistinctGo _ [] = []
+dupDistinctGo seen (o::rest)
+  | has (occKey o) seen = dupDistinctGo seen rest
+  | otherwise =
+    let _ = set (occKey o) () seen
+    occKey o :: dupDistinctGo seen rest
+
+-- Can this key's group emit at all?  ≥2 occurrences spanning ≥2 distinct files.
+-- Cheap pre-filter so the sort and `emitDupGroup` only ever see live groups.
+dupGroupFires : List (String, Int, String, String) -> Bool
+dupGroupFires grp = listLen grp >= 2
+  && listLen (sortUniqS (map occFile grp)) >= 2
 
 -- one occurrence per eligible top-level DFunDef: (file, line, name, structuralKey)
-fileDupOccs : (String, Positions, List Decl) -> List (String, Int, String, String)
+export fileDupOccs : (String, Positions, List Decl) -> List (String, Int, String, String)
 fileDupOccs (path, pos, decls) =
   flatMap (dupOccOfDecl path) (declLocList pos decls)
 
@@ -3636,9 +3783,12 @@ occKey : (String, Int, String, String) -> String
 occKey (_, _, _, k) = k
 
 -- emit findings for one structural-key group, but only when it spans ≥2 files.
-emitDupGroup : List (String, Int, String, String) -> String -> List Finding
-emitDupGroup occs key =
-  let grp = filterList (o => occKey o == key) occs
+-- Takes the group itself; `dupJoin` bucketed the occurrences by key and already
+-- dropped the groups that cannot fire (see `dupGroupFires`).  The ≥2-file check
+-- stays here regardless — this function's contract is "≥2 files or nothing", and
+-- it must not depend on its caller having filtered.
+emitDupGroup : List (String, Int, String, String) -> List Finding
+emitDupGroup grp =
   let distinctFiles = sortUniqS (map occFile grp)
   if listLen distinctFiles < 2 then
     []
@@ -3853,12 +4003,16 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "lintToLines" ((PVar "src") (PVar "path") (PVar "pos") (PVar "prog")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "findingLine")) (EApp (EApp (EVar "applySuppressions") (EVar "src")) (EApp (EApp (EApp (EApp (EApp (EVar "lintProgram") (EVar "allRules")) (EVar "path")) (EVar "src")) (EVar "pos")) (EVar "prog"))))))
 (DTypeSig false "findingLine" (TyFun (TyCon "Finding") (TyCon "String")))
 (DFunDef false "findingLine" ((PVar "f")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EApp (EVar "ppSeverity") (EFieldAccess (EVar "f") "severity")))) (ELit (LString ": ["))) (EApp (EVar "display") (EFieldAccess (EVar "f") "rule"))) (ELit (LString "] "))) (EApp (EVar "display") (EFieldAccess (EVar "f") "message"))) (ELit (LString ""))))
-(DData Private "DirScope" () ((variant "DScopeLine" (ConPos (TyCon "Int"))) (variant "DScopeFile" (ConPos))) ())
-(DData Private "Directive" () ((variant "Directive" (ConPos (TyCon "DirScope") (TyApp (TyCon "List") (TyCon "String"))))) ())
+(DData Public "DirScope" () ((variant "DScopeLine" (ConPos (TyCon "Int"))) (variant "DScopeFile" (ConPos))) ())
+(DData Public "Directive" () ((variant "Directive" (ConPos (TyCon "DirScope") (TyApp (TyCon "List") (TyCon "String"))))) ())
 (DTypeSig true "applySuppressions" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applySuppressions" ((PVar "src") (PVar "findings")) (EBlock (DoLet false false (PVar "dirs") (EApp (EVar "collectDirectives") (EVar "src"))) (DoExpr (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "isSuppressed") (EVar "dirs")) (EVar "f"))))) (EVar "findings")))))
+(DFunDef false "applySuppressions" ((PVar "src") (PVar "findings")) (EApp (EApp (EVar "applySuppressionsDirs") (EApp (EVar "collectDirectives") (EVar "src"))) (EVar "findings")))
+(DTypeSig true "applySuppressionsDirs" (TyFun (TyApp (TyCon "List") (TyCon "Directive")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
+(DFunDef false "applySuppressionsDirs" ((PVar "dirs") (PVar "findings")) (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "isSuppressed") (EVar "dirs")) (EVar "f"))))) (EVar "findings")))
 (DTypeSig true "applySuppressionsMulti" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applySuppressionsMulti" ((PVar "srcs") (PVar "findings")) (EBlock (DoLet false false (PVar "dirTable") (EApp (EApp (EVar "map") (EVar "fileDirectivesOf")) (EVar "srcs"))) (DoExpr (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "findingSuppressedMulti") (EVar "dirTable")) (EVar "f"))))) (EVar "findings")))))
+(DFunDef false "applySuppressionsMulti" ((PVar "srcs") (PVar "findings")) (EApp (EApp (EVar "applySuppressionsMultiDirs") (EApp (EApp (EVar "map") (EVar "fileDirectivesOf")) (EVar "srcs"))) (EVar "findings")))
+(DTypeSig true "applySuppressionsMultiDirs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
+(DFunDef false "applySuppressionsMultiDirs" ((PVar "dirTable") (PVar "findings")) (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "findingSuppressedMulti") (EVar "dirTable")) (EVar "f"))))) (EVar "findings")))
 (DTypeSig false "fileDirectivesOf" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))))
 (DFunDef false "fileDirectivesOf" ((PTuple (PVar "path") (PVar "src"))) (ETuple (EVar "path") (EApp (EVar "collectDirectives") (EVar "src"))))
 (DTypeSig false "findingSuppressedMulti" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))) (TyFun (TyCon "Finding") (TyCon "Bool"))))
@@ -3868,7 +4022,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "lookupDirs" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))) (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "Directive"))))))
 (DFunDef false "lookupDirs" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupDirs" ((PVar "path") (PCons (PTuple (PVar "p") (PVar "ds")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "p") (EVar "path")) (EApp (EVar "Some") (EVar "ds")) (EApp (EApp (EVar "lookupDirs") (EVar "path")) (EVar "rest"))))
-(DTypeSig false "collectDirectives" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive"))))
+(DTypeSig true "collectDirectives" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive"))))
 (DFunDef false "collectDirectives" ((PVar "src")) (EApp (EApp (EVar "flatMap") (ELam ((PVar "c")) (EApp (EVar "dirToList") (EApp (EVar "parseDirective") (EVar "c"))))) (EApp (EVar "collectComments") (EVar "src"))))
 (DTypeSig false "dirToList" (TyFun (TyApp (TyCon "Option") (TyCon "Directive")) (TyApp (TyCon "List") (TyCon "Directive"))))
 (DFunDef false "dirToList" ((PCon "None")) (EListLit))
@@ -4948,6 +5102,12 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "runCrossFileRules" ((PVar "only") (PVar "disable") (PVar "files")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "runCrossRuleOn") (EVar "only")) (EVar "disable")) (EVar "files"))) (EVar "allCrossFileRules")))
 (DTypeSig false "runCrossRuleOn" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyCon "CrossFileRule") (TyApp (TyCon "List") (TyCon "Finding")))))))
 (DFunDef false "runCrossRuleOn" ((PVar "only") (PVar "disable") (PVar "files") (PVar "r")) (EIf (EApp (EApp (EApp (EVar "crossRuleActive") (EVar "only")) (EVar "disable")) (EVar "r")) (EApp (EApp (EVar "map") (EApp (EVar "restampSeverity") (EFieldAccess (EVar "r") "severity"))) (EApp (EFieldAccess (EVar "r") "check") (EVar "files"))) (EIf (EVar "otherwise") (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "crossFileCacheSound" (TyCon "Bool"))
+(DFunDef false "crossFileCacheSound" () (EMatch (EVar "allCrossFileRules") (arm (PList (PVar "r")) () (EBinOp "==" (EFieldAccess (EVar "r") "name") (EVar "ruleNameDuplicateBody"))) (arm PWild () (EVar "False"))))
+(DTypeSig true "runCrossFileRulesFromOccs" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "Finding"))))))
+(DFunDef false "runCrossFileRulesFromOccs" ((PVar "only") (PVar "disable") (PVar "occs")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "runCrossRuleFromOccs") (EVar "only")) (EVar "disable")) (EVar "occs"))) (EVar "allCrossFileRules")))
+(DTypeSig false "runCrossRuleFromOccs" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyFun (TyCon "CrossFileRule") (TyApp (TyCon "List") (TyCon "Finding")))))))
+(DFunDef false "runCrossRuleFromOccs" ((PVar "only") (PVar "disable") (PVar "occs") (PVar "r")) (EIf (EBinOp "&&" (EApp (EApp (EApp (EVar "crossRuleActive") (EVar "only")) (EVar "disable")) (EVar "r")) (EBinOp "==" (EFieldAccess (EVar "r") "name") (EVar "ruleNameDuplicateBody"))) (EApp (EApp (EVar "map") (EApp (EVar "restampSeverity") (EFieldAccess (EVar "r") "severity"))) (EApp (EVar "dupJoin") (EVar "occs"))) (EIf (EVar "otherwise") (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "crossRuleActive" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CrossFileRule") (TyCon "Bool")))))
 (DFunDef false "crossRuleActive" ((PVar "only") (PVar "disable") (PVar "r")) (EBinOp "&&" (EBinOp "&&" (EFieldAccess (EVar "r") "enabled") (EBinOp "||" (EApp (EVar "isEmptyL") (EVar "only")) (EApp (EApp (EVar "contains") (EFieldAccess (EVar "r") "name")) (EVar "only")))) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EFieldAccess (EVar "r") "name")) (EVar "disable")))))
 (DTypeSig false "dupComplexityThreshold" (TyCon "Int"))
@@ -4959,8 +5119,22 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "countOpenParens" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))))
 (DFunDef false "countOpenParens" ((PVar "cs") (PVar "n") (PVar "i") (PVar "acc")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "acc") (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "("))) (EApp (EApp (EApp (EApp (EVar "countOpenParens") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "acc") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "countOpenParens") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "acc")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "ruleDuplicateBody" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "Finding"))))
-(DFunDef false "ruleDuplicateBody" ((PVar "files")) (EBlock (DoLet false false (PVar "occs") (EApp (EApp (EVar "flatMap") (EVar "fileDupOccs")) (EVar "files"))) (DoLet false false (PVar "keys") (EApp (EVar "sortUniqS") (EApp (EApp (EVar "map") (EVar "occKey")) (EVar "occs")))) (DoExpr (EApp (EApp (EVar "flatMap") (EApp (EVar "emitDupGroup") (EVar "occs"))) (EVar "keys")))))
-(DTypeSig false "fileDupOccs" (TyFun (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))))
+(DFunDef false "ruleDuplicateBody" ((PVar "files")) (EApp (EVar "dupJoin") (EApp (EApp (EVar "flatMap") (EVar "fileDupOccs")) (EVar "files"))))
+(DTypeSig true "dupJoin" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "Finding"))))
+(DFunDef false "dupJoin" ((PVar "occs")) (EBlock (DoLet false false (PVar "groups") (EApp (EVar "groupOccsByKey") (EVar "occs"))) (DoLet false false (PVar "live") (EApp (EApp (EVar "filterList") (ELam ((PVar "k")) (EApp (EVar "dupGroupFires") (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "k")) (EVar "groups"))))) (EApp (EVar "dupDistinctKeys") (EVar "occs")))) (DoExpr (EApp (EApp (EVar "flatMap") (ELam ((PVar "k")) (EApp (EVar "emitDupGroup") (EApp (EVar "reverseL") (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "k")) (EVar "groups")))))) (EApp (EVar "sortUniqS") (EVar "live"))))))
+(DTypeSig false "groupOccsByKey" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))))))
+(DFunDef false "groupOccsByKey" ((PVar "occs")) (EBlock (DoLet false false (PVar "m") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "groupOccsGo") (EVar "m")) (EVar "occs"))) (DoExpr (EVar "m"))))
+(DTypeSig false "groupOccsGo" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyCon "Unit"))))
+(DFunDef false "groupOccsGo" (PWild (PList)) (ELit LUnit))
+(DFunDef false "groupOccsGo" ((PVar "m") (PCons (PVar "o") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EApp (EVar "occKey") (EVar "o"))) (EBinOp "::" (EVar "o") (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EApp (EVar "occKey") (EVar "o"))) (EVar "m")))) (EVar "m"))) (DoExpr (EApp (EApp (EVar "groupOccsGo") (EVar "m")) (EVar "rest")))))
+(DTypeSig false "dupDistinctKeys" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "dupDistinctKeys" ((PVar "occs")) (EBlock (DoLet false false (PVar "seen") (EApp (EVar "new") (ELit LUnit))) (DoExpr (EApp (EApp (EVar "dupDistinctGo") (EVar "seen")) (EVar "occs")))))
+(DTypeSig false "dupDistinctGo" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "dupDistinctGo" (PWild (PList)) (EListLit))
+(DFunDef false "dupDistinctGo" ((PVar "seen") (PCons (PVar "o") (PVar "rest"))) (EIf (EApp (EApp (EVar "has") (EApp (EVar "occKey") (EVar "o"))) (EVar "seen")) (EApp (EApp (EVar "dupDistinctGo") (EVar "seen")) (EVar "rest")) (EIf (EVar "otherwise") (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EApp (EVar "occKey") (EVar "o"))) (ELit LUnit)) (EVar "seen"))) (DoExpr (EBinOp "::" (EApp (EVar "occKey") (EVar "o")) (EApp (EApp (EVar "dupDistinctGo") (EVar "seen")) (EVar "rest"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "dupGroupFires" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyCon "Bool")))
+(DFunDef false "dupGroupFires" ((PVar "grp")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "listLen") (EVar "grp")) (ELit (LInt 2))) (EBinOp ">=" (EApp (EVar "listLen") (EApp (EVar "sortUniqS") (EApp (EApp (EVar "map") (EVar "occFile")) (EVar "grp")))) (ELit (LInt 2)))))
+(DTypeSig true "fileDupOccs" (TyFun (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))))
 (DFunDef false "fileDupOccs" ((PTuple (PVar "path") (PVar "pos") (PVar "decls"))) (EApp (EApp (EVar "flatMap") (EApp (EVar "dupOccOfDecl") (EVar "path"))) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "decls"))))
 (DTypeSig false "dupOccOfDecl" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "Decl") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))))))
 (DFunDef false "dupOccOfDecl" ((PVar "path") (PTuple (PVar "d") (PVar "loc"))) (EMatch (EVar "d") (arm (PCon "DFunDef" PWild (PVar "name") (PVar "pats") (PVar "body")) () (EIf (EBinOp ">=" (EApp (EVar "bodyComplexity") (EVar "body")) (EVar "dupComplexityThreshold")) (EListLit (ETuple (EVar "path") (EApp (EVar "locLineOf") (EVar "loc")) (EVar "name") (EApp (EApp (EVar "structuralKey") (EVar "pats")) (EVar "body")))) (EListLit))) (arm (PCon "DAttrib" PWild (PVar "inner")) () (EApp (EApp (EVar "dupOccOfDecl") (EVar "path")) (ETuple (EVar "inner") (EVar "loc")))) (arm PWild () (EListLit))))
@@ -4975,8 +5149,8 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "occName" ((PTuple PWild PWild (PVar "n") PWild)) (EVar "n"))
 (DTypeSig false "occKey" (TyFun (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")) (TyCon "String")))
 (DFunDef false "occKey" ((PTuple PWild PWild PWild (PVar "k"))) (EVar "k"))
-(DTypeSig false "emitDupGroup" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "emitDupGroup" ((PVar "occs") (PVar "key")) (EBlock (DoLet false false (PVar "grp") (EApp (EApp (EVar "filterList") (ELam ((PVar "o")) (EBinOp "==" (EApp (EVar "occKey") (EVar "o")) (EVar "key")))) (EVar "occs"))) (DoLet false false (PVar "distinctFiles") (EApp (EVar "sortUniqS") (EApp (EApp (EVar "map") (EVar "occFile")) (EVar "grp")))) (DoExpr (EIf (EBinOp "<" (EApp (EVar "listLen") (EVar "distinctFiles")) (ELit (LInt 2))) (EListLit) (EApp (EApp (EVar "map") (EApp (EVar "dupFinding") (EVar "distinctFiles"))) (EApp (EVar "sortDupOccs") (EVar "grp")))))))
+(DTypeSig false "emitDupGroup" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "Finding"))))
+(DFunDef false "emitDupGroup" ((PVar "grp")) (EBlock (DoLet false false (PVar "distinctFiles") (EApp (EVar "sortUniqS") (EApp (EApp (EVar "map") (EVar "occFile")) (EVar "grp")))) (DoExpr (EIf (EBinOp "<" (EApp (EVar "listLen") (EVar "distinctFiles")) (ELit (LInt 2))) (EListLit) (EApp (EApp (EVar "map") (EApp (EVar "dupFinding") (EVar "distinctFiles"))) (EApp (EVar "sortDupOccs") (EVar "grp")))))))
 (DTypeSig false "dupFinding" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")) (TyCon "Finding"))))
 (DFunDef false "dupFinding" ((PVar "distinctFiles") (PVar "occ")) (EBlock (DoLet false false (PVar "file") (EApp (EVar "occFile") (EVar "occ"))) (DoLet false false (PVar "line") (EApp (EVar "occLine") (EVar "occ"))) (DoLet false false (PVar "others") (EApp (EApp (EVar "filterList") (ELam ((PVar "_s")) (EBinOp "!=" (EVar "_s") (EVar "file")))) (EVar "distinctFiles"))) (DoExpr (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameDuplicateBody")) (fa "message" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "function '")) (EApp (EVar "display") (EApp (EVar "occName") (EVar "occ")))) (ELit (LString "' has a body structurally identical to a definition in "))) (EApp (EVar "display") (EApp (EApp (EVar "joinWith") (ELit (LString ", "))) (EVar "others")))) (ELit (LString " — consolidate into a shared module")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (EVar "file")) (EVar "line")) (ELit (LInt 1))) (EVar "line")) (ELit (LInt 1))))))))))
 (DTypeSig false "sortDupOccs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))))
@@ -5167,12 +5341,16 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "lintToLines" ((PVar "src") (PVar "path") (PVar "pos") (PVar "prog")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "findingLine")) (EApp (EApp (EVar "applySuppressions") (EVar "src")) (EApp (EApp (EApp (EApp (EApp (EVar "lintProgram") (EVar "allRules")) (EVar "path")) (EVar "src")) (EVar "pos")) (EVar "prog"))))))
 (DTypeSig false "findingLine" (TyFun (TyCon "Finding") (TyCon "String")))
 (DFunDef false "findingLine" ((PVar "f")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EApp (EVar "ppSeverity") (EFieldAccess (EVar "f") "severity")))) (ELit (LString ": ["))) (EApp (EMethodRef "display") (EFieldAccess (EVar "f") "rule"))) (ELit (LString "] "))) (EApp (EMethodRef "display") (EFieldAccess (EVar "f") "message"))) (ELit (LString ""))))
-(DData Private "DirScope" () ((variant "DScopeLine" (ConPos (TyCon "Int"))) (variant "DScopeFile" (ConPos))) ())
-(DData Private "Directive" () ((variant "Directive" (ConPos (TyCon "DirScope") (TyApp (TyCon "List") (TyCon "String"))))) ())
+(DData Public "DirScope" () ((variant "DScopeLine" (ConPos (TyCon "Int"))) (variant "DScopeFile" (ConPos))) ())
+(DData Public "Directive" () ((variant "Directive" (ConPos (TyCon "DirScope") (TyApp (TyCon "List") (TyCon "String"))))) ())
 (DTypeSig true "applySuppressions" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applySuppressions" ((PVar "src") (PVar "findings")) (EBlock (DoLet false false (PVar "dirs") (EApp (EVar "collectDirectives") (EVar "src"))) (DoExpr (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "isSuppressed") (EVar "dirs")) (EVar "f"))))) (EVar "findings")))))
+(DFunDef false "applySuppressions" ((PVar "src") (PVar "findings")) (EApp (EApp (EVar "applySuppressionsDirs") (EApp (EVar "collectDirectives") (EVar "src"))) (EVar "findings")))
+(DTypeSig true "applySuppressionsDirs" (TyFun (TyApp (TyCon "List") (TyCon "Directive")) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
+(DFunDef false "applySuppressionsDirs" ((PVar "dirs") (PVar "findings")) (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "isSuppressed") (EVar "dirs")) (EVar "f"))))) (EVar "findings")))
 (DTypeSig true "applySuppressionsMulti" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "applySuppressionsMulti" ((PVar "srcs") (PVar "findings")) (EBlock (DoLet false false (PVar "dirTable") (EApp (EApp (EMethodRef "map") (EVar "fileDirectivesOf")) (EVar "srcs"))) (DoExpr (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "findingSuppressedMulti") (EVar "dirTable")) (EVar "f"))))) (EVar "findings")))))
+(DFunDef false "applySuppressionsMulti" ((PVar "srcs") (PVar "findings")) (EApp (EApp (EVar "applySuppressionsMultiDirs") (EApp (EApp (EMethodRef "map") (EVar "fileDirectivesOf")) (EVar "srcs"))) (EVar "findings")))
+(DTypeSig true "applySuppressionsMultiDirs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))) (TyFun (TyApp (TyCon "List") (TyCon "Finding")) (TyApp (TyCon "List") (TyCon "Finding")))))
+(DFunDef false "applySuppressionsMultiDirs" ((PVar "dirTable") (PVar "findings")) (EApp (EApp (EVar "filterList") (ELam ((PVar "f")) (EApp (EVar "not") (EApp (EApp (EVar "findingSuppressedMulti") (EVar "dirTable")) (EVar "f"))))) (EVar "findings")))
 (DTypeSig false "fileDirectivesOf" (TyFun (TyTuple (TyCon "String") (TyCon "String")) (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))))
 (DFunDef false "fileDirectivesOf" ((PTuple (PVar "path") (PVar "src"))) (ETuple (EVar "path") (EApp (EVar "collectDirectives") (EVar "src"))))
 (DTypeSig false "findingSuppressedMulti" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))) (TyFun (TyCon "Finding") (TyCon "Bool"))))
@@ -5182,7 +5360,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "lookupDirs" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive")))) (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "Directive"))))))
 (DFunDef false "lookupDirs" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupDirs" ((PVar "path") (PCons (PTuple (PVar "p") (PVar "ds")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "p") (EVar "path")) (EApp (EVar "Some") (EVar "ds")) (EApp (EApp (EVar "lookupDirs") (EVar "path")) (EVar "rest"))))
-(DTypeSig false "collectDirectives" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive"))))
+(DTypeSig true "collectDirectives" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Directive"))))
 (DFunDef false "collectDirectives" ((PVar "src")) (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "c")) (EApp (EVar "dirToList") (EApp (EVar "parseDirective") (EVar "c"))))) (EApp (EVar "collectComments") (EVar "src"))))
 (DTypeSig false "dirToList" (TyFun (TyApp (TyCon "Option") (TyCon "Directive")) (TyApp (TyCon "List") (TyCon "Directive"))))
 (DFunDef false "dirToList" ((PCon "None")) (EListLit))
@@ -6262,6 +6440,12 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "runCrossFileRules" ((PVar "only") (PVar "disable") (PVar "files")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "runCrossRuleOn") (EVar "only")) (EVar "disable")) (EVar "files"))) (EVar "allCrossFileRules")))
 (DTypeSig false "runCrossRuleOn" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl")))) (TyFun (TyCon "CrossFileRule") (TyApp (TyCon "List") (TyCon "Finding")))))))
 (DFunDef false "runCrossRuleOn" ((PVar "only") (PVar "disable") (PVar "files") (PVar "r")) (EIf (EApp (EApp (EApp (EVar "crossRuleActive") (EVar "only")) (EVar "disable")) (EVar "r")) (EApp (EApp (EMethodRef "map") (EApp (EVar "restampSeverity") (EFieldAccess (EVar "r") "severity"))) (EApp (EFieldAccess (EVar "r") "check") (EVar "files"))) (EIf (EVar "otherwise") (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig true "crossFileCacheSound" (TyCon "Bool"))
+(DFunDef false "crossFileCacheSound" () (EMatch (EVar "allCrossFileRules") (arm (PList (PVar "r")) () (EBinOp "==" (EFieldAccess (EVar "r") "name") (EVar "ruleNameDuplicateBody"))) (arm PWild () (EVar "False"))))
+(DTypeSig true "runCrossFileRulesFromOccs" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "Finding"))))))
+(DFunDef false "runCrossFileRulesFromOccs" ((PVar "only") (PVar "disable") (PVar "occs")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "runCrossRuleFromOccs") (EVar "only")) (EVar "disable")) (EVar "occs"))) (EVar "allCrossFileRules")))
+(DTypeSig false "runCrossRuleFromOccs" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyFun (TyCon "CrossFileRule") (TyApp (TyCon "List") (TyCon "Finding")))))))
+(DFunDef false "runCrossRuleFromOccs" ((PVar "only") (PVar "disable") (PVar "occs") (PVar "r")) (EIf (EBinOp "&&" (EApp (EApp (EApp (EVar "crossRuleActive") (EVar "only")) (EVar "disable")) (EVar "r")) (EBinOp "==" (EFieldAccess (EVar "r") "name") (EVar "ruleNameDuplicateBody"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "restampSeverity") (EFieldAccess (EVar "r") "severity"))) (EApp (EVar "dupJoin") (EVar "occs"))) (EIf (EVar "otherwise") (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "crossRuleActive" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CrossFileRule") (TyCon "Bool")))))
 (DFunDef false "crossRuleActive" ((PVar "only") (PVar "disable") (PVar "r")) (EBinOp "&&" (EBinOp "&&" (EFieldAccess (EVar "r") "enabled") (EBinOp "||" (EApp (EVar "isEmptyL") (EVar "only")) (EApp (EApp (EVar "contains") (EFieldAccess (EVar "r") "name")) (EVar "only")))) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EFieldAccess (EVar "r") "name")) (EVar "disable")))))
 (DTypeSig false "dupComplexityThreshold" (TyCon "Int"))
@@ -6273,8 +6457,22 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "countOpenParens" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))))
 (DFunDef false "countOpenParens" ((PVar "cs") (PVar "n") (PVar "i") (PVar "acc")) (EIf (EBinOp ">=" (EVar "i") (EVar "n")) (EVar "acc") (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs")) (ELit (LChar "("))) (EApp (EApp (EApp (EApp (EVar "countOpenParens") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "acc") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "countOpenParens") (EVar "cs")) (EVar "n")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "acc")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "ruleDuplicateBody" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "Finding"))))
-(DFunDef false "ruleDuplicateBody" ((PVar "files")) (EBlock (DoLet false false (PVar "occs") (EApp (EApp (EDictApp "flatMap") (EVar "fileDupOccs")) (EVar "files"))) (DoLet false false (PVar "keys") (EApp (EVar "sortUniqS") (EApp (EApp (EMethodRef "map") (EVar "occKey")) (EVar "occs")))) (DoExpr (EApp (EApp (EDictApp "flatMap") (EApp (EVar "emitDupGroup") (EVar "occs"))) (EVar "keys")))))
-(DTypeSig false "fileDupOccs" (TyFun (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))))
+(DFunDef false "ruleDuplicateBody" ((PVar "files")) (EApp (EVar "dupJoin") (EApp (EApp (EDictApp "flatMap") (EVar "fileDupOccs")) (EVar "files"))))
+(DTypeSig true "dupJoin" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "Finding"))))
+(DFunDef false "dupJoin" ((PVar "occs")) (EBlock (DoLet false false (PVar "groups") (EApp (EVar "groupOccsByKey") (EVar "occs"))) (DoLet false false (PVar "live") (EApp (EApp (EVar "filterList") (ELam ((PVar "k")) (EApp (EVar "dupGroupFires") (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "k")) (EVar "groups"))))) (EApp (EVar "dupDistinctKeys") (EVar "occs")))) (DoExpr (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "k")) (EApp (EVar "emitDupGroup") (EApp (EVar "reverseL") (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EVar "k")) (EVar "groups")))))) (EApp (EVar "sortUniqS") (EVar "live"))))))
+(DTypeSig false "groupOccsByKey" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))))))
+(DFunDef false "groupOccsByKey" ((PVar "occs")) (EBlock (DoLet false false (PVar "m") (EApp (EVar "new") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "groupOccsGo") (EVar "m")) (EVar "occs"))) (DoExpr (EVar "m"))))
+(DTypeSig false "groupOccsGo" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyCon "Unit"))))
+(DFunDef false "groupOccsGo" (PWild (PList)) (ELit LUnit))
+(DFunDef false "groupOccsGo" ((PVar "m") (PCons (PVar "o") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EApp (EVar "occKey") (EVar "o"))) (EBinOp "::" (EVar "o") (EApp (EApp (EApp (EVar "findWithDefault") (EListLit)) (EApp (EVar "occKey") (EVar "o"))) (EVar "m")))) (EVar "m"))) (DoExpr (EApp (EApp (EVar "groupOccsGo") (EVar "m")) (EVar "rest")))))
+(DTypeSig false "dupDistinctKeys" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "dupDistinctKeys" ((PVar "occs")) (EBlock (DoLet false false (PVar "seen") (EApp (EVar "new") (ELit LUnit))) (DoExpr (EApp (EApp (EVar "dupDistinctGo") (EVar "seen")) (EVar "occs")))))
+(DTypeSig false "dupDistinctGo" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "dupDistinctGo" (PWild (PList)) (EListLit))
+(DFunDef false "dupDistinctGo" ((PVar "seen") (PCons (PVar "o") (PVar "rest"))) (EIf (EApp (EApp (EVar "has") (EApp (EVar "occKey") (EVar "o"))) (EVar "seen")) (EApp (EApp (EVar "dupDistinctGo") (EVar "seen")) (EVar "rest")) (EIf (EVar "otherwise") (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "set") (EApp (EVar "occKey") (EVar "o"))) (ELit LUnit)) (EVar "seen"))) (DoExpr (EBinOp "::" (EApp (EVar "occKey") (EVar "o")) (EApp (EApp (EVar "dupDistinctGo") (EVar "seen")) (EVar "rest"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "dupGroupFires" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyCon "Bool")))
+(DFunDef false "dupGroupFires" ((PVar "grp")) (EBinOp "&&" (EBinOp ">=" (EApp (EVar "listLen") (EVar "grp")) (ELit (LInt 2))) (EBinOp ">=" (EApp (EVar "listLen") (EApp (EVar "sortUniqS") (EApp (EApp (EMethodRef "map") (EVar "occFile")) (EVar "grp")))) (ELit (LInt 2)))))
+(DTypeSig true "fileDupOccs" (TyFun (TyTuple (TyCon "String") (TyCon "Positions") (TyApp (TyCon "List") (TyCon "Decl"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))))
 (DFunDef false "fileDupOccs" ((PTuple (PVar "path") (PVar "pos") (PVar "decls"))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "dupOccOfDecl") (EVar "path"))) (EApp (EApp (EVar "declLocList") (EVar "pos")) (EVar "decls"))))
 (DTypeSig false "dupOccOfDecl" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "Decl") (TyApp (TyCon "Option") (TyCon "Loc"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))))))
 (DFunDef false "dupOccOfDecl" ((PVar "path") (PTuple (PVar "d") (PVar "loc"))) (EMatch (EVar "d") (arm (PCon "DFunDef" PWild (PVar "name") (PVar "pats") (PVar "body")) () (EIf (EBinOp ">=" (EApp (EVar "bodyComplexity") (EVar "body")) (EVar "dupComplexityThreshold")) (EListLit (ETuple (EVar "path") (EApp (EVar "locLineOf") (EVar "loc")) (EVar "name") (EApp (EApp (EVar "structuralKey") (EVar "pats")) (EVar "body")))) (EListLit))) (arm (PCon "DAttrib" PWild (PVar "inner")) () (EApp (EApp (EVar "dupOccOfDecl") (EVar "path")) (ETuple (EVar "inner") (EVar "loc")))) (arm PWild () (EListLit))))
@@ -6289,8 +6487,8 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "occName" ((PTuple PWild PWild (PVar "n") PWild)) (EVar "n"))
 (DTypeSig false "occKey" (TyFun (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")) (TyCon "String")))
 (DFunDef false "occKey" ((PTuple PWild PWild PWild (PVar "k"))) (EVar "k"))
-(DTypeSig false "emitDupGroup" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Finding")))))
-(DFunDef false "emitDupGroup" ((PVar "occs") (PVar "key")) (EBlock (DoLet false false (PVar "grp") (EApp (EApp (EVar "filterList") (ELam ((PVar "o")) (EBinOp "==" (EApp (EVar "occKey") (EVar "o")) (EVar "key")))) (EVar "occs"))) (DoLet false false (PVar "distinctFiles") (EApp (EVar "sortUniqS") (EApp (EApp (EMethodRef "map") (EVar "occFile")) (EVar "grp")))) (DoExpr (EIf (EBinOp "<" (EApp (EVar "listLen") (EVar "distinctFiles")) (ELit (LInt 2))) (EListLit) (EApp (EApp (EMethodRef "map") (EApp (EVar "dupFinding") (EVar "distinctFiles"))) (EApp (EVar "sortDupOccs") (EVar "grp")))))))
+(DTypeSig false "emitDupGroup" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "Finding"))))
+(DFunDef false "emitDupGroup" ((PVar "grp")) (EBlock (DoLet false false (PVar "distinctFiles") (EApp (EVar "sortUniqS") (EApp (EApp (EMethodRef "map") (EVar "occFile")) (EVar "grp")))) (DoExpr (EIf (EBinOp "<" (EApp (EVar "listLen") (EVar "distinctFiles")) (ELit (LInt 2))) (EListLit) (EApp (EApp (EMethodRef "map") (EApp (EVar "dupFinding") (EVar "distinctFiles"))) (EApp (EVar "sortDupOccs") (EVar "grp")))))))
 (DTypeSig false "dupFinding" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")) (TyCon "Finding"))))
 (DFunDef false "dupFinding" ((PVar "distinctFiles") (PVar "occ")) (EBlock (DoLet false false (PVar "file") (EApp (EVar "occFile") (EVar "occ"))) (DoLet false false (PVar "line") (EApp (EVar "occLine") (EVar "occ"))) (DoLet false false (PVar "others") (EApp (EApp (EVar "filterList") (ELam ((PVar "_s")) (EBinOp "!=" (EVar "_s") (EVar "file")))) (EVar "distinctFiles"))) (DoExpr (ERecordCreate "Finding" ((fa "rule" (EVar "ruleNameDuplicateBody")) (fa "message" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "function '")) (EApp (EMethodRef "display") (EApp (EVar "occName") (EVar "occ")))) (ELit (LString "' has a body structurally identical to a definition in "))) (EApp (EMethodRef "display") (EApp (EApp (EVar "joinWith") (ELit (LString ", "))) (EVar "others")))) (ELit (LString " — consolidate into a shared module")))) (fa "severity" (EVar "SevWarning")) (fa "loc" (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (EVar "file")) (EVar "line")) (ELit (LInt 1))) (EVar "line")) (ELit (LInt 1))))))))))
 (DTypeSig false "sortDupOccs" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "String") (TyCon "String")))))

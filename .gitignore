@@ -35,3 +35,8 @@ _build/
 # the root as ~330 KB git-add-A landmines. An agent once committed 5 of them.
 /sqlite_*
 /*_demo
+
+# `medaka lint --cache` shard cache (#395): per-file lint results keyed by content
+# hash, rooted at the project root. Regenerable by definition — a missing or stale
+# shard is a cache MISS, which just re-lints the file.
+/.medaka/

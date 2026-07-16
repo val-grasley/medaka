@@ -162,6 +162,7 @@ medaka lint                        # lint the whole medaka.toml project
 medaka lint --fix file.mdk         # apply safe autofixes in place
 medaka lint --deny=rule-name f.mdk # treat a rule's findings as errors (exit 1)
 medaka lint --disable=r1,r2 src/   # turn rules off (or --only=r1,r2)
+medaka lint --cache src/           # skip files whose content is unchanged
 ```
 
 A modular, rule-based linter for style issues that the formatter
@@ -174,6 +175,19 @@ default (exit 0); `--deny` promotes a rule to an error (exit 1). `--fix`
 applies the safe autofixes (currently the match-on-param → multi-clause
 rewrite). Adding a custom rule is one function plus one registry entry
 in `compiler/tools/lint.mdk`.
+
+`--cache` (opt-in, like ESLint's) reuses the previous run's results for
+every file whose *content* is unchanged, which on a repo-sized lint is
+the difference between ~6.7s and ~0.4s. Results are keyed on a hash of
+the file's contents (never its mtime) *and* of the compiler binary, so
+editing a rule — or rebuilding the compiler at all — invalidates the
+cache rather than serving stale findings. Cross-file rules still run in
+full on every invocation: only their per-file inputs are cached, so a
+duplicate-body finding is retracted the moment the other file stops
+duplicating it. The cache lives in `.medaka/lint-cache/` next to
+`medaka.toml` and is safe to delete at any time (and to gitignore —
+`medaka new` does). `--cache` is currently a no-op alongside `--fix` and
+`--json`.
 
 ```
 medaka repl  (:quit to exit, :reset to clear session)
