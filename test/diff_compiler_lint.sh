@@ -14,7 +14,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/lint_main"
 FIXDIR="$ROOT/test/lint_fixtures"
 
-[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }

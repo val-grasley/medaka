@@ -93,6 +93,10 @@ done
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Declared here (not just before step 6) because the int-bounds derivation in
+# step 4 can also set it — see the comment there.
+FAIL=0
+
 # ── helper: print the body of a top-level `fn name = ...` predicate, from its
 # defining line up to (excluding) the next top-level (column-0, letter-first)
 # line that is not itself another clause of the same predicate. ────────────
@@ -187,7 +191,38 @@ printf '%s\n' Ref setRef pi e charMinBound charMaxBound __fallthrough__ >> "$WOR
 sort -u -o "$WORK/wasm_impl.txt" "$WORK/wasm_impl.txt"
 
 extract_family "$WASMMDK" "isNetExternW" | quoted_names > "$WORK/wasm_net.txt"
-printf '%s\n' intMinBound intMaxBound > "$WORK/wasm_trap.txt"
+
+# int bounds (intMinBound/intMaxBound): DERIVE trap-stub-vs-real from the
+# ACTUAL dispatch line instead of hardcoding the verdict (#461 — the old code
+# here was `printf '%s\n' intMinBound intMaxBound > wasm_trap.txt`, a file
+# that was never even read again: the gate ENCODED "these two always trap on
+# wasm" as a constant and could never notice when that stopped being true —
+# which is exactly what happened when the 63-bit tagged-word box made them
+# representable and wasm_emit.mdk started emitting real `i64.const` values).
+# Instead: pull each name's own `x == "..."` dispatch line out of wasm_emit.mdk
+# and test whether ITS OWN RHS still contains `unreachable`. If it does, it's
+# a genuine trap stub (matches a TRAP-STUB row — nothing to report). If it
+# doesn't, the name IS implemented on wasm, so add it to wasm_impl.txt: the
+# existing "ACCIDENTAL FIX" check in step 6 below then fires on its own and
+# fails the gate until the stale TRAP-STUB row is deleted/promoted — no
+# separate bookkeeping needed, and the check re-derives every run instead of
+# trusting a remembered verdict.
+INTBOUND_MISSING=0
+for b in intMinBound intMaxBound; do
+  b_line="$(grep -E "x == \"$b\"" "$WASMMDK" | head -1)"
+  if [ -z "$b_line" ]; then
+    echo "FAIL: could not find wasm dispatch line for '$b' in wasm_emit.mdk (grep 'x == \"$b\"' found nothing) — the int-bounds derivation in $0 broke, not the compiler. Fix the pattern." >&2
+    INTBOUND_MISSING=1
+    continue
+  fi
+  if ! printf '%s' "$b_line" | grep -q 'unreachable'; then
+    echo "$b" >> "$WORK/wasm_impl.txt"
+  fi
+done
+if [ "$INTBOUND_MISSING" = 1 ]; then
+  FAIL=1
+fi
+sort -u -o "$WORK/wasm_impl.txt" "$WORK/wasm_impl.txt"
 
 # Same comment-example contamination guard on the LLVM side (cheap, in case a
 # future doc comment adds a quoted non-extern word to one of the families).
@@ -226,7 +261,6 @@ if [ -n "$DUPES" ]; then
 fi
 
 # ── 6. per-engine, per-extern cross-reference ───────────────────────────────
-FAIL=0
 : > "$WORK/matrix.txt"
 for eng in interp llvm wasm; do
   case "$eng" in

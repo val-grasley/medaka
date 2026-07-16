@@ -38,7 +38,7 @@ CORE="$ROOT/stdlib/core.mdk"
 INPUT="$ROOT/test/repl_fixtures/session.in"
 GOLDEN="$ROOT/test/repl_fixtures/session.golden"
 
-[ -x "$RUN" ]    || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ]    || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 [ -f "$INPUT" ]  || { echo "missing $INPUT"; exit 2; }
 [ -f "$GOLDEN" ] || { echo "missing golden $GOLDEN (run sh test/capture_goldens.sh repl)"; exit 2; }
 

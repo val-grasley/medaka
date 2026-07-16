@@ -187,12 +187,15 @@ netTcpAccept	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit
 netTcpConnect	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
 netTcpListen	wasm	PERMANENT	raw BSD sockets have no WasmGC equivalent (wasm_emit.mdk gapL, ~line 4590/6311) — build for a native target instead
 
-# --- int bounds (2) — TRAP-STUB. Present in source but lower to
-#     `["unreachable"]` (wasm_emit.mdk ~line 4116); a program that actually
-#     evaluates intMinBound/intMaxBound aborts rather than getting a wrong
-#     value. Comment there calls this W8b-shaped/deferred. ---
-intMinBound	wasm	TRAP-STUB	lowers to `unreachable` (wasm_emit.mdk:4116) — bound in source, but any real use traps; deferred as W8b-shaped (64-bit Int overflows the i31 rep)
-intMaxBound	wasm	TRAP-STUB	lowers to `unreachable` (wasm_emit.mdk:4116) — bound in source, but any real use traps; deferred as W8b-shaped (64-bit Int overflows the i31 rep)
+# intMinBound/intMaxBound (wasm): PROMOTED — #461. Were TRAP-STUB rows here
+# (lowered to `["unreachable"]`); wasm_emit.mdk now boxes them as real i64
+# constants (`x == "intMaxBound"` / `x == "intMinBound"`, ~line 4333-4334;
+# see the comment there for why the 63-bit tagged-word box made them
+# representable). The capability-matrix gate DERIVES this from the dispatch
+# line's own text now (does it still say `unreachable`?) instead of a
+# hardcoded assumption, so if this ever regresses back to a real trap the
+# gate will report a SILENT OMISSION and this comment is your cue to look —
+# no row to re-add, since the gate re-derives the verdict every run.
 
 # --- assertSnapshot (1) — TODO, same as the llvm row. ---
 assertSnapshot	wasm	TODO	unimplemented in all 3 engines, no stdlib caller — forward-declared snapshot-testing primitive, not an asymmetric regression

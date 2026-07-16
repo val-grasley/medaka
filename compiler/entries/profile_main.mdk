@@ -15,6 +15,9 @@
 --   lower           Core IR lowering (lowerProgramEmit over the elaborated program)
 --   emit            LLVM text IR emission (emitProgram over the Core IR)
 --   wasm-emit       WasmGC text WAT emission (wasm_emit.emitProgram over the SAME Core IR)
+--                   ⚠️ OPT-IN: only runs under MEDAKA_PERF_WASM=1 (see wasmStage).
+--                   It is ~10x llvm_emit, so it is priced per-shape by the gate rather
+--                   than paid on every invocation.
 --
 -- Without MEDAKA_PERF set the driver exits silently (no useful stdout output —
 -- this is a measurement tool, not a pipeline validator).
@@ -24,6 +27,7 @@
 -- times the full multi-module loader path with elaborate as a single phase).
 
 import frontend.ast.{Decl}
+import ir.core_ir.{CProgram}
 import frontend.parser.{parse, parseWithPositions}
 import tools.lint.{lintProgram, allRules}
 import frontend.desugar.{desugar}
@@ -74,7 +78,14 @@ import backend.wasm_emit.{
 }
 import tools.fmt.{formatSource}
 import frontend.exhaust.{checkGuardExhaustivenessWith}
-import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
+import support.timer.{
+  perfEnabled,
+  perfWasmEnabled,
+  now,
+  emitPhaseA,
+  emitTotalA,
+  allocSnap,
+}
 import support.util.{listLen}
 
 main = match args ()
@@ -246,19 +257,16 @@ runStaged on rsrc csrc tsrc =
   -- assembles or runs it, so this adds no node/wasm-tools dependency to the gate's CI
   -- shard. That is NOT the same as free, and the difference is worth stating: wasm_emit
   -- is ~10x slower than llvm_emit on identical input (~0.215 s vs ~0.021 s just for the
-  -- prelude, 38 s vs 10.6 s at xref N=16000), and the profiler runs this stage on EVERY
-  -- invocation the gate makes, so it costs the `gates (types)` shard ~5 minutes. Paid
-  -- deliberately: `types` is not the CI critical path (`gates (engines)`, ~5.8 min, is —
-  -- and shards are scheduled by cost, not theme, so this must never move there).
-  let _ = installMethodIfaceW (methodIfaceTable live)
-  let _ = installDeclRetTypes (declSigTypeNames rDecls ++ declSigTypeNames live)
-  let _ = installCtorFloatFields (ctorFieldTypeNames live)
-  let _ = installMainIsFloatHintW (mainTypeIsFloat ())
-  let tWe0 = now ()
-  let aWe0 = allocSnap ()
-  let _ = wasmText cprog
-  let tWe1 = now ()
-  let _ = emitPhaseA on "wasm-emit" (tWe1 - tWe0) (allocSnap () - aWe0) declsOp
+  -- prelude, 42 s vs 12 s at xref N=16000).
+  --
+  -- ⚠️ SO IT IS OPT-IN, VIA MEDAKA_PERF_WASM — see wasmStage below. This stage used to
+  -- run on EVERY invocation the gate made, which cost `gates (types)` ~277 s and made it
+  -- the CI CRITICAL PATH at 12 min against engines' 3.7 min. The old note here priced
+  -- that at "~5 minutes, paid deliberately: `types` is not the critical path (`gates
+  -- (engines)`, ~5.8 min, is)" — both halves of that premise have since gone stale, and
+  -- the conclusion with them. Shards are scheduled by COST, so a stage that outgrows its
+  -- shard's budget has to be re-priced, not grandfathered.
+  let _ = wasmStage on (perfWasmEnabled ()) cprog live rDecls declsOp
   -- fmt: the whole comment-preserving format pass (collectComments +
   -- parseWithPositions + formatProgram).  Profiled because it was NOT before, and
   -- an unprofiled pass is where a quadratic hides: the comment side-channel's
@@ -288,6 +296,37 @@ runStaged on rsrc csrc tsrc =
   let tL1 = now ()
   let _ = emitPhaseA on "lint" (tL1 - tL0) (allocSnap () - aL0) declsOp
   emitTotalA on (tL1 - tTotal) (allocSnap () - aTotal)
+
+-- The `wasm-emit` stage, OPT-IN on MEDAKA_PERF_WASM (2nd arg). Off => `()`, and the
+-- WAT is never rendered.
+--
+-- ⚠️ THIS MUST STAY A CLAUSE, NOT A GUARD ON emitPhaseA. Medaka is strict: passing
+-- `wasmText cprog` as an argument to anything — emitPhaseA, whenL, a `let _` — RUNS
+-- it. Only an unforced clause body actually skips the work. This is AGENTS.md's
+-- `whenL False (expensiveCall …)` trap, and the entire ~277 s saving lives or dies on
+-- it: get it wrong and the gate still pays in full while printing nothing, which is
+-- strictly worse than before (cost with no row).
+--
+-- Every argument is ALREADY FORCED by the caller (cprog from the `lower` stage, live
+-- from dceFilter, rDecls from parse-prelude), so passing them costs nothing when off.
+--
+-- The install* calls sit inside the off-switch but outside the timer, mirroring the
+-- LLVM arm: they are table-building, not emission, and they are wasm_emit's own hooks
+-- (the `W`-suffixed peers) — nothing else in this driver reads them, so skipping them
+-- when the stage is off cannot perturb the LLVM rows.
+wasmStage : Bool -> Bool -> CProgram -> List Decl -> List Decl -> String -> <IO> Unit
+wasmStage _ False _ _ _ _ = ()
+wasmStage on True cprog live rDecls declsOp =
+  let _ = installMethodIfaceW (methodIfaceTable live)
+  let _ = installDeclRetTypes (declSigTypeNames rDecls ++ declSigTypeNames live)
+  let _ = installCtorFloatFields (ctorFieldTypeNames live)
+  let _ = installMainIsFloatHintW (mainTypeIsFloat ())
+  let tWe0 = now ()
+  let aWe0 = allocSnap ()
+  let _ = wasmText cprog
+  let tWe1 = now ()
+  emitPhaseA on "wasm-emit" (tWe1 - tWe0) (allocSnap () - aWe0) declsOp
+
 -- parse-prelude: parse + desugar runtime.mdk and core.mdk.
 -- rRaw/cRaw (raw) go to resolve; rDecls/cDecls (desugared) go to mark+typecheck.
 

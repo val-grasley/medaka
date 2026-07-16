@@ -50,6 +50,7 @@ MEDAKA="${MEDAKA:-$ROOT/medaka}"
 SNAPDIR="$ROOT/test/snapshots"
 
 [ -x "$MEDAKA" ] || { echo "build the compiler first: make medaka (missing $MEDAKA)"; exit 2; }
+. "$ROOT/test/lib_stale_warning.sh"
 
 fail=0
 total=0
@@ -97,7 +98,27 @@ run_family() {
   compared=$((compared + ${p:-0}))
   skipped=$((skipped + ${s:-0}))
   printf '%-22s %s\n' "$sub" "$(printf '%s\n' "$out" | tail -1)"
-  printf '%s\n' "$out" | grep -E '^(.*: (FAIL|ERROR))' | sed 's/^/    /'
+  # #482: "FAIL differing sections: CRASH" is opaque -- the --check verdict
+  # never exposes the actual differing text, only the section name. For each
+  # such line, re-render just that ONE fixture into a throwaway --new scratch
+  # dir (never touches the real corpus) and check whether the CRASH section
+  # differs ONLY by the stale-binary warning riding along in it -- if so, say
+  # so instead of leaving an agent to bisect a false regression.
+  printf '%s\n' "$out" | grep -E '^(.*: (FAIL|ERROR))' | while IFS= read -r line; do
+    case "$line" in
+      *"differing sections: CRASH"*)
+        fx="${line%%: FAIL*}"
+        gold="$SNAPDIR/$sub/$(basename "$fx" .mdk).md"
+        cls="$(mdk_snapshot_section_stale_reason "$MEDAKA" "$ROOT" "$fx" "$stages" "$gold" CRASH)"
+        if [ "$cls" = "STALE_ONLY" ]; then
+          printf "    %s -- diff is ONLY the stale-binary warning; run 'make medaka' and retry\n" "$line"
+        else
+          printf '    %s\n' "$line"
+        fi
+        ;;
+      *) printf '    %s\n' "$line" ;;
+    esac
+  done
 }
 
 # stages=eval: the eval path is what RUNS (and, for these, aborts) the fixture; the

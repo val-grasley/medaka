@@ -21,7 +21,15 @@
 #
 # Usage:   sh test/build_oracles.sh          # build stale/missing oracles
 #          FORCE=1 sh test/build_oracles.sh   # rebuild all
-# Exit:    0 built/up-to-date; 2 opt-in skip (no clang/libgc); 1 on a build error.
+#          sh test/build_oracles.sh --list    # list every oracle name this script
+#                                              # can build (builds nothing)
+#          sh test/build_oracles.sh --build-one <entry>       # build exactly one
+#          sh test/build_oracles.sh --for '<gate-pattern>' …  # build only what
+#                                              # those gates read (see #398/#183)
+# Exit:    0 built/up-to-date; 2 opt-in skip (no clang/libgc); 1 on a build error
+#          or an unrecognized flag.
+# ⚠️ An UNRECOGNIZED flag is a hard error (exit 1) — it does NOT fall through to
+# build-all. Only truly NO ARGS means build-all; that is intentional (#474).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -146,6 +154,34 @@ check_modules_main check_all_main check_match_main exhaust_main lint_main lint_f
 diagnostics_main diagnostics_project_main \
 fmt_main new_main test_main repl_main fuzz_gen_main \
  profile_main profile_modules_main"
+
+# ── --list : print every oracle name this script knows how to build ───────────
+# Derived from $ENTRIES (the single source of truth a few lines up), never
+# hand-maintained — so it cannot drift from what --build-one/--for actually see.
+# Needs no clang/libgc (runs before that check) and builds nothing.
+if [ "${1:-}" = "--list" ]; then
+  printf '%s\n' $ENTRIES
+  exit 0
+fi
+
+# ── Catch-all: an UNRECOGNIZED first arg is an error, not a silent build-all ───
+# (#474). Before this fix, a typo'd or unimplemented flag (`--help`, `--list`
+# before this fix existed, any fat-fingered `--build-one`/`--for`) fell through
+# every `if` below and landed on the default path: build ALL of $ENTRIES,
+# spawning the xargs -P pool that AGENTS.md documents as having killed agents.
+# `--build-one` is handled (and exits) above this point; `--for` is handled (and
+# does NOT shift $1 away) below — so by the time this case runs, the only
+# LEGITIMATE values left for $1 are unset/empty (build-all — must stay that way)
+# or `--for` (falls through on purpose to the block that consumes it).
+case "${1:-}" in
+  ''|--for) ;;
+  *)
+    echo "FAIL: unknown argument: ${1:-}" >&2
+    echo "usage: $0 [--list | --build-one <entry> | --for '<gate-pattern>' ...]" >&2
+    echo "       (no args = build all $(printf '%s\n' $ENTRIES | grep -vc '^$') oracles)" >&2
+    exit 1
+    ;;
+esac
 
 # ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ──────
 command -v "$CC" >/dev/null 2>&1 || {

@@ -60,7 +60,7 @@ if [ "${1:-}" = "--one" ]; then
   exit 0
 fi
 
-[ -x "$EMITBIN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EMITBIN)"; exit 2; }
+[ -x "$EMITBIN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$EMITBIN") (missing $EMITBIN)"; exit 2; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then

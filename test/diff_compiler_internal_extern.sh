@@ -32,6 +32,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MEDAKA="$ROOT/medaka"
 [ -x "$MEDAKA" ] || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
+. "$ROOT/test/lib_stale_warning.sh"
 
 bound() { perl -e 'alarm 120; exec @ARGV' "$@"; }
 
@@ -47,37 +48,41 @@ EOF
 # 1. check-reject: no flag → InternalExternAccess error + exit 1.
 out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/u.mdk" 2>&1)"
 code=$?
-case "$out" in
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
   *"internal-only primitive"*) if [ "$code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   check-reject (InternalExternAccess, exit 1)\n'
-                  else fail=$((fail+1)); printf 'FAIL check-reject (flagged but exit %d)\n' "$code"; fi ;;
-  *) fail=$((fail+1)); printf 'FAIL check-reject (not flagged: [%s])\n' "$out" ;;
+                  else fail=$((fail+1)); printf 'FAIL check-reject (flagged but exit %d)%s\n' "$code" "$(mdk_stale_suffix "$out")"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL check-reject (not flagged: [%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
 esac
 
 # 2. check-allow: --allow-internal → clean (exit 0, no internal-only diagnostic).
 out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check --allow-internal "$TMP/u.mdk" 2>&1)"
 code=$?
-case "$out" in
-  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL check-allow (still flagged: [%s])\n' "$out" ;;
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL check-allow (still flagged: [%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
   *) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   check-allow (suppressed, exit 0)\n'
-     else fail=$((fail+1)); printf 'FAIL check-allow (exit %d: [%s])\n' "$code" "$out"; fi ;;
+     else fail=$((fail+1)); printf 'FAIL check-allow (exit %d: [%s])%s\n' "$code" "$out" "$(mdk_stale_suffix "$out")"; fi ;;
 esac
 
 # 3. run-allow: --allow-internal evaluates it (prints 1).
 out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run --allow-internal "$TMP/u.mdk" 2>&1)"
 code=$?
-case "$out" in
-  1*) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   run-allow (prints 1)\n'
-      else fail=$((fail+1)); printf 'FAIL run-allow (printed but exit %d)\n' "$code"; fi ;;
-  *) fail=$((fail+1)); printf 'FAIL run-allow ([%s])\n' "$out" ;;
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
+  1*) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   run-allow (prints 1)%s\n' "$(mdk_stale_suffix "$out")"
+      else fail=$((fail+1)); printf 'FAIL run-allow (printed but exit %d)%s\n' "$code" "$(mdk_stale_suffix "$out")"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL run-allow ([%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
 esac
 
 # 4. run-reject: run (no flag) → InternalExternAccess + exit 1.
 out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run "$TMP/u.mdk" 2>&1)"
 code=$?
-case "$out" in
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
   *"internal-only primitive"*) if [ "$code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   run-reject (InternalExternAccess, exit 1)\n'
-                  else fail=$((fail+1)); printf 'FAIL run-reject (flagged but exit %d)\n' "$code"; fi ;;
-  *) fail=$((fail+1)); printf 'FAIL run-reject (not flagged: [%s])\n' "$out" ;;
+                  else fail=$((fail+1)); printf 'FAIL run-reject (flagged but exit %d)%s\n' "$code" "$(mdk_stale_suffix "$out")"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL run-reject (not flagged: [%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
 esac
 
 # 5. build-reject: build (no flag) → rejected, no binary emitted.
@@ -114,11 +119,12 @@ main = println (arrayLength (arrayFromList [1, 2, 3]))
 EOF
 out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run "$TMP/usearr.mdk" 2>&1)"
 code=$?
-case "$out" in
-  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL stdlib-trust (false positive on array.mdk: [%s])\n' "$out" ;;
-  3*) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   stdlib-trust (array import resolves clean)\n'
-      else fail=$((fail+1)); printf 'FAIL stdlib-trust (printed but exit %d)\n' "$code"; fi ;;
-  *) fail=$((fail+1)); printf 'FAIL stdlib-trust ([%s])\n' "$out" ;;
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL stdlib-trust (false positive on array.mdk: [%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
+  3*) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   stdlib-trust (array import resolves clean)%s\n' "$(mdk_stale_suffix "$out")"
+      else fail=$((fail+1)); printf 'FAIL stdlib-trust (printed but exit %d)%s\n' "$code" "$(mdk_stale_suffix "$out")"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL stdlib-trust ([%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
 esac
 
 # 8. fallthrough-ok: a program with guard fallthrough (desugar emits the
@@ -135,11 +141,12 @@ main = println (classify 5)
 EOF
 out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run "$TMP/guard.mdk" 2>&1)"
 code=$?
-case "$out" in
-  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL fallthrough-ok (false positive on __fallthrough__: [%s])\n' "$out" ;;
-  pos*) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   fallthrough-ok (guard fallthrough not flagged)\n'
-        else fail=$((fail+1)); printf 'FAIL fallthrough-ok (printed but exit %d)\n' "$code"; fi ;;
-  *) fail=$((fail+1)); printf 'FAIL fallthrough-ok ([%s])\n' "$out" ;;
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL fallthrough-ok (false positive on __fallthrough__: [%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
+  pos*) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   fallthrough-ok (guard fallthrough not flagged)%s\n' "$(mdk_stale_suffix "$out")"
+        else fail=$((fail+1)); printf 'FAIL fallthrough-ok (printed but exit %d)%s\n' "$code" "$(mdk_stale_suffix "$out")"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL fallthrough-ok ([%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
 esac
 
 # 9. self-check-rel: `medaka check stdlib/array.mdk` (relative path, run with
@@ -147,19 +154,21 @@ esac
 #    must resolve clean with NO flag.
 out="$(cd "$ROOT" && MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check stdlib/array.mdk 2>&1)"
 code=$?
-case "$out" in
-  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL self-check-rel (false positive on stdlib/array.mdk: [%s])\n' "$out" ;;
-  *) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   self-check-rel (stdlib/array.mdk clean, relative path, no flag)\n'
-     else fail=$((fail+1)); printf 'FAIL self-check-rel (exit %d: [%s])\n' "$code" "$out"; fi ;;
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL self-check-rel (false positive on stdlib/array.mdk: [%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
+  *) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   self-check-rel (stdlib/array.mdk clean, relative path, no flag)%s\n' "$(mdk_stale_suffix "$out")"
+     else fail=$((fail+1)); printf 'FAIL self-check-rel (exit %d: [%s])%s\n' "$code" "$out" "$(mdk_stale_suffix "$out")"; fi ;;
 esac
 
 # 10. self-check-abs: same file, absolute path — also clean with no flag.
 out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$ROOT/stdlib/array.mdk" 2>&1)"
 code=$?
-case "$out" in
-  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL self-check-abs (false positive on stdlib/array.mdk: [%s])\n' "$out" ;;
-  *) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   self-check-abs (stdlib/array.mdk clean, absolute path, no flag)\n'
-     else fail=$((fail+1)); printf 'FAIL self-check-abs (exit %d: [%s])\n' "$code" "$out"; fi ;;
+clean="$(mdk_strip_stale "$out")"
+case "$clean" in
+  *"internal-only primitive"*) fail=$((fail+1)); printf 'FAIL self-check-abs (false positive on stdlib/array.mdk: [%s])%s\n' "$out" "$(mdk_stale_suffix "$out")" ;;
+  *) if [ "$code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   self-check-abs (stdlib/array.mdk clean, absolute path, no flag)%s\n' "$(mdk_stale_suffix "$out")"
+     else fail=$((fail+1)); printf 'FAIL self-check-abs (exit %d: [%s])%s\n' "$code" "$out" "$(mdk_stale_suffix "$out")"; fi ;;
 esac
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

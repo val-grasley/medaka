@@ -67,8 +67,18 @@ CC="${CC:-clang}"
 # worker thread needed).
 STACK_SIZE="${STACK_SIZE:-0x20000000}"   # 512 MiB — the arm64 -stack_size ceiling
 
-[ -x "$BOOTEMIT" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $BOOTEMIT)"; exit 2; }
-[ -x "$LEXORACLE" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $LEXORACLE)"; exit 2; }
+# Collect ALL missing oracles before failing — naming only the first costs a
+# round-trip per oracle in a fresh worktree (#398).
+_missing=""
+[ -x "$BOOTEMIT" ] || _missing="$_missing $BOOTEMIT"
+[ -x "$LEXORACLE" ] || _missing="$_missing $LEXORACLE"
+if [ -n "$_missing" ]; then
+  echo "build oracles first — missing:"
+  for _m in $_missing; do
+    echo "  FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$_m")  (missing $_m)"
+  done
+  exit 2
+fi
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then

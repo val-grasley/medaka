@@ -23,6 +23,7 @@ NATIVE="$ROOT/medaka"
 GOLDIR="$ROOT/test/check_policy_fixtures"
 
 [ -x "$NATIVE" ] || { echo "SKIP: ./medaka not built — run: make medaka"; exit 2; }
+. "$ROOT/test/lib_stale_warning.sh"
 
 export MEDAKA_ROOT="$ROOT"
 
@@ -47,8 +48,14 @@ one_case() {
 
   if [ "$native_out" = "$ref_out" ] && [ "$native_rc" = "$ref_rc" ]; then
     pass=$((pass+1)); printf 'ok   %s (rc=%s)\n' "$label" "$native_rc"
+    return
+  fi
+  cls="$(mdk_classify_diff "$native_out" "$ref_out")"
+  if [ "$cls" = "STALE_ONLY" ] && [ "$native_rc" = "$ref_rc" ]; then
+    fail=$((fail+1)); mdk_stale_fail_line "$label"
   else
     fail=$((fail+1)); printf 'FAIL %s (native rc=%s, golden rc=%s)\n' "$label" "$native_rc" "$ref_rc"
+    [ "$cls" = "STALE_ONLY" ] || [ "$cls" = "STALE_PLUS_DIFF" ] && mdk_stale_note
     printf '  --- native ---\n%s\n  --- golden ---\n%s\n' "$native_out" "$ref_out"
   fi
 }

@@ -18,7 +18,7 @@ RUN="$ROOT/test/bin/check_match_main"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 FIXDIR="$ROOT/test/check_match_fixtures"
 
-[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }

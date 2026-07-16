@@ -1021,33 +1021,39 @@ charClassRuntimeLines = [
 -- ── W8b Float externs (RUNTIME-DESIGN §5 Float / WASMGC-DESIGN §3.3 boxed Float) ──
 -- The §3.3 boxed Float is `(struct $float (field f64))`, declared unconditionally in
 -- the rec group.  A Float value is a boxed (ref eq) struct; a Float LITERAL emits
--- `(struct.new $float (f64.const <floatToString-text>))` — the SAME `%.12g` rendering
--- the LLVM oracle bakes into its IR const, so the parsed double is byte-identical
--- across clang and wasm-tools (verified: identical i64.reinterpret_f64 bit patterns).
+-- `(struct.new $float (f64.const <floatToString-text>))` — the SAME rendering the LLVM
+-- oracle bakes into its IR const, so the parsed double is byte-identical across clang
+-- and wasm-tools (verified: identical i64.reinterpret_f64 bit patterns).
 --
--- floatToString is the CRUX.  The native impl is `snprintf(buf,"%.12g",d)` + a `.0`
--- append (when the lexeme has no `.`/`e`/`E`/`n`/`i`).  `%.12g` is FIXED-12-significant
--- `%g`, not shortest-round-trip dtoa, but reproducing its correctly-rounded decimal
--- conversion + exponent-form thresholds + trailing-zero stripping in pure WAT means
--- reimplementing dtoa (no printf available).  Per the W8b plan's authorized fallback,
--- floatToString is a HOST IMPORT: the JS host reproduces `%.12g` byte-for-byte via
--- `toExponential(11)` (12 significant digits, correct round-half-to-even) + %g-style
--- form selection + trailing-zero trim + the `.0` rule (test/wasm/run.js fmt12g).  This
--- is the ONE host-dependent formatter — a clean parallel to the deferred IO/WASI host
--- surface; a non-JS wedge target would later need the in-WAT dtoa.  The host caches the
--- formatted bytes and exposes them as (length, byte-at-index) so the module rebuilds a
--- $str without GC<->JS interop.
+-- floatToString is the CRUX. ⚠️ #361/#383: the algorithm described below as "%.12g" is
+-- STALE — REVISED 2026-07-15 (issue #57) to SHORTEST-ROUND-TRIP (medaka_rt.c:235,
+-- `mdk_float_lexeme`): digit count is the fewest significant digits whose `strtod`
+-- round-trips bit-exact, so `debug (0.1 + 0.2)` renders "0.30000000000000004", not the
+-- old "%.12g" truncation "0.3". What DID survive from the historical %.12g rule is only
+-- the EXPONENT THRESHOLD (scientific iff decimal exponent < -4 or >= 12) and the `.0`
+-- append/trailing-zero-trim shape — not the digit count. Reproducing that in pure WAT
+-- means reimplementing dtoa (no printf available), so per the W8b plan's authorized
+-- fallback, floatToString is a HOST IMPORT: the JS host reproduces the SAME
+-- shortest-round-trip algorithm byte-for-byte via `toExponential()` (no arg — JS's own
+-- shortest half-even dtoa) re-formatted through the %.12g-style exponent threshold +
+-- trailing-zero trim + the `.0` rule (test/wasm/run.js, function still named `fmt12g`
+-- for history but ported to shortest-round-trip together with medaka_rt.c — see its own
+-- header comment). This is the ONE host-dependent formatter — a clean parallel to the
+-- deferred IO/WASI host surface; a non-JS wedge target would later need the in-WAT
+-- dtoa. The host caches the formatted bytes and exposes them as (length, byte-at-index)
+-- so the module rebuilds a $str without GC<->JS interop.
 export floatFmtImportLines : List String
 floatFmtImportLines = [
-  "  ;; -- W8b floatToString host seam (%.12g — reproduced JS-side, see run.js) --",
+  "  ;; -- W8b floatToString host seam (shortest-round-trip since #57 — reproduced JS-side, see run.js) --",
   "  (import \"env\" \"mdk_float_fmt\" (func $mdk_float_fmt (param f64) (result i32)))",
   "  (import \"env\" \"mdk_float_fmt_byte\" (func $mdk_float_fmt_byte (param i32) (result i32)))",
 ]
 
 -- #101: the libm transcendental (+ pow/atan2/hypot) math externs.  WasmGC has no libm,
--- so — like the floatToString %.12g formatter — each is a HOST IMPORT backed by JS
+-- so — like the floatToString formatter — each is a HOST IMPORT backed by JS
 -- `Math.*` (byte-identical to C libm on the values these fixtures exercise; sub-ULP
--- transcendental divergences would be masked by the %.12g truncation and, if ever
+-- transcendental divergences could still surface in a printed digit since the shortest-
+-- round-trip formatter (unlike the old %.12g truncation) no longer masks them, and if
 -- printed-divergent, are ledgered as native:libm-vs-jsmath-ulp — see
 -- test/engine_divergence.txt).  IEEE-exact ops (sqrt/floor/ceil/trunc/round) and
 -- floatRem lower to native f64 opcodes / $mdk_round / $mdk_float_rem — NOT host imports.
@@ -1211,8 +1217,8 @@ floatRuntimeLines = [
   "      (else (local.set $t (f64.ceil (local.get $x)))",
   "        (if (result f64) (f64.ge (f64.sub (local.get $t) (local.get $x)) (f64.const 0.5))",
   "          (then (f64.sub (local.get $t) (f64.const 1.0))) (else (local.get $t))))))",
-  "  ;; floatToString : the host formats (%.12g + .0 rule) into a cache; copy the bytes",
-  "  ;; into a fresh $str.  cp_count == byte_len (the %.12g output is ASCII).",
+  "  ;; floatToString : the host formats (shortest-round-trip since #57, + .0 rule)",
+  "  ;; into a cache; copy the bytes into a fresh $str.  cp_count == byte_len (ASCII).",
   "  (func $mdk_float_to_str (param $d f64) (result (ref $str))",
   "    (local $n i32) (local $i i32) (local $buf (ref $u8arr))",
   "    (local.set $n (call $mdk_float_fmt (local.get $d)))",

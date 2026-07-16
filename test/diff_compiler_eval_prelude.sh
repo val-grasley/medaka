@@ -20,7 +20,7 @@ RUN="$ROOT/test/bin/eval_prelude_main"
 CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/eval_prelude_fixtures"
 
-[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 strip_unit() { sed '${/^()$/d;}'; }  # drop native runtime's trailing Unit auto-print
 
 pass=0; fail=0

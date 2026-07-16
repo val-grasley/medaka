@@ -21,7 +21,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/eval_main"
 FIXDIR="$ROOT/test/eval_fixtures"
 
-[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 
 # The native value entry auto-prints main's Unit return as a trailing "()" line
 # (runtime/medaka_rt.c); the eval_probe golden has none — drop a sole trailing "()".

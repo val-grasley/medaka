@@ -19,7 +19,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/resolve_main"
 FIXDIR="$ROOT/test/resolve_fixtures"
 
-[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c)
 # BEFORE sorting, so it can't reorder into the middle of the diagnostics.
