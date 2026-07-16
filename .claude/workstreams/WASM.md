@@ -365,14 +365,25 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
 
   > ⭐ **Why this entry no longer says what N6's state IS.** It used to read *"#360 remains
   > decided-and-unimplemented"* — an **encoded fact with no derivation and no expiry**, in a ledger
-  > headed *do NOT re-file*, i.e. sited where a stale claim does the most harm. It was one merge
-  > from rotting (#490 implements N6). **The contract is MAINTAINED and this ledger is not** —
-  > demonstrated, not assumed: #484 drained three `#305` rows from `WASM-SEMANTICS` **unprompted**,
-  > while leaving *both* workstream ledgers stale, including **its own** (#488). ⇒ **a debunkings
-  > ledger must record what was DISPROVED (a fact that cannot expire), never an issue's STATE
-  > (a fact that expires the moment someone fixes it).** The disproof above — *NaN
-  > `compare`/`min`/`max` are engine-uniform, probe-run* — is the durable half and stays; the
-  > status pointer belongs in the doc that gets drained.
+  > headed *do NOT re-file*, i.e. sited where a stale claim does the most harm.
+  >
+  > **It rotted before this sentence was even reviewed.** #490 implemented N6 and merged at
+  > 16:46Z — *during* the review of this very commit — so the old wording was already false while a
+  > reviewer was reading it. **The pointer version survived that untouched.** That is the whole
+  > argument, demonstrated in real time.
+  >
+  > ⚠️ **NOT because the contract is reliably fresher — I claimed that and it is FALSE.** Draining
+  > is a **coin flip**: #484 and #490 drained `WASM-SEMANTICS` unprompted; **#388** (fixed #345/#369)
+  > and **#401** (fixed #381) **did not** — #401 touched *zero* doc files, and **#401 was authored by
+  > this very workstream**. Both stale rows then needed a manual sweep (#390, #409). So the real
+  > reason to stop duplicating is simpler and stronger: **one unreliable copy beats two
+  > independently-rottable ones**, and you don't have to bet on which artifact is current.
+  >
+  > ⇒ **A debunkings ledger records what was DISPROVED — a fact that cannot expire — never an OPEN
+  > issue's STATE, which expires the moment someone finishes the work.** (A **closed** issue's
+  > resolution — *"#305 FIXED by #484"* above — is a stable historical event, closer to a changelog
+  > line than a live status; that is the carve-out, and it is the only one.) The disproof — *NaN
+  > `compare`/`min`/`max` are engine-uniform, probe-run* — is the durable half and stays.
 
   > **Why this line is worth reading twice.** It sat in a ledger headed *"do NOT re-file"* —
   > whose purpose is to tell you a question is **settled**. A stale entry here does not merely
