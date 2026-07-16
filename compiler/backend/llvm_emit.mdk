@@ -996,8 +996,11 @@ canonFnName e name =
 -- from `sigTable e` at emitProgram). Byte-identical to `lookupAssoc name (sigTable
 -- e)`: the map is built with `reverseL` so the FIRST list entry wins on a duplicate
 -- key, matching lookupAssoc's first-match. Falls back to the linear scan only when
--- the map is uninstalled. Use ONLY for GLOBAL-sigs sites (`sigTable e`), never a
--- threaded/augmented `sigs` parameter (those carry local Float-propagation types).
+-- the map is uninstalled. Use for GLOBAL-sigs sites (`sigTable e`); the threaded
+-- `sigs` parameter is a DIFFERENT table, not a mutated one — it is indexed too, via
+-- `sigMapOf` below. (This line used to forbid that, claiming threaded `sigs` is
+-- "augmented" with Float-propagation types. It is not: `sigs` is never consed,
+-- appended or iterated anywhere — only threaded and looked up.)
 sigLookup : Emit -> String -> Option FnSig
 sigLookup e name = match sigMapRef.value
   Some m => omLookup name m
