@@ -119,8 +119,11 @@ Verified DISPROVED at `40e14b85` (a correction needs the same proof as a filing)
 - **`nan <= nan` over top-level Float bindings is CORRECT natively** (both `False`) — the
   `RScalar` stamp covers the shape the static read predicted would fall to `mdk_value_cmp_raw`.
   The generic/HOF path NaN defect (#305) is now FIXED (#484, 2026-07-16) — IEEE relational ops
-  hold on the type-lost path too. The still-undecided half is N6 (#360, design: pin the
-  Float `compare`/min/max/sort story at NaN) — that one stays open.
+  hold on the type-lost path too. The N6 decision (#360: pin the Float `compare`/min/max/sort
+  story at NaN) is ALSO decided and implemented — `impl Ord Float` in `stdlib/core.mdk:227-251`
+  is IEEE-754 totalOrder, citing #360 in its own header comment — even though the #360 issue
+  itself is still open on the tracker (#438 sweep, 2026-07-16: verified the doc is right and the
+  tracker is what's stale here; flagging for the tracker owner rather than closing it myself).
 - **Bare-Float value-main auto-print works** (`6.0`, not garbage) — SHARED-FLOAT's C4 row is
   stale (#361).
 - **User ctors shadowing `Ok`/`Some`/`Cons`… cannot alias the reserved tags** — the resolver
@@ -142,8 +145,10 @@ snapshot goldens — bless them by name in the same commit.
 ## Sequencing
 
 The DAG lives in **#362** (tracking). Shape: Phase 0 semantics defects (#345 ✅ FIXED — Num-poly
-Float `%` is fmod on every engine; #346, #360→#305,
-#361) → Phase 1 enforcement (#359 emit-stage perf arm; #347/#348 identity hardening) → Phase 2
+Float `%` is fmod on every engine; #346 ✅ FIXED; #360→#305,
+#361 — #360's decision is implemented too, see §9 above) → Phase 1 enforcement (#359 ✅ FIXED
+2026-07-16 — emit-stage perf arm now shipped, see `docs/spec/WASM-SEMANTICS.md`'s Perf posture
+row; #347/#348 identity hardening still open) → Phase 2
 mechanical perf under the OrdMap constraint (#349 → #350 → #352; #351 gated) → Phase 3 the
 architecture arc (#353 umbrella; #354–#358 staged). Enforcement lands before optimization on
 purpose: a perf fix without #359 is un-regressable.
