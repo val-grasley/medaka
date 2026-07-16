@@ -1,6 +1,6 @@
 # Medaka stdlib
 
-<!-- Verified against native compiler, 2026-07-13 -->
+<!-- Verified against native compiler, 2026-07-16 -->
 
 ## `runtime.mdk` — built-in extern catalog
 
@@ -23,9 +23,12 @@ Follow that; this file does not duplicate it.
 - Pure functions: no effect annotation (`extern foo : a -> b`).
 - Effectful operations carry an effect on the **return type**, read
   automatically by the effect checker — e.g. `<Stdout>`, `<Stdin>`,
-  `<FileRead "_">`, `<Net "_">`, `<Mut>` (mutation via `setRef`), `<Panic>`
-  (unrecoverable exit), or the coarser `<IO>` alias. See existing entries in
-  `runtime.mdk` for examples of each.
+  `<FileRead "_">`, `<Net "_">`, or the coarser `<IO>` alias. See existing
+  entries in `runtime.mdk` for examples of each. Mutation (e.g. `setRef`) is
+  **untracked** — it carries no effect label at all, since 2026-07-14 (the
+  old internal-label class, which included `<Mut>` and `<Panic>`, was removed
+  outright; see `runtime.mdk:215` and `docs/stdlib/STDLIB.md` §"Design
+  resolution — panic vs exit").
 - Type variables in extern signatures are implicitly universally quantified.
 - A handful of unsafe externs (`arrayGetUnsafe`, `arraySetUnsafe`, `arrayBlit`,
   `arrayFill`, `bytesToFloat64`) are restricted to trusted roots — see
