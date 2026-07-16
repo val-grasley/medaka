@@ -174,8 +174,15 @@ logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
 -- `appendFile ""` failure loop on stderr), `logMcpCall` is a no-op — one
 -- getEnv check, no file I/O, no wall-clock read.  When set to a nonempty
 -- path, each event is appended as one tab-separated line: "<wall-clock epoch
--- seconds>\t<method>\t<name>\t<args JSON>\n" (method-level events with no
--- tool name/args leave those fields as `""`).  `method` and `name` are passed
+-- seconds>\t<method>\t<name>\t<args JSON>\n". Method-level events (no tool
+-- name/args — everything but `tools/call`) call this with `name = ""` and
+-- `args = ""`, but the two fields render DIFFERENTLY: `name` goes through
+-- the `stringify (JString …)` wrap below, so the field is the literal
+-- 2-character text `""`; `args` is spliced in RAW (it is already a
+-- `stringify`d Json value, never re-wrapped), so an empty String there
+-- contributes ZERO characters — the field is empty, not `""`. A
+-- method-level line reads `<ts>\tinitialize\t""\t` (trailing tab, nothing
+-- after it), not `<ts>\tinitialize\t""\t""`. `method` and `name` are passed
 -- through `stringify (JString …)` (quoted + escaped — the same already-public
 -- machinery `stringify` uses internally for any `JString`) rather than
 -- interpolated raw: `name` is client-controlled (the `tools/call` "name"
