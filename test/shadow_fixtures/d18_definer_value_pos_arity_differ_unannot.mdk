@@ -1,7 +1,7 @@
--- SHADOW-SEMANTICS cell D14: KNOWN-BAD (issue #410 headline repro).
+-- SHADOW-SEMANTICS cell D18: KNOWN-BAD (issue #410 headline repro).
 --
--- Identical to d13 but WITHOUT the `List Int` annotation. The emitter arity lie
--- d13 pins is fixed; what remains is a SEPARATE, upstream bug: `println`'s
+-- Identical to d17 but WITHOUT the `List Int` annotation. The emitter arity lie
+-- d17 pins is fixed; what remains is a SEPARATE, upstream bug: `println`'s
 -- `Display (List Int)` requirement is emitted with a NULL element dict
 -- (`@mdk_dc_N = [2 x i64] [<List-display tag>, i64 0]` — the `0` is an RNone
 -- route), so `display` dereferences NULL and the shipped binary SEGFAULTs.
@@ -9,7 +9,7 @@
 -- The element TYPE resolves correctly to Int (annotating `List String` reports
 -- "Type mismatch: Int vs String" at the list literal), so this is not a typing
 -- failure — it is the requirement ROUTE being stamped without being resolved
--- against the inferred type. Adding the annotation (d13) makes the route
+-- against the inferred type. Adding the annotation (d17) makes the route
 -- resolve, which is what isolates the two bugs. The route is stamped in
 -- compiler/types/typecheck.mdk, so this is NOT an emitter fix.
 --

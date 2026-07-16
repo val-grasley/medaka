@@ -30,8 +30,10 @@
    **positional** for objects (two objects with the same pairs in a different
    order compare unequal — fine for round-tripping, which preserves order).
 
-   **Not handled (v1):** `\uXXXX` surrogate pairs (astral codepoints); strict
-   leading-zero / number-grammar rejection (the number scan is lenient). -}
+   **Not handled (v1):** strict leading-zero / number-grammar rejection (the
+   number scan is lenient). `\uXXXX` surrogate pairs (astral codepoints) ARE
+   handled: a valid high/low pair decodes to its astral scalar value, and a
+   lone (unpaired) surrogate is a parse error, not silent corruption. -}
 
 import core.{Eq, Debug, Display, Option, Result, Thenable, map}
 import list.{reverse}
@@ -67,7 +69,11 @@ jArray xs = JArray (arrayFromList xs)
 export jObject : List (String, Json) -> Json
 jObject xs = JObject (arrayFromList xs)
 
--- A codepoint to a `Char` (the `\u` escape target is always valid here).
+-- A codepoint to a `Char`, for the fixed control-char escapes below (`\n`
+-- `\t` `\r` `\b` `\f`) whose codes (10, 9, 13, 8, 12) are always valid scalar
+-- values, so the `None` arm is unreachable for these callers. NOT used for
+-- `\uXXXX` (see `parseUnicodeScalar`), which must reject an invalid codepoint
+-- (e.g. a lone surrogate) with an `Err` rather than silently substituting.
 charOfCode : Int -> Char
 charOfCode k = match charFromCode k
   Some c => c
@@ -215,7 +221,8 @@ hexVal c
   | charCode c >= 65 && charCode c <= 70 = Some (charCode c - 55)
   | otherwise = None
 
--- Four hex digits at [i, i+4) → a codepoint (BMP only; no surrogate pairing).
+-- Four hex digits at [i, i+4) → a raw codepoint (may land inside the UTF-16
+-- surrogate range — `parseUnicodeAt` below is what pairs or rejects those).
 hex4 : Array Char -> Int -> Option Int
 hex4 arr i = match hexVal (arrayGetUnsafe i arr)
   None => None
@@ -234,6 +241,18 @@ hex4From2 arr i acc = match hexVal (arrayGetUnsafe (i + 2) arr)
 hex4From3 : Array Char -> Int -> Int -> Option Int
 hex4From3 arr i acc = map (acc * 16 + _) (hexVal (arrayGetUnsafe (i + 3) arr))
 
+-- UTF-16 surrogate range bounds (the pair range `\uXXXX` escapes use to
+-- encode an astral codepoint that doesn't fit in 16 bits).
+isHighSurrogate : Int -> Bool
+isHighSurrogate k = k >= 55296 && k <= 56319
+
+isLowSurrogate : Int -> Bool
+isLowSurrogate k = k >= 56320 && k <= 57343
+
+-- Combine a high/low surrogate pair into the astral scalar value it encodes.
+combineSurrogates : Int -> Int -> Int
+combineSurrogates hi lo = 65536 + (hi - 55296) * 1024 + (lo - 56320)
+
 parseUnicode : Array Char -> Int -> List Char -> Result String (String, Int)
 parseUnicode arr i acc
   | i + 4 > arrayLength arr = Err "invalid \\u escape"
@@ -241,7 +260,34 @@ parseUnicode arr i acc
 
 parseUnicodeAt : Array Char -> Int -> List Char -> Option Int -> Result String (String, Int)
 parseUnicodeAt arr i acc None = Err "invalid \\u escape"
-parseUnicodeAt arr i acc (Some k) = parseStr arr (i + 4) (charOfCode k :: acc)
+parseUnicodeAt arr i acc (Some k)
+  | isHighSurrogate k = parseLowSurrogate arr i acc k
+  | otherwise = parseUnicodeScalar arr (i + 4) acc k
+
+-- A high surrogate at [i, i+4) must be immediately followed by a `\uXXXX`
+-- low surrogate at [i+4, i+10) to complete a valid astral codepoint; anything
+-- else (EOF, no `\u`, or a `\u` that isn't a low surrogate) is a lone
+-- surrogate, which is invalid JSON.
+parseLowSurrogate : Array Char -> Int -> List Char -> Int -> Result String (String, Int)
+parseLowSurrogate arr i acc hi
+  | i + 10 > arrayLength arr = Err "invalid \\u escape"
+  | arrayGetUnsafe (i + 4) arr != '\\' = Err "invalid \\u escape"
+  | arrayGetUnsafe (i + 5) arr != 'u' = Err "invalid \\u escape"
+  | otherwise = parseLowSurrogateAt arr i acc hi (hex4 arr (i + 6))
+
+parseLowSurrogateAt : Array Char -> Int -> List Char -> Int -> Option Int -> Result String (String, Int)
+parseLowSurrogateAt arr i acc hi (Some lo)
+  | isLowSurrogate lo =
+    parseUnicodeScalar arr (i + 10) acc (combineSurrogates hi lo)
+parseLowSurrogateAt arr i acc hi _ = Err "invalid \\u escape"
+
+-- A codepoint that isn't a surrogate (a lone low surrogate lands here too,
+-- via the `otherwise` arm of `parseUnicodeAt` — `charFromCode` rejects it)
+-- → the matching `Char`, appended to `acc`; resumes the string scan at `j`.
+parseUnicodeScalar : Array Char -> Int -> List Char -> Int -> Result String (String, Int)
+parseUnicodeScalar arr j acc k = match charFromCode k
+  Some c => parseStr arr j (c::acc)
+  None => Err "invalid \\u escape"
 
 -- Numbers: scan the token, classify int vs float, build the value.
 skipSign : Array Char -> Int -> Int
@@ -412,7 +458,15 @@ dispatchValue arr j c
    > parse "  {\"k\": true}  " == Ok (jObject [("k", JBool True)])
    True
    > parse "nope"
-   Err "invalid literal, expected 'null'" -}
+   Err "invalid literal, expected 'null'"
+   > parse "\"a\\u0041b\"" == Ok (JString "aAb")
+   True
+   > parse "\"\\uD834\\uDD1E\"" == Ok (JString "𝄞")
+   True
+   > parse "\"\\uD834\""
+   Err "invalid \\u escape"
+   > parse "\"\\uDC00\""
+   Err "invalid \\u escape" -}
 export parse : String -> Result String Json
 parse s = parseTop (stringToChars s)
 

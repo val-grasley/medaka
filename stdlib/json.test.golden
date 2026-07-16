@@ -1,34 +1,38 @@
 running doctests in stdlib/json.mdk
-  ok   stdlib/json.mdk:54: stringify (jArray [JInt 1, JInt 2, JInt 3]) == "[1,2,3]"
-  ok   stdlib/json.mdk:56: stringify (jArray []) == "[]"
-  ok   stdlib/json.mdk:63: stringify (jObject [("a", JInt 1), ("b", JBool True)]) == "{\"a\":1,\"b\":true}"
-  ok   stdlib/json.mdk:65: stringify (jObject []) == "{}"
-  ok   stdlib/json.mdk:141: stringify JNull == "null"
-  ok   stdlib/json.mdk:143: stringify (JArray (arrayFromList [JInt 1, JBool True])) == "[1,true]"
-  ok   stdlib/json.mdk:145: stringify (jObject [("a", JInt 1), ("b", JString "hi")]) == "{\"a\":1,\"b\":\"hi\"}"
-  ok   stdlib/json.mdk:147: stringify (JFloat 1000.0) == "1000.0"
-  ok   stdlib/json.mdk:408: parse "null" == Ok JNull
-  ok   stdlib/json.mdk:410: parse "[1, 2, 3]" == Ok (jArray [JInt 1, JInt 2, JInt 3])
-  ok   stdlib/json.mdk:412: parse "  {\"k\": true}  " == Ok (jObject [("k", JBool True)])
-  ok   stdlib/json.mdk:414: parse "nope"
-  ok   stdlib/json.mdk:433: lookup "b" (jObject [("a", JInt 1), ("b", JInt 2)]) == Some (JInt 2)
-  ok   stdlib/json.mdk:435: lookup "z" (jObject [("a", JInt 1)]) == None
-  ok   stdlib/json.mdk:449: at 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
-  ok   stdlib/json.mdk:451: at 5 (jArray [JInt 10]) == None
-  ok   stdlib/json.mdk:453: at 0 (JInt 1) == None
-  ok   stdlib/json.mdk:463: asString (JString "hi") == Some "hi"
-  ok   stdlib/json.mdk:465: asString (JInt 1) == None
-  ok   stdlib/json.mdk:473: asInt (JInt 7) == Some 7
-  ok   stdlib/json.mdk:475: asInt JNull == None
-  ok   stdlib/json.mdk:483: asFloat (JFloat 1.5) == Some 1.5
-  ok   stdlib/json.mdk:485: asFloat (JInt 1) == None
-  ok   stdlib/json.mdk:493: asBool (JBool True) == Some True
-  ok   stdlib/json.mdk:495: asBool JNull == None
-  ok   stdlib/json.mdk:505: map JArray (asArray (jArray [JInt 1, JInt 2])) == Some (jArray [JInt 1, JInt 2])
-  ok   stdlib/json.mdk:507: asArray (JInt 1) == None
-  ok   stdlib/json.mdk:532: eq (parse "[1, 2]") (Ok (jArray [JInt 1, JInt 2]))
+  ok   stdlib/json.mdk:56: stringify (jArray [JInt 1, JInt 2, JInt 3]) == "[1,2,3]"
+  ok   stdlib/json.mdk:58: stringify (jArray []) == "[]"
+  ok   stdlib/json.mdk:65: stringify (jObject [("a", JInt 1), ("b", JBool True)]) == "{\"a\":1,\"b\":true}"
+  ok   stdlib/json.mdk:67: stringify (jObject []) == "{}"
+  ok   stdlib/json.mdk:147: stringify JNull == "null"
+  ok   stdlib/json.mdk:149: stringify (JArray (arrayFromList [JInt 1, JBool True])) == "[1,true]"
+  ok   stdlib/json.mdk:151: stringify (jObject [("a", JInt 1), ("b", JString "hi")]) == "{\"a\":1,\"b\":\"hi\"}"
+  ok   stdlib/json.mdk:153: stringify (JFloat 1000.0) == "1000.0"
+  ok   stdlib/json.mdk:454: parse "null" == Ok JNull
+  ok   stdlib/json.mdk:456: parse "[1, 2, 3]" == Ok (jArray [JInt 1, JInt 2, JInt 3])
+  ok   stdlib/json.mdk:458: parse "  {\"k\": true}  " == Ok (jObject [("k", JBool True)])
+  ok   stdlib/json.mdk:460: parse "nope"
+  ok   stdlib/json.mdk:462: parse "\"a\\u0041b\"" == Ok (JString "aAb")
+  ok   stdlib/json.mdk:464: parse "\"\\uD834\\uDD1E\"" == Ok (JString "𝄞")
+  ok   stdlib/json.mdk:466: parse "\"\\uD834\""
+  ok   stdlib/json.mdk:468: parse "\"\\uDC00\""
+  ok   stdlib/json.mdk:487: lookup "b" (jObject [("a", JInt 1), ("b", JInt 2)]) == Some (JInt 2)
+  ok   stdlib/json.mdk:489: lookup "z" (jObject [("a", JInt 1)]) == None
+  ok   stdlib/json.mdk:503: at 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
+  ok   stdlib/json.mdk:505: at 5 (jArray [JInt 10]) == None
+  ok   stdlib/json.mdk:507: at 0 (JInt 1) == None
+  ok   stdlib/json.mdk:517: asString (JString "hi") == Some "hi"
+  ok   stdlib/json.mdk:519: asString (JInt 1) == None
+  ok   stdlib/json.mdk:527: asInt (JInt 7) == Some 7
+  ok   stdlib/json.mdk:529: asInt JNull == None
+  ok   stdlib/json.mdk:537: asFloat (JFloat 1.5) == Some 1.5
+  ok   stdlib/json.mdk:539: asFloat (JInt 1) == None
+  ok   stdlib/json.mdk:547: asBool (JBool True) == Some True
+  ok   stdlib/json.mdk:549: asBool JNull == None
+  ok   stdlib/json.mdk:559: map JArray (asArray (jArray [JInt 1, JInt 2])) == Some (jArray [JInt 1, JInt 2])
+  ok   stdlib/json.mdk:561: asArray (JInt 1) == None
+  ok   stdlib/json.mdk:586: eq (parse "[1, 2]") (Ok (jArray [JInt 1, JInt 2]))
 
-stdlib/json.mdk: 28/28 passed
+stdlib/json.mdk: 32/32 passed
 Testing "parse-then-stringify round-trips a JInt" ... OK (100 tests)
 Testing "parse-then-stringify round-trips a JString (exercises escaping)" ... OK (100 tests)
 Testing "parse-then-stringify round-trips a JBool" ... OK (100 tests)

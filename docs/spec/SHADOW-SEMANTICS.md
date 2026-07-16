@@ -302,10 +302,10 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 7 | definer · live impl at PARAMETRIC head (`impl … (P a)`) · applied | S2 | **REJECT** `Int vs P Bool` @ the `P a` receiver; 4 | `d6_definer_parametric_receiver.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `9,4`. A parametric impl head is no more privileged than a concrete one) |
 | 8 | definer · TWO-param method shadow · applied | S8 | **REJECT** `Int vs Box` @ `comb (Box 1) (Box 2)`; `comb 2 3` → 6 | `d7_definer_multiparam_method.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,6` via ordinary arg-dispatch. Multi-*param methods* now follow S2 like everything else; multi-*TYPARAM interfaces* still do NOT — row 26 / S-3) |
 | 9 | definer · value position · no-impl elements · **method/standalone arity EQUAL** | S4 | standalone → [2, 3, 4] | `d4_definer_value_pos.mdk` | [2,3,4] | [2,3,4] | accept | **OK** — ⚠️ arity-EQUAL, so this row is **blind to S1-RESIDUAL-A (#410)**; rows 9a/9b/9c are the arity-DIFFERING cells |
-| 9a | definer · value position · **method arity 2 / standalone arity 1** · annotated result | S4 | standalone → [2, 3, 4] | `d13_definer_value_pos_arity_differ.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — was `build` exit 0 printing PAP heap pointers as Ints, an S0 silent wrongness; see §6 S1-RESIDUAL-A (A)) |
-| 9b | definer · value position · arity-differing · **ZERO impls** of the iface | S2+S4 | standalone → [2, 3, 4] | `d15_definer_value_pos_arity_differ_zeroimpls.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — proves the impl universe is irrelevant: shadow-hood + arity mismatch + value position suffice) |
-| 9d | definer · value position · **method arity 1 / standalone arity 2** (opposite direction) · annotated | S4 | standalone → 3 | `d16_definer_value_pos_arity_differ_opposite.mdk` | 3 | 3 | accept | **OK** (**FIXED 2026-07-16 #410** — pins the other side of the route-derived arity) |
-| 9c | definer · value position · arity-differing · **UNANNOTATED** result | S4 | standalone → [2, 3, 4] | `d14_definer_value_pos_arity_differ_unannot.mdk` | [2,3,4] | accept, **binary SEGFAULTs** | accept | ❌ **KNOWN-BAD (#410 (B), open)** — `println`'s `Display` requirement gets a NULL element dict (RNone route). NOT the emitter: the route is stamped in `types/typecheck.mdk`. Pinned `BUILD_CRASH` (self-draining) |
+| 9a | definer · value position · **method arity 2 / standalone arity 1** · annotated result | S4 | standalone → [2, 3, 4] | `d17_definer_value_pos_arity_differ.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — was `build` exit 0 printing PAP heap pointers as Ints, an S0 silent wrongness; see §6 S1-RESIDUAL-A (A)) |
+| 9b | definer · value position · arity-differing · **ZERO impls** of the iface | S2+S4 | standalone → [2, 3, 4] | `d19_definer_value_pos_arity_differ_zeroimpls.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — proves the impl universe is irrelevant: shadow-hood + arity mismatch + value position suffice) |
+| 9d | definer · value position · **method arity 1 / standalone arity 2** (opposite direction) · annotated | S4 | standalone → 3 | `d20_definer_value_pos_arity_differ_opposite.mdk` | 3 | 3 | accept | **OK** (**FIXED 2026-07-16 #410** — pins the other side of the route-derived arity) |
+| 9c | definer · value position · arity-differing · **UNANNOTATED** result | S4 | standalone → [2, 3, 4] | `d18_definer_value_pos_arity_differ_unannot.mdk` | [2,3,4] | accept, **binary SEGFAULTs** | accept | ❌ **KNOWN-BAD (#410 (B), open)** — `println`'s `Display` requirement gets a NULL element dict (RNone route). NOT the emitter: the route is stamped in `types/typecheck.mdk`. Pinned `BUILD_CRASH` (self-draining) |
 | 10 | definer · value position · LIVE-impl elements | S4 | located REJECT | `d4b_definer_value_pos_liveimpl.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 2 `ebb8ee90`; was a 3-way split) — ⚠️ also arity-EQUAL |
 | 11 | definer · ungrounded recv · wrapper used at standalone domain | S5 | 4; wrapper : Int -> Int | `d5_definer_poly_receiver.mdk` | 4 | 4 | accept (but `useIt : a -> Int` — over-general, the row-12 hole) | **OK** (value), caveat on scheme |
 | 12 | definer · ungrounded recv · wrapper CALLED at live-impl type | S5 | located REJECT | `d5b_definer_poly_liveimpl_call.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 1 `ef0874f3`; was a silent miscompile) |
@@ -317,9 +317,11 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 18 | importer · no-impl recv · third-module interface | S6 | RLocal → 4 | `i3_importer_imported_iface/` | 4 | 4 | accept | **OK** |
 | 19 | importer · no-impl own type · PRELUDE interface (the stdlib shape) | S2 | standalone → True/False | `i4_importer_prelude_iface/` | T,F | T,F | accept | **OK** |
 | 20 | importer · LIVE prelude impl recv (`isEmpty [1,2]`) alongside the shadow | S2 | method → False/True | `i4_importer_prelude_iface/` | F,T | F,T | accept | **OK** |
-| 21 | importer · value position | S4 | standalone | — | — | — | — | UNTESTED-NO-FIXTURE (expected ≡ row 9) |
-| 22 | importer · N-way | S3 | per-receiver | — | — | — | — | UNTESTED-NO-FIXTURE (expected ≡ row 6) |
-| 23 | return-position method shadow (no receiver param, e.g. `pure`-like) | S4 | value-position rule → standalone | — | — | — | — | UNTESTED-NO-FIXTURE |
+| 21a | importer · value position · no-impl elements | S4 | standalone → [2, 3, 4] | `i6_importer_value_pos/` | [2,3,4] | [2,3,4] | accept | **OK** (fixed #411 2026-07-16; was a LOUD S7 split — check+run gave `[2, 3, 4]` but `build` died `no impl of method 'size' for type 'Int' (slice 6)`, no binary, on a valid program) |
+| 21b | importer · value position · LIVE-impl elements | S4 | located REJECT | `i7_importer_value_pos_liveimpl/` | reject `Int vs Box` | reject | reject | **OK** (fixed #411 2026-07-16; was the SILENT half — check reported zero diagnostics and run AND build both printed `[1, 2]`, all three engines agreeing on the answer S4 forbids. The exact S7 trap: no differential gate could see it) |
+| 22 | importer · N-way | S3 | per-receiver → 3, 30, 4 | `i8_importer_nway/` | 3,30,4 | 3,30,4 | accept | **OK** (probed while fixing #411; already conformant). ⚠️ This row formerly read "expected ≡ row 6" — **stale**: row 6 FLIPPED to REJECT when S3 became vacuous for *definer* shadows, but S3 is explicitly *"Unchanged for importer shadows"* (Fork 1). Per-receiver is the expectation; the fixture is Fork 1's control at N-way width |
+| 23a | return-position method shadow (no receiver param, e.g. `pure`-like) · DEFINER | S4 | value-position rule → standalone → 4 | `d13_definer_return_pos.mdk` | 4 | 4 | accept | **OK** (probed while fixing #411; already conformant) |
+| 23b | return-position method shadow · IMPORTER | S4 | value-position rule → standalone → 4 | `i9_importer_return_pos/` | 4 | 4 | accept | **OK** (probed while fixing #411; already conformant) |
 | 24 | operator-named shadow (`==` etc.) | — | n/a — operator occurrences resolve through the desugared method-call path, not bare-`EVar` funDef intersection | — | — | — | — | UNREACHABLE |
 | 25 | definer · **CONSTRAINED** standalone (`size : Num a => a -> a`) · no-impl recv | S9 | RLocal **carrying the standalone's dicts** → 4 | `d10_definer_constrained.mdk` | 4 | 4 | accept | **OK** (fixed 2026-07-13, S-1 / clause S9; was `check` green + `run` E-PANIC + `build` printing a raw heap pointer) |
 | 26 | definer · method of a **multi-TYPARAM interface** (`interface Ix a i`) · applied | S8 (does not cover it) | dispatch 4; standalone 3 | `d11_definer_multityparam_iface.mdk` | **E-PANIC `unknown op '*'`** | 4,3 | accepts | **BUG** (**S-3**; `run` diverges from check+build — an S7 violation. Every entry point gates on `singleParamIfaceMethod`, which counts interface TYPE PARAMS, not method params, so this shadow bypasses the machinery entirely. `check`/`build` happen to be per-receiver CORRECT. Pinned KNOWN-BAD by the gate.) |
@@ -631,7 +633,7 @@ the two shadow occurrences that do **not** flow through an application-head arm.
 ⚠️ **This is NOT caused by the constraint, and NOT by S-1.** Verified: an **unconstrained**
 shadow (`size : Int -> Int`) in value position fails *identically*, and that takes the
 `dicts == []` path — byte-identical to pre-S1 codegen. So does a shape with **zero impls**
-of the interface (`d15`): shadow-hood + arity mismatch + value position suffice. S-1's
+of the interface (`d19`): shadow-hood + arity mismatch + value position suffice. S-1's
 design doc mis-attributed this row's `build` failure (it saw a GC OOM) to the missing dict.
 
 > **THE 2026-07-14 "DOES NOT REPRODUCE" NOTE WAS WRONG — AND ITS OWN SUSPICION WAS THE
@@ -656,7 +658,7 @@ originally described. Fixed by making the arity **route-derived**: `methValArity
 via `fnArity`/`progFnArity` **minus the route's dict count** (both are dict-INCLUSIVE — see
 the `trmcTryFn` note in `llvm_emit.mdk`), and keep the old name-derived arity for every
 non-RLocal route, so the self-compile fixpoint cannot move (C3a/C3b YES). Pinned by
-`d13`/`d15`/`d16` (**both** arity directions: method>standalone and method<standalone).
+`d17`/`d19`/`d20` (**both** arity directions: method>standalone and method<standalone).
 Wasm carried the same lie via an arity helper taking **no Route**; pre-fix its
 symptom was a hard assembly failure (`unknown func: failed to find name $mdk_w_…__size`),
 **not** the `illegal cast` this entry guessed. Both backends fixed together.
@@ -671,12 +673,28 @@ typing failure — it is the requirement **route** stamped without being resolve
 inferred type. Annotating `let ys : List Int = map size [1,2,3]` makes the route resolve and
 the program correct, which is what isolates (B) from (A). Routes are stamped in
 `compiler/types/typecheck.mdk`, so **(B) is not an emitter fix**; it is plausibly the same
-root as the `#412` structured-requires pre-bake. Ledgered by `d14` (`BUILD_CRASH` —
+root as the `#412` structured-requires pre-bake. Ledgered by `d18` (`BUILD_CRASH` —
 self-draining: it goes RED the day (B) is fixed).
 
 *Fix location (A, done):* `compiler/backend/llvm_emit.mdk` `methValArity`;
 `compiler/backend/wasm_emit.mdk` `methodValArity`.
 *Fix location (B, open):* `compiler/types/typecheck.mdk` — requirement-route resolution.
+
+> ⚠️ **UPDATE 2026-07-16 (#411): the DEFINER shape above still does not reproduce — but
+> its IMPORTER twin DID, and is now fixed.** `map size [1,2,3]` where `size` is
+> **imported** rather than defined locally failed at `build` for real: not a SIGSEGV but
+> `E-PANIC: no impl of method 'size' for type 'Int' (slice 6)`, exit 1, no binary.
+> **The mechanism was NOT the one this entry names** — nothing to do with
+> `emitMethodValue`'s arity, and no line of `llvm_emit.mdk` was touched to fix it. The
+> bug was entirely in `typecheck.mdk`: `standaloneShadowsFromSet` (the importer
+> shadow-set builder) lacked the `mangledShadowMapRef` recovery arm its definer peer
+> `definerShadowsFromSet` has carried since P0-18, so on the EMIT path — where every
+> funDef is mangled (`prov__size`) — the importer shadow set came back **empty**.
+> `recordRLocalSite` therefore never recorded a site, and `resolveArgStamp`'s `RKey Int`
+> **clobbered the mark pass's correct `RLocal prov__size` seed**, landing in
+> `emitDefaultRKey`'s no-impl arm. That asymmetry is precisely why the definer shape
+> never reproduced while the importer one always did — this entry's "value-position
+> lift" theory was looking at the wrong half of the pipeline. Rows 21a/21b pin both.
 
 ### S1-RESIDUAL-B — importer shadow on an UNGROUNDED receiver — ✅ **CLOSED 2026-07-14**
 

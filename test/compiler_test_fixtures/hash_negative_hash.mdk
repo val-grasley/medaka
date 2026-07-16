@@ -1,0 +1,40 @@
+-- Issue #416: a NEGATIVE hash from a contract-compliant `Hashable` impl used to
+-- index the bucket array out of bounds (eval: a misleading "no matching impl for
+-- dispatch" panic; native: SEGFAULT). This is the EVAL-side guard; the native
+-- one is test/build_diff_fixtures/hash_negative_hash.mdk.
+import test.{expectEqual}
+import hash_map.{new as hmNew, set as hmSet, get as hmGet}
+import hash_set.{new as hsNew, insert as hsInsert, has as hsHas}
+
+-- `K tag h` hashes on `h` ONLY, so `K 1 h` and `K 2 h` COLLIDE while staying
+-- un-equal. Eq is STRUCTURAL (derived) over both fields, so eq-equal values
+-- always hash equal — the impl is fully `Hashable`-contract-compliant, which is
+-- the whole point: safe user code must not reach a memory-unsafe index.
+data K = K Int Int deriving (Eq)
+
+impl Hashable K where
+  hash (K _ h) = h
+
+mapAt : Int -> Option Int
+mapAt h =
+  let m = hmNew ()
+  let _ = hmSet (K 1 h) 10 m
+  let _ = hmSet (K 2 h) 20 m
+  hmGet (K 1 h) m
+
+setAt : Int -> Bool
+setAt h =
+  let s = hsNew ()
+  let _ = hsInsert (K 1 h) s
+  hsHas (K 1 h) s
+
+test "hash_map: negative hash finds its key (#416)" =
+  expectEqual (mapAt (0 - 7)) (Some 10)
+
+test "hash_set: negative hash finds its element (#416)" =
+  expectEqual (setAt (0 - 7)) True
+
+test "hash_map: intMinBound hash (#416)" =
+  expectEqual (mapAt intMinBound) (Some 10)
+
+test "hash_set: intMinBound hash (#416)" = expectEqual (setAt intMinBound) True

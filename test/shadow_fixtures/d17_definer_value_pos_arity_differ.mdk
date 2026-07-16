@@ -1,4 +1,4 @@
--- SHADOW-SEMANTICS cell D13: definer shadow in VALUE position where the METHOD's
+-- SHADOW-SEMANTICS cell D17: definer shadow in VALUE position where the METHOD's
 -- arity (2) DIFFERS from the STANDALONE's (1) — issue #410.
 --
 -- This is the cell the corpus was structurally blind to: D4/D4b are both
@@ -12,7 +12,7 @@
 --
 -- The result is annotated `List Int` deliberately: that pins THIS bug (the
 -- emitter arity lie, fixed by `methValArity`) and keeps the cell independent of
--- the SEPARATE unannotated-requirement-route bug ledgered in d14 (#410's
+-- the SEPARATE unannotated-requirement-route bug ledgered in d18 (#410's
 -- headline repro), which is a typecheck-side NULL element dict.
 -- Expected: check/run/build all accept and print [2, 3, 4].
 interface Sizeable a where

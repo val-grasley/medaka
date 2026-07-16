@@ -1,9 +1,9 @@
--- SHADOW-SEMANTICS cell D15: the d13 arity-differ value-position shape with the
+-- SHADOW-SEMANTICS cell D19: the d17 arity-differ value-position shape with the
 -- interface having ZERO impls — proving shadow-hood + arity mismatch + value
 -- position suffices, and that the impl universe is irrelevant to #410 (the
 -- S2 INVERSION means a definer shadow never consults it).
--- Annotated for the same reason as d13: isolate the emitter arity lie from the
--- separate unannotated route bug ledgered in d14.
+-- Annotated for the same reason as d17: isolate the emitter arity lie from the
+-- separate unannotated route bug ledgered in d18.
 -- Expected: check/run/build all accept and print [2, 3, 4].
 interface Sizeable a where
   size : a -> a -> Int

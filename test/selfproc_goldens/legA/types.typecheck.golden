@@ -541,6 +541,7 @@ importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, 
 importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
 importedBindings : UsePath -> Option (List (String, String))
 importerShadowDomain : String -> Option Mono
+importerStandaloneValueScheme : String -> Option Mono
 indexKind : Mono -> String
 indexOfId : Int -> List Int -> Option Int
 indexOfIdGo : Int -> Int -> List Int -> Option Int
@@ -626,6 +627,7 @@ inferRecordUpdatePicked : String -> Mono -> TcEnv -> List FieldAssign -> RecordI
 inferRecordUpdateWith : TcEnv -> String -> Expr -> List FieldAssign -> RecordInfo -> Mono
 inferRequiresImpl : TcEnv -> List Decl -> List String -> String -> List Ty -> List Require -> List ImplMethod -> Unit
 inferShadowApp : TcEnv -> String -> List (Ref Route) -> Expr -> Expr -> Mono
+inferShadowAppHead : TcEnv -> Expr -> Mono
 inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> Mono
 inferStmt : TcEnv -> DoStmt -> TcEnv
 inferTestBodies : TcEnv -> List Decl -> Unit
@@ -1101,6 +1103,7 @@ standaloneShadowDomain : String -> Option Mono
 standaloneShadowScheme : String -> Option Mono
 standaloneShadowSigTy : String -> String -> Option Ty
 standaloneShadowsFromSet : Map String Unit -> Map String Unit -> List Decl -> List String
+standaloneValuePinned : String -> Bool
 strHasSlash : String -> Bool
 strHasSlashGo : String -> Int -> Int -> Bool
 stripArrows : Mono -> Mono

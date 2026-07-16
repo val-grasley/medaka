@@ -3686,7 +3686,7 @@ recordRLocalSite env name tagRef inst
         let dicts = shadowStandaloneDictSlotsAt (standaloneSchemeFor env name sym) (if sym == "" then name else sym) am
         setRef
           perRun.value.pendingRLocalSites
-          (PendingEntry name tagRef am "" (SKRLocal sym False (fst dicts) (snd dicts)) :: perRun.value.pendingRLocalSites.value)
+          (PendingEntry name tagRef am "" (SKRLocal sym (standaloneValuePinned name) (fst dicts) (snd dicts)) :: perRun.value.pendingRLocalSites.value)
       None => ()
 
 -- the SHADOWING STANDALONE's scheme.  An IMPORTER shadow's bare name is rebound by env1
@@ -5321,7 +5321,7 @@ inferShadowApp env mname tagRefs f x =
   -- concrete receivers) are byte-identical.
   let _ = groundShadowReceiver (importerShadowDomain mname) tx (definerReceiverIsDictVar mname tx) dloc
   match headTyconMono tx
-    Some head => if implExistsForHead perRun.value.shadowKeyTableRef.value mname head then inferApp (envAlphaLets env) (EApp f x) (infer env f) tx
+    Some head => if implExistsForHead perRun.value.shadowKeyTableRef.value mname head then inferApp (envAlphaLets env) (EApp f x) (inferShadowAppHead env f) tx
     else match lookupAssoc mname perRun.value.shadowStandaloneSchemesRef.value
       Some sscheme =>
         let smono = instantiate sscheme
@@ -5339,8 +5339,24 @@ inferShadowApp env mname tagRefs f x =
         -- site's TYPE to the standalone, so its route is not open to re-derivation.
         let _ = recordImporterShadowDicts env mname tagRefs tx
         r
-      None => inferApp (envAlphaLets env) (EApp f x) (infer env f) tx
-    None => inferApp (envAlphaLets env) (EApp f x) (infer env f) tx
+      None => inferApp (envAlphaLets env) (EApp f x) (inferShadowAppHead env f) tx
+    None => inferApp (envAlphaLets env) (EApp f x) (inferShadowAppHead env f) tx
+
+-- #411: infer an IMPORTER-shadow application's head with shadowHeadCtxRef flagged, so
+-- maybeStandaloneValueMono's new importer arm does not pin an APPLIED occurrence to the
+-- standalone scheme (which would kill per-receiver dispatch — Fork 1 / i4).  The definer
+-- path has always bracketed its head this way (inferDefinerShadowApp); this is the peer
+-- the importer path was missing, and the reason it could be missing before is that
+-- nothing pinned importer value positions at all — which IS the #411 bug.
+-- Save/restore, not set-False: a nested shadow head inside [f] must not clobber an outer
+-- True on its way out (see inferDefinerShadowApp's bracket).
+inferShadowAppHead : TcEnv -> Expr -> Mono
+inferShadowAppHead env f =
+  let saved = toggles.value.shadowHeadCtxRef.value
+  let _ = setRef toggles.value.shadowHeadCtxRef True
+  let ft = infer env f
+  let _ = setRef toggles.value.shadowHeadCtxRef saved
+  ft
 
 -- S1-RESIDUAL-B: the IMPORTED standalone's declared domain — the first arrow domain of the
 -- scheme stashed in shadowStandaloneSchemesRef (the concrete-head pick made per module by
@@ -5714,12 +5730,60 @@ standaloneShadowDomain name = match lookupAssoc name perRun.value.definerShadowS
 -- interface-method name that is a module-local standalone WITH a declared signature;
 -- everything else (app head, non-shadow, unsignatured standalone) returns None → the
 -- ordinary env lookup / method scheme, unchanged.
+-- #411 (row 21, S4): the IMPORTER half of the same cell.  S4 is not keyed on where the
+-- standalone lives — a value-position shadow denotes the standalone whether this module
+-- DEFINED it or IMPORTED it — so the definer arm below is followed by the importer arm,
+-- reading the imported standalone's scheme out of shadowStandaloneSchemesRef (the same
+-- scheme inferShadowApp's standalone arm uses, so `check` and the applied path cannot
+-- drift).  That ref is populated ONLY on the Module path (checkModuleFullImpl), so the
+-- single-file Flat path finds it empty → None → byte-identical.
+--
+-- ⚠️ FORK 1 IS NOT TOUCHED.  This arm is gated on shadowHeadCtxRef = False, i.e. bare
+-- VALUE position only; every APPLIED importer occurrence goes through inferShadowApp,
+-- which now flags its head (inferShadowAppHead) exactly as the definer path always did.
+-- So per-receiver importer dispatch (i4's `isEmpty [1, 2]` → `Foldable.isEmpty`) is
+-- unchanged — rows 15-20/22 do not move.
 maybeStandaloneValueMono : String -> Option Mono
 maybeStandaloneValueMono name
   | toggles.value.shadowHeadCtxRef.value = None
   | not (singleParamIfaceMethod name) = None
-  | not (contains name perRun.value.definerShadowNamesRef.value) = None
-  | otherwise = standaloneShadowScheme name
+  | contains name perRun.value.definerShadowNamesRef.value =
+    standaloneShadowScheme name
+  | otherwise = importerStandaloneValueScheme name
+
+-- #411: is [name] an occurrence whose TYPE maybeStandaloneValueMono pins to the
+-- standalone?  ⭐ THE ROUTE MUST FOLLOW THE ARM (the P0-20 lesson): a site typed against
+-- the standalone must ROUTE to the standalone, or type and route disagree — which is this
+-- arc's recurring bug class.  So recordRLocalSite stamps such a site forceLocal, skipping
+-- resolveRLocalSite's per-receiver query entirely.  Under S4 there is no receiver to
+-- dispatch on, so the query was never meaningful for a value position in the first place.
+--
+-- For a DEFINER shadow this is behavior-preserving both ways: resolveRLocalSite's grounded
+-- arm already forced RLocal (`not (isDefinerShadow name)` is False ⇒ stampRLocalOrFallback
+-- False), and its ungrounded arm already stamped RLocal for definerShadowNamesRef members.
+-- For an IMPORTER shadow it is the #411 fix: the grounded arm used to let a live impl steal
+-- the value (row 21b), and the ungrounded arm left the route UNSTAMPED (row 21a) — which is
+-- why eval arg-tag-dispatched into the Box impl and the emitter, having no standalone
+-- fallback, panicked `no impl of method 'size' for type 'Int'`.
+--
+-- Mirrors maybeStandaloneValueMono's guards exactly; keep the two in lockstep.
+standaloneValuePinned : String -> Bool
+standaloneValuePinned name
+  | toggles.value.shadowHeadCtxRef.value = False
+  | not (singleParamIfaceMethod name) = False
+  | contains name perRun.value.definerShadowNamesRef.value =
+    isSome (standaloneShadowScheme name)
+  | otherwise = isSome (importerStandaloneValueScheme name)
+
+-- #411: the IMPORTED standalone's full scheme, freshly instantiated (`Int -> Int`), for a
+-- bare value-position occurrence.  Peer of standaloneShadowScheme's definer arm; None when
+-- the name is not an importer shadow of this module, leaving the ordinary env lookup (the
+-- permissive method scheme) exactly as before.
+importerStandaloneValueScheme : String -> Option Mono
+importerStandaloneValueScheme name =
+  map
+    instantiate
+    (lookupAssoc name perRun.value.shadowStandaloneSchemesRef.value)
 
 -- P0-19: a definer-shadow standalone's full declared scheme (`Int -> Int`), freshly
 -- instantiated.  None when the standalone has no top-level signature (nothing to pin —
@@ -13190,12 +13254,29 @@ definerShadowsFromSet ifaceSet prog =
 -- LOCALLY in the importing module) is preserved: appendUniverseAccums folds prog0's own
 -- interface methods into the set, so a local `interface Sizeable … size` is visible here
 -- exactly as the old `allIfaceMethodNames (implDecls ++ prog)` (which included prog) made it.
+--
+-- #411 (row 21, S4): the `mangled` arm is the IMPORTER peer of the recovery
+-- definerShadowsFromSet has carried since P0-18 (its `bares`), and its absence WAS the
+-- bug.  On the EMIT path every funDef is mangled (`prov__size`), so `direct` — which
+-- intersects the MANGLED universe fn names against the BARE interface-method names —
+-- matches nothing and this returned []; importerShadows was therefore empty on emit, so
+-- standaloneValuesRef never listed the name, recordRLocalSite never recorded a site, and
+-- resolveArgStamp's `RKey Int` CLOBBERED the mark pass's correct `RLocal prov__size`
+-- seed → `emitDefaultRKey` → `no impl of method 'size' for type 'Int'` on a valid
+-- program.  The definer twin (d4) never broke precisely because it had this arm.
+-- Recovering the bare method name via the mangle map restores the site, and
+-- resolveRLocalSite then applies the ORDINARY Fork-1 importer rule to it (live impl at
+-- the receiver head ⇒ keep the RKey dispatch; no impl ⇒ RLocal standalone) — so i4's
+-- `isEmpty [1, 2]` still reaches `Foldable.isEmpty`.  Empty on the un-mangled run/check
+-- path (the map is empty there) → `direct` alone → byte-identical.
 standaloneShadowsFromSet : OrdMap Unit -> OrdMap Unit -> List Decl -> List String
 standaloneShadowsFromSet ifaceSet fnSet prog =
   let localNames = map fst (funDefs prog)
-  filter
-    (n => omHasKey n ifaceSet && not (contains n localNames))
-    (omKeys fnSet)
+  let direct = filter (n => omHasKey n ifaceSet && not (contains n localNames)) (omKeys fnSet)
+  let mangled = flatMap (n => match lookupAssoc n driverState.value.mangledShadowMapRef.value
+    Some bare => if contains n localNames then [] else [bare]
+    None => []) (omKeys fnSet)
+  dedup (direct ++ mangled)
 
 -- C5: graph-wide standalone-shadow names — every top-level funDef name in [userDecls]
 -- (the user modules, NOT core) that is also an interface method name anywhere in
