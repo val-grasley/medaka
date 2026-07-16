@@ -1,0 +1,53 @@
+-- #370: the stringToFloat ACCEPTANCE FRONTIER, pinned across all three engines.
+-- The C runtime is the oracle (WASM-SEMANTICS WH2): medaka_rt.c mdk_string_to_float
+-- is `strtod` + an endptr full-consumption check + an empty-string reject.  The wasm
+-- host shim used to be JS `Number()`, which agrees with strtod on plain decimals and
+-- diverges everywhere else — so the four cases the issue happened to name were only a
+-- sample of the real bug.  Every line below is a class where Number() != strtod:
+-- empty/whitespace-only, leading- vs trailing-whitespace, trailing garbage, the
+-- inf/nan spellings, and C99 hex floats.  Derived from the C oracle, not hand-written.
+showOpt : Option Float -> String
+showOpt (Some f) = "Some " ++ floatToString f
+showOpt None = "None"
+
+s : String -> String
+s x = showOpt (stringToFloat x) ++ "\n"
+
+-- The NaN SIGN BIT is observable (floatToBytes64), and floatToString renders every NaN
+-- as "nan" — so `s "-nan"` above cannot see a sign divergence and a battery graded on
+-- floatToString silently passes one.  strtod propagates the sign onto the NaN: native
+-- "-nan" is byte0 0xff (255), "nan" is 0x7f (127).  Big-endian, so byte 0 holds it.
+sgn : String -> String
+sgn x = match stringToFloat x
+  Some f => x ++ " sign-byte " ++ intToString (arrayGetUnsafe 0 (floatToBytes64 f)) ++ "\n"
+  None => x ++ " None\n"
+
+main =
+  -- empty / whitespace-only: strtod consumes nothing -> None (Number("") is 0.0)
+  s "" ++ s " " ++ s "  "
+  -- strtod skips LEADING whitespace only ...
+  ++ s " 1.5" ++ s "\t1.5" ++ s "\n1.5" ++ s "\r1.5"
+  -- ... and the endptr check rejects TRAILING whitespace and any trailing garbage
+  ++ s "1.5 " ++ s "1.5\t" ++ s "1.5\n" ++ s "1.5x" ++ s "abc"
+  -- nan spellings: a SUCCESSFUL parse whose value is NaN (the old seam lost these,
+  -- because it used NaN itself as the failure signal)
+  ++ s "nan" ++ s "NaN" ++ s "-nan" ++ s "+nan" ++ s "nan()" ++ s "nan(1)"
+  ++ s "nan(abc_123)" ++ s "nanx" ++ s "nan(" ++ s "na"
+  -- inf spellings (Number("inf") is NaN)
+  ++ s "inf" ++ s "INF" ++ s "-inf" ++ s "+inf" ++ s "Infinity" ++ s "infinity"
+  ++ s "-Infinity" ++ s "infx" ++ s "infi" ++ s "in"
+  -- C99 hex floats: strtod accepts them; Number takes "0x10" as an integer but
+  -- rejects any p-exponent
+  ++ s "0x1p3" ++ s "0x10" ++ s "0X1P3" ++ s "0x1.8p1" ++ s "0x.8p1" ++ s "0x1p-1"
+  ++ s "0x1p+1" ++ s "0x1p" ++ s "0x" ++ s "0xg" ++ s "0x."
+  -- plain decimal forms
+  ++ s "1.5" ++ s "+1.5" ++ s "-1.5" ++ s ".5" ++ s "5." ++ s "010" ++ s "1.5e2"
+  ++ s "1.5E2" ++ s "1.5e-2" ++ s "-0.0"
+  -- overflow / underflow: strtod sets ERANGE but medaka_rt.c ignores errno, so these
+  -- are Some inf / Some 0.0, not None
+  ++ s "1e400" ++ s "1e-400" ++ s "1e999"
+  -- rejects
+  ++ s "1_000" ++ s "1,5" ++ s "e5" ++ s "--1" ++ s "1..5" ++ s "0b101" ++ s "1e"
+  ++ s "1e+" ++ s "." ++ s "1.5.5"
+  -- and the sign bit itself, which every line above is blind to
+  ++ sgn "nan" ++ sgn "-nan" ++ sgn "+nan" ++ sgn "-nan(1)" ++ sgn "-inf" ++ sgn "-1.5"

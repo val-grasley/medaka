@@ -116,9 +116,12 @@ import surface part of the semantics, with laws:
   `mdk_float_lexeme` (N9's "one formatter" law quantifies over THREE copies:
   the C one and the two `fmt12g`s), `mdk_str_to_float` ≡ the `strtod`
   acceptance set (spelling set for inf/nan, empty-string rejection, trailing
-  garbage), `mdk_exit` ≡ flush-then-exit. "Close enough for the fixtures" is
-  how the `stringToFloat` divergence shipped (§4 — `Number("")` is `0`,
-  `strtod("")` is a parse failure). A JS shim behavior with no C-oracle
+  garbage, C99 hex floats), `mdk_exit` ≡ flush-then-exit. "Close enough for the
+  fixtures" is how the `stringToFloat` divergence shipped (#370 — `Number("")` is
+  `0`, `strtod("")` is a parse failure). #370 also shows the oracle constrains the
+  SEAM, not just the shim: `strtod("nan")` SUCCEEDS with a NaN value, so a seam that
+  returns only an f64 and reads NaN as failure cannot express the C contract at all
+  — hence the separate `mdk_str_to_float_ok` channel. A JS shim behavior with no C-oracle
   equivalent (worker sandbox stubs) must be a **loud, named** capability
   error, never a value.
 - **WH3 — Shim parity, LinkError ban.** Both shims provide the **same `env`
@@ -161,7 +164,8 @@ import surface part of the semantics, with laws:
 | `mdk_float_fmt` / `mdk_float_fmt_byte` | ~922 | any Float use | real (`fmt12g`) | real (byte-identical copy) | float → cached shortest-round-trip lexeme (≡ `mdk_float_lexeme`) | N9 — **verified equivalent by review + probe battery** (the #361 ask); comments still say `%.12g` |
 | 14 unary libm (`mdk_cbrt exp log log2 log10 sin cos tan asin acos atan sinh cosh tanh`) | ~939–952 | math-extern use | real (`Math.*`) | real | transcendental | N4-adjacent: JS `Math.*` vs C libm sub-ULP (ledgered class) |
 | `mdk_pow` / `mdk_atan2` / `mdk_hypot` | ~953–955 | math-extern use | real | real | binary libm | same |
-| `mdk_str_to_float` | ~967 | `stringToFloat` use | real — **`Number()`, not strtod** | same | parse path-channel bytes | **WH2 ✗ CONFIRMED** (§4 R2 row) |
+| `mdk_str_to_float` | ~968 | `stringToFloat` use | real — strtod acceptance set | same | parse path-channel bytes; latch ok | **WH2 ✅ FIXED** (#370) |
+| `mdk_str_to_float_ok` | ~969 | `stringToFloat` use | real — ok flag of the last parse | same | did that parse succeed? | **WH2 ✅** (#370; `Some nan` needs a channel NaN cannot carry) |
 | `mdk_path_reset` / `mdk_path_push` | ~1106–1107 | IO group | real | real | guest→host byte channel | — |
 | `mdk_read_file` / `mdk_file_exists` / `mdk_get_env` | ~1108–1110 | IO group | real (Node fs/env) | capability stub | 1/0 + cached result bytes | capability |
 | `mdk_args_count` / `mdk_arg_len` / `mdk_arg_byte` | ~1111–1113 | IO group | real (`MDK_ARGS`) | capability stub | argv marshaling | capability |
@@ -211,8 +215,8 @@ import surface part of the semantics, with laws:
 | D4 — own-source competence | ⚠ | the D4-analog closure is "what the playground compiler emits for itself"; unaudited beyond the linkage gate |
 | Perf posture | ✗ STATIC | wasm-specific quadratics (**#381**: `ctorOrdinal` per-slot rescans, `indent` O(branches²)) + the #349–#352 sibling census (**#382**); enforcement blind: no emit stage in `perf_scaling` for either backend, and the wasm arm must grade TIME (pure scans allocate nothing) — **#359** |
 | WH1 — enumerated imports | ✅ | §3 inventory (grep-complete; dead W2 scaffold imports verified never-emitted) |
-| WH2 — C-runtime oracle | ✗ **CONFIRMED S0** | `mdk_str_to_float` = JS `Number()`, not strtod: `""`→`Some 0.0`, `" "`→`Some 0.0`, `"1.5 "`→`Some 1.5`, `"nan"`→`None`, `"inf"`/`"infinity"`→`None`, `"0x1p4"`→`None` — **#370**; `mdk_float_fmt` ✅ verified (N9 row) |
-| WH3 — shim parity, LinkError ban | ✗ CONFIRMED | `worker.js` missing `mdk_write_file_reset/push/commit` → raw LinkError on `writeFileBytes` programs (node simulation with worker's exact env set) — **#375** |
+| WH2 — C-runtime oracle | ✅ **HELD** | `mdk_str_to_float` was JS `Number()`, not strtod (`""`→`Some 0.0`, `"1.5 "`→`Some 1.5`, `"nan"`/`"inf"`→`None`, `"0x1p4"`→`None`) — **#370 FIXED**: both shims now implement the strtod acceptance set (leading-ws-only, full consumption, inf/nan spellings, C99 hex floats), derived from the C oracle over a 621-case battery and pinned on all three engines by `test/llvm_fixtures/str_to_float_frontier.mdk`; `mdk_float_fmt` ✅ verified (N9 row) |
+| WH3 — shim parity, LinkError ban | ✗ CONFIRMED (env-key half) | `worker.js` missing `mdk_write_file_reset/push/commit` → raw LinkError on `writeFileBytes` programs (node simulation with worker's exact env set) — **#375**, still open. The SHARED-BLOCK half is now mechanised: `test/diff_compiler_wasm_shim_parity.sh` (a required `gates (frontend)` shard) byte-diffs every `--- SHARED SHIM ---` region across the two hosts. It found `fmt12g` had ALREADY drifted (comments/whitespace only — behaviour unaffected) under the "copied verbatim" comment that was the only prior enforcement. The env-KEY-SET half (#375) is still unchecked by any gate |
 | WH4 — flush discipline | ✗ CONFIRMED | `run.js` `mdk_exit` writes stdout, **drops buffered stderr** — **#376**; trap path flushes both ✅ (probe: pre-trap stdout delivered) |
 | WH5 — byte-channel only | ✅ | no GC ref crosses an import signature (inventory) |
 | WH6 — engine baseline | ⚠ | node 24 + wasm-tools pinned in CI; playground WasmGC feature-detect still open (**#75**); the CI wasm job is not a required check (R1 row) |
