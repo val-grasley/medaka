@@ -68,7 +68,33 @@ multi-minute build would time out the MCP handshake) or fall back to another
 checkout's binary (the tools *are* the compiler's behavior, so a worktree must
 answer with its own binary).
 
-## 4. Honesty caveats — read before trusting a result
+## 4. Subagents inherit the parent's tools
+
+A subagent spawned in a fresh **isolated worktree** does NOT start its own
+server — it inherits the parent (orchestrator) session's `medaka` MCP tools and
+routes calls through the parent's already-running server. (Verified 2026-07-16:
+a daughter with no local `medaka` binary successfully *called* `medaka_check`
+and got a real diagnostic.) So an orchestrator guarantees working MCP for its
+**whole fleet** by holding two things on ITS OWN checkout: (1) a current built
+`medaka`, and (2) a connected server (one `/mcp` reconnect if it started before
+the binary existed). No per-daughter build or reconnect.
+
+Two traps this creates:
+
+- ⚠️ **`claude mcp list` LIES inside a subagent.** Its health probe connects
+  fresh from the binary-less worktree and reports `✘ Failed to connect` *even
+  while real tool calls succeed*. Gate daughter-MCP readiness on an actual tool
+  call, never on `claude mcp list`.
+- ⚠️ **Inherited tools run the PARENT's binary — the parent's compiler
+  semantics, frozen at server-launch.** A daughter editing `compiler/*.mdk` or
+  `stdlib/core.mdk` and calling inherited `medaka_check`/`medaka_type_at` gets
+  the orchestrator's typechecker, not its own edits — a silent wrong answer.
+  Such a daughter must verify with its OWN freshly-built `./medaka`; inherited
+  tools are for non-compiler work and querying unchanged-semantics code. (The
+  same trap hits the parent after it rebuilds mid-session — `/mcp` reconnect to
+  refresh the server onto the new binary.)
+
+## 5. Honesty caveats — read before trusting a result
 
 - ⚠️ **`medaka_test` runs under the INTERPRETER (eval), not the native
   backend.** A native-only miscompile is invisible to it (#81) — treat a

@@ -482,6 +482,17 @@ Every delegated task prompt should contain, in order:
    gates and report real numbers, never end with background tasks running."*
 10. **A friction report** (below).
 
+⚠️ **Inherited MCP tools answer with YOUR binary, not the agent's.** A subagent
+inherits the orchestrator's `medaka` MCP tools (it starts no per-worktree
+server), so `medaka_check`/`medaka_type_at`/`medaka_lint` run the orchestrator's
+compiler, frozen at your server-launch — NOT the agent's edits. For any agent
+touching `compiler/*.mdk` or `stdlib/core.mdk`, put this in its prompt: *"the
+inherited `medaka_*` MCP tools run the orchestrator's compiler, not your edits —
+verify any compiler-source change with your OWN freshly-built `./medaka`, never
+inherited `medaka_check`/`medaka_type_at`."* Non-compiler agents can trust them
+freely. (This is why you keep your own binary + server current: it's what the
+whole fleet inherits — see `docs/ops/MCP.md`.)
+
 ---
 
 ## Every agent prompt MUST demand a FRICTION REPORT
