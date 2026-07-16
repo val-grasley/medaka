@@ -166,6 +166,53 @@ writeMessage j =
 logMcp : String -> <IO> Unit
 logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
 
+-- ── opt-in call logging ──────────────────────────────────────────────────────
+--
+-- File logging is OPT-IN (unlike lsp.mdk's always-on debug log): when
+-- MEDAKA_MCP_LOG is unset OR set to the empty string (an exported-but-empty
+-- env var — treated identically to unset so it can't turn into a per-request
+-- `appendFile ""` failure loop on stderr), `logMcpCall` is a no-op — one
+-- getEnv check, no file I/O, no wall-clock read.  When set to a nonempty
+-- path, each event is appended as one tab-separated line: "<wall-clock epoch
+-- seconds>\t<method>\t<name>\t<args JSON>\n". Method-level events (no tool
+-- name/args — everything but `tools/call`) call this with `name = ""` and
+-- `args = ""`, but the two fields render DIFFERENTLY: `name` goes through
+-- the `stringify (JString …)` wrap below, so the field is the literal
+-- 2-character text `""`; `args` is spliced in RAW (it is already a
+-- `stringify`d Json value, never re-wrapped), so an empty String there
+-- contributes ZERO characters — the field is empty, not `""`. A
+-- method-level line reads `<ts>\tinitialize\t""\t` (trailing tab, nothing
+-- after it), not `<ts>\tinitialize\t""\t""`. `method` and `name` are passed
+-- through `stringify (JString …)` (quoted + escaped — the same already-public
+-- machinery `stringify` uses internally for any `JString`) rather than
+-- interpolated raw: `name` is client-controlled (the `tools/call` "name"
+-- argument), and an unescaped embedded '\n'/'\t' would split one record
+-- across lines, breaking the one-record-per-line invariant this log format
+-- promises. `args` is already a `stringify`d Json value, which is
+-- single-line-safe on its own (see the file header on json.stringify's
+-- escaping). stdout stays protocol-only (see header) — this writes ONLY to
+-- the given file, via `appendFile`; a write failure falls back to stderr via
+-- `logMcp` rather than crashing the server.
+logMcpCall : String -> String -> String -> <IO> Unit
+logMcpCall method name args = match getEnv "MEDAKA_MCP_LOG"
+  None => unit
+  Some "" => unit
+  Some path =>
+    let ts = floatToString (wallTimeSec ())
+    let line = stringConcat [
+      ts,
+      "\t",
+      stringify (JString method),
+      "\t",
+      stringify (JString name),
+      "\t",
+      args,
+      "\n",
+    ]
+    match appendFile path line
+      Ok _ => unit
+      Err e => logMcp (stringConcat ["log write failed: ", e])
+
 -- ── handshake result values ──────────────────────────────────────────────────
 
 initializeResultFor : String -> Json
@@ -842,9 +889,12 @@ handleToolsCall : String -> String -> String -> Json -> Json -> <IO> Unit
 handleToolsCall runtimeSrc coreSrc stdlibDir idJson params = match fieldStr "name" params
   None =>
     writeMessage (errorMsg idJson (0 - 32602) "tools/call: missing 'name'")
-  Some name => match callTool runtimeSrc coreSrc stdlibDir name (fieldOr "arguments" params)
-    None => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Unknown tool: ", name]))
-    Some result => writeMessage (responseMsg idJson result)
+  Some name =>
+    let args = fieldOr "arguments" params
+    let _ = logMcpCall "tools/call" name (stringify args)
+    match callTool runtimeSrc coreSrc stdlibDir name args
+      None => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Unknown tool: ", name]))
+      Some result => writeMessage (responseMsg idJson result)
 
 -- ── request dispatch ─────────────────────────────────────────────────────────
 
@@ -866,6 +916,9 @@ dispatchMsg runtimeSrc coreSrc stdlibDir msg = match asArray msg
     None => logMcp "ignored: message has no string 'method' field"
     Some meth =>
       let params = fieldOr "params" msg
+      -- tools/call gets its own richer line (tool name + args) inside
+      -- handleToolsCall — don't double-log it here.
+      let _ = if meth == "tools/call" then unit else logMcpCall meth "" ""
       if meth == "notifications/initialized" then unit
       else match lookup "id" msg
         None => unit -- notification: no response for ANY method

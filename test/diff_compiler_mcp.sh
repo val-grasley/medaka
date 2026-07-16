@@ -141,6 +141,82 @@ if [ "${CAPTURE:-0}" = "1" ]; then
   exit 0
 fi
 
+# ── opt-in call-logging coverage ─────────────────────────────────────────
+#
+# Every fixture above runs with MEDAKA_MCP_LOG UNSET, so the loop above only
+# ever exercises logMcpCall's no-op branch — zero automated coverage of the
+# feature's actual risk: does turning logging ON perturb the stdout protocol
+# channel, and is the log file itself well-formed? Re-run the `logging`
+# fixture (a tools/call whose client-controlled "name" deliberately embeds a
+# raw '\n' and '\t', the exact case that used to split one log record across
+# physical lines before method/name were routed through json.escapeString)
+# with MEDAKA_MCP_LOG pointed at a fresh mktemp path and assert:
+#   1. stdout is BYTE-IDENTICAL to the SAME golden already diffed above —
+#      logging must not perturb the protocol channel.
+#   2. the log file holds exactly one physical line per logged event (no
+#      unescaped newline leaked a record across lines), tab-separated into
+#      exactly 4 fields, with `tools/call` appearing EXACTLY ONCE and
+#      carrying the escaped tool name plus its stringified arguments.
+# Every check below is an exact-count assertion (never ">= 0" / "non-empty")
+# so a regression that silently drops all logging can't read as a pass.
+log_name="logging"
+log_req="$FIXDIR/$log_name.jsonl"
+log_golden="$FIXDIR/$log_name.golden"
+
+if [ ! -f "$log_req" ] || [ ! -f "$log_golden" ]; then
+  fail=$((fail+1))
+  printf 'FAIL logging-on: missing fixture/golden for %s (need test/mcp_fixtures/%s.jsonl + .golden)\n' "$log_name" "$log_name"
+else
+  logdir="$(mktemp -d)"
+  logfile="$logdir/mcp_call.log"
+  tmpout="$(mktemp)"
+  MEDAKA_MCP_LOG="$logfile" perl -e 'alarm 30; exec @ARGV' "$MEDAKA" mcp < "$log_req" > "$tmpout" 2>/dev/null
+  rc=$?
+  self_out="$(cat "$tmpout")"
+  want_out="$(cat "$log_golden")"
+  rm -f "$tmpout"
+
+  if [ "$rc" -ne 0 ]; then
+    fail=$((fail+1)); printf 'FAIL logging-on(stdout): medaka mcp exited %d\n' "$rc"
+  elif [ "$self_out" != "$want_out" ]; then
+    fail=$((fail+1)); printf 'FAIL logging-on(stdout): MEDAKA_MCP_LOG perturbed stdout\n'
+    printf '  self:   %s\n' "$self_out"
+    printf '  golden: %s\n' "$want_out"
+  else
+    pass=$((pass+1)); printf 'ok   logging-on(stdout unchanged)\n'
+  fi
+
+  if [ ! -s "$logfile" ]; then
+    fail=$((fail+1)); printf 'FAIL logging-on(log-file): %s missing or empty\n' "$logfile"
+  else
+    nlines=$(wc -l < "$logfile" | tr -d ' ')
+    nfields_bad=$(awk -F'\t' 'NF!=4' "$logfile" | wc -l | tr -d ' ')
+    ncalls=$(awk -F'\t' '$2=="\"tools/call\""' "$logfile" | wc -l | tr -d ' ')
+    call_line="$(awk -F'\t' '$2=="\"tools/call\""' "$logfile")"
+
+    if [ "$nlines" -ne 4 ]; then
+      fail=$((fail+1)); printf 'FAIL logging-on(log-lines): expected 4 physical lines (initialize, notifications/initialized, tools/call, shutdown), got %s\n' "$nlines"
+      cat "$logfile"
+    elif [ "$nfields_bad" -ne 0 ]; then
+      fail=$((fail+1)); printf 'FAIL logging-on(log-format): %s line(s) do not have exactly 4 tab-separated fields (an embedded \\n/\\t leaked unescaped?)\n' "$nfields_bad"
+      cat "$logfile"
+    elif [ "$ncalls" -ne 1 ]; then
+      fail=$((fail+1)); printf 'FAIL logging-on(tools/call-count): expected exactly 1 tools/call record, found %s\n' "$ncalls"
+      cat "$logfile"
+    else
+      case "$call_line" in
+        *'"weird\nname\ttab"'*'"probe":true'*)
+          pass=$((pass+1)); printf 'ok   logging-on(tools/call record: name+args escaped correctly)\n'
+          ;;
+        *)
+          fail=$((fail+1)); printf 'FAIL logging-on(tools/call record): unexpected content: %s\n' "$call_line"
+          ;;
+      esac
+    fi
+  fi
+  rm -rf "$logdir"
+fi
+
 echo ""
 total=$((pass+fail))
 printf 'checked %d fixture(s): %d ok, %d failing\n' "$total" "$pass" "$fail"

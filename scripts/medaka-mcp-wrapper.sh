@@ -19,4 +19,10 @@ if [ ! -x "$ROOT/medaka" ]; then
   exit 1
 fi
 
+# Opt-in call logging (compiler/tools/mcp.mdk: logMcpCall) is OFF unless
+# MEDAKA_MCP_LOG is set — default it here so a developer gets a call log for
+# free on interactive use, without configuring anything. Respects an
+# already-exported MEDAKA_MCP_LOG (e.g. a caller pointing it elsewhere).
+export MEDAKA_MCP_LOG="${MEDAKA_MCP_LOG:-$ROOT/.medaka-mcp.log}"
+
 exec "$ROOT/medaka" mcp "$@"

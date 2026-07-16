@@ -16,6 +16,10 @@ _build/
 # Native gate oracles (built by test/build_oracles.sh)
 /test/bin/
 
+# Default `medaka mcp` opt-in call log (scripts/medaka-mcp-wrapper.sh sets
+# MEDAKA_MCP_LOG here unless the caller already exported it).
+/.medaka-mcp.log
+
 # Playground dist artifacts (built by playground/build_playground_wasm.sh; not committed)
 /playground/dist/*.wasm
 /playground/dist/*.mdk
