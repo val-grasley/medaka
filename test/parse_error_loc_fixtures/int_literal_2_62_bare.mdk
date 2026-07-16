@@ -1,0 +1,6 @@
+-- #171: the bare-2^62 rejection must point AT the literal, not at the enclosing
+-- decl head. The rejection fires deep inside `many (appArg …)`, which swallows a
+-- recoverable parse failure and leaves the leftover-token path to report a
+-- generic "unexpected INT" at the wrong spot; the parser's PFatal (committed)
+-- channel is what carries this message and this location out intact.
+main = println 4611686018427387904

@@ -126,6 +126,7 @@ externNameFor : Token -> Parser String
 extractConstraints : Ty -> List Constraint
 failIfAliasedMember : List UseMember -> Parser Unit
 failP : String -> Parser a
+fatalP : String -> Parser a
 fieldPathExtend : Option (String, List String) -> String -> Option (String, List String)
 firstBacktickIdx : Array Token -> Int -> Int
 firstBlockCommentIdx : Array Token -> Int -> Int
@@ -197,6 +198,8 @@ indexOrSliceRest : Expr -> Expr -> Token -> Parser Expr
 inlineLetMissingInMsg : String
 intBound : Parser Lit
 intBoundFor : Token -> Parser Lit
+intLitTooBigMsg : String
+intMinLit : Int
 intPatRest : Lit -> Parser Pat
 interpOpenFor : Token -> Parser String
 interpOpenStr : Parser String
@@ -210,6 +213,7 @@ isCtorChars : Array Char -> Bool
 isCtorName : String -> Bool
 isDataDecl : Decl -> Bool
 isForeignKwTok : Token -> Bool
+isIntMinLit : Int -> Bool
 isLayoutTok : Token -> Bool
 isNoiseTok : Token -> Bool
 isOpenDelim : Token -> Bool
@@ -278,6 +282,8 @@ negIntPat : Parser Pat
 negIntRng : Lit -> Parser Pat
 negLitArg : Bool -> Parser Expr
 negLitArgFor : Token -> Token -> Parser Expr
+negUnary : Parser Expr
+negUnaryFor : Token -> Parser Expr
 nextSigIsPipe : Array Token -> Int -> Int -> Bool
 noExportedAlias : Bool -> UsePath -> Parser Unit
 noMemberAlias : String -> Parser Unit

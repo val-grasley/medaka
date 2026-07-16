@@ -66,7 +66,15 @@ import support.util.{reverseL, joinWith}
 import support.char.{isUpper}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
-public export data PR a = POk a Int | PErr String Int
+-- `PErr` is a RECOVERABLE failure: `orElse` may try the other alternative and
+-- `many` may treat it as "no more items".  `PFatal` is a COMMITTED failure: the
+-- input is unambiguously this production and unambiguously wrong, so no
+-- alternative may paper over it and no `many` may swallow it — it propagates
+-- straight out to `resultDeclsResult`, which locates it like any other error.
+-- Without this channel a deep, well-worded rejection (e.g. the #171 bare-2^62
+-- literal) is discarded by the enclosing `many (appArg …)` and the user sees a
+-- generic "unexpected INT" from the leftover-token path instead.
+public export data PR a = POk a Int | PErr String Int | PFatal String Int
 public export data Parser a = Parser (Array Token -> Int -> PR a)
 
 runP : Parser a -> Array Token -> Int -> PR a
@@ -75,6 +83,7 @@ runP (Parser f) toks pos = f toks pos
 mapPR : (a -> b) -> PR a -> PR b
 mapPR f (POk a pos) = POk (f a) pos
 mapPR _ (PErr e pos) = PErr e pos
+mapPR _ (PFatal e pos) = PFatal e pos
 
 impl Mappable Parser where
   map f pa = Parser (toks pos => mapPR f (runP pa toks pos))
@@ -83,6 +92,7 @@ apPR : Parser (a -> b) -> Parser a -> Array Token -> Int -> PR b
 apPR pf pa toks pos = match runP pf toks pos
   POk f pos1 => mapPR f (runP pa toks pos1)
   PErr e pos1 => PErr e pos1
+  PFatal e pos1 => PFatal e pos1
 
 impl Applicative Parser where
   pure x = Parser (toks pos => POk x pos)
@@ -92,6 +102,7 @@ bindPR : Parser a -> (a -> Parser b) -> Array Token -> Int -> PR b
 bindPR pa k toks pos = match runP pa toks pos
   POk a pos1 => runP (k a) toks pos1
   PErr e pos1 => PErr e pos1
+  PFatal e pos1 => PFatal e pos1
 
 impl Thenable Parser where
   andThen pa k = Parser (toks pos => bindPR pa k toks pos)
@@ -104,6 +115,12 @@ peekTok toks pos
 
 failP : String -> Parser a
 failP msg = Parser (toks pos => PErr msg pos)
+
+-- A COMMITTED failure at the current token (see `PR`).  Use only where no other
+-- production could possibly claim the token — the message is guaranteed to reach
+-- the user, so a wrong one cannot be backtracked away.
+fatalP : String -> Parser a
+fatalP msg = Parser (toks pos => PFatal msg pos)
 
 peekP : Parser Token
 peekP = Parser (toks pos => POk (peekTok toks pos) pos)
@@ -233,10 +250,12 @@ orElse pa pb = Parser (toks pos => orElseR pa pb toks pos)
 orElseR : Parser a -> Parser a -> Array Token -> Int -> PR a
 orElseR pa pb toks pos = match runP pa toks pos
   POk x q => POk x q
+  PFatal ea qa => PFatal ea qa
   PErr ea qa => orElseRb ea qa (runP pb toks pos)
 
 orElseRb : String -> Int -> PR a -> PR a
 orElseRb _ _ (POk y q) = POk y q
+orElseRb _ _ (PFatal eb qb) = PFatal eb qb
 orElseRb ea qa (PErr eb qb)
   | qa > qb = PErr ea qa
   | otherwise = PErr eb qb
@@ -252,6 +271,7 @@ many p = Parser (toks pos => manyGo p toks pos [])
 manyGo : Parser a -> Array Token -> Int -> List a -> PR (List a)
 manyGo p toks pos acc = match runP p toks pos
   POk x pos2 => manyStep p toks pos pos2 acc x
+  PFatal e q => PFatal e q
   PErr _ _ => POk (reverseL acc) pos
 
 manyStep : Parser a -> Array Token -> Int -> Int -> List a -> a -> PR (List a)
@@ -525,6 +545,40 @@ parseMul = chainl1
   parseUnary
   (choice [binOp TStar "*", binOp TSlash "/", binOp TMod "%"])
 
+-- ── The 2^62 int literal: legal only under a unary `-` (#171) ───────────────
+-- `Int` is 63-bit (`word = (n << 1) | 1`), spanning [-2^62, 2^62-1].  The lexer
+-- sees only unsigned digits — the `-` is a separate token — so its magnitude
+-- guard (`intLitOverflows`) must admit 2^62 to keep the minimum -2^62 writable,
+-- and `parseIntFrom` wraps that magnitude to `intMinBound` on the spot.  The
+-- SIGN only exists here, in the parser, so this is the only place the remaining
+-- asymmetry can be resolved: 2^62 is in range as a negative and out of range as
+-- a positive.  C, Rust and Haskell all carry the same INT_MIN literal asymmetry.
+--
+-- A `TInt` carrying exactly `intMinBound` can ONLY have come from the digit
+-- string 2^62 (every admissible smaller magnitude parses non-negative), so the
+-- value is an exact discriminator and needs no extra token.  Every site that
+-- consumes a `TInt` in POSITIVE position rejects it (`intLitTooBigMsg`); the
+-- negation sites consume the token themselves and keep the value as-is —
+-- `negate intMinBound` wraps back to `intMinBound`, which is the wanted number.
+-- Rejection is FATAL: an enclosing `many (appArg …)` would otherwise swallow a
+-- recoverable failure and the user would get "unexpected INT" instead.
+--
+-- Written as arithmetic rather than as the literal `-4611686018427387904` so
+-- that the constant does not depend on the very rule it defines.
+intMinLit : Int
+intMinLit = 0 - 4611686018427387903 - 1
+
+isIntMinLit : Int -> Bool
+isIntMinLit n = n == intMinLit
+
+-- Named as a String, not as a `Parser a`: a `rejectIntMinLit = fatalP msg` would be
+-- a constructor APPLICATION, which is not generalized — the `a` would monomorphise
+-- to whichever site typechecked first (`Parser Lit`) and clash with the rest.
+-- `fatalP` is a function, so each call site instantiates it freshly; this is the
+-- same shape every `failP "…"` in this file already uses.
+intLitTooBigMsg : String
+intLitTooBigMsg = "integer literal too large for Int (max 4611686018427387903); -4611686018427387904 is the minimum and is only writable with its `-`"
+
 -- unary minus, tighter than `*` (a leading `-` in operand position)
 parseUnary : Parser Expr
 parseUnary = do
@@ -532,19 +586,35 @@ parseUnary = do
   unaryFor t
 
 unaryFor : Token -> Parser Expr
-unaryFor TMinus = do
-  advance
-  e <- parseUnary
-  pure (EUnOp "-" e (Ref RNone))
-unaryFor TMinusTight = do
-  advance
-  e <- parseUnary
-  pure (EUnOp "-" e (Ref RNone))
+unaryFor TMinus = negUnary
+unaryFor TMinusTight = negUnary
 unaryFor TBang = do
   advance
   e <- parseUnary
   pure (EUnOp "!" e (Ref RNone))
 unaryFor _ = parseInfix
+
+-- `-` in operand position.  A directly-following 2^62 literal is FUSED into a
+-- single negative `ENumLit` (the token already carries `intMinBound`), which is
+-- both the value `EUnOp "-"` would have computed and the only shape that keeps
+-- `-4611686018427387904` writable now that the bare literal is rejected.  Same
+-- fusion `negLitArgFor` already does for a tight negative argument.  Anything
+-- else keeps the ordinary `EUnOp "-"` shape.
+negUnary : Parser Expr
+negUnary = do
+  t2 <- peek2P
+  negUnaryFor t2
+
+negUnaryFor : Token -> Parser Expr
+negUnaryFor (TInt n)
+  | isIntMinLit n = located (do
+    advance
+    advance
+    pure (ENumLit n (Ref None) (Ref RNone)))
+negUnaryFor _ = do
+  advance
+  e <- parseUnary
+  pure (EUnOp "-" e (Ref RNone))
 
 -- backtick infix application (``a `div` b``) has been removed.  The lexer still
 -- produces `TBacktickIdent` as a sentinel; a pre-grammar scan surfaces a located
@@ -690,6 +760,7 @@ parseAtomRaw : Parser Expr
 parseAtomRaw = do
   t <- peekP
   match t
+    TInt n if isIntMinLit n => fatalP intLitTooBigMsg
     TInt n => emit (ENumLit n (Ref None) (Ref RNone))
     TFloat f => emit (ELit (LFloat f))
     TString s => emit (ELit (LString s))
@@ -1421,6 +1492,7 @@ parsePatAtom = do
   match t
     TIdent x => emit (PVar x)
     TUnderscore => emit PWild
+    TInt n if isIntMinLit n => fatalP intLitTooBigMsg
     TInt n => intPatRest (LInt n)
     TMinus => negIntPat
     TMinusTight => negIntPat
@@ -1515,6 +1587,8 @@ intBound = do
   intBoundFor t
 
 intBoundFor : Token -> Parser Lit
+intBoundFor (TInt n)
+  | isIntMinLit n = fatalP intLitTooBigMsg
 intBoundFor (TInt n) = emit (LInt n)
 intBoundFor TMinus = do
   advance
@@ -3461,6 +3535,7 @@ parseWithPositionsOpt src = match tokenizeWithLines src
     let lines = arrayFromList lineList
     match runP programWithSpans toks 0
       PErr _ _ => None
+      PFatal _ _ => None
       POk spans pos => if peekTok toks pos == TEof then
         let decls = map ((d, _s, _e) => d) spans
         let dps = map (declPosOf toks lines) spans
@@ -3474,6 +3549,7 @@ parseWithPositionsOpt src = match tokenizeWithLines src
 -- Mirrors lib/loader.ml: raises Failure "Parse error" on Parser.Error or Failure.
 resultDecls : Array Token -> PR (List Decl) -> List Decl
 resultDecls _ (PErr _ _) = panic "parse error"
+resultDecls _ (PFatal _ _) = panic "parse error"
 resultDecls toks (POk ds pos)
   | peekTok toks pos == TEof = ds
   | otherwise = panic "parse error"
@@ -3558,6 +3634,8 @@ locateOffset toks offs srcLen pos
 resultDeclsResult : String -> Array Token -> Array Int -> Int -> PR (List Decl) -> Result ParseError (List Decl)
 resultDeclsResult src toks offs srcLen (PErr msg pos) =
   Err (mkLocated src toks offs srcLen msg pos)
+resultDeclsResult src toks offs srcLen (PFatal msg pos) =
+  Err (mkLocated src toks offs srcLen msg pos)
 resultDeclsResult src toks offs srcLen (POk ds pos)
   | peekTok toks pos == TEof = Ok ds
   | otherwise = Err (deepenLeftover src toks offs srcLen pos)
@@ -3573,6 +3651,7 @@ resultDeclsResult src toks offs srcLen (POk ds pos)
 -- (so already-well-located parse errors keep their exact spot).
 deepenLeftover : String -> Array Token -> Array Int -> Int -> Int -> ParseError
 deepenLeftover src toks offs srcLen pos = match runP parseDecl toks pos
+  PFatal msg2 pos2 => mkLocated src toks offs srcLen msg2 pos2
   PErr msg2 pos2 if pos2 > pos => mkLocated src toks offs srcLen msg2 pos2
   _ => mkLocated src toks offs srcLen (unexpectedLeftoverMsg src toks offs srcLen pos) pos
 

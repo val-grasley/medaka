@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"L-INT-OVERFLOW","kind":"lex","message":"integer literal too large for Int (max 4611686018427387903); -4611686018427387904 is the minimum and is only writable with its `-`","range":{"end":{"character":16,"line":7},"start":{"character":15,"line":7}},"severity":1,"source":"medaka"}]}]}
