@@ -1,0 +1,10 @@
+-- #421: a `deriving (…)` name with no deriver was SILENTLY dropped — the clause
+-- generated nothing and check stayed green. Each unknown name must now be an
+-- error located on the NAME itself. `Eq`/`Ord` here are derivable and must NOT be
+-- reported. A newtype cannot derive `Generic` (only `data` can), so its supported
+-- list is the shorter one — the message must not advertise what it cannot do.
+data X = X Int deriving (Eq, Ord, Banana)
+
+newtype N = N Int deriving (Generic)
+
+main = println "checked"

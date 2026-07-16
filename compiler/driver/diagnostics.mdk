@@ -27,7 +27,7 @@ import frontend.parser.{
   parseErrorCol,
   parseErrorMessage,
 }
-import frontend.desugar.{desugar}
+import frontend.desugar.{desugar, checkDerives}
 import frontend.resolve.{
   ResError,
   resolveProgram,
@@ -320,6 +320,9 @@ analyzeFrom runtimeSrc coreSrc raw internalGuard =
   -- Oracle superset = target + prelude (runtime + core) so exhaustiveness of a
   -- multi-clause function over a prelude ADT (Result/Option/…) isn't false-flagged.
   let guardWarns = checkGuardExhaustivenessWith (raw ++ runtimeP ++ coreP) raw
+  -- Derives live only on the RAW tree (`desugar` clears the field), so this reads
+  -- `raw`, not `desugared`.
+  let deriveDiags = map deriveErrToDiag (checkDerives raw)
   let resErrs = resolveProgramG2 internalGuard runtimeP coreP desugared
   let resDiags = map diagOfResError resErrs
   let _ = setCoherenceUserDecls desugared
@@ -339,7 +342,7 @@ analyzeFrom runtimeSrc coreSrc raw internalGuard =
     [] => filterNewDiags tcDiags (autoPrintObligationDiags runtimeP coreP desugared)
     _ => []
   let guardDiags = map guardWarnToDiag guardWarns
-  guardDiags ++ resDiags ++ tcDiags ++ autoDiags
+  deriveDiags ++ guardDiags ++ resDiags ++ tcDiags ++ autoDiags
 
 -- The auto-print Display obligation for a bare non-Unit value main, as located
 -- Diags (empty when the wrap doesn't fire or the obligation is satisfied).
@@ -379,6 +382,14 @@ filterNewDiags existing news =
 -- keying the stable code off the message shape: a constructor-coverage warning on
 -- a multi-clause function is `W-NONEXHAUSTIVE-CLAUSES`; a guard gap stays
 -- `W-GUARD-INEXHAUSTIVE`.
+-- #421: an unknown `deriving (…)` name.  An ERROR, not a warning: the clause
+-- silently generated NOTHING, so the program is already broken — it just fails
+-- later and elsewhere ("No impl of Banana for X" at the first use site), or never,
+-- if that impl is only needed on a rare path.  Naming it where it is written is
+-- the whole point.
+deriveErrToDiag : (String, Option Loc) -> Diag
+deriveErrToDiag (msg, loc) = mkDiag SevError "R-CANNOT-DERIVE" msg loc
+
 guardWarnToDiag : (String, Option Loc) -> Diag
 guardWarnToDiag (msg, loc) =
   mkDiag SevWarning (exhaustWarnCode msg) (stripWarnPrefix msg) loc
@@ -685,7 +696,8 @@ foldModuleTc oracleDecls ((mid, path, prog)::rest) tcByMid buckets =
   let warnDiags = map diagOfMatchWarning tcWarns
   let guardWarns = checkGuardExhaustivenessWith oracleDecls prog
   let guardDiags = map guardWarnToDiag guardWarns
-  let buckets2 = pushDiags path (guardDiags ++ errDiags ++ warnDiags) buckets
+  let deriveDiags = map deriveErrToDiag (checkDerives prog)
+  let buckets2 = pushDiags path (deriveDiags ++ guardDiags ++ errDiags ++ warnDiags) buckets
   foldModuleTc oracleDecls rest tcByMid buckets2
 
 lookupTcDiags : String -> List (String, (List TcDiag, List TcDiag)) -> (List TcDiag, List TcDiag)

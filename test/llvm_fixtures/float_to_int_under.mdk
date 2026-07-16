@@ -1,0 +1,2 @@
+-- #346 (S0): below Int range saturates to intMinBound (-2^62).
+main = floatToInt -1.0e30

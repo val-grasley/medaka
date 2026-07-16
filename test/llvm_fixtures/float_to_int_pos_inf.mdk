@@ -1,0 +1,4 @@
+-- #346 (S0): floatToInt SATURATES — +inf -> intMaxBound (2^62-1), NOT i64 max.
+-- llvm.fptosi.sat / i64.trunc_sat_f64_s saturate to +-2^63, which is OUTSIDE Medaka's
+-- 63-bit Int domain, so each backend must clamp before tagging/boxing.
+main = floatToInt (1.0 / 0.0)

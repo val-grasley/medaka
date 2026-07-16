@@ -612,7 +612,44 @@ stage_times_min_modules() {
 # the target reads smaller here than it would in isolation. Read a `lower`/`emit`
 # ratio as a LOWER BOUND on the true exponent: over-threshold is real, under-threshold
 # is not proof of linearity.
-TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower emit"
+#
+# `wasm-emit` is the WASM ARM of the same issue (#359). `emit` above grades ONLY
+# llvm_emit; wasm_emit is a separate ~10k-line backend and was equally unprofiled.
+#
+# ⚠️ ONE `emit` ROW CANNOT STAND IN FOR BOTH BACKENDS — this is measured, not assumed.
+# #381 was a CUBIC in WasmGC ctor-switch emission (O(ctors x branches x table)) that did
+# NOT reproduce on llvm_emit: `ctorOrdinal`'s whole-table scan is SHARED, but only wasm
+# nested it inside a (slot, branch) loop. #401 fixed it (53x at N=400). The `match` shape
+# is that exact shape and now reads r2=1.09 — the fix holds, and this row is what keeps
+# it holding.
+#
+# ⚠️ THE PRELUDE CONSTANT IS FAR HEAVIER HERE THAN ON `emit`, and it changes how two
+# rows must be read. wasm_emit renders the whole live prelude to WAT at ~0.215 s / ~240 MB
+# no matter how small the target (llvm_emit: ~0.021 s / ~10 MB — 10x cheaper). Two
+# consequences, both real:
+#
+#   * On the DEAD-`main` shapes (bindings/listlit/nesting/comments) DCE prunes the
+#     synthetic decls, so this stage times THE PRELUDE AND NOTHING ELSE — but unlike
+#     `lower`/`emit`, which fall under TIME_FLOOR and SKIP loudly, that constant is
+#     ~0.215-0.25 s and generally CLEARS the 0.2 s floor. Those rows therefore print a
+#     flat `ok r1≈1.0 r2≈1.0` (measured: 0.90/1.08, 1.09/1.21, 1.08/0.94). THAT "ok" IS
+#     NOT BACKEND COVERAGE — it is the prelude constant being constant. Do not read it
+#     as one, and do not let it satisfy backend_graded (see the counter below, which
+#     deliberately excludes this stage).
+#
+#     ⚠️ THE CONSTANT IS NOT UNIVERSAL AND THE ROW COUNT IS LOAD-DEPENDENT — do not
+#     build on either. `manydefs` SKIPs outright (156-174 ms): its `main = p0 + p1` is
+#     `Int`-typed, not a `println`, so DCE keeps no Display/String prelude and there is
+#     less WAT to render. `comments` sits ON the floor and flips: 220 ms (graded "ok")
+#     on a loaded box, 198 ms (SKIP) on a quiet one. So "wasm-emit always clears the
+#     floor" is FALSE, and so is any fixed count of rows it grades — both were asserted
+#     by earlier drafts of this comment and both were falsified by the next full run.
+#     Only ONE wasm row is guaranteed: `xref:wasm-emit`, and only because the ledger
+#     forces it (a KNOWN_SLOW_TIME stage may not SKIP).
+#   * On the ROOTED shapes (xref/match) the same constant DILUTES the ratio downward
+#     harder than it does `emit`: at match N=1000 it is 79% of the reading. Under-
+#     threshold here is even weaker evidence of linearity than it is for `emit`.
+TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower emit wasm-emit"
 
 # ── KNOWN SLOW (TIME) — a ledger, NOT a skip-list ────────────────────────────
 #
@@ -711,8 +748,8 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 #
 #     So the native LLVM emitter is QUADRATIC on this shape too (~3.7x), NOT cubic.
 #     Worth stating plainly because the ws:wasm workstream measured ~7.9-8.4x per
-#     doubling (≈2^3, CUBIC) on the SAME shape through `wasm_emit_modules_main`. That
-#     is a wasm_emit finding; it does NOT reproduce on llvm_emit. Do not carry the
+#     doubling (≈2^3, CUBIC) on the SAME shape through `wasm_emit_modules_main` (#381).
+#     That was a wasm_emit finding; it did NOT reproduce on llvm_emit. Do not carry the
 #     cubic claim across backends.
 #
 #     It is NOT in KNOWN_SLOW_TIME because at this gate's match sizes (250/500/1000)
@@ -721,12 +758,69 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 #     that is a deliberate follow-up, not an oversight — raising match's N also moves
 #     its alloc rows and the T17 alloc ledger, which must be re-derived, not assumed.
 #
+#     UPDATE 2026-07-16 (#359 wasm arm) — THE WASM CUBIC ABOVE IS FIXED, AND NOW
+#     MEASURED. #401 fixed #381 (53x at N=400), and the `match:wasm-emit` row now checks
+#     that rather than trusting it: 0.245s / 0.250s / 0.272s at N=250/500/1000, r1=1.02
+#     r2=1.09 on a quiet box (load 0.6); this gate's own min-of-5 runs read r2=1.05/1.06.
+#     So the band is r2 1.05-1.09 — the cubic is gone, and this row stops it returning.
+#     Read that with the prelude caveat: at N=1000 the ~0.215s wasm prelude constant is
+#     79% of the reading, so it is a WEAK linearity claim but a STRONG not-cubic one,
+#     which is exactly what #401 is about. Unlike `match:emit`, this row is gradeable at
+#     the gate's existing match sizes (the constant carries it over the floor), so the
+#     wasm cubic needs no new base-N knob to stay regressed.
+#
 #     ⚠️ 4.15x is a LOWER BOUND on the true exponent, not an estimate of it. Unlike
 #     the front-end stages, `emit` pays a large FIXED prelude cost (core.mdk is
 #     emitted on every run, ~0.03s/~13 MB) that the per-stage TIME arm does not
 #     subtract, so the constant term DILUTES the measured ratio downward.
 #
-KNOWN_SLOW_TIME="xref:emit"
+#   xref:wasm-emit — THE WASM PEER OF THE ROW ABOVE, AND A SEPARATE MEASUREMENT.
+#
+#     wasm_emit is quadratic in the top-level declaration count too, and it is NOT a
+#     restatement of `xref:emit`: it is a different ~10k-line backend, measured
+#     independently. Rooted `xref`, quiet box (load 0.5), heap pinned at 2 GB:
+#
+#         xref, wasm-emit stage       TIME              ALLOC (this stage's delta)
+#           N=4000                    2.439s            519.2 MB
+#           N=8000                    9.317s  (3.82x)   796.9 MB   (1.53x)
+#           N=16000                  38.128s  (4.09x)  1352.9 MB   (1.70x)
+#
+#     ⚠️ STATE THE N BAND WITH THE RATIO — A SCALING RATIO IS NOT A CONSTANT. These are
+#     r1/r2 at N=4000 -> 8000 -> 16000, the band this gate's XREF_N fixes. The ceiling
+#     below is only meaningful against THAT band: the same curve sampled at a different
+#     N reads a different number, and both readings are correct. (This is exactly how
+#     the ws:emitter and ws:wasm workstreams reported 3.71/3.73 and 2.27/2.87 for one
+#     curve and briefly appeared to disagree.)
+#
+#     OBSERVED r2 BAND, same N, FIVE batches: 3.87 / 3.88 / 3.92 / 4.09 / 4.15
+#     (r1 3.60-3.82). 4.09 is the quiet-box (load 0.5, min-of-2) reading above; 3.88 and
+#     3.87 are this gate's own min-of-5 runs (the 3.87 on the tree merged with #468,
+#     which reworked wasm_emit — it did not move this row); 3.92/4.15 are min-of-1
+#     falsification runs. Treat the BAND as the measurement, not any single batch — and
+#     note the QUIETER box read HIGHER, so a busy CI runner biases this row toward
+#     false-green, never toward false-red.
+#
+#     ALLOCATION IS BLIND HERE TOO, AND HARDER THAN IT IS FOR `emit`. Two ways to see
+#     it, both from the run above:
+#       * this stage's OWN alloc delta reads 1.53x / 1.70x — not merely "linear (ok)"
+#         but SUBLINEAR, because the ~240 MB fixed wasm prelude dominates the numerator;
+#       * the gate's WHOLE-RUN net alloc column — the only alloc signal it actually
+#         grades — reads a flat 2.02x / 2.02x and prints `ok` for this very row.
+#     So a gate reading only allocation would call a stage taking 38 SECONDS to emit
+#     16000 functions its healthiest row on the board. That is the #110/#115 thesis on a
+#     second backend: these are PURE SCANS, and only the TIME arm can see them.
+#
+#     Mechanism note: this tracks `xref:emit` closely (3.97/4.08 in the same batch), so
+#     the likely shared cause is `ctorOrdinal`/#352-class whole-table scans over
+#     accumulated per-decl state, which both backends inherit. It is ~3.7x SLOWER in
+#     absolute terms than llvm_emit on identical input. Fix the shared scans and BOTH
+#     entries PROMOTE OUT — independently, which is the point of ledgering them apart.
+#
+#     ⚠️ 4.09x is a LOWER BOUND on the true exponent (the ~0.215s prelude constant is
+#     not subtracted), and it is a WEAKER bound than `emit`'s: wasm's constant is ~10x
+#     llvm's, so it dilutes harder.
+#
+KNOWN_SLOW_TIME="xref:emit xref:wasm-emit"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # Observed r2 3.85-4.15 across four DCE-realistic batches (incl. the merged tree with
@@ -737,6 +831,14 @@ KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # file-wide convention): drop under it and #349/#350/#352 are fixed and this entry
 # must be promoted out.
 KNOWN_TCEIL_xref_emit="5.6";          KNOWN_TFIXED_xref_emit="2.60"
+# Observed r2 band 3.87-4.15 (r1 3.60-3.82) at N=4000->8000->16000 across FIVE batches —
+# see the band warning above; the ceiling means nothing without that N band. Ceiling 5.6
+# and TFIXED 2.60 re-derived against THIS backend's own readings, not copied from
+# xref:emit because the numbers look alike: the band tops out at 4.15, and 5.6 clears it
+# by 1.45 — the same headroom convention as the modules:typecheck precedent (1.3) and
+# xref:emit (1.45). That the two backends land on the same ceiling is a fact about the
+# shared quadratic, not an assumption carried across them.
+KNOWN_TCEIL_xref_wasm_emit="5.6";     KNOWN_TFIXED_xref_wasm_emit="2.60"
 
 is_known_time() {
   for k in $KNOWN_SLOW_TIME; do [ "$k" = "$1" ] && return 0; done
@@ -747,10 +849,28 @@ fail=0
 known=0
 pass=0
 
-# How many times a BACKEND stage (lower/emit) actually produced a graded ratio.
+# How many times a NATIVE backend stage (lower/emit) actually produced a graded ratio.
 # "Green" must never mean "did not run": if these two always SKIP under the TIME_FLOOR
 # the gate silently reverts to issue #359's blind spot — grading no backend stage at
 # all — while still exiting 0. Asserted non-zero at the bottom of this file.
+#
+# ⚠️ `wasm-emit` IS DELIBERATELY NOT COUNTED HERE, and the reason is the whole point of
+# the counter. Its ~0.215-0.25 s prelude constant clears the 0.2 s floor on most shapes
+# (4-5 of 7, load-dependent) — including the dead-`main` ones where DCE has pruned
+# everything and it is timing the prelude alone. Counting it would peg this counter at
+# 5-6 on every run: it would never be zero again, so it could never fail, and the llvm
+# arm's floor-skip regression (the ONLY thing it detects) would sail through behind wasm
+# rows that measured nothing but the prelude. A guard that cannot fail is not a guard.
+# (Measured: with wasm-emit excluded this counter still reads 1, the same as before this
+# stage existed — so the llvm guard is provably undiluted.)
+#
+# The wasm arm does not need this counter, because it is guarded twice over and more
+# tightly:
+#   * a stage in TIME_STAGES that the profiler stops emitting at all is already a hard
+#     FAIL ("NO MEASUREMENT from the profiler") in the loop below — that covers deletion;
+#   * `xref:wasm-emit` is LEDGERED in KNOWN_SLOW_TIME, and a ledgered stage MAY NOT SKIP:
+#     dropping under the floor fires PROMOTE and FAILS. So the one row that carries the
+#     wasm arm's real coverage is provably graded on every green run, or the gate is red.
 backend_graded=0
 
 printf '%-10s %8s %10s %10s %10s  %6s %6s  %s\n' \
@@ -1071,7 +1191,13 @@ esac
 printf -- '---------------------------------------------------------------------\n'
 printf '%d ok, %d known-superlinear (ledgered), %d regressed (threshold %sx per doubling)\n' "$pass" "$known" "$fail" "$THRESH"
 
-printf 'backend TIME arm (issue #359): %d lower/emit stage-ratios graded\n' "$backend_graded"
+printf 'backend TIME arm (issue #359): %d native lower/emit stage-ratios graded\n' "$backend_graded"
+# The wasm arm is NOT counted by backend_graded (see that counter's note: wasm-emit
+# clears the floor on most shapes, so counting it would make the counter unfailable).
+# Its coverage guarantee is the KNOWN_SLOW_TIME ledger instead — `xref:wasm-emit` is
+# graded on every green run or the gate is red — so report it rather than leaving the
+# arm unmentioned.
+printf 'backend TIME arm (issue #359): wasm graded via the xref:wasm-emit ledger row\n'
 
 # Never exit 0 having measured nothing.
 [ $((pass + known + fail)) -gt 0 ] || { echo "FAIL: the gate measured no shapes at all"; exit 1; }

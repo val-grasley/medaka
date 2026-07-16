@@ -1,0 +1,2 @@
+-- #346: in-range control — truncates toward zero (NOT floor): -3.7 -> -3.
+main = floatToInt -3.7
