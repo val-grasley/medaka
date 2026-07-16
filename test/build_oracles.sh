@@ -1,4 +1,9 @@
 #!/bin/sh
+# banned-oracle-cmd: self-referential
+#   ^ opts this file out of test/check_no_banned_oracle_cmd.sh, which forbids any script
+#     from PRINTING the bare `sh test/build_oracles.sh` — it builds every oracle and spawns
+#     the xargs -P pool AGENTS.md documents as having killed several agents (#527). This
+#     file IS the tool, not a caller: its own usage text must name it. Nothing else may.
 # build_oracles.sh — compile the compiler STAGE ENTRIES the OCaml-free gates need
 # into native binaries under test/bin/<entry>, via the native `./medaka build`.
 #

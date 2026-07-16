@@ -1,4 +1,5 @@
 #!/bin/sh
+# banned-oracle-cmd: self-referential
 # check_no_banned_oracle_cmd.sh — no script may PRESCRIBE the bare `build_oracles.sh`.
 #
 # WHY THIS GATE EXISTS (#478 -> #525 -> #527).
@@ -49,8 +50,21 @@ bad=0
 # covered the moment it is added, with nothing to remember.
 for f in $(git ls-files '*.sh'); do
   checked=$((checked + 1))
-  # build_oracles.sh legitimately names itself (usage//docs). It is the tool, not a caller.
-  [ "$f" = "test/build_oracles.sh" ] && continue
+
+  # SELF-REFERENTIAL OPT-OUT. Two files must name the bare command to do their job:
+  # build_oracles.sh (its own usage/docs — it IS the tool, not a caller) and this gate
+  # (whose FAIL/PASS text quotes the thing it forbids). A file DECLARES ITSELF with the
+  # marker below instead of being named in a list here, so the opt-out lives with the file
+  # that needs it and is greppable — mirroring the repo's `-- lint-disable-file <rule>`
+  # idiom. A central list here would rot; a third file wanting this marker is a signal
+  # worth a human look, not a silent edit to this script.
+  #
+  # ⚠️ This gate flagged ITSELF in CI while passing locally — `git ls-files` lists only
+  # TRACKED files, so an untracked new script is invisible to its own check. If you add a
+  # script here, `git add` it BEFORE trusting a local run. (Same trap caught
+  # diff_compiler_ci_shard_coverage.sh's green in the same commit — it enumerates the same
+  # way.)
+  grep -q '^# banned-oracle-cmd: self-referential' "$f" && continue
 
   # Strip COMMENT lines before matching. A comment discussing the hazard (preflight.sh does
   # exactly this, describing the very pattern this gate enforces) is not a prescription.
