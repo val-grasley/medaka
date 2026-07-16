@@ -97,11 +97,30 @@ while `build` auto-prints them (intentional asymmetry — see #361 for where it 
 Multi-statement probes use the layout block (`main =` + indented `println`s), not `do`.
 
 ### 9. The debunkings are findings too — do not re-file them
+> ### 🔁 CLOSING AN ISSUE IS NOT DONE UNTIL THE ROWS BELOW ASSERTING IT ARE DRAINED — **in the SAME commit**
+>
+> **This ledger went stale exactly once — #305 stayed listed as "the live NaN defect" for hours
+> after #484 closed it (2026-07-16).** Each `#N` cited below is an encoded claim that N is still
+> the open, live version of that finding — with no derivation and no expiry (#488). When you close
+> an issue referenced anywhere in this list (or in `docs/spec/EMITTER-SEMANTICS.md`), run:
+> `grep -rn '#<N>' .claude/workstreams/EMITTER.md .claude/workstreams/WASM.md
+> docs/spec/EMITTER-SEMANTICS.md` and drain **every** hit in the closing commit — including the
+> SIBLING workstream's ledger (#488: #484 drained neither ledger's stale `#305` row on
+> merge — `WASM.md`'s copy was only fixed later, separately, in #487; this file's copy sat stale
+> until #488 itself). The drain is the ledger OWNER's job; nobody else will do it for you.
+>
+> A parse-the-refs-and-check-`gh issue view --state` gate is tempting but the same trap #438
+> documents for `WASM-SEMANTICS`'s law table applies here too — this prose isn't a structured
+> state column, so a naive gate can't tell "closed, correctly reported as fixed" from "closed,
+> still asserted open" without a format that doesn't exist yet. Until then: grep + a human/reviewer.
+
 Verified DISPROVED at `40e14b85` (a correction needs the same proof as a filing):
 - **IR-text building is NOT quadratic** — prepend into a `Ref (List String)`, one reverse+join.
 - **`nan <= nan` over top-level Float bindings is CORRECT natively** (both `False`) — the
   `RScalar` stamp covers the shape the static read predicted would fall to `mdk_value_cmp_raw`.
-  The live NaN defect is the generic/HOF path (#305) + the undecided N6 story (#360).
+  The generic/HOF path NaN defect (#305) is now FIXED (#484, 2026-07-16) — IEEE relational ops
+  hold on the type-lost path too. The still-undecided half is N6 (#360, design: pin the
+  Float `compare`/min/max/sort story at NaN) — that one stays open.
 - **Bare-Float value-main auto-print works** (`6.0`, not garbage) — SHARED-FLOAT's C4 row is
   stale (#361).
 - **User ctors shadowing `Ok`/`Some`/`Cons`… cannot alias the reserved tags** — the resolver

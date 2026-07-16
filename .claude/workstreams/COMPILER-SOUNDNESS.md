@@ -81,6 +81,13 @@ of care:
 **To close a row, produce the passing run. To keep it, produce the failing one. Never resolve one
 on prose.**
 
+⚠️ **This section is clean today by luck, not design — it cites no `#N` issue numbers.** The
+moment a future entry here names a GH issue, it acquires the identical failure mode `EMITTER.md`
+hit with `#305` (#488): an encoded claim about that issue's state, with no derivation and no
+expiry. If you add one: run `gh issue view <N> --json state` before AND after any change here,
+and drain this ledger in the SAME commit that closes the issue — see `EMITTER.md`'s §9 drain-rule
+callout for the exact convention to copy.
+
 **5. ⭐ A PARITY GATE CANNOT DETECT A BUG WHERE BOTH BACKENDS ARE EQUALLY WRONG.** The TMC dict-veto
 lived in a **shared** predicate, so both backends declined **identically** and the census was a green,
 honest `12/12 same`. **Parity was gated; COVERAGE never was.** If two things are checked only against
