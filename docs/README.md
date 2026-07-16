@@ -65,6 +65,7 @@ Cross-cutting process docs: how the test suite is organized, how a build ships, 
 | Doc | What it is | Status |
 |-----|------------|--------|
 | [`DISTRIBUTION-DESIGN.md`](ops/DISTRIBUTION-DESIGN.md) | DISTRIBUTION-DESIGN.md — shipping a native `medaka` binary to strangers | PARTIAL |
+| [`MCP.md`](ops/MCP.md) | MCP.md — `medaka mcp`, the LSP-for-agents | IMPLEMENTED |
 | [`RELEASE-0.1.0-PLAN.md`](ops/RELEASE-0.1.0-PLAN.md) | RELEASE-0.1.0-PLAN.md — the road to a public 0.1.0 preview | OPEN |
 | [`TESTING-DESIGN.md`](ops/TESTING-DESIGN.md) | TESTING-DESIGN.md — a coherent testing architecture for Medaka | PARTIAL |
 
