@@ -1483,6 +1483,23 @@ groupConstraintMonosRef = Ref []
 methodDispatchIdxRef : Ref (List (String, Int))
 methodDispatchIdxRef = Ref []
 
+-- #154 PR-B: PERSISTENT per-run dispatch-index accumulator for the multi-module path.
+-- checkBodyImpl's Module arm used to `argDispatchIndices implDecls` (= `accAll ++ prog`) —
+-- a flatMap over EVERY earlier module's decls once per module, an O(N²) rebuild on the
+-- emit path (elabWorker / elabModuleStamp).  `argDispatchIndices` is a pure structural
+-- scan of the DInterface decls (no tyvars, no side effects), so the result is just a
+-- concatenation of each module's interface indices: `argDispatchIndices (a ++ b)` =
+-- `argDispatchIndices a ++ argDispatchIndices b`.  Grow this list ONE module at a time in
+-- `appendUniverseAccums` (BEFORE the Module arm reads it, so module k sees interfaces
+-- 1..k INCLUDING its own — the same membership `accAll ++ prog` gave), copy it into the
+-- resetState-wiped methodDispatchIdxRef in the Module arm.  Byte-identical: method names
+-- are globally unique and the sole reader is methodDispatchIdx's `lookupAssoc` (first-wins),
+-- so the accumulated list carries exactly the entries the per-module rebuild produced, in
+-- the same core-first left-to-right order.  Survives per-module `resetState`; cleared per
+-- RUN by `resetCrossModuleState`; seeded by the core pass (also Module mode).
+universeMethodDispatchIdxRef : Ref (List (String, Int))
+universeMethodDispatchIdxRef = Ref []
+
 -- FLAT-PATH SHADOW FIX (facet 1): interface-method names that a USER top-level fn
 -- shadows on the single-file flat check path.  processSCC drops a scheme with one
 -- of these names from the env it THREADS FORWARD, so a later prelude binding
@@ -1939,6 +1956,9 @@ resetCrossModuleState _ =
   -- registeredIfacesRef on the Module path share the same per-run reset boundary.
   let _ = setRef universeMethodIfaceParamsRef omEmpty
   let _ = setRef universeRegisteredIfacesRef omEmpty
+  -- #154 PR-B: the dispatch-index accumulator (feeds methodDispatchIdxRef on the Module
+  -- path) shares the same per-run reset boundary.
+  let _ = setRef universeMethodDispatchIdxRef []
   -- #154 PR3 (sites #6/#7): the keyed impl universe for the obligation checkers
   -- shares the same per-run reset boundary.
   let _ = setRef obUnivConcreteRef omEmpty
@@ -10432,10 +10452,10 @@ checkBodyImpl seed mode prog0 =
       let _ = setRef flatUserShadowNamesRef definerShadows
       let _ = setRef flatCoreFnNamesRef (namesToSet (map fst (funDefs coreProg)) omEmpty)
       ()
-    Module _ _ implDecls =>
+    Module _ _ _ =>
       let _ = setRef standaloneValuesRef (dedup (importerShadows ++ definerShadows))
       let _ = setRef shadowStandaloneSchemesRef (pickStandaloneSchemes importerShadows seed)
-      let _ = setRef methodDispatchIdxRef (argDispatchIndices implDecls)
+      let _ = setRef methodDispatchIdxRef universeMethodDispatchIdxRef.value
       let _ = setRef funConstraintsRef crossModuleFunConstraintsRef.value
       let _ = setRef funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
       let _ = setRef funConstraintsRef (aliasConstraintEntries prog crossModuleFunConstraintsQualRef.value
@@ -13140,6 +13160,11 @@ appendUniverseAccums prog =
   let acc = insertMethodIfaceParams prog (universeMethodIfaceParamsRef.value, universeRegisteredIfacesRef.value)
   let _ = setRef universeMethodIfaceParamsRef (fst acc)
   let _ = setRef universeRegisteredIfacesRef (snd acc)
+  -- #154 PR-B: grow the dispatch-index accumulator by THIS module's interface indices.
+  -- APPEND (universe first) so the accumulated list stays in the same core-first order the
+  -- old `argDispatchIndices (accAll ++ prog)` flatMap produced; the sole reader is a
+  -- first-wins lookupAssoc, so a prior-module entry this module never names is never queried.
+  let _ = setRef universeMethodDispatchIdxRef (universeMethodDispatchIdxRef.value ++ argDispatchIndices prog)
   -- #154 PR3 (sites #6/#7): grow the keyed obligation impl universe by THIS module's
   -- impls (append to keep forward declaration order within each bucket).  Uses the
   -- SAME `implDeclsWithReqs` (iface, tys, reqs) triples the old rebuild consumed, so
