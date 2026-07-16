@@ -1,5 +1,5 @@
 # META
-source_lines=70
+source_lines=98
 stages=DESUGAR,MARK
 # SOURCE
 -- Per-stage wall-clock timing helpers for the self-hosted pipeline.
@@ -21,6 +21,34 @@ stages=DESUGAR,MARK
 -- True when MEDAKA_PERF is set to any value in the environment.
 export perfEnabled : Unit -> <IO> Bool
 perfEnabled () = match getEnv "MEDAKA_PERF"
+  Some _ => True
+  None => False
+
+-- True when MEDAKA_PERF_WASM is set to any value in the environment.
+--
+-- SEPARATE from perfEnabled, and it gates WORK rather than OUTPUT — that is the
+-- whole point. Every other stage is gated only on printing (`emitPhaseA on ...`),
+-- because every other stage is cheap enough to always run. `wasm-emit` is not: it
+-- is ~10x llvm_emit and, sampled at the `xref` shape's resolve-driven N=16000, it
+-- cost the `gates (types)` shard ~277 s per run and made it the CI critical path
+-- at 12 min against engines' 3.7 min.
+--
+-- ⚠️ A CALLER MUST BRANCH ON THIS, NOT PASS IT TO emitPhaseA. Medaka is strict, so
+-- `emitPhaseA (perfWasmEnabled ()) "wasm-emit" ... (wasmText cprog)` still RUNS the
+-- emission and saves nothing — it only hides the line. See profile_main.mdk.
+--
+-- ⚠️ EMPTY IS OFF — a DELIBERATE divergence from perfEnabled's "set to any value",
+-- and it is not a style quibble. `getEnv` is C `getenv`: a var set to the EMPTY string
+-- is SET, so `MEDAKA_PERF_WASM=` reads `Some ""` and the "any value" rule turns it ON.
+-- MEASURED, on the obvious shell spelling of the off-switch:
+--   MEDAKA_PERF_WASM="" ... profile_main   =>  wasm-emit RAN
+-- Under "any value" this stage is on whenever a caller writes the natural
+-- `MEDAKA_PERF_WASM="$flag"` with an unset flag — i.e. the off-switch silently fails
+-- OPEN, the ~277 s saving evaporates, and the only symptom is a slow shard. An
+-- off-switch whose failure mode is "still on, silently" is not an off-switch.
+export perfWasmEnabled : Unit -> <IO> Bool
+perfWasmEnabled () = match getEnv "MEDAKA_PERF_WASM"
+  Some "" => False
   Some _ => True
   None => False
 
@@ -75,6 +103,8 @@ emitTotalA True elapsed allocTotal =
 # DESUGAR
 (DTypeSig true "perfEnabled" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Bool"))))
 (DFunDef false "perfEnabled" ((PLit LUnit)) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_PERF"))) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
+(DTypeSig true "perfWasmEnabled" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Bool"))))
+(DFunDef false "perfWasmEnabled" ((PLit LUnit)) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_PERF_WASM"))) (arm (PCon "Some" (PLit (LString ""))) () (EVar "False")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig true "now" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Float"))))
 (DFunDef false "now" ((PLit LUnit)) (EApp (EVar "wallTimeSec") (ELit LUnit)))
 (DTypeSig true "emitPhase" (TyFun (TyCon "Bool") (TyFun (TyCon "String") (TyFun (TyCon "Float") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))))
@@ -100,6 +130,8 @@ emitTotalA True elapsed allocTotal =
 # MARK
 (DTypeSig true "perfEnabled" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Bool"))))
 (DFunDef false "perfEnabled" ((PLit LUnit)) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_PERF"))) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
+(DTypeSig true "perfWasmEnabled" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Bool"))))
+(DFunDef false "perfWasmEnabled" ((PLit LUnit)) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_PERF_WASM"))) (arm (PCon "Some" (PLit (LString ""))) () (EVar "False")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig true "now" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Float"))))
 (DFunDef false "now" ((PLit LUnit)) (EApp (EVar "wallTimeSec") (ELit LUnit)))
 (DTypeSig true "emitPhase" (TyFun (TyCon "Bool") (TyFun (TyCon "String") (TyFun (TyCon "Float") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))))
