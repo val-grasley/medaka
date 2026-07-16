@@ -267,12 +267,7 @@ countHeadByIface : Map String (List KeyEntry) -> String -> String -> Int
 countHeadByIfaceGo : List KeyEntry -> String -> String -> Int
 countHeadGo : List KeyEntry -> String -> String -> Int
 countInSubst : List Int -> List (Int, Mono) -> Int
-crossModuleFunConstraintIfacesQualRef : Ref (List ((String, String), List String))
-crossModuleFunConstraintIfacesRef : Ref (List (String, List String))
-crossModuleFunConstraintsQualRef : Ref (List ((String, String), List Int))
-crossModuleFunConstraintsRef : Ref (List (String, List Int))
-crossModuleMethodConstraintsQualRef : Ref (List ((String, String), List Int))
-crossModuleMethodConstraintsRef : Ref (List (String, List Int))
+crossRun : Ref CrossRun
 ctorHeadIsUpper : String -> Bool
 curEffect : Ref EffRow
 currentDoOrigin : Ref (Option Loc)
@@ -463,6 +458,7 @@ foldrFun : List Mono -> Mono -> Mono
 foreachUnit : (a -> Unit) -> List a -> Unit
 freeEffvars : Mono -> List Int
 freeGenVars : Int -> Mono -> List Int
+freshCrossRun : Unit -> CrossRun
 freshEffMap : List String -> List (String, Ref Effvar)
 freshEffSubst : List Int -> List (Int, Ref Effvar)
 freshEffvar : Unit -> Ref Effvar
@@ -853,9 +849,6 @@ numlitReframeLoc : Option Loc -> Bool
 numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route))
 numlitUntainted : Ref (List (Mono, Loc))
 numlitVarLocs : Ref (List (Mono, Loc))
-obUnivConcreteRef : Ref (Map String (List (List Ty, List Require)))
-obUnivHeadlessRef : Ref (Map String (List (List Ty, List Require)))
-obUnivIfaceTagsRef : Ref (Map String (Map String Unit))
 oblDispatchMonos : (String, List String, Ty, Mono, Option Loc) -> List Mono
 occursAdjust : Int -> Int -> Mono -> Unit
 occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> Unit
@@ -1278,19 +1271,6 @@ unitMangledShadows : List String -> (String, List Decl) -> List (String, String)
 univConcreteBucket : ImplUniverse -> String -> Option String -> List (List Ty, List Require)
 univHeadless : ImplUniverse -> String -> List (List Ty, List Require)
 univReceiverTag : List Ty -> Option String
-universeAliasTable : Ref (List (String, (List String, Ty)))
-universeDataEnv : Ref TcEnv
-universeDataParamKinds : Ref (List (String, List Kind))
-universeFieldOwners : Ref (Map String (List String))
-universeFunNamesRef : Ref (Map String Unit)
-universeIfaceMethodsRef : Ref (Map String Unit)
-universeIfaceRequiredRef : Ref (Map String (List String))
-universeKeyBucketsRef : Ref (Map String (List KeyEntry))
-universeMethodDispatchIdxRef : Ref (List (String, Int))
-universeMethodIfaceParamsRef : Ref (Map String (String, List String, Ty))
-universeRecordByName : Ref (Map String RecordInfo)
-universeRecords : Ref (List (String, RecordInfo))
-universeRegisteredIfacesRef : Ref (Map String Unit)
 unknownCtorMsg : String -> String
 unknownFieldFresh : String -> String -> List String -> Mono
 unknownFieldMsg : String -> String -> String

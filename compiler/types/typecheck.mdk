@@ -1364,21 +1364,9 @@ shadowKeyTableRef = Ref omEmpty
 -- per-module `resetState` (like the crossModule* accumulators) and are cleared per RUN
 -- by `resetCrossModuleState`; the core pass (also Module mode) seeds them.  The Flat
 -- path never touches them (it rebuilds over its whole `prog` — already O(N)).
---   • the SET of every in-scope interface-method name (buildDefinerShadows / buildStandaloneShadows)
-universeIfaceMethodsRef : Ref (OrdMap Unit)
-universeIfaceMethodsRef = Ref omEmpty
---   • the SET of every in-scope top-level funDef name (buildStandaloneShadows' importedFns)
-universeFunNamesRef : Ref (OrdMap Unit)
-universeFunNamesRef = Ref omEmpty
---   • the impl KEY buckets (implExistsForHead's existence table — order/dup-insensitive,
---     so NOT reverseL'd: only the two boolean `implExistsForHead` reads consult it)
-universeKeyBucketsRef : Ref KeyBuckets
-universeKeyBucketsRef = Ref omEmpty
---   • interface name → its REQUIRED-method names (checkImplCompleteness' ifaceRequiredMethods).
---     Interface names are globally unique, so last-write-wins omInsert == first-match scan.
-universeIfaceRequiredRef : Ref (OrdMap (List String))
-universeIfaceRequiredRef = Ref omEmpty
--- #154 PR2 adds two more of the same shape (site #3 — registerMethodIfaceParamsAll's
+--   • the SET of every in-scope interface-method name (buildDefinerShadows / buildStandaloneShadows)--   • the SET of every in-scope top-level funDef name (buildStandaloneShadows' importedFns)--   • the impl KEY buckets (implExistsForHead's existence table — order/dup-insensitive,
+--     so NOT reverseL'd: only the two boolean `implExistsForHead` reads consult it)--   • interface name → its REQUIRED-method names (checkImplCompleteness' ifaceRequiredMethods).
+--     Interface names are globally unique, so last-write-wins omInsert == first-match scan.-- #154 PR2 adds two more of the same shape (site #3 — registerMethodIfaceParamsAll's
 -- per-module rebuild over `fullUniverse`).  Same lifecycle: survive `resetState`, cleared
 -- by `resetCrossModuleState`, seeded by the core pass, appended in `appendUniverseAccums`,
 -- and — because they are the two refs registerMethodIfaceParamsAll writes — COPIED into
@@ -1390,14 +1378,8 @@ universeIfaceRequiredRef = Ref omEmpty
 --     same map the per-module `fullUniverse` rebuild produced.  EVERY reader is a by-method-
 --     NAME omLookup (singleParamIfaceMethod / ifaceParamMonos / shadowVarHeadMethodScheme /
 --     inferAppExpr / …), never an iteration or an emptiness test, so an extra prior-module
---     entry that this module never names is never queried — byte-identical output.
-universeMethodIfaceParamsRef : Ref (OrdMap (String, List String, Ty))
-universeMethodIfaceParamsRef = Ref omEmpty
---   • the SET of interface names with ≥1 method registered.  Read only by ifaceRegistered's
+--     entry that this module never names is never queried — byte-identical output.--   • the SET of interface names with ≥1 method registered.  Read only by ifaceRegistered's
 --     omHasKey existence check (core's Num/Eq/Ord are seeded on both paths, so identical).
-universeRegisteredIfacesRef : Ref (OrdMap Unit)
-universeRegisteredIfacesRef = Ref omEmpty
-
 -- #154 PR3 (sites #6/#7): the PERSISTENT keyed impl universe for the obligation
 -- checkers (checkImplObligations / checkCallObligations).  The Module arm used to
 -- REBUILD `implDeclsWithReqs fullUniverse` + `implHeadsOf fullUniverse` (two flatMaps
@@ -1418,23 +1400,14 @@ universeRegisteredIfacesRef = Ref omEmpty
 -- NOT an order-immaterial coherence argument (coherence ACCEPTS specific-vs-parametric
 -- overlap, so two impls CAN match one concrete mono).
 --   • concrete-head impls, keyed "iface|tag" (tag = head tycon of the receiver
---     position), each bucket in forward declaration order → (head tys, requires).
-obUnivConcreteRef : Ref (OrdMap (List (List Ty, List Require)))
-obUnivConcreteRef = Ref omEmpty
---   • HEADLESS-receiver impls (receiver head is a TyVar / function / empty — no head
+--     position), each bucket in forward declaration order → (head tys, requires).--   • HEADLESS-receiver impls (receiver head is a TyVar / function / empty — no head
 --     tycon, so keyEntry-style tag bucketing can't reach them), keyed by iface.  These
 --     match ANY receiver (matchTyMono wildcard), so every lookup consults them in
 --     addition to the tag bucket.  Almost always empty (`impl Foo a` — the overlapping-
 --     impls / parse fixtures are the only corpus sources), but MUST be kept: dropping
---     them would change `implMatches` from True to False on such a program.
-obUnivHeadlessRef : Ref (OrdMap (List (List Ty, List Require)))
-obUnivHeadlessRef = Ref omEmpty
---   • iface name → SET of its impls' concrete head tags (headless impls contribute no
+--     them would change `implMatches` from True to False on such a program.--   • iface name → SET of its impls' concrete head tags (headless impls contribute no
 --     tag, exactly as `implHeadTagsFromHeads` skipped them).  `implCountForIfaceU`
 --     reads its omSize — byte-identical to `listLen (dedupStr (implHeadTagsFromHeads …))`.
-obUnivIfaceTagsRef : Ref (OrdMap (OrdMap Unit))
-obUnivIfaceTagsRef = Ref omEmpty
-
 -- #154 PR-A: PERSISTENT per-run DATA-universe accumulators for the multi-module path.
 -- checkBodyImpl's Module arm used to `registerAllData initialEnv (accData ++ prog0)`,
 -- RE-REGISTERING every earlier module's public data (and RE-MINTING its tyvars) once per
@@ -1452,19 +1425,6 @@ obUnivIfaceTagsRef = Ref omEmpty
 -- COUNT of tyvars minted shifts (registered once, not per module), argued invisible via the
 -- ppMono/ppScheme normalization (the TYPE-dump goldens + fixpoint are the oracle).  Survive
 -- per-module `resetState`; cleared per RUN by `resetCrossModuleState`.
-universeRecords : Ref (List (String, RecordInfo))
-universeRecords = Ref []
-universeRecordByName : Ref (OrdMap RecordInfo)
-universeRecordByName = Ref omEmpty
-universeFieldOwners : Ref (OrdMap (List String))
-universeFieldOwners = Ref omEmpty
-universeDataParamKinds : Ref (List (String, List Kind))
-universeDataParamKinds = Ref []
-universeAliasTable : Ref (List (String, (List String, Ty)))
-universeAliasTable = Ref []
-universeDataEnv : Ref TcEnv
-universeDataEnv = Ref initialEnv
-
 -- P0-19 (constrained-receiver arm): the `=>`-constraint variables of the top-level
 -- group CURRENTLY being inferred, as (interface name, the constraint's instantiated
 -- mono).  Set by processSCC between preunifySigsEx (which instantiates the sigs) and
@@ -1498,9 +1458,6 @@ methodDispatchIdxRef = Ref []
 -- so the accumulated list carries exactly the entries the per-module rebuild produced, in
 -- the same core-first left-to-right order.  Survives per-module `resetState`; cleared per
 -- RUN by `resetCrossModuleState`; seeded by the core pass (also Module mode).
-universeMethodDispatchIdxRef : Ref (List (String, Int))
-universeMethodDispatchIdxRef = Ref []
-
 -- FLAT-PATH SHADOW FIX (facet 1): interface-method names that a USER top-level fn
 -- shadows on the single-file flat check path.  processSCC drops a scheme with one
 -- of these names from the env it THREADS FORWARD, so a later prelude binding
@@ -1796,9 +1753,6 @@ schemeObligationsRef = Ref []
 -- is NOT cleared by resetState; checkModuleFullImpl re-seeds funConstraintsRef from
 -- it after the per-module reset.  The DEFINING module's entry (real
 -- ids, registered first) wins the lookupAssocSL2 first-match.
-crossModuleFunConstraintsRef : Ref (List (String, List Int))
-crossModuleFunConstraintsRef = Ref []
-
 -- WS-2/D2: module-attributed mirror of crossModuleFunConstraintsRef.  Keyed by
 -- (owning module id, fn name) so the FINAL dict-pass (scopeArities) can keep only
 -- the inferred-arity entry whose DEFINING module is in the dict-passed module's
@@ -1813,15 +1767,9 @@ crossModuleFunConstraintsRef = Ref []
 -- consumed by scopeAritiesQual.  The bare crossModuleFunConstraintsRef is KEPT — the
 -- per-module reseed at checkModuleFullImpl:7546 needs the bare form for the current
 -- module's E6 cross-module call-site discovery.
-crossModuleFunConstraintsQualRef : Ref (List ((String, String), List Int))
-crossModuleFunConstraintsQualRef = Ref []
-
 -- cross-module accumulator for funConstraintIfacesRef, mirroring
 -- crossModuleFunConstraintsRef exactly (accumulate across the graph, NOT cleared by
 -- resetState, re-seeded after the per-module reset).
-crossModuleFunConstraintIfacesRef : Ref (List (String, List String))
-crossModuleFunConstraintIfacesRef = Ref []
-
 -- WS-2/D2 (ifaces analog of crossModuleFunConstraintsQualRef): module-attributed
 -- mirror of crossModuleFunConstraintIfacesRef, keyed by (DEFINER module id, fn name),
 -- slot-parallel to crossModuleFunConstraintsQualRef.  inferDictAtFound reads the
@@ -1829,9 +1777,6 @@ crossModuleFunConstraintIfacesRef = Ref []
 -- the two stay aligned across a bare-name cross-module collision (a foreign same-named
 -- fn of different `=>`-arity must not contribute its ifaces).  Populated/reset in
 -- lockstep with the ids qual ref (checkModuleFullImpl / elaborateModules).
-crossModuleFunConstraintIfacesQualRef : Ref (List ((String, String), List String))
-crossModuleFunConstraintIfacesQualRef = Ref []
-
 -- WS-2/D2: the current module's imported VALUE name → its source module id (the dotted
 -- id its `import` form names == the loader mid == the qual tables' DEFINER key for a
 -- DIRECT import).  Lets inferDictAtFound resolve a cross-module constrained callee's
@@ -1904,9 +1849,6 @@ methodConstraintPositionsRef = Ref []
 -- module's registered method-constraints across the graph and is NOT cleared by
 -- resetState; checkModuleFullImpl re-seeds methodConstraintsRef from it after the
 -- per-module reset+registration (MERGE, the per-module entry wins first-match).
-crossModuleMethodConstraintsRef : Ref (List (String, List Int))
-crossModuleMethodConstraintsRef = Ref []
-
 -- WS-2/D2 (method-level analog of crossModuleFunConstraintsQualRef): module-attributed
 -- mirror of crossModuleMethodConstraintsRef, keyed by (owning interface's module id,
 -- method name).  Without it, two modules declaring distinct interfaces that share a
@@ -1921,57 +1863,89 @@ crossModuleMethodConstraintsRef = Ref []
 -- per-scope dict-pass.  The bare crossModuleMethodConstraintsRef is KEPT — the
 -- per-module reseed at checkModuleFullImpl needs the bare form for the current module's
 -- cross-module call-site discovery (recordMethodDicts), exactly like the fn side.
-crossModuleMethodConstraintsQualRef : Ref (List ((String, String), List Int))
-crossModuleMethodConstraintsQualRef = Ref []
+-- #158 PR2: the 22 per-run cross-module accumulators declared above (the six
+-- crossModule* dict-arity mirrors of #143/#144, plus the #154 universe*/obUniv* universe
+-- accumulators) are bundled into ONE typed record so their survive/clear lifecycle is a
+-- TYPE FACT, not prose.  `freshCrossRun` constructs exactly the field-Refs that
+-- `resetCrossModuleState` installs, so "what survives resetState" == "what CrossRun holds"
+-- == "what a per-run reset clears" — enforced by the constructor: a new accumulator cannot
+-- be added to the survive-set without appearing in freshCrossRun (and thus the reset).
+-- This is a record OF Refs (fields stay `Ref …`), NOT a record of values: the grow helpers
+-- (appendUniverseAccums / appendDataUniverse / growImplUniverse) and the Module-arm copies
+-- mutate the field-Refs in place, so no whole-record copy is allocated per grow/push.
+data CrossRun = CrossRun {
+    universeIfaceMethodsRef : Ref (OrdMap Unit),
+    universeFunNamesRef : Ref (OrdMap Unit),
+    universeKeyBucketsRef : Ref (OrdMap (List KeyEntry)),  -- = KeyBuckets, inlined: that alias is defined below this record, so it wouldn't expand in a field-type projection
+    universeIfaceRequiredRef : Ref (OrdMap (List String)),
+    universeMethodIfaceParamsRef : Ref (OrdMap (String, List String, Ty)),
+    universeRegisteredIfacesRef : Ref (OrdMap Unit),
+    universeMethodDispatchIdxRef : Ref (List (String, Int)),
+    universeRecords : Ref (List (String, RecordInfo)),
+    universeRecordByName : Ref (OrdMap RecordInfo),
+    universeFieldOwners : Ref (OrdMap (List String)),
+    universeDataParamKinds : Ref (List (String, List Kind)),
+    universeAliasTable : Ref (List (String, (List String, Ty))),
+    universeDataEnv : Ref TcEnv,
+    obUnivConcreteRef : Ref (OrdMap (List (List Ty, List Require))),
+    obUnivHeadlessRef : Ref (OrdMap (List (List Ty, List Require))),
+    obUnivIfaceTagsRef : Ref (OrdMap (OrdMap Unit)),
+    crossModuleFunConstraintsRef : Ref (List (String, List Int)),
+    crossModuleFunConstraintsQualRef : Ref (List ((String, String), List Int)),
+    crossModuleFunConstraintIfacesRef : Ref (List (String, List String)),
+    crossModuleFunConstraintIfacesQualRef : Ref (List ((String, String), List String)),
+    crossModuleMethodConstraintsRef : Ref (List (String, List Int)),
+    crossModuleMethodConstraintsQualRef : Ref (List ((String, String), List Int)),
+  }
 
--- ── the ONE lifecycle owner for the six cross-module accumulators (#143/#144) ──
--- These six deliberately SURVIVE the per-module `resetState` (so dict arities/ifaces
--- cross module boundaries within one graph — see the declaration comments above), but
--- they must NOT survive a whole multi-module RUN: a long-lived process (LSP, playground,
--- snapshot runner) drives the analyze/elaborate path repeatedly, and without a per-run
--- reset run K+1 seeds `funConstraintsRef`/`funConstraintIfacesRef` from run K's residue
+-- Construct all 22 field-Refs fresh (each reproduces its former top-level ref's initial).
+freshCrossRun : Unit -> CrossRun
+freshCrossRun _ = CrossRun {
+  universeIfaceMethodsRef = Ref omEmpty,
+  universeFunNamesRef = Ref omEmpty,
+  universeKeyBucketsRef = Ref omEmpty,
+  universeIfaceRequiredRef = Ref omEmpty,
+  universeMethodIfaceParamsRef = Ref omEmpty,
+  universeRegisteredIfacesRef = Ref omEmpty,
+  universeMethodDispatchIdxRef = Ref [],
+  universeRecords = Ref [],
+  universeRecordByName = Ref omEmpty,
+  universeFieldOwners = Ref omEmpty,
+  universeDataParamKinds = Ref [],
+  universeAliasTable = Ref [],
+  universeDataEnv = Ref initialEnv,
+  obUnivConcreteRef = Ref omEmpty,
+  obUnivHeadlessRef = Ref omEmpty,
+  obUnivIfaceTagsRef = Ref omEmpty,
+  crossModuleFunConstraintsRef = Ref [],
+  crossModuleFunConstraintsQualRef = Ref [],
+  crossModuleFunConstraintIfacesRef = Ref [],
+  crossModuleFunConstraintIfacesQualRef = Ref [],
+  crossModuleMethodConstraintsRef = Ref [],
+  crossModuleMethodConstraintsQualRef = Ref [],
+}
+
+-- The single module-level cell holding the current run's accumulator bundle.
+crossRun : Ref CrossRun
+crossRun = Ref (freshCrossRun ())
+
+-- ── the ONE lifecycle owner for the 22 cross-module accumulators (#143/#144, #154) ──
+-- These 22 deliberately SURVIVE the per-module `resetState` (so dict arities/ifaces and
+-- the universe/data/impl accumulators cross module boundaries within one graph — see the
+-- declaration comments above), but they must NOT survive a whole multi-module RUN: a
+-- long-lived process (LSP, playground, snapshot runner) drives the analyze/elaborate path
+-- repeatedly, and without a per-run reset run K+1 seeds `funConstraintsRef` /
+-- `funConstraintIfacesRef` (and the universe accumulators) from run K's residue
 -- (checkModuleFullImpl reads them for the FIRST module before any fresh snapshot lands),
 -- while the `*Qual` mirrors are prepend-appended and never truncated → unbounded growth.
 -- Give them exactly ONE reset owner, called at the top of EVERY multi-module entry
 -- (`checkModules`, `checkModulesDiags`, `checkModulesEntryFull`, `elaborateModules`), so
--- the next entry added cannot silently miss one — and so all six are cleared symmetrically
--- (the pre-#144 elaborateModules clear block omitted `crossModuleFunConstraintIfacesRef`).
--- Scoped to exactly these six; do NOT fold into `resetState` (they must survive THAT).
+-- the next entry added cannot silently miss one — and so all are cleared symmetrically.
+-- Replacing `crossRun` with a fresh bundle IS the reset: freshCrossRun re-mints every
+-- field, so the set that resets == the set in CrossRun, enforced by the constructor.
+-- Scoped to exactly these 22; do NOT fold into `resetState` (they must survive THAT).
 resetCrossModuleState : Unit -> Unit
-resetCrossModuleState _ =
-  let _ = setRef crossModuleFunConstraintsRef []
-  let _ = setRef crossModuleFunConstraintsQualRef []
-  let _ = setRef crossModuleFunConstraintIfacesRef []
-  let _ = setRef crossModuleFunConstraintIfacesQualRef []
-  let _ = setRef crossModuleMethodConstraintsRef []
-  let _ = setRef crossModuleMethodConstraintsQualRef []
-  -- #154 PR1: the per-run universe accumulators share this reset boundary (called at
-  -- the top of every multi-module entry).  Clearing them here — NOT in resetState —
-  -- keeps them alive across the per-module resets while preventing run K+1 from
-  -- inheriting run K's universe.
-  let _ = setRef universeIfaceMethodsRef omEmpty
-  let _ = setRef universeFunNamesRef omEmpty
-  let _ = setRef universeKeyBucketsRef omEmpty
-  let _ = setRef universeIfaceRequiredRef omEmpty
-  -- #154 PR2 (site #3): the two accumulators that feed methodIfaceParamsRef /
-  -- registeredIfacesRef on the Module path share the same per-run reset boundary.
-  let _ = setRef universeMethodIfaceParamsRef omEmpty
-  let _ = setRef universeRegisteredIfacesRef omEmpty
-  -- #154 PR-B: the dispatch-index accumulator (feeds methodDispatchIdxRef on the Module
-  -- path) shares the same per-run reset boundary.
-  let _ = setRef universeMethodDispatchIdxRef []
-  -- #154 PR3 (sites #6/#7): the keyed impl universe for the obligation checkers
-  -- shares the same per-run reset boundary.
-  let _ = setRef obUnivConcreteRef omEmpty
-  let _ = setRef obUnivHeadlessRef omEmpty
-  let _ = setRef obUnivIfaceTagsRef omEmpty
-  -- #154 PR-A: the DATA-universe accumulators share the same per-run reset boundary.
-  let _ = setRef universeRecords []
-  let _ = setRef universeRecordByName omEmpty
-  let _ = setRef universeFieldOwners omEmpty
-  let _ = setRef universeDataParamKinds []
-  let _ = setRef universeAliasTable []
-  setRef universeDataEnv initialEnv
+resetCrossModuleState _ = setRef crossRun (freshCrossRun ())
 
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
@@ -3829,8 +3803,8 @@ qualConstraintFor name = match lookupAssoc name currentImportDefinersRef.value
   None => None
   Some src => map (ids => (
     ids,
-    fromOption [] (lookupQualIfaces src name crossModuleFunConstraintIfacesQualRef.value),
-  )) (lookupQualArity src name crossModuleFunConstraintsQualRef.value)
+    fromOption [] (lookupQualIfaces src name crossRun.value.crossModuleFunConstraintIfacesQualRef.value),
+  )) (lookupQualArity src name crossRun.value.crossModuleFunConstraintsQualRef.value)
 
 lookupQualArity : String -> String -> List ((String, String), List Int) -> Option (List Int)
 lookupQualArity _ _ [] = None
@@ -7292,8 +7266,8 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
   let _ = resetState ()
   let _ = setRef typeErrorsSticky savedSticky
   let _ = setRef typeErrors savedErrors
-  let _ = setRef crossModuleFunConstraintsRef snapshotE
-  let _ = setRef crossModuleFunConstraintIfacesRef snapshotIfacesE
+  let _ = setRef crossRun.value.crossModuleFunConstraintsRef snapshotE
+  let _ = setRef crossRun.value.crossModuleFunConstraintIfacesRef snapshotIfacesE
   promoted
 -- DRIVER-COLLAPSE Phase 2: discovery is a SCRATCH joint typecheck (see below); its
 -- type-error side effects must NOT leak into the STICKY accumulator that gates the
@@ -10430,11 +10404,11 @@ checkBodyImpl seed mode prog0 =
   -- the old empty result — `funDefs [] = []` gave no imported fns there.
   let definerShadows = match mode
     Flat _ => buildDefinerShadows fullUniverse prog0
-    Module _ _ _ => definerShadowsFromSet universeIfaceMethodsRef.value prog0
+    Module _ _ _ => definerShadowsFromSet crossRun.value.universeIfaceMethodsRef.value prog0
   let importerShadows = match mode
     Flat _ => []
     Module _ _ [] => []
-    Module _ _ _ => standaloneShadowsFromSet universeIfaceMethodsRef.value universeFunNamesRef.value prog0
+    Module _ _ _ => standaloneShadowsFromSet crossRun.value.universeIfaceMethodsRef.value crossRun.value.universeFunNamesRef.value prog0
   let sigs = sigsOf prog
   let _ = setRef definerShadowNamesRef definerShadows
   let _ = setRef definerShadowSigsRef sigs
@@ -10442,7 +10416,7 @@ checkBodyImpl seed mode prog0 =
   -- Module path (existence is order/dup-insensitive), the per-program rebuild on Flat.
   let _ = match mode
     Flat _ => setRef shadowKeyTableRef (buildKeyTable fullUniverse)
-    Module _ _ _ => setRef shadowKeyTableRef universeKeyBucketsRef.value
+    Module _ _ _ => setRef shadowKeyTableRef crossRun.value.universeKeyBucketsRef.value
   -- (#4 + #3-restore) mode-specific pre-inference ref setup (all pure/independent of the
   -- register+globalS block below, so order-safe).  Flat arms the per-body shadow-scoping
   -- toggles; Module installs importer-shadow state and restores the cross-module dict
@@ -10456,12 +10430,12 @@ checkBodyImpl seed mode prog0 =
     Module _ _ _ =>
       let _ = setRef standaloneValuesRef (dedup (importerShadows ++ definerShadows))
       let _ = setRef shadowStandaloneSchemesRef (pickStandaloneSchemes importerShadows seed)
-      let _ = setRef methodDispatchIdxRef universeMethodDispatchIdxRef.value
-      let _ = setRef funConstraintsRef crossModuleFunConstraintsRef.value
-      let _ = setRef funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
-      let _ = setRef funConstraintsRef (aliasConstraintEntries prog crossModuleFunConstraintsQualRef.value
+      let _ = setRef methodDispatchIdxRef crossRun.value.universeMethodDispatchIdxRef.value
+      let _ = setRef funConstraintsRef crossRun.value.crossModuleFunConstraintsRef.value
+      let _ = setRef funConstraintIfacesRef crossRun.value.crossModuleFunConstraintIfacesRef.value
+      let _ = setRef funConstraintsRef (aliasConstraintEntries prog crossRun.value.crossModuleFunConstraintsQualRef.value
         ++ funConstraintsRef.value)
-      let _ = setRef funConstraintIfacesRef (aliasConstraintEntries prog crossModuleFunConstraintIfacesQualRef.value
+      let _ = setRef funConstraintIfacesRef (aliasConstraintEntries prog crossRun.value.crossModuleFunConstraintIfacesQualRef.value
         ++ funConstraintIfacesRef.value)
       let _ = setRef currentImportDefinersRef (importDefinersOf prog)
       ()
@@ -10476,8 +10450,8 @@ checkBodyImpl seed mode prog0 =
   let _ = match mode
     Flat _ => registerMethodIfaceParamsAll fullUniverse
     Module _ _ _ =>
-      let _ = setRef methodIfaceParamsRef universeMethodIfaceParamsRef.value
-      setRef registeredIfacesRef universeRegisteredIfacesRef.value
+      let _ = setRef methodIfaceParamsRef crossRun.value.universeMethodIfaceParamsRef.value
+      setRef registeredIfacesRef crossRun.value.universeRegisteredIfacesRef.value
   -- #154 PR-A: the dominant remaining O(N²) in the multi-module typecheck.  The Module arm
   -- used to `registerAllData initialEnv (accData ++ prog0)` — re-registering (and re-minting
   -- the tyvars of) EVERY earlier module's public data ONCE PER MODULE.  Now: COPY the six
@@ -10490,12 +10464,12 @@ checkBodyImpl seed mode prog0 =
   let dataEnv = match mode
     Flat _ => registerAllData initialEnv prog
     Module _ _ _ =>
-      let _ = setRef recordsRef universeRecords.value
-      let _ = setRef recordByNameRef universeRecordByName.value
-      let _ = setRef fieldOwnersRef universeFieldOwners.value
-      let _ = setRef dataParamKindsRef universeDataParamKinds.value
-      let _ = setRef aliasTableRef universeAliasTable.value
-      registerAllData universeDataEnv.value prog0
+      let _ = setRef recordsRef crossRun.value.universeRecords.value
+      let _ = setRef recordByNameRef crossRun.value.universeRecordByName.value
+      let _ = setRef fieldOwnersRef crossRun.value.universeFieldOwners.value
+      let _ = setRef dataParamKindsRef crossRun.value.universeDataParamKinds.value
+      let _ = setRef aliasTableRef crossRun.value.universeAliasTable.value
+      registerAllData crossRun.value.universeDataEnv.value prog0
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   -- methodNames: FLAT's SECOND ifaceMethodSchemes call over prog — dedup-skipped by
@@ -10514,7 +10488,7 @@ checkBodyImpl seed mode prog0 =
       []
     Module _ _ implDecls =>
       let sm = pickSchemes importerShadows (ifaceMethodSchemes implDecls)
-      let _ = setRef methodConstraintsRef (methodConstraintsRef.value ++ crossModuleMethodConstraintsRef.value)
+      let _ = setRef methodConstraintsRef (methodConstraintsRef.value ++ crossRun.value.crossModuleMethodConstraintsRef.value)
       sm
   let env1 = extendVars (extendVars (extendVars dataEnv seed) globalS) shadowLayer
   let defs = funDefs prog
@@ -10552,22 +10526,22 @@ checkBodyImpl seed mode prog0 =
     Flat _ => ()
     Module mid _ _ =>
       let _ = expandSupersTable superDeclsRef.value
-      let _ = setRef crossModuleFunConstraintsRef funConstraintsRef.value
-      let _ = setRef crossModuleFunConstraintsQualRef
-        (attributeModuleArities mid prog funConstraintsRef.value ++ crossModuleFunConstraintsQualRef.value)
-      let _ = setRef crossModuleFunConstraintIfacesQualRef
-        (attributeModuleArrIfaces mid prog funConstraintIfacesRef.value ++ crossModuleFunConstraintIfacesQualRef.value)
-      let _ = setRef crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
-      let _ = setRef crossModuleMethodConstraintsRef methodConstraintsRef.value
-      let _ = setRef crossModuleMethodConstraintsQualRef
-        (attributeMethodModuleArities mid prog methodConstraintsRef.value ++ crossModuleMethodConstraintsQualRef.value)
+      let _ = setRef crossRun.value.crossModuleFunConstraintsRef funConstraintsRef.value
+      let _ = setRef crossRun.value.crossModuleFunConstraintsQualRef
+        (attributeModuleArities mid prog funConstraintsRef.value ++ crossRun.value.crossModuleFunConstraintsQualRef.value)
+      let _ = setRef crossRun.value.crossModuleFunConstraintIfacesQualRef
+        (attributeModuleArrIfaces mid prog funConstraintIfacesRef.value ++ crossRun.value.crossModuleFunConstraintIfacesQualRef.value)
+      let _ = setRef crossRun.value.crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
+      let _ = setRef crossRun.value.crossModuleMethodConstraintsRef methodConstraintsRef.value
+      let _ = setRef crossRun.value.crossModuleMethodConstraintsQualRef
+        (attributeMethodModuleArities mid prog methodConstraintsRef.value ++ crossRun.value.crossModuleMethodConstraintsQualRef.value)
       ()
   let _ = groundMultiParamObligations groundUniverse pendingImplObligations.value
   -- P0-17: impl missing a required method.  #154 PR1: the Module path looks the required
   -- methods up in the accumulated iface→required map instead of rescanning fullUniverse.
   let _ = match mode
     Flat _ => checkImplCompleteness fullUniverse prog
-    Module _ _ _ => checkImplCompletenessMap universeIfaceRequiredRef.value prog
+    Module _ _ _ => checkImplCompletenessMap crossRun.value.universeIfaceRequiredRef.value prog
   -- (#5 / BREAK #2) obligation gate.  FLAT runs checkImplObligations + setNumlitFloats
   -- UNCONDITIONALLY (flat-emit via elaborateDict needs the Float int-literal stamp — its
   -- resolve chain doesn't redo it).  MODULE runs them iff `not implInferEnabled` (the emit
@@ -10589,7 +10563,7 @@ checkBodyImpl seed mode prog0 =
       -- because groundUniverse = implDecls EXCLUDES this module's prog0, which the
       -- accumulator (appended before this point) includes — and it is a no-op for the
       -- single-param obligations the perf `modules` shape exercises.
-      let obUniv = ImplUniverse obUnivConcreteRef.value obUnivHeadlessRef.value obUnivIfaceTagsRef.value
+      let obUniv = ImplUniverse crossRun.value.obUnivConcreteRef.value crossRun.value.obUnivHeadlessRef.value crossRun.value.obUnivIfaceTagsRef.value
       let _ = if not implInferEnabled.value then
                 let _ = checkImplObligationsU obUniv pendingImplObligations.value
                 setNumlitFloats ()
@@ -13074,32 +13048,32 @@ buildDefinerShadows implDecls prog =
 -- so the accumulated tables are entry-for-entry the per-module rebuild.
 appendUniverseAccums : List Decl -> Unit
 appendUniverseAccums prog =
-  let _ = setRef universeIfaceMethodsRef (namesToSet (allIfaceMethodNames prog) universeIfaceMethodsRef.value)
-  let _ = setRef universeFunNamesRef (namesToSet (map fst (funDefs prog)) universeFunNamesRef.value)
-  let _ = setRef universeKeyBucketsRef (bucketKeyEntries (flatMap keyEntryOf prog) universeKeyBucketsRef.value)
+  let _ = setRef crossRun.value.universeIfaceMethodsRef (namesToSet (allIfaceMethodNames prog) crossRun.value.universeIfaceMethodsRef.value)
+  let _ = setRef crossRun.value.universeFunNamesRef (namesToSet (map fst (funDefs prog)) crossRun.value.universeFunNamesRef.value)
+  let _ = setRef crossRun.value.universeKeyBucketsRef (bucketKeyEntries (flatMap keyEntryOf prog) crossRun.value.universeKeyBucketsRef.value)
   let _ = setRef
-    universeIfaceRequiredRef
-    (insertIfaceRequired prog universeIfaceRequiredRef.value)
+    crossRun.value.universeIfaceRequiredRef
+    (insertIfaceRequired prog crossRun.value.universeIfaceRequiredRef.value)
   -- #154 PR2 (site #3): grow the methodIfaceParams / registeredIfaces accumulators by
   -- THIS module's interfaces, in lockstep (one decl walk).
-  let acc = insertMethodIfaceParams prog (universeMethodIfaceParamsRef.value, universeRegisteredIfacesRef.value)
-  let _ = setRef universeMethodIfaceParamsRef (fst acc)
-  let _ = setRef universeRegisteredIfacesRef (snd acc)
+  let acc = insertMethodIfaceParams prog (crossRun.value.universeMethodIfaceParamsRef.value, crossRun.value.universeRegisteredIfacesRef.value)
+  let _ = setRef crossRun.value.universeMethodIfaceParamsRef (fst acc)
+  let _ = setRef crossRun.value.universeRegisteredIfacesRef (snd acc)
   -- #154 PR-B: grow the dispatch-index accumulator by THIS module's interface indices.
   -- APPEND (universe first) so the accumulated list stays in the same core-first order the
   -- old `argDispatchIndices (accAll ++ prog)` flatMap produced; the sole reader is a
   -- first-wins lookupAssoc, so a prior-module entry this module never names is never queried.
-  let _ = setRef universeMethodDispatchIdxRef (universeMethodDispatchIdxRef.value ++ argDispatchIndices prog)
+  let _ = setRef crossRun.value.universeMethodDispatchIdxRef (crossRun.value.universeMethodDispatchIdxRef.value ++ argDispatchIndices prog)
   -- #154 PR3 (sites #6/#7): grow the keyed obligation impl universe by THIS module's
   -- impls (append to keep forward declaration order within each bucket).  Uses the
   -- SAME `implDeclsWithReqs` (iface, tys, reqs) triples the old rebuild consumed, so
   -- the accumulated buckets are entry-for-entry that per-module `fullUniverse` rebuild.
-  let obUni = growImplUniverse (implDeclsWithReqs prog) (ImplUniverse obUnivConcreteRef.value obUnivHeadlessRef.value obUnivIfaceTagsRef.value)
+  let obUni = growImplUniverse (implDeclsWithReqs prog) (ImplUniverse crossRun.value.obUnivConcreteRef.value crossRun.value.obUnivHeadlessRef.value crossRun.value.obUnivIfaceTagsRef.value)
   match obUni
     ImplUniverse c h t =>
-      let _ = setRef obUnivConcreteRef c
-      let _ = setRef obUnivHeadlessRef h
-      setRef obUnivIfaceTagsRef t
+      let _ = setRef crossRun.value.obUnivConcreteRef c
+      let _ = setRef crossRun.value.obUnivHeadlessRef h
+      setRef crossRun.value.obUnivIfaceTagsRef t
 
 -- #154 PR-A: grow the persistent DATA-universe by [pubDecls] (THIS module's public data).
 -- `registerData` / `registerVariants` hardcode the five working table refs, so grow by
@@ -13112,18 +13086,18 @@ appendUniverseAccums prog =
 -- stays module-local), matching foldModules' `accData ++ publicDataDecls prog` threading.
 appendDataUniverse : List Decl -> Unit
 appendDataUniverse pubDecls =
-  let _ = setRef recordsRef universeRecords.value
-  let _ = setRef recordByNameRef universeRecordByName.value
-  let _ = setRef fieldOwnersRef universeFieldOwners.value
-  let _ = setRef dataParamKindsRef universeDataParamKinds.value
-  let _ = setRef aliasTableRef universeAliasTable.value
-  let env2 = registerAllData universeDataEnv.value pubDecls
-  let _ = setRef universeRecords recordsRef.value
-  let _ = setRef universeRecordByName recordByNameRef.value
-  let _ = setRef universeFieldOwners fieldOwnersRef.value
-  let _ = setRef universeDataParamKinds dataParamKindsRef.value
-  let _ = setRef universeAliasTable aliasTableRef.value
-  setRef universeDataEnv env2
+  let _ = setRef recordsRef crossRun.value.universeRecords.value
+  let _ = setRef recordByNameRef crossRun.value.universeRecordByName.value
+  let _ = setRef fieldOwnersRef crossRun.value.universeFieldOwners.value
+  let _ = setRef dataParamKindsRef crossRun.value.universeDataParamKinds.value
+  let _ = setRef aliasTableRef crossRun.value.universeAliasTable.value
+  let env2 = registerAllData crossRun.value.universeDataEnv.value pubDecls
+  let _ = setRef crossRun.value.universeRecords recordsRef.value
+  let _ = setRef crossRun.value.universeRecordByName recordByNameRef.value
+  let _ = setRef crossRun.value.universeFieldOwners fieldOwnersRef.value
+  let _ = setRef crossRun.value.universeDataParamKinds dataParamKindsRef.value
+  let _ = setRef crossRun.value.universeAliasTable aliasTableRef.value
+  setRef crossRun.value.universeDataEnv env2
 
 -- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
 -- replaced by the persistent interface-method membership SET.  `direct` still filters
@@ -14237,10 +14211,10 @@ elaborateModules runtimeDecls coreDecls modulesIn =
 dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
 dictPassModulesIfEnabled dictNames core2 modules2 =
   let allModDecls = flatMap snd modules2
-  let promotedQ = crossModuleFunConstraintsQualRef.value
+  let promotedQ = crossRun.value.crossModuleFunConstraintsQualRef.value
   let allMods = namesToSet (map fst modules2) omEmpty
   let _ = setRef funConstraintsRef (scopeArities promotedQ allMods (core2 ++ allModDecls))
-  let _ = setRef methodConstraintsRef (scopeMethodArities crossModuleMethodConstraintsQualRef.value allMods)
+  let _ = setRef methodConstraintsRef (scopeMethodArities crossRun.value.crossModuleMethodConstraintsQualRef.value allMods)
   let core2' = dictPass dictNames core2
   let modules2' = dictPassModulesScoped dictNames promotedQ core2 modules2 modules2
   (core2', modules2')
@@ -14273,7 +14247,7 @@ dictPassModulesScoped dictNames promotedQ core2 allModules ((mid, prog)::rest) =
   -- already rewritten `A.name` to the origin's real symbol before this point.
   let _ = setRef funConstraintsRef (aliasConstraintEntries prog promotedQ
     ++ scopeArities promotedQ scopeMods scope)
-  let _ = setRef methodConstraintsRef (scopeMethodArities crossModuleMethodConstraintsQualRef.value scopeMods)
+  let _ = setRef methodConstraintsRef (scopeMethodArities crossRun.value.crossModuleMethodConstraintsQualRef.value scopeMods)
   (mid, dictPass dictNames prog) :: dictPassModulesScoped dictNames promotedQ core2 allModules rest
 
 -- the arity table for a scope: every `=>`-constrained signature in [scope]
