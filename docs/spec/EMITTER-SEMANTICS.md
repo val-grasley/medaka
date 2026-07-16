@@ -208,10 +208,19 @@ laws bind **all four engines** and every reflective helper (V6).
   `==` is false and `!=` is true on NaN; `-0.0 == 0.0`. The load-bearing word
   is *uniformly*: the same answer must come from the inline `fcmp` path, the
   interpreter's `evalArith`, the generic/dict-routed `Ord`/`Eq` paths, and
-  every V6 reflective helper (`mdk_value_eq`, `mdk_value_cmp_raw`, wasm's
-  `$mdk_value_cmp`). A path that funnels Float comparison through a
+  every V6 reflective helper. A path that funnels Float comparison through a
   three-way `compare` and back **cannot** be IEEE-correct, because a total
   `Ordering` has no "unordered" — see N6.
+
+  This is why the *type-lost* path (a genuinely-poly `Ord a` forwarded through
+  a HOF, where the emitter cannot see Float statically) uses **per-op IEEE
+  predicates** — `mdk_value_lt/le/gt/ge` and the `$mdk_value_lt/le/gt/ge` WAT
+  peers — and **not** the three-way `mdk_value_cmp_raw` / `$mdk_value_cmp`.
+  Deriving the four relational operators from a three-way was exactly **#305**
+  (S0): the 3-way's Float arm collapsed an unordered pair to `0` (EQ), so
+  `nan <= nan` read True on native and wasm while eval said False. The three-way
+  helpers survive **only** for the String/immediate shapes, where `-1/0/1` is
+  exact; they must never again back a relational operator.
 - **N6 — `compare` at Float needs a decided total-order story.** IEEE defines
   the four predicates; it does *not* give `compare : Float -> Float ->
   Ordering` a lawful answer at NaN (LT/EQ/GT are all wrong; each choice makes
@@ -232,6 +241,23 @@ laws bind **all four engines** and every reflective helper (V6).
   inputs — as a trap with a stable code or a pinned saturation, never a raw
   `fptosi` (out-of-range `fptosi` is poison; R5) and never an engine-varying
   answer.
+
+  **PINNED (owner decision, 2026-07-16, #346): `floatToInt` SATURATES. No
+  trap.** NaN → `0`; `+inf` / above range → `intMaxBound`; `−inf` / below
+  range → `intMinBound`; in-range truncates toward zero. Lowered as
+  `llvm.fptosi.sat.i64.f64` (native) / `i64.trunc_sat_f64_s` (wasm); eval
+  inherits the native arm through the `floatToInt` extern.
+
+  ⚠️ **The saturating intrinsic ALONE IS NOT CONFORMANT on either backend.**
+  Both saturate to **i64** bounds (±2^63), but Medaka's `Int` is the 63-bit
+  payload of the tagged word (RUNTIME-DESIGN §8), so its domain is
+  `[−2^62, 2^62−1]`. An i64-saturated result is *outside* the Int domain: on
+  native, `tagInt`'s `shl 1` shifts `INT64_MAX` straight out the top and it
+  decodes to `−1`; on wasm, `$mdk_box_int`'s renormalization wraps it the same
+  way. **Each backend must clamp the saturated value to
+  `intMinBound`/`intMaxBound` BEFORE tagging/boxing** — saturate-then-box is
+  the wrong order. Pinned by `float_to_int_clamp_i64` (input `2^63` exactly),
+  which is red under the intrinsic alone.
 - **N8 — The emitter must KNOW, not GUESS, scalar types.** The int-vs-float
   choice at every arithmetic/comparison/print site must derive from a fact
   established by the typechecker and carried to the emitter on the node
@@ -361,16 +387,16 @@ laws bind **all four engines** and every reflective helper (V6).
 | R1/R2 refinement | ✅ sampled | `diff_compiler_engines` + llvm/build/typed gates; known violations pinned in `test/engine_divergence.txt` |
 | R1 — Num-poly Float `%` | ✅ **FIXED (#345)** | `mdk_num_mod` float arm is now `fmod` (`medaka_rt.c`); wasm's `$mdk_value_mod` + `$mdk_float_rem` are an exact power-of-two-reduction fmod (byte-identical to libm across large/negative/small ratios); eval==native==wasm pinned by `polynum_mod_float{,_large,_neg}` |
 | R5 — unguarded `sdiv/srem` | ✅ | divisor guarded pre-instruction (`emitIntDivZeroChecked`); i64 `INT_MIN/-1` structurally unreachable under V2 (63-bit payloads) |
-| R5/N7 — `floatToInt` | ✗ **CONFIRMED (UB-derived)** | raw `fptosi`, poison on NaN/inf/range; observed `0` in both engines only by tag-wrap accident — **#346** (owner pin wanted) |
+| R5/N7 — `floatToInt` | ✅ **FIXED (#346/#372)** | saturates: `llvm.fptosi.sat.i64.f64` (native) / `i64.trunc_sat_f64_s` (wasm), each **clamped to the 63-bit Int bounds before tag/box** (the intrinsic saturates to i64 — out of domain). The status quo was worse than a wrong number: out-of-range `fptosi` poison was read back as a **live pointer**, so `floatToInt 1.0e19` printed an **ASLR-randomized address** (stable under `setarch -R`) — an address-disclosure primitive from safe surface. Pinned eval==native==wasm by `float_to_int_{nan,pos_inf,neg_inf,over,under,clamp_i64,trunc_pos,trunc_neg}` + `engine_value_pins` |
 | V1–V3, V5 rep | ✅ | ratified + spike-proven (RUNTIME-DESIGN §8); fixtures throughout |
 | V4/M2 — tag injectivity | ⚠ STATIC | ctor tags collision-free by construction (composite ordinals; reserved block guarded upstream by resolver `Duplicate constructor`); sentinel + dict-witness tags still raw djb2 with **no emit-time check** — **#348**; stale "real backend" comment — **#361** |
-| V6 — reflective surface | ⚠ enumerated here | `mdk_value_eq` ✅ (IEEE eq), `mdk_value_cmp_raw` ✗ (NaN→EQ, #305/N6), `mdk_num_*` ✅ (Float `%` = fmod, #345 FIXED), `mdk_append` ✅, `mdk_print_num` ✅, `mdk_hash_float` LATENT (−0.0 hash≠eq; −0.0 unconstructible from source — `negate a = 0.0 - a` — trigger: `intBitsToFloat`) |
+| V6 — reflective surface | ⚠ enumerated here | `mdk_value_eq` ✅ (IEEE eq), `mdk_value_lt/le/gt/ge` ✅ (IEEE, #305 — the relational path), `mdk_value_cmp_raw` ⚠ 3-way, NaN→EQ: String/immediate shapes ONLY, never relational (#305/N6), `mdk_num_*` ✅ (Float `%` = fmod, #345 FIXED), `mdk_append` ✅, `mdk_print_num` ✅, `mdk_hash_float` LATENT (−0.0 hash≠eq; −0.0 unconstructible from source — `negate a = 0.0 - a` — trigger: `intBitsToFloat`) |
 | DL1–DL3 dispatch | ✅ post-#203/#309 | uniform min⊑ elaboration; residuals #323/#324 (deep-nested overlap emit, wasm key sanitize) |
 | N1 wrap / N2 div-mod / N3 literals | ✅ CONFIRMED | bare `add/sub/mul` (no nsw/nuw, grep-clean), `sdiv/srem` guarded, trap codes match eval; literal tag-width guard at 2^61 handled via full-width shl |
 | N4 IEEE ops | ✅ | inline paths ✅ (`fadd…frem`, no fast-math); the runtime-dispatch Float `%` arm is now fmod on every engine (#345 FIXED) |
-| N5 IEEE compare, uniformly | ⚠ | inline `fcmp o*`/`une` ✅ both backends; `nan <= nan` on global Floats CONFIRMED correct (the `RScalar` stamp covers it — a suspected divergence DISPROVED by probe); residual: the generic/HOF path, #305 |
+| N5 IEEE compare, uniformly | ✅ | inline `fcmp o*`/`une` ✅ both backends; `nan <= nan` on global Floats CONFIRMED correct (the `RScalar` stamp covers it — a suspected divergence DISPROVED by probe); the generic/HOF (type-lost) path **#305 FIXED** — per-op IEEE predicates `mdk_value_lt/le/gt/ge` + `$mdk_value_*` peers replace the 3-way derivation; eval==native==wasm pinned by `test/llvm_fixtures_typed/float_typelost_ord_nan.mdk` (engines gate + value pin) and `test/run_check_agreement_fixtures/accept_float_ne_nan.mdk` |
 | N6 total-order story | ✗ undecided | owner decision — **#360**; until then bar = engine uniformity |
-| N7 conversions | ✗ | see #346; `floor/ceil/round/trunc` ✅ (C library, Float→Float) |
+| N7 conversions | ✅ **FIXED (#346/#372)** | `floatToInt` saturates (NaN→0, ±inf/range→`intMaxBound`/`intMinBound`), clamped to the 63-bit domain on both backends; `floor/ceil/round/trunc` ✅ (C library, Float→Float) |
 | N8 know-don't-guess | ✗ STATIC (architectural) | five accreted recovery heuristics (`staticIsFloat`, two-pass `inferSigs` w/ mutated `sigs`, `bodyFloatRet`/`closureRetTyRef`, `RScalar`, `mainKind`) — umbrella **#353**; the `RScalar` stamp is the done-right model |
 | N9 format/parse round-trip | ✅ CONFIRMED | shortest-round-trip lexeme (revised #57), `-0.0`/nan/inf pinned, `1e+300` re-lexes (#51 CLOSED; stale AGENTS.md row — #361); IR-text literal serialization round-trips via same formatter + `ensureFloatDot`; wasm JS-host copies UNVERIFIED — #361 |
 | T1–T3 traps | ✅ | closed taxonomy in `medaka_rt.c` (panic/div/mod/oob/refute/nonexh + fault handler); codes match eval |

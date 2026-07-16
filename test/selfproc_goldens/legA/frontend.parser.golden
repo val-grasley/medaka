@@ -69,16 +69,16 @@ cmpOp : Parser (Expr -> Expr -> Expr)
 coalesceClauses : List (String, List Pat, Expr) -> List LetBind
 coalesceGo : String -> List FunClause -> List (String, List Pat, Expr) -> List LetBind
 coalesceStep : String -> List FunClause -> String -> List Pat -> Expr -> List (String, List Pat, Expr) -> List LetBind
-combineDerives : List String -> List String -> List String
+combineDerives : List DeriveRef -> List DeriveRef -> List DeriveRef
 concatMapC : List Ty -> List Constraint
 consField : RecPatField -> (List RecPatField, Bool) -> (List RecPatField, Bool)
 consTail : Expr -> Parser Expr
 constraintTail : Ty -> Parser Ty
 ctorOrVar : String -> Pat
 curryLam : List Pat -> Expr -> Expr
-dataAfterEq : String -> Token -> Parser (List Variant, List String)
-dataBody : String -> Parser (List Variant, List String)
-dataBodyFor : String -> Token -> Parser (List Variant, List String)
+dataAfterEq : String -> Token -> Parser (List Variant, List DeriveRef)
+dataBody : String -> Parser (List Variant, List DeriveRef)
+dataBodyFor : String -> Token -> Parser (List Variant, List DeriveRef)
 dataVariants : Parser (List Variant)
 dataVariantsN : String -> Parser (List Variant)
 dataVariantsNFor : String -> Token -> Parser (List Variant)
@@ -92,8 +92,9 @@ declThenNoise : Parser Decl
 declWithSpan : Parser (Decl, Int, Int)
 deepenLeftover : String -> Array Token -> Array Int -> Int -> Int -> ParseError
 defaultImplRemovedMsg : String
-derivingClause : Parser (List String)
-derivingFor : Token -> Parser (List String)
+derivedNameP : Parser DeriveRef
+derivingClause : Parser (List DeriveRef)
+derivingFor : Token -> Parser (List DeriveRef)
 desugarDottedField : Expr -> (List String, Expr) -> FieldAssign
 dotFor : Expr -> Token -> Parser Expr
 dotTail : Expr -> Parser Expr

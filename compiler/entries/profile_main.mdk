@@ -14,6 +14,7 @@
 --   typecheck       HM type inference (checkToLinesWithRuntime; desugared runtime+core)
 --   lower           Core IR lowering (lowerProgramEmit over the elaborated program)
 --   emit            LLVM text IR emission (emitProgram over the Core IR)
+--   wasm-emit       WasmGC text WAT emission (wasm_emit.emitProgram over the SAME Core IR)
 --
 -- Without MEDAKA_PERF set the driver exits silently (no useful stdout output —
 -- this is a measurement tool, not a pipeline validator).
@@ -58,6 +59,18 @@ import backend.llvm_emit.{
   installDeclSigTypes,
   installMainIsUnitHint,
   installMainIsFloatHint,
+}
+-- `backend.wasm_emit` is the SECOND backend, and it exports its own `emitProgram`,
+-- `installMethodIface` and `installMainIsFloatHint` — all three collide with the LLVM
+-- names above. Aliased on import, exactly as tools/snapshot.mdk does for the same
+-- clash. The `W` suffix marks the WasmGC peer; the un-suffixed names stay LLVM's, so
+-- an unqualified `emitProgram` in this file still means what it has always meant.
+import backend.wasm_emit.{
+  emitProgram as wasmText,
+  installMethodIface as installMethodIfaceW,
+  installMainIsFloatHint as installMainIsFloatHintW,
+  installDeclRetTypes,
+  installCtorFloatFields,
 }
 import tools.fmt.{formatSource}
 import frontend.exhaust.{checkGuardExhaustivenessWith}
@@ -202,6 +215,50 @@ runStaged on rsrc csrc tsrc =
   let _ = emitProgram cprog
   let tE1 = now ()
   let _ = emitPhaseA on "emit" (tE1 - tE0) (allocSnap () - aE0) declsOp
+  -- WASM EMIT — the second half of issue #359. The `emit` stage above grades ONLY
+  -- llvm_emit; wasm_emit is a whole separate ~10k-line backend that was just as
+  -- unprofiled, and it is not a hypothetical: #381 was a CUBIC in WasmGC ctor-switch
+  -- emission (O(ctors x branches x table)), fixed by #401 for a 53x win at N=400.
+  -- Nothing but this stage stops it coming back.
+  --
+  -- ⚠️ THE TWO BACKENDS DIVERGE ON EXACTLY THIS AXIS, which is why one `emit` stage
+  -- cannot stand in for both: `ctorOrdinal`'s whole-table scan is SHARED, but only
+  -- wasm nests it inside a (slot, branch) loop — so the same shape that is quadratic
+  -- on llvm was cubic on wasm. A wasm regression is structurally invisible to the
+  -- llvm row and vice versa.
+  --
+  -- Mirrors entries/wasm_emit_modules_main.mdk's `emitTail` (the REAL wasm build
+  -- path): same four install* hooks, in the same order, fed from the SAME post-DCE
+  -- decls (`live`), then emitProgram over the Core IR.
+  --
+  -- `cprog` IS REUSED FROM THE `lower` STAGE ABOVE — deliberately, and it is not a
+  -- shortcut. Core IR is backend-agnostic (both llvm_emit_modules_main and
+  -- wasm_emit_modules_main emit from the identical `lowerProgramEmit allDecls`), so
+  -- re-lowering would time lowering twice and fold it into a stage named "wasm-emit".
+  -- Rule 1 of the gate: grade a stage, never a sum.
+  --
+  -- The install* calls sit OUTSIDE the timer, as the LLVM arm's do: they are
+  -- table-building, not emission. The same caveats as `lower`/`emit` apply verbatim —
+  -- DCE exercised, prelude constant NOT subtracted, single-file/no-link — so read a
+  -- ratio here as a LOWER BOUND on the true exponent.
+  --
+  -- No wasm TOOLCHAIN is needed: emitProgram renders TEXT WAT and this stage never
+  -- assembles or runs it, so this adds no node/wasm-tools dependency to the gate's CI
+  -- shard. That is NOT the same as free, and the difference is worth stating: wasm_emit
+  -- is ~10x slower than llvm_emit on identical input (~0.215 s vs ~0.021 s just for the
+  -- prelude, 38 s vs 10.6 s at xref N=16000), and the profiler runs this stage on EVERY
+  -- invocation the gate makes, so it costs the `gates (types)` shard ~5 minutes. Paid
+  -- deliberately: `types` is not the CI critical path (`gates (engines)`, ~5.8 min, is —
+  -- and shards are scheduled by cost, not theme, so this must never move there).
+  let _ = installMethodIfaceW (methodIfaceTable live)
+  let _ = installDeclRetTypes (declSigTypeNames rDecls ++ declSigTypeNames live)
+  let _ = installCtorFloatFields (ctorFieldTypeNames live)
+  let _ = installMainIsFloatHintW (mainTypeIsFloat ())
+  let tWe0 = now ()
+  let aWe0 = allocSnap ()
+  let _ = wasmText cprog
+  let tWe1 = now ()
+  let _ = emitPhaseA on "wasm-emit" (tWe1 - tWe0) (allocSnap () - aWe0) declsOp
   -- fmt: the whole comment-preserving format pass (collectComments +
   -- parseWithPositions + formatProgram).  Profiled because it was NOT before, and
   -- an unprofiled pass is where a quadratic hides: the comment side-channel's
@@ -247,3 +304,5 @@ runStaged on rsrc csrc tsrc =
 -- lower: Core IR lowering of the elaborated program (prelude ++ target)
 
 -- emit: LLVM text IR emission from that Core IR
+
+-- wasm-emit: WasmGC text WAT emission from that same Core IR (the second backend)

@@ -1,0 +1,4 @@
+-- #346 (S0): THE CLAMP PROBE.  2^63 exactly.  llvm.fptosi.sat/i64.trunc_sat_f64_s
+-- alone return i64 max (9223372036854775807) here, which tags/boxes to -1 — so this
+-- fixture is red unless the backend ALSO clamps to the 63-bit Int bound.
+main = floatToInt 9.223372036854776e18

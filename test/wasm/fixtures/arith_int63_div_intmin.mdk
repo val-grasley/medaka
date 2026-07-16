@@ -1,0 +1,10 @@
+-- N1/R5: the ONLY i64.div_s that engine-traps is INT64_MIN / -1, and INT64_MIN is
+-- -2^63 — NOT intMinBound (-2^62).  So the dividend must be built by an ADD that
+-- OVERFLOWS to exactly -2^63: `intMinBound + intMinBound`.  Without the 63-bit wrap the
+-- raw i64 sum IS -2^63 and the divide is an uncoded engine trap ("divide result
+-- unrepresentable", violating WP8/T1); with it the sum wraps to 0 and 0 / -1 = 0.
+--
+-- Pins the R5 corollary: renormalizing makes INT64_MIN unreachable, so the trap is
+-- structurally impossible rather than guarded.  (Prelude-free corpus, and #469 means the
+-- literal 2^62 silently wraps, so intMinBound is built by subtraction.)
+main = (0 - 4611686018427387903 - 1 + (0 - 4611686018427387903 - 1)) / (0 - 1)

@@ -356,8 +356,30 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
   Refs and there is no disable for the census-mode gap flag; process-per-emit masks it.
 - **`$boxint` equality/compare through a poly HOF is by VALUE** (no ref-identity bug).
 - **NaN `compare`/`min`/`max` are engine-UNIFORM today** (all three engines: `Eq`,
-  `nan`, `nan`, `1.0`, `1.0`) — the N6 interim bar holds there; the live NaN defect is
-  the HOF-routed `<=`/`>=` path (#305, native+wasm in lockstep, eval correct).
+  `nan`, `nan`, `1.0`, `1.0`) — the N6 interim bar holds there. ⚠️ **The second half of this
+  entry is now DRAINED: the HOF-routed `<=`/`>=` NaN defect (#305) is FIXED** — ws:emitter's
+  #484 made Float relational ops IEEE predicates on the **type-lost path** too (both backends,
+  one atomic PR), and took a latent `== NaN` bug with it. `WASM-SEMANTICS`'s **N5 row is now ✅**.
+  N6 (`compare`/`min`/`max` at NaN → totalOrder, **#360**) remains decided-and-unimplemented.
+
+  > **Why this line is worth reading twice.** It sat in a ledger headed *"do NOT re-file"* —
+  > whose purpose is to tell you a question is **settled**. A stale entry here does not merely
+  > misinform: **it discourages the very check that would catch it.**
+  >
+  > ⚠️ **It is a CONVENTION GAP, not a workstream boundary — I claimed the latter and a reviewer
+  > disproved it in under a minute.** The tell: #484 didn't drain **its own team's** ledger either
+  > — `.claude/workstreams/EMITTER.md`'s debunkings section *still* reads *"the live NaN defect is
+  > the generic/HOF path (#305)"* (**#488**). A boundary would predict ws:emitter *could* reach
+  > `EMITTER.md` and did; instead **neither** workstream ledger was touched — only the explicitly
+  > named contract files (`docs/spec/*-SEMANTICS.md`). And `EMITTER.md` contains **no drain-rule
+  > text at all**: this file only checks itself because #409 wrote the rule *into this file*.
+  > **No drain checklist — ours or theirs — currently covers ANY workstream doc's debunkings
+  > ledger.**
+  >
+  > **So the practical rule stands and its scope is wider than "yours":** when *any* issue a
+  > debunkings ledger cites gets closed, **the drain is the LEDGER OWNER's, and nobody will do it
+  > for them.** Run the rule's grep on every closed `#N`, not just your own — and if the sibling's
+  > ledger is stale, **tell them** (#488), because their file has no rule telling them to look.
 
 ## Before you measure anything
 

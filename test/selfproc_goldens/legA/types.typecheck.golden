@@ -197,19 +197,20 @@ cmCheckWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> Lis
 cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List TcDiag, List TcDiag))
 cmEntryCollect : Bool -> String -> (List (String, Scheme), List TcDiag, List TcDiag) -> (List (String, Scheme), List TcDiag, List TcDiag) -> (List (String, Scheme), List TcDiag, List TcDiag)
 cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List TcDiag, List TcDiag))
-cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option String
+cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option (String, Option Loc)
 cohBind : Ref (List (Int, Mono)) -> Int -> Mono -> Bool
 cohCollectImpls : List Decl -> List CohImpl
 cohCollectModuleImpls : List (String, List Decl) -> List CohImpl
-cohConflictWith : CohImpl -> List CohImpl -> Option String
+cohConflictWith : CohImpl -> List CohImpl -> Option (String, Option Loc)
 cohCrossModuleMsg : String -> String -> String -> String
 cohEqMono : Mono -> Mono -> Bool
 cohEqR : Mono -> Mono -> Bool
-cohFirstConflict : List CohImpl -> Option String
+cohFirstConflict : List CohImpl -> Option (String, Option Loc)
 cohFreshTys : List Ty -> List Mono
 cohGo : Ref (List (Int, Mono)) -> Mono -> Mono -> Bool
 cohGoR : Ref (List (Int, Mono)) -> Mono -> Mono -> Bool
 cohImplIface : CohImpl -> String
+cohImplLoc : CohImpl -> Option Loc
 cohImplsOf : Decl -> List CohImpl
 cohImplsOfMid : String -> Decl -> List CohImpl
 cohOverlap : List Mono -> List Mono -> Bool
@@ -524,6 +525,7 @@ implEntryFromTys : String -> List Ty -> List Require -> List ImplMethod -> List 
 implEntryOf : Decl -> List ImplEntry
 implExistsForHead : Map String (List KeyEntry) -> String -> String -> Bool
 implExistsForHeadGo : List KeyEntry -> String -> String -> Bool
+implHeadLoc : List Ty -> Option Loc
 implHeadMatchesArgs : List Ty -> List Mono -> Bool
 implHeadSubst : List Ty -> List Mono -> Option (List (String, Mono))
 implHeadSubstGo : List Ty -> List Mono -> Option (List (String, Mono)) -> Option (List (String, Mono))
@@ -693,6 +695,7 @@ letRecNonFunctionMsg : String -> String
 letters : String
 litType : Lit -> Mono
 liveNumVarGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> Option Mono
+loadDataUniverse : Unit -> Unit
 locEq : Loc -> Loc -> Bool
 lookupAssocI : Int -> List (Int, a) -> Option a
 lookupAssocS : String -> List (String, List String) -> Option (List String)
@@ -901,6 +904,7 @@ pushIncompleteImpl : (Option Loc, String) -> Unit
 pushNoImplError : String -> Option Loc -> List Mono -> Unit
 pushPendingObl : (String, List String, Ty, Mono, Option Loc) -> Unit
 pushTypeError : String -> String -> Unit
+pushTypeErrorAt : String -> Option Loc -> String -> Unit
 pushTypeErrorHelpFixAt : String -> Option Loc -> String -> String -> Option (Loc, String) -> Unit
 pushTypeErrorOnce : String -> String -> Unit
 pushTypeErrorOnceAt : String -> Option Loc -> String -> Unit
@@ -1056,12 +1060,15 @@ scopeShadowsForGroup : List String -> Unit
 scopeShadowsUser : Unit -> Unit
 seedAbstractRecordTypes : List Decl -> List (String, List Decl) -> Unit
 seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
+seedAndCheckSplit : List Decl -> List Decl -> List Decl -> List (String, Scheme)
+seedCheckRun : List Decl -> Unit
 seedEffectDomains : Unit -> Unit
 selectImplEntryByIface : Map String (List KeyEntry) -> String -> Mono -> Option KeyEntry
 selectReqImpl : Map String (List KeyEntry) -> Map String (List ImplEntry) -> String -> String -> Mono -> Option (Ty, List Require)
 selfBinding : String -> (String, String)
 setCardCap : Int
 setCoherenceUserDecls : List Decl -> Unit
+setDictEligible : List String -> Unit
 setLocIfSome : Option Loc -> Unit
 setNumlitFloats : Unit -> Unit
 setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> Unit
@@ -1104,6 +1111,7 @@ standaloneShadowScheme : String -> Option Mono
 standaloneShadowSigTy : String -> String -> Option Ty
 standaloneShadowsFromSet : Map String Unit -> Map String Unit -> List Decl -> List String
 standaloneValuePinned : String -> Bool
+storeDataUniverse : Unit -> Unit
 strHasSlash : String -> Bool
 strHasSlashGo : String -> Int -> Int -> Bool
 stripArrows : Mono -> Mono
@@ -1162,6 +1170,7 @@ twoArgCallee : TcEnv -> Expr -> Option (String, Expr, Mono, Mono)
 tyAppSpine : Ty -> (Ty, List Ty)
 tyConNamesInConstraint : Constraint -> List String
 tyConNamesInTy : Ty -> List String
+tyFirstLoc : Ty -> Option Loc
 tyHeadEq : Ty -> Ty -> Bool
 tyIsConcrete : Ty -> Bool
 tyMatchesAst : Ty -> Ty -> Bool

@@ -1,0 +1,10 @@
+-- N1/WP2 peer of arith_int63_wrap_scalar, in REF mode: the `data` forces the uniform
+-- (ref eq) rep, so the overflowing product round-trips the $mdk_box_int/$mdk_unbox_int
+-- seam.  Pins the 63-bit renormalization on the boxed path (a $boxint must never hold a
+-- value outside [-2^62, 2^62)).
+data Box = Box Int
+
+unbox b = match b
+  Box n => n
+
+main = unbox (Box (4611686018427387903 + 1))

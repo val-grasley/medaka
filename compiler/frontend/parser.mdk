@@ -16,6 +16,7 @@
 -- forms, and the rest of the operator ladder come in later slices.
 
 import frontend.ast.{
+  DeriveRef(..),
   Lit(..),
   Ty(..),
   Constraint(..),
@@ -2621,19 +2622,19 @@ parseData vis = do
 
 -- block-form deriving (inside the INDENT) and inline-form deriving (after the
 -- DEDENT) are mutually exclusive in practice; prefer whichever is non-empty.
-combineDerives : List String -> List String -> List String
+combineDerives : List DeriveRef -> List DeriveRef -> List DeriveRef
 combineDerives [] outer = outer
 combineDerives block _ = block
 
 -- inline (`= …`) or block (`INDENT = … DEDENT`) variant list.  Returns the
 -- variants paired with any deriving names found INSIDE a block body (empty for
 -- the inline form).
-dataBody : String -> Parser (List Variant, List String)
+dataBody : String -> Parser (List Variant, List DeriveRef)
 dataBody tyName = do
   t <- peekP
   dataBodyFor tyName t
 
-dataBodyFor : String -> Token -> Parser (List Variant, List String)
+dataBodyFor : String -> Token -> Parser (List Variant, List DeriveRef)
 dataBodyFor tyName TEqual = do
   advance
   t <- peekP
@@ -2663,7 +2664,7 @@ dataBodyFor _ _ = pure ([], [])
 -- before the first variant is optional (lenient); the formatter always emits it.
 -- `deriving (…)` inside the block is consumed before the DEDENT, mirroring the
 -- old `TIndent` block form.
-dataAfterEq : String -> Token -> Parser (List Variant, List String)
+dataAfterEq : String -> Token -> Parser (List Variant, List DeriveRef)
 dataAfterEq tyName TIndent = do
   advance
   skipNewlines
@@ -2768,20 +2769,31 @@ parseField = do
   pure (Field name t)
 
 -- `deriving (Name, …)`, after the variant/field block; optional
-derivingClause : Parser (List String)
+derivingClause : Parser (List DeriveRef)
 derivingClause = do
   skipNewlines
   t <- peekP
   derivingFor t
 
-derivingFor : Token -> Parser (List String)
+derivingFor : Token -> Parser (List DeriveRef)
 derivingFor TDeriving = do
   advance
   expectTok TLParen
-  names <- sepBy1 upperNameP (expectTok TComma)
+  names <- sepBy1 derivedNameP (expectTok TComma)
   expectTok TRParen
   pure names
 derivingFor _ = pure []
+
+-- One name in a `deriving (…)` list, wrapped with its own token span so a
+-- "cannot derive" diagnostic underlines the NAME.  Real only on the
+-- `parseLocated` path (`parse` leaves the loc refs unset → placeholder), the
+-- same convention `TyCon`'s `Option Loc` already follows.
+derivedNameP : Parser DeriveRef
+derivedNameP = do
+  s <- getPos
+  n <- upperNameP
+  q <- getPos
+  pure (DeriveRef n (Some (locOfSpan s q)))
 
 -- a decl body is an inline expr, or an INDENT block of statements: a single
 -- expression statement unwraps to that expr; anything else becomes an EBlock

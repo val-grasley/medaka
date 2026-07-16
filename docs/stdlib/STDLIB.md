@@ -80,31 +80,34 @@ here. In rough priority order:
 These are the primitives declared as `extern` in `stdlib/runtime.mdk`. They are
 visible to every Medaka program without an import. The list below reflects
 the **current** labels (fine-grained after the `<IO>` split — verified 2026-06-22).
+⚠️ **Non-exhaustive** — `stdlib/runtime.mdk` declares 135 externs (verified
+2026-07-16); this is a curated excerpt of the common surface, not the full
+catalog. `stdlib/runtime.mdk` itself is authoritative for the complete list.
 
 - `putStr : String -> <Stdout> Unit` — write a string to stdout, no trailing newline
 - `putStrLn : String -> <Stdout> Unit` — write a string to stdout followed by `\n`
 - (`print`/`println : Display a => a -> <IO> Unit` are Medaka prelude functions
   over `putStr`/`putStrLn`, not externs — they render via `Display`, Phase 111)
 - `Ref : a -> Ref a` — wrap a value in a mutable cell (read it back via `r.value`)
-- `set_ref : Ref a -> a -> Unit` — overwrite the contents of a `Ref` (mutation is untracked, no effect row)
+- `setRef : Ref a -> a -> Unit` — overwrite the contents of a `Ref` (mutation is untracked, no effect row)
 - `hashInt`, `hashFloat`, `hashString`, `hashChar`, `hashBool : _ -> Int` — type-specific
   hash externs; the `Hashable` interface in `core.mdk` calls these (replaced the old
   generic `hash : a -> Int` extern)
 - `pi : Float` — math constant π
 - `e : Float` — math constant e
 - `readLine : Unit -> <Stdin> String` — read one line from stdin
-- `readFile : String -> <FileRead> (Result String String)` — read file, `Ok contents` or `Err message`
-- `writeFile : String -> String -> <FileWrite> (Result String Unit)` — write file, `Ok ()` or `Err message`
+- `readFile : String -> <FileRead "_"> (Result String String)` — read file, `Ok contents` or `Err message`
+- `writeFile : String -> String -> <FileWrite "_"> (Result String Unit)` — write file, `Ok ()` or `Err message`
 - `exit : Int -> Unit` — terminate the process with the given exit code
 - `panic : String -> a` — abort with a runtime panic carrying the message
 
 io Module 7 host primitives (see Module 7 for the ergonomic layer):
 
 - `args : Unit -> <Env> (List String)` — program args after the script name
-- `getEnv : String -> <Env> (Option String)` — environment variable, or `None`
-- `fileExists : String -> <FileRead> Bool`
-- `appendFile : String -> String -> <FileWrite> (Result String Unit)` — `Ok ()` / `Err message`
-- `listDir : String -> <FileRead> (Result String (List String))` — directory entry names
+- `getEnv : String -> <Env "_"> (Option String)` — environment variable, or `None`
+- `fileExists : String -> <FileRead "_"> Bool`
+- `appendFile : String -> String -> <FileWrite "_"> (Result String Unit)` — `Ok ()` / `Err message`
+- `listDir : String -> <FileRead "_"> (Result String (List String))` — directory entry names
 - `ePutStr` / `ePutStrLn : String -> <Stderr> Unit` — raw stderr output
 - `readLineOpt : Unit -> <Stdin> (Option String)` — one stdin line, `None` at EOF
 - `readAll : Unit -> <Stdin> String` — all of stdin
@@ -415,11 +418,12 @@ written in Medaka on top.
 - **Kernel shape.** Minimal bridge to `Array Char` (the analog of
   `arrayFromList`/`arrayMakeWith`) plus a few codepoint-aware perf externs that
   avoid an `Array Char` round-trip on hot paths.
-- **Unicode.** Classification and case folding are **host-backed now** — they
-  need the Unicode character database, which OCaml's stdlib lacks. Implement via
-  [`uucp`](https://erratique.ch/software/uucp) (add to `lib/dune`). The contract
-  (full Unicode) is part of the runtime and every self-hosting host must re-provide
-  it, exactly like `floatToString`. ASCII-only ops (`isDigit`, `digitToInt`,
+- **Unicode.** Classification and case folding are host-backed but
+  **ASCII-only** (`runtime/medaka_rt.c` — plain `'a'..'z'`/`'A'..'Z'` byte
+  tests; there is no bundled Unicode character database). A non-ASCII byte
+  (UTF-8 lead or continuation, `>= 0x80`) passes through every one of these
+  operations unchanged — see issue #417. Full Unicode case folding/
+  classification is a tracked gap, not implemented. ASCII-only ops (`isDigit`, `digitToInt`,
   hex) stay in Medaka — `'0'..'9'`/`'a'..'f'` is exact and needs no tables.
 
 ### Runtime kernel (extern, in `stdlib/runtime.mdk`)
@@ -451,21 +455,31 @@ Number parsing/formatting (correct float work is infeasible in Medaka):
 - ✅ `floatToString : Float -> String` — already an extern
 - ✅ `intToString : Int -> String` — already an extern
 
-Unicode classification & case folding (host Unicode tables via `uucp`):
+Char classification & case folding — **ASCII-only** (own issue #417; verified
+against `runtime/medaka_rt.c`, no Unicode tables anywhere in the kernel):
 
-- ✅ `charIsAlpha : Char -> Bool`
-- ✅ `charIsSpace : Char -> Bool`
-- ✅ `charIsUpper : Char -> Bool`
-- ✅ `charIsLower : Char -> Bool`
-- ✅ `charIsPunct : Char -> Bool`
-- ✅ `charToUpper : Char -> Char` — identity for non-letters **and** where the
-  Unicode mapping would expand 1→N (e.g. `'ß'` is unchanged; it can't become
-  `SS` in a single `Char`)
-- ✅ `charToLower : Char -> Char` — same identity-on-expansion caveat
-- ✅ `stringToUpper : String -> String` — full-fidelity uppercasing, expands
-  1→N (`"Straße" → "STRASSE"`). Why a separate extern: `charToUpper` can't
-  express expansion, so `String.toUpper` is **not** `map charToUpper`.
-- ✅ `stringToLower : String -> String` — full-fidelity lowercasing
+- ✅ `charIsAlpha : Char -> Bool` — `'a'..'z'`/`'A'..'Z'` only; `False` on any
+  non-ASCII codepoint (`mdk_char_is_alpha`, `runtime/medaka_rt.c:926-929`)
+- ✅ `charIsSpace : Char -> Bool` — ASCII space + `\t\n\v\f\r` only
+  (`mdk_char_is_space`, `runtime/medaka_rt.c:930-933`)
+- ✅ `charIsUpper : Char -> Bool` — `'A'..'Z'` only (`mdk_char_is_upper`,
+  `runtime/medaka_rt.c:934-937`)
+- ✅ `charIsLower : Char -> Bool` — `'a'..'z'` only (`mdk_char_is_lower`,
+  `runtime/medaka_rt.c:938-941`)
+- ✅ `charIsPunct : Char -> Bool` — a fixed ASCII punctuation set
+  (`mdk_char_is_punct`, `runtime/medaka_rt.c:945-954`); `False` on non-ASCII
+- ✅ `charToUpper : Char -> Char` — identity outside `'a'..'z'`; a non-ASCII
+  codepoint is unchanged, not case-mapped (`mdk_char_to_upper`,
+  `runtime/medaka_rt.c:955-959`)
+- ✅ `charToLower : Char -> Char` — identity outside `'A'..'Z'`, same caveat
+  (`mdk_char_to_lower`, `runtime/medaka_rt.c:960-964`)
+- ✅ `stringToUpper : String -> String` — byte-wise ASCII uppercasing; any byte
+  `>= 0x80` (every UTF-8 lead/continuation byte of a non-ASCII codepoint)
+  passes through unchanged, so `"Straße"` → `"STRAßE"`, not `"STRASSE"` — no
+  1→N expansion happens (`mdk_string_to_upper`, `runtime/medaka_rt.c:967-977`)
+- ✅ `stringToLower : String -> String` — byte-wise ASCII lowercasing, same
+  pass-through-on-non-ASCII behavior (`mdk_string_to_lower`,
+  `runtime/medaka_rt.c:978-988`)
 
 Already present and reused: `charToStr` (= `fromChar`), `showStringLit`,
 `showCharLit`, `randomChar`.
@@ -483,7 +497,7 @@ Already present and reused: `charToStr` (= `fromChar`), `showStringLit`,
 - ✅ `isUpper : Char -> Bool` — wraps `charIsUpper`
 - ✅ `isLower : Char -> Bool` — wraps `charIsLower`
 - ✅ `isPunct : Char -> Bool` — wraps `charIsPunct`
-- ⛔ `toUpper`/`toLower` for a single `Char` — **intentionally not provided**: the `String`-level `toUpper`/`toLower` (full Unicode) own those unqualified names. For Char, call the kernel externs `charToUpper`/`charToLower` directly (they return `Char`, so they're identity on 1→N expansions like `'ß'`)
+- ⛔ `toUpper`/`toLower` for a single `Char` — **intentionally not provided**: the `String`-level `toUpper`/`toLower` own those unqualified names. For Char, call the kernel externs `charToUpper`/`charToLower` directly (ASCII-only — identity on any non-ASCII `Char`, e.g. `'ß'`)
 - ✅ `digitToInt : Char -> Option Int` — `'0'..'9' → Some 0..9`, `'a'..'f' → Some 10..15`, else `None` (ASCII, via `charCode`)
 - ✅ `intToDigit : Int -> Option Char` — inverse of `digitToInt` for `0..15` (via `charFromCode`)
 - ✅ `charCode : Char -> Int` — **kernel extern**
@@ -521,7 +535,7 @@ Already present and reused: `charToStr` (= `fromChar`), `showStringLit`,
 - ✅ `trim : String -> String` — strip whitespace from both ends
 - ✅ `trimLeft : String -> String` — strip leading whitespace
 - ✅ `trimRight : String -> String` — strip trailing whitespace
-- ✅ `toUpper : String -> String` — wraps `stringToUpper` (full Unicode, expands 1→N; *not* `map charToUpper`)
+- ✅ `toUpper : String -> String` — wraps `stringToUpper` (ASCII-only byte-wise uppercasing; a non-ASCII codepoint passes through unchanged — issue #417)
 - ✅ `toLower : String -> String` — wraps `stringToLower`
 - ✅ `capitalize : String -> String` — uppercase first char, leave the rest alone
 - ✅ `replace : String -> String -> String -> String` — `replace old new s` — replace the first occurrence
@@ -711,10 +725,10 @@ will work once `set.mdk` adds the matching impl. See PLAN.md Phase 108.
 
 - **Construction:** `empty` (= `Tip`; standalone, *not* a `Monoid` method — see
   below), `singleton`, `fromList` (last write wins on duplicate keys)
-- **Query:** `size` (O(1)), `isEmpty`, `lookup`, `member`, `findWithDefault`
-- **Insertion:** `insert`, `insertWith` (`f new old`), `adjust`
+- **Query:** `size` (O(1)), `isEmpty`, `get`, `has`, `findWithDefault`
+- **Insertion:** `set`, `insertWith` (`f new old`), `adjust`
 - **Deletion:** `delete`, `deleteMin`, `deleteMax`
-- **Min/max:** `minView`, `maxView`, `lookupMin`, `lookupMax`
+- **Min/max:** `minView`, `maxView`, `getMin`, `getMax`
 - **Folds / traversal (ascending key order):** `foldrWithKey`, `foldlWithKey`,
   `toList` (assoc pairs), `keys`, `elems`, `mapWithKey`, `filterWithKey`
 - **Combining:** `union` (left-biased), `unionWith`, `difference`,
@@ -745,10 +759,10 @@ ascending inserts).
 
 - **Construction:** `empty` (= `Monoid.empty`/`Tip`), `singleton`, `fromList`
   (drops duplicates)
-- **Query:** `size` (O(1)), `member`; `isEmpty`/`length`/`elem`/`toList`/`sum`/
+- **Query:** `size` (O(1)), `has`; `isEmpty`/`length`/`elem`/`toList`/`sum`/
   `maximum`/`any`/`all` via `Foldable Set` (folds over elements, ascending)
 - **Insertion / deletion:** `insert`, `delete`, `deleteMin`, `deleteMax`
-- **Min/max:** `minView`, `maxView`, `lookupMin`, `lookupMax`
+- **Min/max:** `minView`, `maxView`, `getMin`, `getMax`
 - **Set algebra:** `union`, `intersection`, `difference`, `isSubsetOf`
 - **Invariant checker:** `wellFormed` (backs the property tests)
 - **Instances:** `Foldable Set`, `Eq`/`Debug` (via the ascending element list),
@@ -781,8 +795,8 @@ would break it. Iteration order is unspecified.
 
 - **Construction:** `new : Unit -> HashMap k v` (a *function*, so each call
   allocates its own table), `fromList : Eq k => List (k, v) -> HashMap k v`.
-- **Query (pure):** `size` (O(1)), `isEmpty`, `get`, `member`, `findWithDefault`.
-- **Mutation (untracked, no effect row):** `insert` (overwrites), `delete`.
+- **Query (pure):** `size` (O(1)), `isEmpty`, `get`, `has`, `findWithDefault`.
+- **Mutation (untracked, no effect row):** `set` (overwrites), `delete`.
 - **Iteration (pure, unspecified order):** `entries` (the pairs), `toList`
   (alias of `entries`), `keys`, `values`.
 - **Instances:** `Eq` (order-independent — same entries), `Debug` (`fromList […]`
@@ -796,7 +810,7 @@ Standalone mutable element tree (mirrors `hash_map` minus values; not a wrapper
 over `HashMap a Unit`, same reasoning as `set` over `Map a Unit`).
 
 - **Construction:** `new`, `fromList`.
-- **Query (pure):** `size`, `member`; `toList`/`length`/`elem`/`any`/`sum`/… via
+- **Query (pure):** `size`, `has`; `toList`/`length`/`elem`/`any`/`sum`/… via
   `Foldable HashSet` (a set's elements *are* its `toList`, so no clash — unlike
   `hash_map`).
 - **Mutation (untracked, no effect row):** `insert`, `delete`.
@@ -1274,11 +1288,11 @@ an effect label).
 | 0 runtime (extern catalog) | `runtime.mdk` | mixed — see §Extern audit | |
 | 1 core | `core.mdk` | P + H carve-outs | Mostly P; `print`/`println` → `<IO>`; `Arbitrary`/`arbitraryString`/`arbitraryList` → `<Rand>` |
 | 2 list | `list.mdk` | P | Fully pure |
-| 3 string | `string.mdk` | P | Fully pure (Unicode DB is bundled, not a syscall) |
+| 3 string | `string.mdk` | P | Fully pure; case folding/classification are ASCII-only (no Unicode tables bundled) |
 | 4 array | `array.mdk` | P + M | In-place ops (`sort!`, `fill`, `blit`) mutate in place, untracked; allocation and reads are P |
 | 5 map | `map.mdk` | P | Persistent weight-balanced tree; no mutation |
 | 5 set | `set.mdk` | P | Persistent weight-balanced tree; no mutation |
-| 6 hash_map | `hash_map.mdk` | M | `insert`/`delete`/`fromList` mutate in place, untracked; all queries pure |
+| 6 hash_map | `hash_map.mdk` | M | `set`/`delete`/`fromList` mutate in place, untracked; all queries pure |
 | 6 hash_set | `hash_set.mdk` | M | Same as hash_map |
 | 7 io | `io.mdk` | H (`<IO>`) | Entirely host-capability; not available without the `<IO>` grant |
 | 8 mut_array | `mut_array.mdk` | M | `push`/`pop`/`set`/`swap`/`clear`/`mapInPlace` mutate in place, untracked; capacity/length queries pure |
@@ -1296,22 +1310,22 @@ structures needs no manifest entries at all.
 | Group | Externs |
 |-------|---------|
 | Constants | `pi`, `e`, `intMinBound`, `intMaxBound`, `charMinBound`, `charMaxBound` |
-| Allocation (pure) | `Ref` (wraps a value; mutation is `set_ref`), `arrayMake`, `arrayMakeWith`, `arrayCopy`, `arrayFromList` |
+| Allocation (pure) | `Ref` (wraps a value; mutation is `setRef`), `arrayMake`, `arrayMakeWith`, `arrayCopy`, `arrayFromList` |
 | Array read | `arrayLength`, `arrayGetUnsafe` |
 | Array pure wrappers | `arraySortBy` — allocates + locally mutates + returns a fresh array; the mutation never escapes |
 | Numeric / char conversions | `charToStr`, `intToFloat`, `floatToInt`, `intToString`, `floatToString`, `charCode`, `charFromCode` |
 | Debug rendering | `debugStringLit`, `debugCharLit` |
 | String kernel | `stringToChars`, `stringFromChars`, `stringLength`, `stringSlice`, `stringConcat`, `stringIndexOf`, `stringCompare`, `stringToFloat` |
-| Unicode classification | `charIsAlpha`, `charIsSpace`, `charIsUpper`, `charIsLower`, `charIsPunct` |
-| Unicode case folding | `charToUpper`, `charToLower`, `stringToUpper`, `stringToLower` |
-| Hash | `hash` — structural, deterministic; must agree with the type's `Eq` |
+| Char classification (ASCII-only) | `charIsAlpha`, `charIsSpace`, `charIsUpper`, `charIsLower`, `charIsPunct` |
+| Case folding (ASCII-only) | `charToUpper`, `charToLower`, `stringToUpper`, `stringToLower` |
+| Hash | `hashInt`, `hashFloat`, `hashString`, `hashChar`, `hashBool` — per-type, deterministic; must agree with the type's `Eq` |
 | Internal | `__fallthrough__` — signals pattern fall-through; not a user capability |
 
 #### Tier M — local mutation (untracked, no effect label)
 
 | Extern | Notes |
 |--------|-------|
-| `set_ref` | Overwrites a `Ref`; heap-local |
+| `setRef` | Overwrites a `Ref`; heap-local |
 | `arraySetUnsafe` | In-place write; bounds unchecked (stdlib-internal use) |
 | `arrayBlit` | Copy range between arrays in-place |
 | `arrayFill` | Fill array range in-place |

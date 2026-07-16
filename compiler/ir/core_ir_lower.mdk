@@ -52,7 +52,7 @@ import eval.eval.{
   buildCtorToType,
   buildCtorFieldOrders,
   ctorFieldOrdersRef,
-  buildIfaceDispatch,
+  installDispatchTables,
   lookupPositions,
   tyvarsInArgs,
   headTyconHead,
@@ -757,8 +757,17 @@ lgToBind ((n, _), cs) = CBind n cs
 -- impl's concrete type head) and per interface default (untagged fallback).  The
 -- method BODY is lowered to CExpr; the tag / positions / score are pure AST
 -- computations reused from eval.mdk so the Core IR stays Ty-free.
+-- #315/#413: installDispatchTables both BUILDS the dispatch table (as
+-- buildIfaceDispatch did) and installs it alongside the method reqCount table that
+-- applyMethodDicts consults.  cevalProgram is handed a CProgram and so has no decls
+-- of its own to derive them from; lowering is the last point that still does.
+-- Without this the Core-IR interpreter's reqCount lookups all returned None and
+-- #413's fix was inert there (proven: `impl S (List a) requires S a where s _ = 2`
+-- ran correctly under `medaka run` but panicked "applied non-function: 2" under
+-- core_ir_typed_main).  The emit path lowers through here too and never reads the
+-- tables, so installing is a no-op for it.
 lowerImpls : List Decl -> List CImplEntry
-lowerImpls prog = lowerImplsWith (buildIfaceDispatch prog) prog
+lowerImpls prog = lowerImplsWith (installDispatchTables prog) prog
 
 -- lowerImpls against a PRE-BUILT dispatch table — the multi-module driver builds
 -- one `disp` from all modules' decls jointly (an impl in module B for an interface

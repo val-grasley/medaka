@@ -142,9 +142,12 @@ hasTag : String -> Value a -> Bool
 headTycon : Ty -> Option String
 headTyconHead : List Ty -> Option String
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
+ifaceDispatchRef : Ref (List ((String, String), List Int))
 ifaceMethodArity : IfaceMethod -> (String, Int)
 ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
 ifaceMethodNmE : IfaceMethod -> String
+ifaceOfMethod : String -> String
+ifaceOfMethodIn : String -> List ((String, String), List Int) -> String
 implDeclNames : Decl -> List String
 implDictRoutes : Option Int -> List Route -> List Route -> List Route
 implKeyOf : String -> List Ty -> Option String -> String
@@ -159,6 +162,7 @@ inCharRange : String -> String -> String -> Bool -> Bool
 inIntRange : Int -> Int -> Int -> Bool -> Bool
 insertScore : (Int, Value a) -> List (Int, Value a) -> List (Int, Value a)
 installConsts : List (String, Ref (Value a)) -> List (String, Value a) -> Unit
+installDispatchTables : List Decl -> List ((String, String), List Int)
 installGroup : EvalEnv (Value a) -> List (String, Ref (Value a)) -> List LetBind -> Unit
 installGroups : EvalEnv (Value a) -> List (String, Ref (Value a)) -> List (String, List (List Pat, Expr)) -> Unit
 installModGroups : List (ModInfo (Value a)) -> Unit
@@ -208,6 +212,8 @@ methodCell : List (String, Ref (Value a)) -> String -> List (String, Ref (Value 
 methodCellsOf : List (String, Ref (Value a)) -> List Decl -> List (String, Ref (Value a))
 methodDeclArities : Decl -> List (String, Int)
 methodReqCountRef : Ref (List ((String, String), Int))
+methodsOfIface : String -> List String
+methodsOfIfaceIn : String -> List ((String, String), List Int) -> List String
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 modImplEntries : List ((String, String), List Int) -> ModInfo (Value a) -> List (String, (Int, Value a))
 moduleMethodNames : List Decl -> List String
@@ -377,10 +383,15 @@ runtimeTypeTag : Value a -> Option String
 selectByName : String -> List (String, (Int, Value a)) -> List (Int, Value a)
 selfBind : String -> (String, String)
 seqV : Unit -> Value a -> Value a
+shadowBind : EvalEnv (Value a) -> String -> List Route -> String -> List (String, Ref (Value a))
+shadowBindAt : EvalEnv (Value a) -> String -> List Route -> String -> Int -> List (String, Ref (Value a))
+shadowOf : EvalEnv (Value a) -> String -> List Route -> String -> Int -> Value a -> List (String, Ref (Value a))
 shadowedFun : List String -> Decl -> Bool
+siblingShadows : EvalEnv (Value a) -> String -> String -> List Route -> List (String, Ref (Value a))
 sliceArray : Array (Value a) -> Int -> Int -> Value a
 sortByScore : List (Int, Value a) -> List (Int, Value a)
 sortGo : List (Int, Value a) -> List (Int, Value a) -> List (Int, Value a)
+specializeDefault : EvalEnv (Value a) -> String -> String -> Option Int -> List Route -> Value a -> Option (Value a)
 startsWithAt : String -> Bool
 statTuple : (Int, Bool, Bool, Float) -> Value a
 storeMemo : Ref (Option (Value a)) -> Value a -> Value a
@@ -423,4 +434,5 @@ valueListEq : List (Value a) -> List (Value a) -> Bool
 valueTag : Value a -> Int
 variantFieldOrder : Variant -> List (String, List String)
 variantName : Variant -> String
+withEnvFrame : List (String, Ref (Value a)) -> Value a -> Option (Value a)
 zipFieldOrder : List String -> List (Value a) -> List (String, Value a)

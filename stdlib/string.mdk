@@ -25,10 +25,11 @@
 --
 -- Naming choices (this file holds *both* Char and String utilities, so some
 -- short names would collide):
---   • `toUpper`/`toLower` here are the *String* versions (full Unicode, so
---     "Straße" → "STRASSE").  For a single Char, call the kernel externs
---     `charToUpper`/`charToLower` (Char → Char, identity where Unicode would
---     expand 1→N — they can't return "SS").
+--   • `toUpper`/`toLower` here are the *String* versions — ASCII-only
+--     byte-wise case mapping (issue #417): "Straße" → "STRAßE", not
+--     "STRASSE".  For a single Char, call the kernel externs
+--     `charToUpper`/`charToLower` (Char → Char, also ASCII-only — identity on
+--     any non-ASCII codepoint).
 --   • `length`/`isEmpty` are *not* defined: they'd clash with the `Foldable`
 --     methods of the same name.  Use the global `stringLength`, or `s == ""`.
 --   • Integer rendering is the global `intToString` (clashes with `Num.fromInt`
@@ -53,7 +54,8 @@ import core.{Eq, Ord, Debug, Foldable, Mappable, Option, Ordering}
 
 -- ── Char operations ─────────────────────────────────────────────────────────
 -- ASCII-exact predicates (isDigit/digitToInt/intToDigit) compute on the
--- codepoint directly; the Unicode-aware ones wrap the uucp-backed externs.
+-- codepoint directly; the classification wrappers below (isAlpha/isSpace/…)
+-- wrap ASCII-only kernel externs (issue #417 — no Unicode tables exist).
 
 {- | True for the ASCII decimal digits `'0'`..`'9'`.
 
@@ -449,17 +451,20 @@ firstSpace a i n
   | isSpace (arrayGetUnsafe i a) = i
   | otherwise = firstSpace a (i + 1) n
 
-{- | Uppercase every character (full Unicode — expands 1→N, e.g. ß → SS).
+{- | Uppercase every character. **ASCII-only** (issue #417): a non-ASCII byte
+   passes through unchanged, so this is byte-wise `'a'..'z'` mapping, not
+   Unicode case folding — it never expands 1→N (`ß` stays `ß`, not `SS`).
 
    > toUpper "Straße"
-   "STRASSE" -}
+   "STRAßE" -}
 export toUpper : String -> String
 toUpper s = stringToUpper s
 
-{- | Lowercase every character (full Unicode).
+{- | Lowercase every character. **ASCII-only** (issue #417): a non-ASCII byte
+   passes through unchanged.
 
    > toLower "HÉLLO"
-   "héllo" -}
+   "hÉllo" -}
 export toLower : String -> String
 toLower s = stringToLower s
 

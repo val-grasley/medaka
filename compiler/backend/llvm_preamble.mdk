@@ -37,6 +37,7 @@ preambleLines = [
   "declare void @mdk_print_str(i64)",
   "declare i64 @mdk_int_to_string(i64)",
   "declare i64 @mdk_float_to_string(double)",
+  "declare i64 @llvm.fptosi.sat.i64.f64(double)",
   "declare i64 @mdk_string_concat(i64)",
   "declare i64 @mdk_string_append(i64, i64)",
   "declare i64 @mdk_string_eq(i64, i64)",
@@ -103,6 +104,15 @@ preambleLines = [
   "declare i64 @mdk_string_compare(i64, i64)",
   "declare i64 @mdk_string_compare_raw(i64, i64)",
   "declare i64 @mdk_value_cmp_raw(i64, i64)",
+  -- #305: per-op IEEE relational predicates for the type-lost ordering path.
+  -- The 3-way @mdk_value_cmp_raw cannot express NaN's unorderedness (its Float
+  -- arm collapses to 0/EQ), so `<`/`<=`/`>`/`>=` call these instead — they take
+  -- the Float arm as a direct f64 predicate (FALSE at NaN, matching inline
+  -- `fcmp`) and delegate String/immediate shapes to the 3-way.  Tagged Bool.
+  "declare i64 @mdk_value_lt(i64, i64)",
+  "declare i64 @mdk_value_le(i64, i64)",
+  "declare i64 @mdk_value_gt(i64, i64)",
+  "declare i64 @mdk_value_ge(i64, i64)",
   "declare void @mdk_set_args(i32, ptr)",
   "declare i64 @mdk_args(i64)",
   "declare i64 @mdk_get_env(i64)",

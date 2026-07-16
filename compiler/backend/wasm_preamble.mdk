@@ -221,7 +221,16 @@ ioRuntimeLines = [
   "      (then (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $v)))))",
   "      (else (struct.get $boxint 0 (ref.cast (ref $boxint) (local.get $v))))))",
   "  ;; box an i64 Int: in [-2^30, 2^30) -> i31 immediate; else -> $boxint struct.",
+  "  ;; N1/WP2: an Int is 63-bit two's complement and WRAPS.  Native gets that for free",
+  "  ;; (its immediates are `(n << 1) | 1`, so every re-tag drops bit 63); wasm has no tag,",
+  "  ;; so the wrap must be explicit.  Renormalize by sign-extending from bit 62 — the",
+  "  ;; `(x << 1) >> 1` arithmetic-shift pair, which mirrors native's tag/untag exactly and",
+  "  ;; is a no-op on any already-63-bit value.  This is the SOLE producer of $boxint, so",
+  "  ;; it makes `every (ref eq) Int holds a 63-bit value` a representation invariant, and",
+  "  ;; with it INT64_MIN is unreachable — which is what re-grounds the R5 `INT_MIN / -1`",
+  "  ;; claim (i64.div_s can no longer engine-trap on a normalized pair).",
   "  (func $mdk_box_int (param $n i64) (result (ref eq))",
+  "    (local.set $n (i64.shr_s (i64.shl (local.get $n) (i64.const 1)) (i64.const 1)))",
   "    (if (result (ref eq))",
   "        (i32.and (i64.ge_s (local.get $n) (i64.const -1073741824))",
   "                 (i64.lt_s (local.get $n) (i64.const 1073741824)))",
@@ -633,9 +642,11 @@ appendRuntimeLines = [
 --   $mdk_value_eq(a,b)  : both $str → byte-equal; else `ref.eq` (i31/struct identity,
 --     correct for Int/Bool/Char/Unit immediates).  Returns an i31 Bool (0/1).
 --   $mdk_value_cmp(a,b) : both $str → $mdk_str_compare → -1/0/1; else compare the i31
---     signed values.  Returns a PLAIN i32 -1/0/1 (the emitter then i32-compares it
---     against 0 for the requested ordering op).  Gated by useStrRef (forces `$str`
+--     signed values.  Returns a PLAIN i32 -1/0/1.  Gated by useStrRef (forces `$str`
 --     in scope); only reached in ref-mode where the i31 fast path was unsafe.
+--     ⚠️ #305: a 3-way cannot express NaN's unorderedness, so the emitter does NOT
+--     compare this against 0 for an ordering op — it calls $mdk_value_lt/le/gt/ge,
+--     which answer $float directly and use this only for the $str/int shapes.
 export valueEqRuntimeLines : List String
 valueEqRuntimeLines = [
   "  ;; -- layer-9 runtime-shape-dispatched `==`/`!=` (String byte-equal OR immediate identity) --",
@@ -682,6 +693,38 @@ valueEqRuntimeLines = [
   "    (if (i64.lt_s (local.get $ia) (local.get $ib)) (then (return (i32.const -1))))",
   "    (if (i64.gt_s (local.get $ia) (local.get $ib)) (then (return (i32.const 1))))",
   "    (i32.const 0))",
+  -- #305 (S0): per-op IEEE relational predicates — the WasmGC peers of native's
+  -- mdk_value_lt/le/gt/ge.  $mdk_value_cmp's 3-way -1/0/1 STRUCTURALLY CANNOT
+  -- express NaN's unorderedness (its $float arm returns 0/EQ for an unordered
+  -- pair), so lowering `<=` as `cmp <= 0` read `nan <= nan` as True.  These take
+  -- the $float arm as a direct f64 predicate (f64.lt/le/gt/ge are IEEE — all
+  -- FALSE at NaN, matching the monomorphic emitFloatBinRef path) and delegate
+  -- every other shape to the 3-way, exact for $str/int.  Return an i31 Bool.
+  "  ;; -- #305 per-op IEEE relational predicates (Float f64 pred; else 3-way) --",
+  "  (func $mdk_value_lt (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.lt",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.lt_s (call $mdk_value_cmp (local.get $a) (local.get $b)) (i32.const 0))))",
+  "  (func $mdk_value_le (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.le",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.le_s (call $mdk_value_cmp (local.get $a) (local.get $b)) (i32.const 0))))",
+  "  (func $mdk_value_gt (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.gt",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.gt_s (call $mdk_value_cmp (local.get $a) (local.get $b)) (i32.const 0))))",
+  "  (func $mdk_value_ge (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.ge",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.ge_s (call $mdk_value_cmp (local.get $a) (local.get $b)) (i32.const 0))))",
 ]
 
 -- ── A0 (poly-`Num`-on-Float): runtime value-tag-dispatched arithmetic helpers ──
@@ -754,6 +797,32 @@ valueArithRuntimeLines = [
   "    (if (i64.lt_s (local.get $ia) (local.get $ib)) (then (return (i32.const -1))))",
   "    (if (i64.gt_s (local.get $ia) (local.get $ib)) (then (return (i32.const 1))))",
   "    (i32.const 0))",
+  -- #305: the num-only peers of $mdk_value_lt/le/gt/ge (same law, no $str) —
+  -- IEEE f64 predicate on a $float operand, else the exact int 3-way.
+  "  (func $mdk_value_lt_num (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.lt",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.lt_s (call $mdk_value_cmp_num (local.get $a) (local.get $b)) (i32.const 0))))",
+  "  (func $mdk_value_le_num (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.le",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.le_s (call $mdk_value_cmp_num (local.get $a) (local.get $b)) (i32.const 0))))",
+  "  (func $mdk_value_gt_num (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.gt",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.gt_s (call $mdk_value_cmp_num (local.get $a) (local.get $b)) (i32.const 0))))",
+  "  (func $mdk_value_ge_num (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
+  "    (if (ref.test (ref $float) (local.get $a))",
+  "      (then (return (ref.i31 (f64.ge",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))))",
+  "    (ref.i31 (i32.ge_s (call $mdk_value_cmp_num (local.get $a) (local.get $b)) (i32.const 0))))",
 ]
 
 -- ── W8 RNG — deterministic SplitMix64 (RUNTIME-DESIGN §5 RNG) ─────────────────
@@ -1055,11 +1124,25 @@ floatRuntimeLines = [
   "  ;; i31 cast (e.g. intToFloat 4503599627370497).",
   "  (func $mdk_int_to_float (param $n i64) (result (ref $float))",
   "    (struct.new $float (f64.convert_i64_s (local.get $n))))",
-  "  ;; floatToInt : boxed $float -> i64 (truncate toward zero, matching (int64)d).  #199:",
-  "  ;; i64 result reboxes via $mdk_box_int so a large truncation (|x| > 2^30, up to 2^53)",
-  "  ;; no longer overflows i32 (`float unrepresentable in integer range`) nor traps ref.i31.",
+  "  ;; floatToInt : boxed $float -> i64 (truncate toward zero).  #199: the i64 result",
+  "  ;; reboxes via $mdk_box_int so a large truncation (|x| > 2^30, up to 2^53) no longer",
+  "  ;; overflows i32 (`float unrepresentable in integer range`) nor traps ref.i31.",
+  "  ;; #346/#372 (S0): SATURATES — NaN -> 0, +inf/over -> intMaxBound, -inf/under ->",
+  "  ;; intMinBound.  The old bare i64.trunc_f64_s TRAPPED on NaN/inf/out-of-range (an",
+  "  ;; uncoded engine trap: `float unrepresentable in integer range`, exit 1, no E-code),",
+  "  ;; where native's fptosi was silent poison — so the three engines disagreed on exactly",
+  "  ;; the inputs N7 says must be pinned.  trunc_sat alone is NOT enough: it saturates to",
+  "  ;; *i64* bounds (+-2^63), which are OUTSIDE Medaka's 63-bit Int domain, and $mdk_box_int",
+  "  ;; would renormalize that to -1/0 rather than the bound.  So clamp to the Int bounds",
+  "  ;; ([-2^62, 2^62-1]) BEFORE returning to the box seam.  Matches llvm_emit's arm.",
   "  (func $mdk_float_to_int (param $f (ref $float)) (result i64)",
-  "    (i64.trunc_f64_s (struct.get $float 0 (local.get $f))))",
+  "    (local $r i64)",
+  "    (local.set $r (i64.trunc_sat_f64_s (struct.get $float 0 (local.get $f))))",
+  "    (if (result i64) (i64.gt_s (local.get $r) (i64.const 4611686018427387903))",
+  "      (then (i64.const 4611686018427387903))",
+  "      (else (if (result i64) (i64.lt_s (local.get $r) (i64.const -4611686018427387904))",
+  "        (then (i64.const -4611686018427387904))",
+  "        (else (local.get $r))))))",
   "  ;; #101 round : C round() — round to nearest, HALVES AWAY FROM ZERO (NOT f64.nearest,",
   "  ;; which is round-half-to-even).  Branch-based so there is NO intermediate `x+0.5`:",
   "  ;; the naive `floor(abs(x)+0.5)` double-rounds — `x+0.5` itself rounds (IEEE) before",

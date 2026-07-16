@@ -1079,9 +1079,11 @@ declaredEffects _ = []
 -- update / patterns can look records up without threading an env field.
 public export data RecordInfo = RecordInfo (List Int) Mono (List (String, Mono))
 
--- Keyed indices over `recordsRef`, maintained in lockstep at every registration
--- (registerRecordInfoKeyed) and cleared with it (resetState) — so the hot
--- per-field-access read paths never walk the full registry (issue #149).
+-- Keyed indices over `recordsRef` — so the hot per-field-access read paths never walk the
+-- full registry (issue #149).  #415 item 3: the lockstep is structural, not an obligation.
+-- `registerRecordInfoKeyed` is the SOLE registration writer of all three; they are cleared
+-- together by resetState; and the cross-module universe copy goes through the single
+-- loadDataUniverse/storeDataUniverse inverse pair.
 --   recordByNameRef : registry KEY → RecordInfo.  omInsert is last-write-wins and
 --     the register site inserts in registration order, so it reproduces the old
 --     prepend-list first-match (latest-registered wins) for lookupRecordByName.
@@ -1996,9 +1998,10 @@ sitesFor fn idx = fromOption [] (omLookup fn idx)
 -- reads it to decide the empty-case short-circuit vs the discard-and-fallback.  Set
 -- to [] by elaborateModules before the sweep; NOT touched by resetState.
 
--- O(log n) membership mirror of dictEligibleRef (set in lockstep at both set
--- sites).  maybeInferConstraint tests it per SCC member per discovery pass — an
--- O(members × eligible) scan over the whole program when it was a list.
+-- O(log n) membership index of dictEligibleRef.  #415 item 3: DERIVED from the list by
+-- `setDictEligible`, the single writer of both — not mirrored at each set site, so the
+-- two cannot drift.  maybeInferConstraint tests it per SCC member per discovery pass —
+-- an O(members × eligible) scan over the whole program when it was a list.
 
 -- Whether checkProgramSeeded ALSO infers each parametric impl's return-position
 -- method bodies (instance-`requires` dict-passing, Phase 83/84 single-level).  ON
@@ -2227,6 +2230,18 @@ pushTypeError code msg =
   setRef
     perRun.value.typeErrors
     (TcDiag code 1 currentLoc.value msg None None :: perRun.value.typeErrors.value)
+
+-- Push one type-error message attributed to [loc] rather than the live
+-- `currentLoc` (#414).  Same non-deduping semantics as `pushTypeError` — the
+-- deduping `pushTypeErrorOnceAt` is for obligation errors, which two checkers can
+-- each detect; a coherence conflict is pushed exactly once per run.  `None` falls
+-- back to `currentLoc`, i.e. the old behaviour.
+pushTypeErrorAt : String -> Option Loc -> String -> Unit
+pushTypeErrorAt code loc msg =
+  let _ = setRef typeErrorsSticky True
+  setRef
+    perRun.value.typeErrors
+    (TcDiag code 1 (orElseLoc loc currentLoc.value) msg None None :: perRun.value.typeErrors.value)
 
 -- #11 soundness: push an obligation error only if the SAME message isn't already
 -- accumulated.  A single missing impl can be detected by both checkImplObligations
@@ -7293,11 +7308,20 @@ elaborateOne runtimeDecls coreDecls (rootId, prog) =
 -- pass), then mark + typecheck + route + dict_pass the final set.  In the RKey
 -- rewrite, each occurrence of a name in the final set becomes an EDictAt (routes
 -- filled after inference) and its def gets matching leading dict params.
+-- #415 item 3: the ONLY writer of dictEligibleRef / dictEligibleSetRef.  The set is
+-- DERIVED from the list here rather than mirrored at each set site, so the two cannot
+-- drift: there is no longer a second side for a future edit to be absent from.  (Both
+-- former sites hand-wrote `namesToSet <names> omEmpty` next to the list store; the
+-- module site additionally recomputed `moduleUserFnNames modules` for the mirror.)
+setDictEligible : List String -> Unit
+setDictEligible names =
+  let _ = setRef driverState.value.dictEligibleRef names
+  setRef driverState.value.dictEligibleSetRef (namesToSet names omEmpty)
+
 export elaborateDict : List Decl -> List String -> List String -> List Decl -> List Decl
 elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = setRef driverState.value.superDeclsRef prog
-  let _ = setRef driverState.value.dictEligibleRef eligibleNames
-  let _ = setRef driverState.value.dictEligibleSetRef (namesToSet eligibleNames omEmpty)
+  let _ = setDictEligible eligibleNames
   let _ = setRef driverState.value.implInferEnabled True
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
   let _ = setRef driverState.value.argDispatchIdxRef (argDispatchIndices prog)
@@ -8036,9 +8060,18 @@ implExistsForHeadGo ((KeyEntry methods tag2 _ _ _ _ _)::rest) name tag
 -- obligations — IS routed through the one engine: every RLocal payload is filled by routesOfMonosTop
 -- → entail (EKNestedTop).  So the single-entailment-function law holds at 4-of-5 BY CONSTRUCTION; what
 -- stays out is exactly the binding-selection axis §3 never claimed (cf. §8 I1: identity keyed by
--- binding, not bare name).  ⚠️ implExistsForHead MUST read the same KeyBuckets table entailInst's
--- keyForSite keys on — a drift between "does an impl exist" and "which impl entails" would be a real
--- dispatch bug.
+-- binding, not bare name).  "Does an impl exist" and "which impl entails" must agree on ONE
+-- KeyBuckets table — a drift between them would be a real dispatch bug.  #415 item 2: that
+-- agreement is STRUCTURAL, not a standing obligation.  Both reads consume this function's single
+-- [keyTable] param: `implExistsForHead keyTable` directly, and `keyForSite` via
+-- routesOfMonosTop keyTable → routeOf → entail (EKNestedTop keyTable) → entailInst.  There is no
+-- second table in scope to drift TO; each resolver group threads one `buildKeyTable` result to
+-- all five stampers (elaborateDict:7323, elabModuleStamp:14711).  Re-introducing the hazard would
+-- take adding a parameter or reaching for a global — so keep both reads on [keyTable].
+-- (The separate `implExistsForHead perRun.value.shadowKeyTableRef.value` reads in inferShadowApp
+-- are NOT this table and NOT a drift: that universe is GLOBAL by design — local ∪ imported ∪
+-- prelude, see the P0-19 d8 note — and answers the inference-time binding question, not which
+-- impl a route stamps.)
 resolveRLocalSites : List Decl -> ImplBuckets -> KeyBuckets -> List PendingEntry -> Unit
 resolveRLocalSites _ _ _ [] = ()
 resolveRLocalSites prog implTable keyTable ((PendingEntry name tagRef am _ kind)::rest) =
@@ -8395,11 +8428,14 @@ implDefinesMethodAtGo ((ImplEntry tag2 methodNames _ _ _ _)::rest) method tag
 
 -- a user impl, reduced to what coherence needs: iface + head-arg monos (fresh
 -- vars).
--- CohImpl iface head-tys ownerModuleId.  The 3rd field is the id of the module
--- that PHYSICALLY declares this impl ("" for the single-file / entry path, so its
--- goldens stay byte-identical — only the global cross-module check threads a real
--- module id and uses it to name BOTH modules in a conflict).
-public export data CohImpl = CohImpl String (List Mono) String
+-- CohImpl iface head-tys ownerModuleId headLoc.  The 3rd field is the id of the
+-- module that PHYSICALLY declares this impl ("" for the single-file / entry path, so
+-- its goldens stay byte-identical — only the global cross-module check threads a real
+-- module id and uses it to name BOTH modules in a conflict).  The 4th is the span of
+-- the impl's head type constructor (#414), so a conflict can point AT an impl instead
+-- of fabricating a file-start caret; `None` for a synthesized impl with no source
+-- span (e.g. desugar's `deriving` lowering, which builds `TyCon tyName None`).
+public export data CohImpl = CohImpl String (List Mono) String (Option Loc)
 
 cohImplsOf : Decl -> List CohImpl
 cohImplsOf d = cohImplsOfMid "" d
@@ -8408,8 +8444,37 @@ cohImplsOf d = cohImplsOfMid "" d
 cohImplsOfMid : String -> Decl -> List CohImpl
 cohImplsOfMid mid (DAttrib _ d) = cohImplsOfMid mid d
 cohImplsOfMid mid (DImpl { iface, tys, ... }) =
-  [CohImpl iface (cohFreshTys tys) mid]
+  [CohImpl iface (cohFreshTys tys) mid (implHeadLoc tys)]
 cohImplsOfMid _ _ = []
+
+-- #414: the span to blame for an impl, taken from its head types.  A `DImpl` has no
+-- `Loc` of its own (`DUse` is the only `Decl` variant carrying one inline) — but the
+-- parser stamps every `TyCon` leaf with its span (`parser.mdk`'s parseTyAtom:
+-- `TyCon c (Some (locOfSpan s q))`), so the head's own tycon IS the impl's location.
+-- Pre-order, so `impl C (Pair a Int)` blames `Pair` — the head — not the argument.
+-- Mirrors `resolve.mdk`'s firstTyLoc, which locates a `DTypeSig` the same way (that
+-- copy is module-private, and typecheck deliberately keeps its own loc walkers —
+-- cf. `exprLoc` here vs resolve's `firstExprLoc`).
+--
+-- ⚠️ RESIDUAL (#414): only `TyCon` leaves carry spans, so a head with NO tycon —
+-- the fully-parametric `impl Foo a` — still yields `None` and falls back to the
+-- file-start caret.  That is the degenerate overlap case (`test/
+-- typecheck_error_fixtures/overlapping_impls.mdk`).  Closing it needs a span on
+-- `TyVar` (an ast.mdk change rippling through every `Ty` consumer) or the parser's
+-- `DeclPos` side-table threaded into typecheck; both are out of proportion to an
+-- S3 diagnostic-quality fix.  Every head naming a CONCRETE type is covered.
+implHeadLoc : List Ty -> Option Loc
+implHeadLoc [] = None
+implHeadLoc (t::rest) = orElseLoc (tyFirstLoc t) (implHeadLoc rest)
+
+tyFirstLoc : Ty -> Option Loc
+tyFirstLoc (TyCon _ l) = l
+tyFirstLoc (TyVar _) = None
+tyFirstLoc (TyApp f x) = orElseLoc (tyFirstLoc f) (tyFirstLoc x)
+tyFirstLoc (TyFun f x) = orElseLoc (tyFirstLoc f) (tyFirstLoc x)
+tyFirstLoc (TyTuple ts) = implHeadLoc ts
+tyFirstLoc (TyEffect _ _ t) = tyFirstLoc t
+tyFirstLoc (TyConstrained _ t) = tyFirstLoc t
 
 -- the impl's head args → monos under ONE shared fresh-var map (so a var reused
 -- across args, e.g. `Conv a a`, is the SAME fresh tyvar — the oracle shares one
@@ -8582,17 +8647,26 @@ cohOverlapMsg : String -> List Mono -> List Mono -> String
 cohOverlapMsg iface xs ys = match cohPpPair xs ys
   (s1, s2) => "Overlapping impls of \{iface}: \{s1} and \{s2} can match the same type. Make them disjoint, or wrap one type in a newtype"
 
--- scan all ordered pairs; return the FIRST conflict message (mirrors the oracle
--- raising on the first incoherent pair).  None ⇒ coherent.
-cohFirstConflict : List CohImpl -> Option String
+-- scan all ordered pairs; return the FIRST conflict (mirrors the oracle raising on
+-- the first incoherent pair).  None ⇒ coherent.  #414: the payload is the message
+-- PLUS the span to blame — the scan runs over a `reverseL`-ed list, so the outer
+-- element `e1` is the LATER-declared impl of the pair, which is also the head the
+-- message names FIRST.  Blaming it keeps caret and wording consistent.
+--
+-- Every T-CONFLICTING-IMPL push reaches a conflict through HERE, so this one return
+-- type is the seam that offers all of them a span.  The two cross-module pushes
+-- deliberately drop it (see globalCoherenceConflict) — a span is only useful to a
+-- consumer that files the diagnostic against the span's OWN file, which today only
+-- the single-file `checkCoherence` path does.
+cohFirstConflict : List CohImpl -> Option (String, Option Loc)
 cohFirstConflict [] = None
 cohFirstConflict (e::rest) = match cohConflictWith e rest
-  Some msg => Some msg
+  Some hit => Some hit
   None => cohFirstConflict rest
 
-cohConflictWith : CohImpl -> List CohImpl -> Option String
+cohConflictWith : CohImpl -> List CohImpl -> Option (String, Option Loc)
 cohConflictWith _ [] = None
-cohConflictWith (e1@(CohImpl if1 xs mid1)) ((CohImpl if2 ys mid2)::rest)
+cohConflictWith (e1@(CohImpl if1 xs mid1 _)) ((CohImpl if2 ys mid2 _)::rest)
   | if1 == if2 && cohOverlap xs ys = cohAnonConflict e1 xs ys mid1 mid2 rest
   | otherwise = cohConflictWith e1 rest
 
@@ -8601,13 +8675,13 @@ cohConflictWith (e1@(CohImpl if1 xs mid1)) ((CohImpl if2 ys mid2)::rest)
 -- overlap (mirrors the oracle's OverlappingImpls).  When the two impls come from
 -- DIFFERENT modules (mid1 /= mid2, both non-empty), the message names BOTH owning
 -- modules (the cross-module global-coherence case).
-cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option String
+cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option (String, Option Loc)
 cohAnonConflict e1 xs ys mid1 mid2 rest
   | cohStrictlyMoreSpecific xs ys = cohConflictWith e1 rest
   | cohStrictlyMoreSpecific ys xs = cohConflictWith e1 rest
   | mid1 != "" && mid2 != "" && mid1 != mid2 =
-    Some (cohCrossModuleMsg (cohImplIface e1) mid1 mid2)
-  | otherwise = Some (cohOverlapMsg (cohImplIface e1) xs ys)
+    Some (cohCrossModuleMsg (cohImplIface e1) mid1 mid2, cohImplLoc e1)
+  | otherwise = Some (cohOverlapMsg (cohImplIface e1) xs ys, cohImplLoc e1)
 
 -- cross-module conflict wording: names the interface and BOTH owning modules.
 cohCrossModuleMsg : String -> String -> String -> String
@@ -8615,7 +8689,10 @@ cohCrossModuleMsg iface mid1 mid2 =
   "Conflicting `impl \{iface}`. Defined in \{mid2} and \{mid1}"
 
 cohImplIface : CohImpl -> String
-cohImplIface (CohImpl i _ _) = i
+cohImplIface (CohImpl i _ _ _) = i
+
+cohImplLoc : CohImpl -> Option Loc
+cohImplLoc (CohImpl _ _ _ l) = l
 
 -- run coherence over USER decls; push the first conflict (if any) into typeErrors.
 -- The impls are scanned in REVERSE declaration order to mirror the oracle, whose
@@ -8623,7 +8700,7 @@ cohImplIface (CohImpl i _ _) = i
 -- conflict message names the later-declared impl as the first head, byte-identical.
 checkCoherence : List Decl -> Unit
 checkCoherence userDecls = match cohFirstConflict (reverseL (cohCollectImpls userDecls))
-  Some msg => pushTypeError "T-CONFLICTING-IMPL" msg
+  Some (msg, loc) => pushTypeErrorAt "T-CONFLICTING-IMPL" loc msg
   None => ()
 
 -- ── D1 WS-1a: superinterface-existence gate ────────────────────────────────
@@ -9021,11 +9098,25 @@ cohCollectModuleImpls ((mid, prog)::rest) = flatMap (cohImplsOfMid mid) prog
   ++ cohCollectModuleImpls rest
 
 -- the first cross-module coherence conflict (if any) as a bare message — drivers
--- that thread errs as a VALUE (cmEntryCollect) prepend this themselves,
--- rather than relying on the typeErrors ref (cleared per-module by resetState).
+-- that thread errs as a VALUE (cmEntryCollect) prepend this themselves, rather than
+-- relying on the typeErrors ref (cleared per-module by resetState).
+--
+-- ⚠️ #414: this deliberately DROPS the blame-span `cohFirstConflict` now returns.
+-- Both consumers attach the diagnostic to the ENTRY module, but the span belongs to
+-- whichever module declares the offending impl — and the `--json`/human renderers
+-- key a diagnostic's file by the GROUP it is filed under, NOT by the filename
+-- inside its own `Loc`.  Attaching a foreign span therefore renders a caret at that
+-- line/col in the WRONG file.  Measured, with the impl 40 lines into a dependency:
+--     ./main.mdk:42:7: Conflicting `impl C`. Defined in amod and bmod
+-- — main.mdk is 5 lines long, so the caret block cannot even render.  That is worse
+-- than the file-start default: a confidently wrong location beats an obviously
+-- fabricated one only at misleading the reader.  The cross-module wording already
+-- names BOTH owning modules, which is the locating information that actually helps
+-- here.  Attaching a real span needs the renderers to honour `Loc`'s own filename
+-- (a driver/diagnostics.mdk change, well beyond an S3 caret fix).
 globalCoherenceConflict : List (String, List Decl) -> Option String
 globalCoherenceConflict modules =
-  cohFirstConflict (reverseL (cohCollectModuleImpls modules))
+  map fst (cohFirstConflict (reverseL (cohCollectModuleImpls modules)))
 
 -- the USER decls a driver wants coherence-checked.  Set by single-file drivers
 -- (check.mdk / typecheck_main.mdk / check_batch.mdk) to the desugared USER program
@@ -10591,11 +10682,7 @@ checkBodyImpl seed mode prog0 =
   let dataEnv = match mode
     Flat _ => registerAllData initialEnv prog
     Module _ _ _ =>
-      let _ = setRef perRun.value.recordsRef crossRun.value.universeRecords.value
-      let _ = setRef perRun.value.recordByNameRef crossRun.value.universeRecordByName.value
-      let _ = setRef perRun.value.fieldOwnersRef crossRun.value.universeFieldOwners.value
-      let _ = setRef perRun.value.dataParamKindsRef crossRun.value.universeDataParamKinds.value
-      let _ = setRef perRun.value.aliasTableRef crossRun.value.universeAliasTable.value
+      let _ = loadDataUniverse ()
       registerAllData crossRun.value.universeDataEnv.value prog0
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
@@ -12927,6 +13014,36 @@ checkToLines prog =
 -- coherence over the WHOLE prog: this path (typecheck_main single-arg) is
 -- prelude-free, so every impl is a user impl (mirrors check_program_no_prelude).
 
+-- #415 item 1: the seeding PREAMBLE every runtime-seeded entry point runs before its
+-- typecheck pass — the head half of the sandwich whose tail is `runFinalChecks`.
+-- [oracleDecls] is the decl set the ctor oracle is built from: the ONE axis the callers
+-- legitimately differ on (the flat paths pass `prog`; checkModuleFullDiags passes
+-- `prog ++ accData` own-module-FIRST — see the P0-9 note there, that order is load-bearing).
+-- matchWarnings is cleared explicitly because resetState does NOT clear it.
+-- Call ORDER is preserved from the four bodies this replaces.
+seedCheckRun : List Decl -> Unit
+seedCheckRun oracleDecls =
+  let _ = setRef driverState.value.implInferEnabled False
+  let _ = setRef driverState.value.matchWarnings []
+  setRef driverState.value.matchOracle (buildOracle oracleDecls)
+
+-- #415 item 1: seed-and-run for the three FLAT runtime-seeded entry points
+-- (checkToLinesWithRuntime / checkErrorsWithRuntime / checkProgramDiags).  All three
+-- used to repeat this body verbatim under a "Mirrors checkToLinesWithRuntime's
+-- side-effects EXACTLY" comment — a mirror obligation enforced only by that comment.
+-- They now differ ONLY in what they HARVEST from the accumulators afterwards, so the
+-- seeding+coherence they share has exactly one body and cannot drift.
+-- ⚠️ trap #5, same as runFinalChecks: coherence sees the driver-staged USER decls only,
+-- NEVER `prog`.  A user impl deliberately overrides a seeded prelude impl, so feeding
+-- the seeded set to checkCoherence false-positives on the stdlib itself.
+seedAndCheckSplit : List Decl -> List Decl -> List Decl -> List (String, Scheme)
+seedAndCheckSplit runtimeDecls coreProg userProg =
+  let prog = coreProg ++ userProg
+  let _ = seedCheckRun prog
+  let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
+  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  schemes
+
 -- like checkToLines but seeds runtime.mdk's externs (for typechecking core.mdk,
 -- which references putStrLn / etc. declared in runtime.mdk).  [coreProg] is the PRELUDE
 -- the caller would otherwise have pre-concatenated onto [userProg]; keeping the two
@@ -12934,12 +13051,7 @@ checkToLines prog =
 -- see flatShadowScopingRef).  Prelude-free callers pass [].
 export checkToLinesWithRuntime : List Decl -> List Decl -> List Decl -> String
 checkToLinesWithRuntime runtimeDecls coreProg userProg =
-  let prog = coreProg ++ userProg
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
-  let _ = setRef driverState.value.matchOracle (buildOracle prog)
-  let schemes = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  let schemes = seedAndCheckSplit runtimeDecls coreProg userProg
   let errs = reverseL perRun.value.typeErrors.value
   let warns = map tcMsg (reverseL driverState.value.matchWarnings.value)
   match errs
@@ -12953,19 +13065,14 @@ checkToLinesWithRuntime runtimeDecls coreProg userProg =
 -- driver staged nothing (golden/profile paths) ⇒ no check, byte-identical.
 
 -- G1 (SOUNDNESS): does the runtime-seeded typecheck pass produce any TYPE ERROR?
--- Mirrors checkToLinesWithRuntime's side-effects EXACTLY (same seeding + coherence
--- over the same staged user decls) but returns a Bool keyed on the typeErrors
--- accumulator, ignoring the success-path scheme dump and the match WARNINGS (which
--- are not errors).  Used by check.mdk's checkHasErrors to gate the CLI exit code
+-- Shares checkToLinesWithRuntime's seeding + coherence BY CONSTRUCTION (the one
+-- seedAndCheckSplit body), and differs only in the harvest: a Bool keyed on the
+-- typeErrors accumulator, ignoring the success-path scheme dump and the match WARNINGS
+-- (which are not errors).  Used by check.mdk's checkHasErrors to gate the CLI exit code
 -- WITHOUT altering runCheck's reported stdout.
 export checkErrorsWithRuntime : List Decl -> List Decl -> List Decl -> Bool
 checkErrorsWithRuntime runtimeDecls coreProg userProg =
-  let prog = coreProg ++ userProg
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
-  let _ = setRef driverState.value.matchOracle (buildOracle prog)
-  let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  let _ = seedAndCheckSplit runtimeDecls coreProg userProg
   match perRun.value.typeErrors.value
     [] => False
     _ => True
@@ -12991,12 +13098,7 @@ checkMatchToLines runtimeDecls prog =
 -- so diagnostics.mdk maps them straight to structured `Diag` values.
 export checkProgramDiags : List Decl -> List Decl -> List Decl -> (List TcDiag, List TcDiag)
 checkProgramDiags runtimeDecls coreProg userProg =
-  let prog = coreProg ++ userProg
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
-  let _ = setRef driverState.value.matchOracle (buildOracle prog)
-  let _ = checkProgramSeededSplit (externSchemes runtimeDecls) coreProg userProg
-  let _ = runFinalChecks driverState.value.coherenceUserDecls.value prog
+  let _ = seedAndCheckSplit runtimeDecls coreProg userProg
   (
     reverseL perRun.value.typeErrors.value,
     reverseL driverState.value.matchWarnings.value,
@@ -13213,19 +13315,36 @@ appendUniverseAccums prog =
 -- decl exactly ONCE across the whole run — the O(N) replacing the Module arm's old
 -- per-module O(|accData|) re-registration.  Only publicDataDecls are folded in (private data
 -- stays module-local), matching foldModules' `accData ++ publicDataDecls prog` threading.
-appendDataUniverse : List Decl -> Unit
-appendDataUniverse pubDecls =
+-- #415 item 3: the cross-module DATA universe ⇄ per-run working tables copy, which was
+-- open-coded as a 5-way lockstep mirror at THREE sites (the Module arm of the data-env
+-- setup + appendDataUniverse's load and its store-back).  Adding a sixth universe table
+-- meant remembering all three — the "silently absent from the other side" shape.  It now
+-- has one body per direction, and the two are exact inverses of each other.
+-- ⚠️ universeDataEnv is deliberately NOT copied here: it is threaded through
+-- `registerAllData` by the CALLER (it is that call's env argument and its result), so it
+-- has no meaning as a blind copy.
+loadDataUniverse : Unit -> Unit
+loadDataUniverse _ =
   let _ = setRef perRun.value.recordsRef crossRun.value.universeRecords.value
   let _ = setRef perRun.value.recordByNameRef crossRun.value.universeRecordByName.value
   let _ = setRef perRun.value.fieldOwnersRef crossRun.value.universeFieldOwners.value
   let _ = setRef perRun.value.dataParamKindsRef crossRun.value.universeDataParamKinds.value
-  let _ = setRef perRun.value.aliasTableRef crossRun.value.universeAliasTable.value
-  let env2 = registerAllData crossRun.value.universeDataEnv.value pubDecls
+  setRef perRun.value.aliasTableRef crossRun.value.universeAliasTable.value
+
+-- the exact inverse of loadDataUniverse (same five tables, same order).
+storeDataUniverse : Unit -> Unit
+storeDataUniverse _ =
   let _ = setRef crossRun.value.universeRecords perRun.value.recordsRef.value
   let _ = setRef crossRun.value.universeRecordByName perRun.value.recordByNameRef.value
   let _ = setRef crossRun.value.universeFieldOwners perRun.value.fieldOwnersRef.value
   let _ = setRef crossRun.value.universeDataParamKinds perRun.value.dataParamKindsRef.value
-  let _ = setRef crossRun.value.universeAliasTable perRun.value.aliasTableRef.value
+  setRef crossRun.value.universeAliasTable perRun.value.aliasTableRef.value
+
+appendDataUniverse : List Decl -> Unit
+appendDataUniverse pubDecls =
+  let _ = loadDataUniverse ()
+  let env2 = registerAllData crossRun.value.universeDataEnv.value pubDecls
+  let _ = storeDataUniverse ()
   setRef crossRun.value.universeDataEnv env2
 
 -- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
@@ -13900,9 +14019,10 @@ checkModules runtimeDecls coreDecls modules =
     modules
 
 -- ── per-module ISOLATED diagnostics (the analyzeProject typecheck stage) ────
--- Like checkModuleFull but ALSO harvests THIS module's type diagnostics: it
--- mirrors checkProgramDiags's side-effects (matchOracle/matchWarnings seeded,
--- coherence over the module's OWN decls) while keeping the module ISOLATED — only
+-- Like checkModuleFull but ALSO harvests THIS module's type diagnostics: it shares the
+-- flat paths' seeding via `seedCheckRun` (#415 item 1 — matchOracle/matchWarnings/
+-- implInferEnabled) and runs coherence over the module's OWN decls, while keeping the
+-- module ISOLATED — only
 -- PUBLIC schemes/data of earlier modules are seeded (via seedVars/accData), so a
 -- private same-named helper in another module never collides (the bug the old
 -- flat prefix-concat diagnostics path had).  checkModuleFull calls resetState (),
@@ -13921,8 +14041,8 @@ checkModules runtimeDecls coreDecls modules =
 -- standalone caller that skips it would leak the previous run's universe into this one.
 export checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModuleFullDiags seedVars accData accAll prog =
-  let _ = setRef driverState.value.implInferEnabled False
-  let _ = setRef driverState.value.matchWarnings []
+  -- #415 item 1: same seeding preamble as the flat entry points (one body), but the
+  -- oracle decls are THIS module's own first.
   -- P0-9: THIS module's own decls (`prog`) come FIRST so its constructors win
   -- the oracle's first-wins bare-name tables.  Another loaded module (in accData)
   -- can define a same-named ctor at a different arity (`map`'s arity-5 `Bin` vs
@@ -13930,7 +14050,7 @@ checkModuleFullDiags seedVars accData accAll prog =
   -- the WRONG arity/type for this module's own `Bin` in a match and false-warns
   -- W-NONEXHAUSTIVE.  buildOracle is duplicate-tolerant, and accData still
   -- supplies prelude Option/Result ctors (this module never redefines them).
-  let _ = setRef driverState.value.matchOracle (buildOracle (prog ++ accData))
+  let _ = seedCheckRun (prog ++ accData)
   -- Bug C: pass the cumulative full impl universe (core + earlier modules) as
   -- implDecls (was checkModuleFull, i.e. implDecls=[]) so buildStandaloneShadows sees
   -- an imported standalone funDef that shadows an interface method (`map`'s `toList`
@@ -14002,6 +14122,8 @@ checkModulesDiags runtimeDecls coreDecls modules =
   -- D3 / WS-2 part-2: attach any cross-module coherence conflict to the ENTRY
   -- module's diagnostics (last in dependency-first order), so LSP/analyzeProject
   -- surfaces it too.  User modules only (prelude excluded).
+  -- #414: no span — see globalCoherenceConflict (the entry module it attaches to is
+  -- not the module the span would name, and the renderer keys the file by group).
   match globalCoherenceConflict modules
     Some msg => attachEntryDiag (TcDiag "T-CONFLICTING-IMPL" 1 None msg None None) perMod
     None => perMod
@@ -14050,6 +14172,7 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
   -- D3 / WS-2 part-2: cross-module coherence over the USER modules only (prelude
   -- excluded — it is checked separately and a user impl may override a prelude one).
   -- Prepend any conflict (dependency-first, ahead of the entry's own errors).
+  -- #414: no span — see globalCoherenceConflict.
   match globalCoherenceConflict modules
     Some msg => (schemes, TcDiag "T-CONFLICTING-IMPL" 1 None msg None None :: errs, warns)
     None => (schemes, errs, warns)
@@ -14171,8 +14294,7 @@ elaborateModules runtimeDecls coreDecls modulesIn =
   let rpNames = returnPosMethodNames allDecls
   let _ = setRef driverState.value.argDispatchIdxRef (argDispatchIndices allDecls)
   let argNames = map fst driverState.value.argDispatchIdxRef.value
-  let _ = setRef driverState.value.dictEligibleRef (moduleUserFnNames modules)
-  let _ = setRef driverState.value.dictEligibleSetRef (namesToSet (moduleUserFnNames modules) omEmpty)
+  let _ = setDictEligible (moduleUserFnNames modules)
   -- #194: eliminate the redundant MANDATORY promotion-discovery whole-program
   -- typecheck.  Direct-promotion == ∅ ⟹ full-promoted == ∅ (inherited promotion needs a
   -- leaf direct promotion to inherit from), so a SINGLE bare-dict elaboration sweep that

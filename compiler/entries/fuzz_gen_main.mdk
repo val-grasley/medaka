@@ -52,6 +52,7 @@ import frontend.ast.{
   DataVis(..),
   ConPayload(..),
   Variant(..),
+  DeriveRef(..),
   Decl(..),
 }
 import tools.printer.{programToString}
@@ -446,7 +447,9 @@ variantToAst (con, ftys) = Variant con (ConPos (map gtyToTy ftys))
 adtToDecl : Gadt -> Decl
 adtToDecl a =
   let variants = map variantToAst (adtVariants a)
-  let derives = if adtDerives a then ["Eq", "Ord", "Debug"] else ["Debug"]
+  let names = if adtDerives a then ["Eq", "Ord", "Debug"] else ["Debug"]
+  -- Synthesized AST: there is no source span to point at, so the loc is None.
+  let derives = map (n => DeriveRef n None) names
   DData VisPrivate (adtName a) [] variants derives
 
 -- ── monomorphic helper function: f : A -> B ─────────────────────────────────
