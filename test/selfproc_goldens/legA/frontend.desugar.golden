@@ -10,6 +10,8 @@ attribHead : List Attr -> List Decl -> List Decl
 binMethod : String -> String -> String -> Expr -> ImplMethod
 binOp : String -> Expr -> Expr -> Expr
 callBin : String -> Expr -> Expr -> Expr
+cannotDeriveMsg : String -> List String -> String -> String
+checkDerives : List Decl -> List (String, Option Loc)
 collectRecordNames : List Decl -> List String
 conArity : Variant -> Int
 conBindPat : Variant -> List String -> Pat
@@ -19,11 +21,13 @@ concatLists : List (List a) -> List a
 concatMapDecl : (Decl -> List Decl) -> List Decl -> List Decl
 concatStrings : List Expr -> Expr
 containsMethod : String -> List IfaceMethod -> Bool
+dataDerivers : String -> List String -> List Variant -> List (String, Unit -> Decl)
+declDeriveErrors : Decl -> List (String, Option Loc)
 deriveEqData : String -> List Variant -> Decl
 deriveForData : String -> List String -> List Variant -> String -> Option Decl
 deriveForNewtype : String -> List String -> String -> Ty -> String -> Option Decl
 deriveGenericData : String -> List Variant -> Decl
-deriveImpls : (String -> Option Decl) -> List String -> List Decl
+deriveImpls : (String -> Option Decl) -> List DeriveRef -> List Decl
 deriveOrdData : String -> List Variant -> Decl
 deriveShowData : String -> String -> String -> List Variant -> Decl
 derivedImpl : String -> String -> List ImplMethod -> Decl
@@ -60,6 +64,7 @@ isRefutable : Pat -> Bool
 isVarExpr : Expr -> Bool
 kvToTuple : (Expr, Expr) -> Expr
 lexCompareExprs : List (Expr, Expr) -> Expr
+lookupDeriver : String -> List (String, Unit -> Decl) -> Option Decl
 lowerContainerLiterals : List Decl -> List Decl
 lowerDo : List DoStmt -> Expr
 mapArm : (Expr -> Expr) -> Arm -> Arm
@@ -86,6 +91,7 @@ mergedDefault : Option MethodDefault -> Option MethodDefault -> Option MethodDef
 mergedType : Ty -> Ty -> Ty
 methodName : IfaceMethod -> String
 moduleAliases : List Decl -> List String
+newtypeDerivers : String -> List String -> String -> Ty -> List (String, Unit -> Decl)
 ordArms : List Variant -> List Arm
 ordBody : Int -> Int -> List String -> List String -> Expr
 ordCell : Int -> Variant -> (Int, Variant) -> Arm
@@ -114,6 +120,7 @@ stripLocE : Expr -> Expr
 synthDefaultMethods : List ImplMethod -> List IfaceMethod -> List ImplMethod
 synthFromDefault : IfaceMethod -> ImplMethod
 toRep : String -> Expr
+unknownDerive : String -> List String -> DeriveRef -> List (String, Option Loc)
 wrapDoOrigin : List DoStmt -> Expr -> Expr
 wrappedFieldCall : String -> String -> Expr
 zipEqCalls : List String -> List String -> List Expr
