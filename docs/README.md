@@ -31,6 +31,7 @@ What parses, what it means, formal semantics. Read here first for "does X exist 
 | [`SHADOW-SEMANTICS.md`](spec/SHADOW-SEMANTICS.md) | Declaration-Shadowing Semantics (standalone fn ⇄ interface method) | ENFORCED |
 | [`STYLE.md`](spec/STYLE.md) | Medaka style guide | — |
 | [`SYNTAX.md`](spec/SYNTAX.md) | SYNTAX.md — Medaka construct cheat-sheet | — |
+| [`WASM-SEMANTICS.md`](spec/WASM-SEMANTICS.md) | WasmGC Backend Semantics: the physical-encoding + host-boundary supplement | specification |
 | [`language-design.md`](spec/language-design.md) | Medaka Language Design Document | PARTIAL |
 
 ### guide — learning path
