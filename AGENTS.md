@@ -181,6 +181,22 @@ emitter was built from into `.medaka_emitter.srcstamp` and rebuilds any emitter 
 or mismatched provenance. (It used to decide this by **mtime**, which `cp` inverts — that
 is where the spurious "lagging seed" scares came from.)
 
+> ### 🚨 …but if you are a WORKTREE-ISOLATED SUBAGENT, do NOT borrow it. Cold-bootstrap.
+>
+> The paragraph above is written for a human (or an orchestrator) working in their own checkout.
+> **For an isolated subagent it is a trap that will cost you your whole session.** `cp
+> <other-tree>/medaka_emitter .` *reads* from a tree that is not yours, which trips the auto-mode
+> isolation classifier — and the denial is **stateful**: it carries forward and blocks every later
+> `make` you attempt, *including a clean cold-bootstrap entirely inside your own worktree*. An agent
+> lost a full session to exactly this on 2026-07-16, and the classifier's own stated reasons for the
+> successive denials contradicted each other ("you are in another agent's worktree" → "bare `make`
+> risks the shared main checkout").
+>
+> **Just run `make -C <your-absolute-worktree-path> medaka`.** A fresh worktree has NO
+> `./medaka_emitter` and **that is FINE** — it cold-bootstraps from `compiler/seed/emitter.ll.gz`
+> and works. The entire cost of not borrowing is ~4 s. **Never read from another tree; the speedup
+> is not worth the session.**
+
 **Environment.** opam/dune are NOT needed. The native build uses only **clang + Boehm GC**
 (Debian: `clang` + system `libgc-dev`, found via plain `-lgc`; macOS: Apple clang + `brew
 install bdw-gc`). `node` ≥ 24 is needed only for the wasm/sqlite/playground gates. If clang
@@ -318,6 +334,17 @@ move when wording changes.
 
 When **writing** a diagnostic, follow `compiler/ERROR-QUALITY.md` (the rubric) and add the
 code to `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
+
+**To see the emitted LLVM IR — `medaka build --keep-ir <file>` (or `MEDAKA_KEEP_IR=1`)**, which
+copies the IR to a predictable path and prints it (`effectiveKeepIr`,
+`compiler/driver/build_cmd.mdk:312`). Reach for this the moment a bug is "check/run are green but
+the built binary is wrong": it is the only way to see what the backend *actually* emitted, and it
+settles dispatch/arity/calling-convention questions that are pure speculation from the source. An
+agent debugging a dict-routing S0 on 2026-07-16 called it the single highest-value tool in the
+investigation — it turned "I think the wrong impl is selected" into `call
+@mdk_impl_S__List_a___s` on the screen, which disproved the filed root cause outright.
+⚠️ **`./medaka_emitter <file>` is NOT the way to get IR** — it silently emits **0 lines and exits
+0**, with no error and no diagnostic. That is a silent no-op, not an empty program.
 
 **Playground e2e:** `playground/e2e/` is a Playwright harness driving a real browser against
 the built CM6 playground (`cd playground/e2e && ./run.sh`). Needs **node v24+** and a
