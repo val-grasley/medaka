@@ -631,17 +631,21 @@ stage_times_min_modules() {
 #   * On the DEAD-`main` shapes (bindings/listlit/nesting/comments) DCE prunes the
 #     synthetic decls, so this stage times THE PRELUDE AND NOTHING ELSE — but unlike
 #     `lower`/`emit`, which fall under TIME_FLOOR and SKIP loudly, that constant is
-#     ~0.215-0.25 s and CLEARS the 0.2 s floor. Those four rows therefore print a flat
-#     `ok r1≈1.0 r2≈1.0` (measured: 1.02/1.02, 1.02/1.22, 0.88/1.08, 0.91/0.98). THAT
-#     "ok" IS NOT BACKEND COVERAGE — it is the prelude constant being constant. Do not
-#     read it as one, and do not let it satisfy backend_graded (see the counter below,
-#     which deliberately excludes this stage).
+#     ~0.215-0.25 s and generally CLEARS the 0.2 s floor. Those rows therefore print a
+#     flat `ok r1≈1.0 r2≈1.0` (measured: 0.90/1.08, 1.09/1.21, 1.08/0.94). THAT "ok" IS
+#     NOT BACKEND COVERAGE — it is the prelude constant being constant. Do not read it
+#     as one, and do not let it satisfy backend_graded (see the counter below, which
+#     deliberately excludes this stage).
 #
-#     `manydefs` is the exception that proves the constant is NOT universal: it SKIPs at
-#     174 ms. Its `main = p0 + p1` is `Int`-typed, not a `println`, so DCE keeps no
-#     Display/String prelude and there is less WAT to render. So "wasm-emit always
-#     clears the floor" is FALSE — do not build on it (an earlier draft of this comment
-#     asserted it; the manydefs row falsified it on the first full run).
+#     ⚠️ THE CONSTANT IS NOT UNIVERSAL AND THE ROW COUNT IS LOAD-DEPENDENT — do not
+#     build on either. `manydefs` SKIPs outright (156-174 ms): its `main = p0 + p1` is
+#     `Int`-typed, not a `println`, so DCE keeps no Display/String prelude and there is
+#     less WAT to render. `comments` sits ON the floor and flips: 220 ms (graded "ok")
+#     on a loaded box, 198 ms (SKIP) on a quiet one. So "wasm-emit always clears the
+#     floor" is FALSE, and so is any fixed count of rows it grades — both were asserted
+#     by earlier drafts of this comment and both were falsified by the next full run.
+#     Only ONE wasm row is guaranteed: `xref:wasm-emit`, and only because the ledger
+#     forces it (a KNOWN_SLOW_TIME stage may not SKIP).
 #   * On the ROOTED shapes (xref/match) the same constant DILUTES the ratio downward
 #     harder than it does `emit`: at match N=1000 it is 79% of the reading. Under-
 #     threshold here is even weaker evidence of linearity than it is for `emit`.
@@ -757,8 +761,8 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 #     UPDATE 2026-07-16 (#359 wasm arm) — THE WASM CUBIC ABOVE IS FIXED, AND NOW
 #     MEASURED. #401 fixed #381 (53x at N=400), and the `match:wasm-emit` row now checks
 #     that rather than trusting it: 0.245s / 0.250s / 0.272s at N=250/500/1000, r1=1.02
-#     r2=1.09 on a quiet box (load 0.6); this gate's own min-of-5 reads r2=1.05. So the
-#     band is r2 1.05-1.09 — the cubic is gone, and this row is what stops it returning.
+#     r2=1.09 on a quiet box (load 0.6); this gate's own min-of-5 runs read r2=1.05/1.06.
+#     So the band is r2 1.05-1.09 — the cubic is gone, and this row stops it returning.
 #     Read that with the prelude caveat: at N=1000 the ~0.215s wasm prelude constant is
 #     79% of the reading, so it is a WEAK linearity claim but a STRONG not-cubic one,
 #     which is exactly what #401 is about. Unlike `match:emit`, this row is gradeable at
@@ -788,9 +792,10 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 #     the ws:emitter and ws:wasm workstreams reported 3.71/3.73 and 2.27/2.87 for one
 #     curve and briefly appeared to disagree.)
 #
-#     OBSERVED r2 BAND, same N, FOUR batches: 3.88 / 3.92 / 4.09 / 4.15 (r1 3.60-3.82).
-#     4.09 is the quiet-box (load 0.5, min-of-2) reading above; 3.88 is this gate's own
-#     min-of-5 under moderate load (~4-6, a shared box); 3.92/4.15 are min-of-1
+#     OBSERVED r2 BAND, same N, FIVE batches: 3.87 / 3.88 / 3.92 / 4.09 / 4.15
+#     (r1 3.60-3.82). 4.09 is the quiet-box (load 0.5, min-of-2) reading above; 3.88 and
+#     3.87 are this gate's own min-of-5 runs (the 3.87 on the tree merged with #468,
+#     which reworked wasm_emit — it did not move this row); 3.92/4.15 are min-of-1
 #     falsification runs. Treat the BAND as the measurement, not any single batch — and
 #     note the QUIETER box read HIGHER, so a busy CI runner biases this row toward
 #     false-green, never toward false-red.
@@ -826,7 +831,7 @@ KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # file-wide convention): drop under it and #349/#350/#352 are fixed and this entry
 # must be promoted out.
 KNOWN_TCEIL_xref_emit="5.6";          KNOWN_TFIXED_xref_emit="2.60"
-# Observed r2 band 3.88-4.15 (r1 3.60-3.82) at N=4000->8000->16000 across FOUR batches —
+# Observed r2 band 3.87-4.15 (r1 3.60-3.82) at N=4000->8000->16000 across FIVE batches —
 # see the band warning above; the ceiling means nothing without that N band. Ceiling 5.6
 # and TFIXED 2.60 re-derived against THIS backend's own readings, not copied from
 # xref:emit because the numbers look alike: the band tops out at 4.15, and 5.6 clears it
@@ -850,12 +855,14 @@ pass=0
 # all — while still exiting 0. Asserted non-zero at the bottom of this file.
 #
 # ⚠️ `wasm-emit` IS DELIBERATELY NOT COUNTED HERE, and the reason is the whole point of
-# the counter. Its ~0.215-0.25 s prelude constant clears the 0.2 s floor on FIVE of the
-# seven shapes — including four dead-`main` ones where DCE has pruned everything and it
-# is timing the prelude alone. Counting it would peg this counter at 6 on every run: it
-# would never be zero again, so it could never fail, and the llvm arm's floor-skip
-# regression (the ONLY thing it detects) would sail through behind wasm rows that
-# measured nothing but the prelude. A guard that cannot fail is not a guard.
+# the counter. Its ~0.215-0.25 s prelude constant clears the 0.2 s floor on most shapes
+# (4-5 of 7, load-dependent) — including the dead-`main` ones where DCE has pruned
+# everything and it is timing the prelude alone. Counting it would peg this counter at
+# 5-6 on every run: it would never be zero again, so it could never fail, and the llvm
+# arm's floor-skip regression (the ONLY thing it detects) would sail through behind wasm
+# rows that measured nothing but the prelude. A guard that cannot fail is not a guard.
+# (Measured: with wasm-emit excluded this counter still reads 1, the same as before this
+# stage existed — so the llvm guard is provably undiluted.)
 #
 # The wasm arm does not need this counter, because it is guarded twice over and more
 # tightly:
@@ -1186,7 +1193,7 @@ printf '%d ok, %d known-superlinear (ledgered), %d regressed (threshold %sx per 
 
 printf 'backend TIME arm (issue #359): %d native lower/emit stage-ratios graded\n' "$backend_graded"
 # The wasm arm is NOT counted by backend_graded (see that counter's note: wasm-emit
-# clears the floor on 5 of 7 shapes, so counting it would make the counter unfailable).
+# clears the floor on most shapes, so counting it would make the counter unfailable).
 # Its coverage guarantee is the KNOWN_SLOW_TIME ledger instead — `xref:wasm-emit` is
 # graded on every green run or the gate is red — so report it rather than leaving the
 # arm unmentioned.
