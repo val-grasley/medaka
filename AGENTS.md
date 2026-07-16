@@ -192,12 +192,19 @@ is where the spurious "lagging seed" scares came from.)
 > this exact `cp` and **never built again** (its stated reasons for the successive denials even
 > contradicted each other — "you are in another agent's worktree" → "bare `make` risks the shared
 > main checkout"), while another warm-started from a borrowed emitter with no issue.
-> **Don't gamble the session on a coin-flip to save 4 seconds.**
+> **Don't gamble the session on a coin-flip to save 31 seconds.**
 >
 > **Just run `make -C <your-absolute-worktree-path> medaka`.** A fresh worktree has NO
 > `./medaka_emitter` and **that is FINE** — it cold-bootstraps from `compiler/seed/emitter.ll.gz`
-> and works. The entire cost of not borrowing is ~4 s. **Never read from another tree; the speedup
-> is not worth the session.**
+> and works. **The entire cost of not borrowing is ~31 s** — the seed bootstrap, and *only* that
+> (measured 2026-07-16: `time sh test/bootstrap_from_seed.sh` → `real 0m31.003s`, exit 0). This
+> line said **~4 s** until then, an ~8× understatement that propagated into new code verbatim.
+> It is NOT the ~1m52s of a full fresh `make medaka`: **stages A and B run in the borrow path
+> too**, because `cp` copies the emitter binary but not `.medaka_emitter.srcstamp`, so a borrowed
+> emitter is "provenance unknown" and is **rebuilt from source anyway**
+> (`test/build_native_medaka.sh:212-221` — *"fresh bootstrap, or copied in from another tree"* is
+> one branch). So borrowing buys **31 s**, not two minutes. **Never read from another tree; the
+> speedup is not worth the session.**
 
 **Environment.** opam/dune are NOT needed. The native build uses only **clang + Boehm GC**
 (Debian: `clang` + system `libgc-dev`, found via plain `-lgc`; macOS: Apple clang + `brew

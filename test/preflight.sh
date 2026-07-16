@@ -764,7 +764,13 @@ fi
 # of whichever sibling agent happened to be live. Same disease as #492 and #470: the
 # tooling made the banned path the silent default.
 #
-# The entire cost of not borrowing is ~4 seconds of seed bootstrap. Do not reintroduce it.
+# The cost of not borrowing is the SEED BOOTSTRAP ONLY — measured 31s on this box
+# (2026-07-16, `time sh test/bootstrap_from_seed.sh` -> real 0m31.003s, exit 0). It is not
+# the ~1m52s a fresh `make medaka` takes: stages A and B run in the BORROW path too, because
+# `cp` copies the emitter binary but NOT $ROOT/.medaka_emitter.srcstamp, so the borrowed
+# emitter reads as "provenance unknown" and gets rebuilt from source anyway
+# (build_native_medaka.sh:212-221 — "fresh bootstrap, or copied in from another tree" is ONE
+# branch). Borrowing buys 31s and risks the session. Do not reintroduce it.
 echo "── building ./medaka ─────────────────────────────────────────"
 make -C "$ROOT" medaka >/dev/null 2>&1 || { echo "preflight: make medaka FAILED"; exit 1; }
 
