@@ -1592,11 +1592,14 @@ runLintCmd argv =
     let multiFile = match files
       (_::_::_) => True
       _ => False
-    let perFileErr = lintFilesGo fixMode multiFile disableNames onlyNames denyNames files False
+    -- `parsed` carries each readable target's (path, src, Positions, decls) out of
+    -- the per-file pass so the cross-file tier reuses them instead of re-reading
+    -- and re-parsing every file (#394).
+    let (perFileErr, parsed) = lintFilesGo fixMode multiFile disableNames onlyNames denyNames files False
     -- Cross-file rules only run in the multi-file REPORT path; a single target or
     -- --fix produces nothing (need ≥2 files), keeping single-file output identical.
     let crossErr =
-      if multiFile && not fixMode then runCrossFileReport disableNames onlyNames denyNames files
+      if multiFile && not fixMode then runCrossFileReport disableNames onlyNames denyNames parsed
       else False
     if perFileErr || crossErr then exit 1 else ()
 
@@ -1616,7 +1619,7 @@ runLintJsonCmd disableNames onlyNames denyNames files =
   if anyList cjLintTripleHasErr triples then exit 1 else ()
 
 -- Sequence `lintFileDiagTriple` over every target file, in order.  Mirrors
--- `parseLintFiles`'s explicit recursion — this codebase sequences an `<IO>`
+-- `lintFilesGo`'s explicit recursion — this codebase sequences an `<IO>`
 -- list traversal by hand, not via `map` over an effectful function.
 lintFilesToDiagTriples : List String -> List String -> List String -> List String -> <IO> List (String, String, List Diag)
 lintFilesToDiagTriples _ _ _ [] = []
@@ -1627,19 +1630,21 @@ lintFilesToDiagTriples disable only deny (f::rest) =
 cjLintTripleHasErr : (String, String, List Diag) -> Bool
 cjLintTripleHasErr (_, _, diags) = anyList diagIsError diags
 
--- Parse every target file once, then run the cross-file rule tier over the whole
--- set.  Findings render AFTER the per-file output under a `cross-file:` header.
+-- Run the cross-file rule tier over the whole set, REUSING the parses the per-file
+-- pass already produced (#394 — this used to call `parseLintFiles`, re-reading and
+-- re-parsing every target, plus `readLintSrcs` for a third read of the same bytes).
+-- Findings render AFTER the per-file output under a `cross-file:` header.
 -- --only/--disable are honored inside `runCrossFileRules`; --deny promotion is
 -- applied here (mirrors the per-file path).  Returns whether any finding is an
 -- error severity (feeds the exit code).
-runCrossFileReport : List String -> List String -> List String -> List String -> <IO> Bool
-runCrossFileReport disableNames onlyNames denyNames files =
-  let triples = parseLintFiles files
+runCrossFileReport : List String -> List String -> List String -> List (String, String, Positions, List Decl) -> <IO> Bool
+runCrossFileReport disableNames onlyNames denyNames parsed =
+  let triples = map parsedToTriple parsed
   let raw = runCrossFileRules onlyNames disableNames triples
   -- Honor inline `-- lint-disable-*` directives on cross-file findings too:
   -- each finding anchors to its own file, so filter against that file's own
   -- directives (recovered from its source) before the CLI flag filters.
-  let suppressed = applySuppressionsMulti (readLintSrcs files) raw
+  let suppressed = applySuppressionsMulti (map parsedToSrc parsed) raw
   let findings = applyFindingDeny denyNames suppressed
   match findings
     [] => False
@@ -1661,21 +1666,15 @@ locFileOf None = ""
 
 -- Read each readable target's source into `(path, src)` for inline-directive
 -- recovery in the cross-file report path.  Unreadable files are skipped.
-readLintSrcs : List String -> <IO> List (String, String)
-readLintSrcs [] = []
-readLintSrcs (f::rest) = match readFile f
-  Err _ => readLintSrcs rest
-  Ok src => (f, src) :: readLintSrcs rest
+-- Projections off the threaded (path, src, Positions, decls) quad (#394): the
+-- cross-file rule tier wants (path, Positions, decls), and the inline-directive
+-- suppression pass wants (path, src).  Both used to be re-derived from disk by
+-- `parseLintFiles` / `readLintSrcs`, which this replaces.
+parsedToTriple : (String, String, Positions, List Decl) -> (String, Positions, List Decl)
+parsedToTriple (path, _, pos, decls) = (path, pos, decls)
 
--- Parse each readable target into (path, Positions, decls) for the cross-file
--- tier.  Unreadable files are skipped (already reported by the per-file pass).
-parseLintFiles : List String -> <IO> List (String, Positions, List Decl)
-parseLintFiles [] = []
-parseLintFiles (f::rest) = match readFile f
-  Err _ => parseLintFiles rest
-  Ok src =>
-    let (decls, pos) = parseWithPositions src
-    (f, pos, decls) :: parseLintFiles rest
+parsedToSrc : (String, String, Positions, List Decl) -> (String, String)
+parsedToSrc (path, src, _, _) = (path, src)
 
 -- Resolve file args to a concrete list of .mdk paths.
 -- Empty args → project root mode (find medaka.toml, list top-level .mdk files).
@@ -1747,30 +1746,45 @@ filterNonDot (n::rest)
   | otherwise = n :: filterNonDot rest
 
 -- Fold over file list, running lint on each.  acc = whether any SevError seen.
-lintFilesGo : Bool -> Bool -> List String -> List String -> List String -> List String -> Bool -> <IO> Bool
-lintFilesGo _ _ _ _ _ [] acc = acc
+-- Returns (anyError, parsedFiles).  `parsedFiles` is threaded to the cross-file
+-- tier so it need not re-read/re-parse the same targets (#394); it is empty in
+-- --fix mode, which runs no cross-file rules.  The per-file printing order is
+-- unchanged: each file's report is emitted (strictly) before the recursion.
+lintFilesGo : Bool -> Bool -> List String -> List String -> List String -> List String -> Bool -> <IO> (Bool, List (String, String, Positions, List Decl))
+lintFilesGo _ _ _ _ _ [] acc = (acc, [])
 lintFilesGo fixMode multiFile disableNames onlyNames denyNames (f::rest) acc =
-  let hadErr = if fixMode then
-    lintOneFileFix onlyNames disableNames f
+  if fixMode then
+    let hadErr = lintOneFileFix onlyNames disableNames f
+    lintFilesGo
+      fixMode
+      multiFile
+      disableNames
+      onlyNames
+      denyNames
+      rest
+      (acc || hadErr)
   else
-    lintOneFileReport multiFile disableNames onlyNames denyNames f
-  lintFilesGo
-    fixMode
-    multiFile
-    disableNames
-    onlyNames
-    denyNames
-    rest
-    (acc || hadErr)
+    let (hadErr, parsed) = lintOneFileReport multiFile disableNames onlyNames denyNames f
+    let (restErr, restParsed) = lintFilesGo fixMode multiFile disableNames onlyNames denyNames rest (acc || hadErr)
+    (restErr, parsed ++ restParsed)
 
 -- Lint a single file in report mode.
 -- multiFile=False: output is byte-for-byte identical to single-file v1 behavior.
 -- multiFile=True: prints "path:" header before findings (only when there are findings).
-lintOneFileReport : Bool -> List String -> List String -> List String -> String -> <IO> Bool
+-- Returns (hadError, parsed) where `parsed` is a 0-or-1 element list carrying this
+-- file's (path, src, Positions, decls) for the cross-file tier to REUSE — empty
+-- when the file could not be read (mirroring the old parseLintFiles/readLintSrcs
+-- skip-unreadable behavior).  Handing the parse out rather than letting the
+-- cross-file tier redo it is issue #394: the tier used to `parseLintFiles` (a full
+-- re-read + re-parse of every target, 11.4% of a whole-tree lint's runtime) AND
+-- `readLintSrcs` (a THIRD read of the same bytes) after this pass had already read
+-- and parsed each file. Memory-neutral: runCrossFileReport already materialised
+-- every triple at once.
+lintOneFileReport : Bool -> List String -> List String -> List String -> String -> <IO> (Bool, List (String, String, Positions, List Decl))
 lintOneFileReport multiFile disableNames onlyNames denyNames target = match readFile target
   Err msg =>
     let _ = ePutStrLn msg
-    True
+    (True, [])
   Ok src =>
     let (decls, pos) = parseWithPositions src
     -- suppress findings silenced by inline `-- lint-disable-*` directives before
@@ -1781,7 +1795,7 @@ lintOneFileReport multiFile disableNames onlyNames denyNames target = match read
     let hasOutput = stringLength output > 0
     let _ = if multiFile && hasOutput then putStrLn (target ++ ":") else ()
     let _ = if hasOutput then putStrLn output else ()
-    anyList isFindingError findings
+    (anyList isFindingError findings, [(target, src, pos, decls)])
 
 -- Fix a single file in-place.  Returns True only on I/O error (write errors exit 2).
 lintOneFileFix : List String -> List String -> String -> <IO> Bool
