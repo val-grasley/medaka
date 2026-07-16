@@ -152,26 +152,33 @@ above Core IR; these laws are the wasm peers of EMITTER-SEMANTICS §2 (V1–V6).
   Until #553 lands, a value global whose initializer reaches another global
   through a **call** is unsound on both backends; keep the read in the binding's
   own body (pass it as an argument) so `eagerVars` can see it.
-  ⚠️ **No gate covers this, and placing one is BLOCKED — the reason is worth
-  recording so it is not rediscovered.** The only artifact that compiles the whole
-  compiler to wasm is the playground build: nightly-only, not required. The
-  12-line reproducer above runs in ~1 s and would be ideal, but it cannot land
-  green while #553 is open, and the two prescribed homes both refuse it:
-  * **`test/wasm/fixtures/`** — `diff_wasm.sh` has **no per-fixture ledger** of any
-    kind (`engine_divergence.txt` is consulted by `diff_compiler_engines.sh` ALONE),
-    so a known-broken fixture there simply turns a gate red.
-  * **`test/llvm_fixtures/`** — `diff_compiler_engines.sh` *does* have the
-    self-draining ledger, and it is the right mechanism. But **every category the
-    ledger offers is a false claim here**: `wasm:codegen-bug` / `wasm:emitter-gap`
-    are wrong (native SIGSEGVs too), and there is **no `native:*` codegen category
-    at all** — the taxonomy has no cell for "one shared emitter helper, both
-    backends wrong". Writing the nearest label would reproduce precisely the
-    failure `engine_divergence.txt`'s own header documents at length (*"THE CATEGORY
-    IS A CLAIM. VERIFY IT — a wrong one launders a bug behind a plausible label"*;
-    17+ rows have already dissolved that way) — and it would re-tell the very
-    "wasm-only" story this law exists to correct.
-  ⇒ **#553 needs a ledger category (e.g. `emitter:shared-eager-init`) before its
-  fixture can land.** That is a taxonomy decision, not a mechanical add.
+  ✅ **GATED — `test/llvm_fixtures/eager_global_call_hidden.mdk`**, ledgered in
+  `test/engine_divergence.txt` under **`emitter:shared-eager-init`** — a category added
+  for #553, and the first naming a defect in a SHARED emitter primitive rather than in
+  one engine. It was added rather than bending an existing label because every existing
+  one is a FALSE claim here: the `wasm:*` categories are wrong (native is broken too)
+  and there is no `native:*` codegen category at all. The row asserts the CURRENT wrong
+  behaviour (`ne:ne:ne:ran:ran:ran` — eval `42`, native `0`, wasm traps) and
+  **self-drains**: proven by simulating the fix, which made `diff_compiler_engines`
+  report `PROMOTIONS 1` / `PROMOTE llvm/eager_global_call_hidden` and exit 1. When #553
+  lands, the gate FORCES the row's removal instead of letting the fix rot back.
+  ⚠️ `eager_global_call_hidden.eval.golden` therefore says **`0` — the WRONG answer** —
+  by construction: this corpus's goldens are captured from native (`capture_goldens.sh`'s
+  `llvm_eval` block mirrors `diff_compiler_llvm.sh`'s worker exactly). Do NOT "correct"
+  it to 42 while #553 is open; it also goes red the moment the bug is fixed. Its peer
+  `eager_global_call_ordered.mdk` is the **control** — same program, `base` declared
+  first, green on all three engines — which is what proves declaration order is the only
+  variable.
+  ⚠️ **Only the SILENT arm is pinnable, and that is deliberate.** The boxed/SIGSEGV
+  variant cannot live here: `diff_compiler_llvm.sh` runs every fixture against a value
+  golden and has **no ledger of any kind** (`engine_divergence.txt` is read by
+  `diff_compiler_engines.sh` ALONE), and a segfault yields no golden — the same reason
+  `test/wasm/fixtures/` hosts neither arm (`diff_wasm.sh` has no ledger either). Pinning
+  the silent arm is the point: a fix that merely silenced the crash would leave the LIE
+  live.
+  ⚠️ Still true: the only artifact that compiles the whole COMPILER to wasm is the
+  playground build — nightly-only, not required. #543's own SYMPTOM remains ungated even
+  though its MECHANISM now is.
 
 ---
 
@@ -322,7 +329,7 @@ landed, #370 reached only TWO of the three — `playground/compile.mjs` was left
 dead until #543 completed it and made the gate derive its host set) (leading-ws-only, full consumption, inf/nan spellings, C99 hex floats), derived from the C oracle over a 621-case battery and pinned on all three engines by `test/llvm_fixtures/str_to_float_frontier.mdk`; `mdk_float_fmt` ✅ verified (N9 row) |
 | WH3 — shim parity, LinkError ban | ✗ CONFIRMED (env-key half) | `worker.js` missing `mdk_write_file_reset/push/commit` → raw LinkError on `writeFileBytes` programs (node simulation with worker's exact env set) — **#375**, still open. The SHARED-BLOCK half is now mechanised: `test/diff_compiler_wasm_shim_parity.sh` (a required `gates (frontend)` shard) byte-diffs every `--- SHARED SHIM ---` region across all **three** hosts (`run.js`, `worker.js`, `compile.mjs`). ⚠️ It covered only the first TWO until 2026-07-16: `compile.mjs` (the seam that runs the COMPILER) holds its own copy of both blocks, and the gate's blindness to it is precisely how #543 shipped — #370's fix updated the two gated copies, leaving `compile.mjs` on raw `Number()` and missing the new `mdk_str_to_float_ok` import (LinkError → playground dead), while its `fmt12g` sat on the pre-#361 `%.12g` formatter. Fixed in #543. It found `fmt12g` had ALREADY drifted (comments/whitespace only — behaviour unaffected) under the "copied verbatim" comment that was the only prior enforcement. The env-KEY-SET half (#375) is still unchecked by any gate |
 | WH4 — flush discipline | ✗ CONFIRMED | `run.js` `mdk_exit` writes stdout, **drops buffered stderr** — **#376**; trap path flushes both ✅ (probe: pre-trap stdout delivered) |
-| WP10 — eager value-global init ordered by dependency | ✗ **CONFIRMED — #553** | `topoSortValBinds`'s edges come from `eagerVars`, a DIRECT free-var scan that does not follow calls, so a global read reached through a call yields NO edge and source order decides → `ref.null` + *"dereferencing a null pointer"* at instantiate. Exploited by **#543** (`crossRun` → `freshCrossRun` → `initialEnv`, ordered 97 lines early, playground dead). ⚠️ **NOT wasm-only and NOT playground-only**: `llvm_emit`'s `orderedValBinds` uses the SAME shared `eagerVars`. A **12-line user program** (§1 WP10) measured across the three SHIPPING engines gives **eval `7` / native SIGSEGV (exit 139) / wasm `dereferencing a null pointer`** — only eval is right, so native is **EXPLOITABLE from user code**, not merely exposed. In the COMPILER's own graph native escapes only by luck: `resetCrossModuleState ()` overwrites the poisoned bundle before any reader dereferences it (pre-fix IR receipt: `crossRun` stored at prologue line 1693 vs `initialEnv` at 1768; `global i64 0` loaded inside `freshCrossRun`). **Native fails as a segfault/silent zero, wasm as a named trap** — the asymmetry is why only the playground surfaced it — so #553 must fix BOTH arms; a wasm-only fix leaves the silent one live. #543 restored the edge at the one known site (`freshCrossRun` takes the env as an arg) — a point fix, not the law. **Ungated**: only the playground build compiles the whole compiler to wasm, and it is nightly + non-required |
+| WP10 — eager value-global init ordered by dependency | ✗ **CONFIRMED — #553** | `topoSortValBinds`'s edges come from `eagerVars`, a DIRECT free-var scan that does not follow calls, so a global read reached through a call yields NO edge and source order decides → `ref.null` + *"dereferencing a null pointer"* at instantiate. Exploited by **#543** (`crossRun` → `freshCrossRun` → `initialEnv`, ordered 97 lines early, playground dead). ⚠️ **NOT wasm-only and NOT playground-only**: `llvm_emit`'s `orderedValBinds` uses the SAME shared `eagerVars`. A **12-line user program** (§1 WP10) measured across the three SHIPPING engines gives **eval `7` / native SIGSEGV (exit 139) / wasm `dereferencing a null pointer`** — only eval is right, so native is **EXPLOITABLE from user code**, not merely exposed. In the COMPILER's own graph native escapes only by luck: `resetCrossModuleState ()` overwrites the poisoned bundle before any reader dereferences it (pre-fix IR receipt: `crossRun` stored at prologue line 1693 vs `initialEnv` at 1768; `global i64 0` loaded inside `freshCrossRun`). **Native fails as a segfault/silent zero, wasm as a named trap** — the asymmetry is why only the playground surfaced it — so #553 must fix BOTH arms; a wasm-only fix leaves the silent one live. #543 restored the edge at the one known site (`freshCrossRun` takes the env as an arg) — a point fix, not the law. **GATED as of #543**: `test/llvm_fixtures/eager_global_call_hidden.mdk` + its `emitter:shared-eager-init` ledger row pin the SILENT arm on the required engines gate, and **self-drain** (simulating the fix yields `PROMOTE llvm/eager_global_call_hidden`, exit 1). Its control peer `eager_global_call_ordered.mdk` is green on all 3 engines. The boxed/SIGSEGV arm is NOT pinnable (`diff_compiler_llvm.sh` has no ledger and a segfault has no golden). #543's own symptom is still ungated — only the nightly, non-required playground build compiles the whole compiler to wasm |
 | WH5 — byte-channel only | ✅ | no GC ref crosses an import signature (inventory) |
 | WH6 — engine baseline | ⚠ | node 24 + wasm-tools pinned in CI; playground WasmGC feature-detect still open (**#75**); the CI wasm job is not a required check (R1 row) |
 
