@@ -86,7 +86,11 @@ if [ -d "$PROJDIR" ]; then
     fi
     tmpout="$(mktemp)"
     perl -e 'alarm 120; exec @ARGV' "$NATIVE" check --json "$entry" > "$tmpout" 2>&1
-    native_out="$(sed "s|$d|<proj>/|g" "$tmpout")"
+    # Diagnostic `file` paths are normalized to project-root-relative (#298), so the
+    # dep files land as $ROOT-relative, not absolute.  Placeholder both the absolute
+    # dir (defensive) and its $ROOT-relative form so the golden stays `<proj>/…`.
+    rel_d="${d#$ROOT/}"
+    native_out="$(sed -e "s|$d|<proj>/|g" -e "s|$rel_d|<proj>/|g" "$tmpout")"
     rm -f "$tmpout"
     if [ "${CAPTURE:-0}" = "1" ]; then
       printf '%s\n' "$native_out" > "$golden"
