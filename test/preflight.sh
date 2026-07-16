@@ -316,20 +316,53 @@ for f in $changed; do
       add 'diff_compiler_check*'; add 'diff_compiler_exhaust'
       add 'diff_compiler_diagnostics'; add 'diff_compiler_eval_typed*' ;;
 
+    # ── THE THREE ENGINES ─────────────────────────────────────────────────────
+    #
+    # diff_compiler_engines is the differential that proves eval == native == wasm on
+    # the SAME programs (it found 4 bug classes on its first run). Its subject is not a
+    # directory — it is the three engines themselves, and each one has an owning arm:
+    #
+    #     eval    -> compiler/eval/* , compiler/ir/core_ir_eval.mdk
+    #     native  -> compiler/backend/llvm_emit.mdk
+    #     wasm    -> compiler/backend/wasm_emit.mdk
+    #
+    # ...and compiler/ir/* is the Core IR lowering that FEEDS two of the three, so a
+    # change there moves what the differential compares just as directly.
+    #
+    # None of those arms derived it (#402). A WasmGC emitter change derived the llvm,
+    # core_ir and snapshot gates and NOT the gate whose entire job is to notice that the
+    # wasm engine now disagrees with the other two. It is the exclusion this file's own
+    # rule warns about — "when in doubt, run MORE" — and ci.yml's: "a gate wrongly
+    # INCLUDED costs CI minutes, which are free on a public repo. A gate wrongly
+    # EXCLUDED is a bug that reaches the queue."
+    #
+    # The CI cost is close to nil: `engines` owns its runner alone, so it is wall-clock
+    # parallel with the shard a backend/eval/ir change is already paying for (backend is
+    # 5.3 min against engines' 5.8 min). Locally it costs nothing at all — LOCAL_SKIP
+    # drops it below the PREFLIGHT_DRY exit, which is the whole point of that block.
+
     # ── eval: also the in-language suite and the capability matrix ──
     # diff_compiler_snapshot* covers diff_compiler_snapshot_eval, whose `# EVAL`
     # section is produced by the eval pipeline — an eval.mdk change moves it.
     compiler/eval/*|compiler/ir/core_ir_eval.mdk)
       add 'diff_compiler_eval*'; add 'diff_compiler_snapshot*'; add 'diff_compiler_core_ir*'
-      add 'diff_compiler_ported'; add 'diff_compiler_test'; add 'diff_compiler_capability_matrix' ;;
+      add 'diff_compiler_ported'; add 'diff_compiler_test'; add 'diff_compiler_capability_matrix'
+      add 'diff_compiler_engines' ;;
 
     compiler/ir/*)
-      add 'diff_compiler_core_ir*'; add 'diff_compiler_llvm*'; add 'diff_compiler_snapshot*' ;;
+      add 'diff_compiler_core_ir*'; add 'diff_compiler_llvm*'; add 'diff_compiler_snapshot*'
+      add 'diff_compiler_engines' ;;
 
     # ── backend: the FIXPOINT is the decisive gate; do not defer it to CI ──
+    #
+    # diff_compiler_tmc_parity is here and NOT on the arms above: it proves both backends
+    # TMC the SAME functions, and the shared analysis it guards (backend/trmc_analysis.mdk)
+    # plus both emitters that consume it all live under this arm. It self-provisions its
+    # own emit probes, so it needs no oracle wiring here.
     compiler/backend/*)
       add 'diff_compiler_llvm*'; add 'diff_compiler_build'; add 'diff_compiler_core_ir*'
       add 'diff_compiler_capability_matrix'
+      add 'diff_compiler_engines'; add 'diff_compiler_tmc_parity'
       need_fixpoint=1 ;;
 
     compiler/driver/*)
