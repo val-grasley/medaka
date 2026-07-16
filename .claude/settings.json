@@ -1,4 +1,5 @@
 {
+  "enabledMcpjsonServers": ["medaka"],
   "permissions": {
     "allow": [
       "Bash(dune build)",

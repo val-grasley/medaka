@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "medaka": {
+      "type": "stdio",
+      "command": "./scripts/medaka-mcp-wrapper.sh"
+    }
+  }
+}

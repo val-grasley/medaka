@@ -78,6 +78,7 @@ Support files:
 | `compiler/types/annotate.mdk` | Type annotation helpers |
 | `compiler/tools/printer.mdk` / `fmt.mdk` | AST→source round-trip / comment-preserving formatter |
 | `compiler/tools/lsp.mdk` | LSP over stdio: diagnostics, formatting, symbols, hover, definition, highlight, completion, inlay hints |
+| `compiler/tools/mcp.mdk` | `medaka mcp` — MCP stdio server, the LSP-for-agents: 7 tools (check/type_at/symbols/definition/fmt/lint/test), auto-wired via committed `.mcp.json`. See `docs/ops/MCP.md`; use the tools during your own work and file friction as `ws:tooling` |
 | `compiler/tools/lint.mdk` | `medaka lint` — modular AST linter on the RAW pre-desugar AST. Per-file `Rule` + cross-file `CrossFileRule` registries (add a rule = one fn + one list entry); `--fix`; `--deny`/`--disable`/`--only` |
 | `compiler/tools/doctest.mdk` | Doctest extraction for `medaka test`. Two paths: import-bearing files → multi-module chain; prelude-only → single-file + arg-tag fallback (deliberate — the multi-module path would coalesce a redefined prelude standalone and error every example at once) |
 | `compiler/tools/check.mdk` / `check_policy.mdk` | `medaka check` entry + policy checker |
