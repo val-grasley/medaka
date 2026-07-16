@@ -1,0 +1,7 @@
+-- Regression (#300 review): a `test "double"` named after the `double` function
+-- it tests is a FREE string label, not a duplicate binding — it must remain a
+-- distinct outline symbol, never fused into the function's collapsed entry.
+double : Int -> Int
+double x = x * 2
+
+test "double" = assertEq (double 4) 8

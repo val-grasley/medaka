@@ -1,5 +1,5 @@
 # META
-source_lines=1625
+source_lines=1670
 stages=DESUGAR,MARK
 # SOURCE
 -- lint-disable-file rule-duplicate-body
@@ -348,9 +348,12 @@ occToHighlight arr nlen off = match posOfOffset arr off
 -- ── textDocument/documentSymbol ─────────────────────────────────────────────
 -- parseWithPositions → zip decls with their DeclPos (1-based line..end_line) →
 -- one DocumentSymbol per decl: { name, kind, range, selectionRange, children }.
--- Range/selectionRange are decl-level: (line-1, 0)..(end_line-1, 0).  The
--- compiler AST is location-stripped of columns, so symbol ranges are line-
--- granular (the column-precise spans are the ELoc slice).  SymbolKind codes are
+-- Consecutive same-name decls (a signature + its clauses, or a multi-clause
+-- function) COLLAPSE to a single outline symbol spanning them (#300 part 3), so a
+-- 2-clause `dirGo` is one entry, not three.  Range/selectionRange are decl-level:
+-- (line-1, 0)..(end_line-1, 0).  The compiler AST is location-stripped of columns
+-- (#331), so symbol ranges are line-granular (character always 0; the
+-- column-precise spans are the ELoc slice).  SymbolKind codes are
 -- the LSP spec integers (Struct=23, Method=6, Field=8, Enum=10, EnumMember=22,
 -- Interface=11, Class=5, Function=12, Variable=13, TypeParameter=26, Event=24).
 -- Mirrors symbol_of_decl's kind mapping + child nesting.
@@ -401,39 +404,45 @@ implMethodName (ImplMethod n _ _) = n
 letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
--- One DocumentSymbol JSON for a decl + its DeclPos, or None for decls that
--- don't surface in the outline (DUse).
-symbolOfDecl : Decl -> DeclPos -> Option Json
-symbolOfDecl d dp =
-  let range = jRange (declPosLine dp - 1) 0 (declPosEndLine dp - 1) 0
-  match innerDecl d
-    DTypeSig _ name _ => Some (jSymbol name 13 range [])
-    DExtern _ name _ => Some (jSymbol name 12 range [])
-    DFunDef _ name _ _ => Some (jSymbol name 12 range [])
+-- The outline (name, kind, clauseLike, children) for a decl, given its
+-- precomputed decl-level `range` (used for the child symbols' spans), or None for
+-- decls that don't surface in the outline (DUse).  The decl's own range is
+-- reattached by the caller (symbolParts), which also spans it across collapsed
+-- clauses.  `clauseLike` is True ONLY for a signature or a value-binding clause
+-- (DTypeSig/DFunDef/DLetGroup) — the decls that legitimately repeat under one name
+-- (a sig + its clauses) and so may coalesce.  Everything else is False: crucially
+-- DTest/DProp/DBench take a FREE string label (`test "double"`) that resolve.mdk
+-- never enters into any namespace or duplicate check, so a test named after the
+-- function it tests must NOT be swallowed into that function's outline entry.
+symbolPartsOfDecl : Decl -> Json -> Option (String, Int, Bool, List Json)
+symbolPartsOfDecl d range = match innerDecl d
+    DTypeSig _ name _ => Some (name, 13, True, [])
+    DExtern _ name _ => Some (name, 12, False, [])
+    DFunDef _ name _ _ => Some (name, 12, True, [])
     DLetGroup _ binds => match binds
       [] => None
       (LetBind n0 _)::_ =>
         let kids = map ((LetBind n _) => jChild n 12 range) binds
-        Some (jSymbol n0 12 range kids)
+        Some (n0, 12, True, kids)
     DData _ name _ variants _ =>
       -- records (the `data X = { … }` short form, nameOmitted) expose their
       -- fields as child symbols (kind 8); ordinary variants show their ctor name.
       let kids = flatMap (variantSymChildren range) variants
-      Some (jSymbol name 10 range kids)
+      Some (name, 10, False, kids)
     DInterface { name = n, methods = ms, ... } =>
       let kids = map ((IfaceMethod mn _ _) => jChild mn 6 range) ms
-      Some (jSymbol n 11 range kids)
+      Some (n, 11, False, kids)
     DImpl { iface = ifc, methods = ms, ... } =>
       let label = implLabel ifc
       let kids = map ((ImplMethod mn _ _) => jChild mn 6 range) ms
-      Some (jSymbol label 5 range kids)
-    DTypeAlias _ name _ _ => Some (jSymbol name 26 range [])
-    DNewtype _ name _ _ _ _ => Some (jSymbol name 23 range [])
+      Some (label, 5, False, kids)
+    DTypeAlias _ name _ _ => Some (name, 26, False, [])
+    DNewtype _ name _ _ _ _ => Some (name, 23, False, [])
     DUse _ _ _ => None
-    DProp _ name _ _ => Some (jSymbol name 12 range [])
-    DTest _ name _ => Some (jSymbol name 12 range [])
-    DBench _ name _ => Some (jSymbol name 12 range [])
-    DEffect _ name _ => Some (jSymbol name 24 range [])
+    DProp _ name _ _ => Some (name, 12, False, [])
+    DTest _ name _ => Some (name, 12, False, [])
+    DBench _ name _ => Some (name, 12, False, [])
+    DEffect _ name _ => Some (name, 24, False, [])
     DAttrib _ _ => None  -- unreachable post innerDecl
 -- Variable
 -- Function
@@ -457,20 +466,56 @@ symbolOfDecl d dp =
 implLabel : String -> String
 implLabel iface = stringConcat ["impl ", iface]
 
--- Zip decls with positions (1:1; defensive truncation to the shorter list) and
--- collect the symbols.  Exported for `medaka_symbols` (#255) — parse-only, no
--- typecheck, so it's a pure function of `src` and safe for the stateless MCP
--- disk-read harness (mirrors `typeAtPoint`'s export shape).
+-- Parse → parts → collapse same-name clauses → render.  Exported for
+-- `medaka_symbols` (#255) — parse-only, no typecheck, so it's a pure function of
+-- `src` and safe for the stateless MCP disk-read harness (mirrors `typeAtPoint`'s
+-- export shape).
 export documentSymbols : String -> List Json
 documentSymbols src = match parseWithPositionsOpt src
   None => []
-  Some (decls, positions) => symbolsZip decls (positionsDecls positions)
+  Some (decls, positions) => map renderSymbol (collapseSymbols (symbolParts decls (positionsDecls positions)))
 
-symbolsZip : List Decl -> List DeclPos -> List Json
-symbolsZip (d::ds) (p::ps) = match symbolOfDecl d p
-  None => symbolsZip ds ps
-  Some s => s :: symbolsZip ds ps
-symbolsZip _ _ = []
+-- One outline row before collapse: name, LSP SymbolKind, 0-based start/end line,
+-- whether it's a signature/clause row (only those coalesce — see
+-- symbolPartsOfDecl), and its child symbols.  A dedicated type rather than a tuple
+-- because it carries 6 fields (past the tuple ceiling) and reads better.
+data SymRow = SymRow String Int Int Int Bool (List Json)
+
+-- Zip decls with positions (1:1; defensive truncation to the shorter list) into
+-- SymRow rows, dropping non-outline decls.
+symbolParts : List Decl -> List DeclPos -> List SymRow
+symbolParts (d::ds) (p::ps) =
+  let sl = declPosLine p - 1
+  let el = declPosEndLine p - 1
+  match symbolPartsOfDecl d (jRange sl 0 el 0)
+    None => symbolParts ds ps
+    Some (name, kind, clauseLike, kids) =>
+      SymRow name kind sl el clauseLike kids :: symbolParts ds ps
+symbolParts _ _ = []
+
+-- Collapse a signature+clauses run — consecutive rows that share the EXACT same
+-- name AND are BOTH clause-like — into ONE outline symbol (#300 part 3): the
+-- shared name, the LAST row's kind (so a `sig`(Variable)+`def`(Function) pair
+-- reads as the Function, not the sig), the range spanning first-start..last-end,
+-- and the concatenated children.  The clause-like gate is what stops a
+-- `test "double"`/`prop`/`bench` (free string label, never a duplicate) from being
+-- fused into an adjacent same-named function; only sig/clause runs coalesce, and
+-- only adjacent ones, so decls that merely share a prefix are never merged either.
+collapseSymbols : List SymRow -> List SymRow
+collapseSymbols [] = []
+collapseSymbols (x::xs) = collapseGo x xs
+
+collapseGo : SymRow -> List SymRow -> List SymRow
+collapseGo cur [] = [cur]
+collapseGo (SymRow n0 k0 s0 e0 cl0 c0) ((SymRow n1 k1 s1 e1 cl1 c1)::rest) =
+  if n0 == n1 && cl0 && cl1 then
+    collapseGo (SymRow n0 k1 s0 e1 True (c0 ++ c1)) rest
+  else
+    SymRow n0 k0 s0 e0 cl0 c0 :: collapseGo (SymRow n1 k1 s1 e1 cl1 c1) rest
+
+renderSymbol : SymRow -> Json
+renderSymbol (SymRow name kind sl el _ kids) =
+  jSymbol name kind (jRange sl 0 el 0) kids
 
 -- ── textDocument/definition ─────────────────────────────────────────────────
 -- identifier-at-cursor → first decl that DEFINES that name → its DeclPos range
@@ -1728,15 +1773,24 @@ unit = ()
 (DFunDef false "implMethodName" ((PCon "ImplMethod" (PVar "n") PWild PWild)) (EVar "n"))
 (DTypeSig false "letBindName" (TyFun (TyCon "LetBind") (TyCon "String")))
 (DFunDef false "letBindName" ((PCon "LetBind" (PVar "n") PWild)) (EVar "n"))
-(DTypeSig false "symbolOfDecl" (TyFun (TyCon "Decl") (TyFun (TyCon "DeclPos") (TyApp (TyCon "Option") (TyCon "Json")))))
-(DFunDef false "symbolOfDecl" ((PVar "d") (PVar "dp")) (EBlock (DoLet false false (PVar "range") (EApp (EApp (EApp (EApp (EVar "jRange") (EBinOp "-" (EApp (EVar "declPosLine") (EVar "dp")) (ELit (LInt 1)))) (ELit (LInt 0))) (EBinOp "-" (EApp (EVar "declPosEndLine") (EVar "dp")) (ELit (LInt 1)))) (ELit (LInt 0)))) (DoExpr (EMatch (EApp (EVar "innerDecl") (EVar "d")) (arm (PCon "DTypeSig" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 13))) (EVar "range")) (EListLit)))) (arm (PCon "DExtern" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DFunDef" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DLetGroup" PWild (PVar "binds")) () (EMatch (EVar "binds") (arm (PList) () (EVar "None")) (arm (PCons (PCon "LetBind" (PVar "n0") PWild) PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EVar "map") (ELam ((PCon "LetBind" (PVar "n") PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "n")) (ELit (LInt 12))) (EVar "range")))) (EVar "binds"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "n0")) (ELit (LInt 12))) (EVar "range")) (EVar "kids")))))))) (arm (PCon "DData" PWild (PVar "name") PWild (PVar "variants") PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EVar "flatMap") (EApp (EVar "variantSymChildren") (EVar "range"))) (EVar "variants"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 10))) (EVar "range")) (EVar "kids")))))) (arm (PRec "DInterface" ((rf "name" (PVar "n")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EVar "map") (ELam ((PCon "IfaceMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "n")) (ELit (LInt 11))) (EVar "range")) (EVar "kids")))))) (arm (PRec "DImpl" ((rf "iface" (PVar "ifc")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "label") (EApp (EVar "implLabel") (EVar "ifc"))) (DoLet false false (PVar "kids") (EApp (EApp (EVar "map") (ELam ((PCon "ImplMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "label")) (ELit (LInt 5))) (EVar "range")) (EVar "kids")))))) (arm (PCon "DTypeAlias" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 26))) (EVar "range")) (EListLit)))) (arm (PCon "DNewtype" PWild (PVar "name") PWild PWild PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 23))) (EVar "range")) (EListLit)))) (arm (PCon "DUse" PWild PWild PWild) () (EVar "None")) (arm (PCon "DProp" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DTest" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DBench" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DEffect" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 24))) (EVar "range")) (EListLit)))) (arm (PCon "DAttrib" PWild PWild) () (EVar "None"))))))
+(DTypeSig false "symbolPartsOfDecl" (TyFun (TyCon "Decl") (TyFun (TyCon "Json") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Json")))))))
+(DFunDef false "symbolPartsOfDecl" ((PVar "d") (PVar "range")) (EMatch (EApp (EVar "innerDecl") (EVar "d")) (arm (PCon "DTypeSig" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 13)) (EVar "True") (EListLit)))) (arm (PCon "DExtern" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DFunDef" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "True") (EListLit)))) (arm (PCon "DLetGroup" PWild (PVar "binds")) () (EMatch (EVar "binds") (arm (PList) () (EVar "None")) (arm (PCons (PCon "LetBind" (PVar "n0") PWild) PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EVar "map") (ELam ((PCon "LetBind" (PVar "n") PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "n")) (ELit (LInt 12))) (EVar "range")))) (EVar "binds"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "n0") (ELit (LInt 12)) (EVar "True") (EVar "kids")))))))) (arm (PCon "DData" PWild (PVar "name") PWild (PVar "variants") PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EVar "flatMap") (EApp (EVar "variantSymChildren") (EVar "range"))) (EVar "variants"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 10)) (EVar "False") (EVar "kids")))))) (arm (PRec "DInterface" ((rf "name" (PVar "n")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EVar "map") (ELam ((PCon "IfaceMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "n") (ELit (LInt 11)) (EVar "False") (EVar "kids")))))) (arm (PRec "DImpl" ((rf "iface" (PVar "ifc")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "label") (EApp (EVar "implLabel") (EVar "ifc"))) (DoLet false false (PVar "kids") (EApp (EApp (EVar "map") (ELam ((PCon "ImplMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "label") (ELit (LInt 5)) (EVar "False") (EVar "kids")))))) (arm (PCon "DTypeAlias" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 26)) (EVar "False") (EListLit)))) (arm (PCon "DNewtype" PWild (PVar "name") PWild PWild PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 23)) (EVar "False") (EListLit)))) (arm (PCon "DUse" PWild PWild PWild) () (EVar "None")) (arm (PCon "DProp" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DTest" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DBench" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DEffect" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 24)) (EVar "False") (EListLit)))) (arm (PCon "DAttrib" PWild PWild) () (EVar "None"))))
 (DTypeSig false "implLabel" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "implLabel" ((PVar "iface")) (EApp (EVar "stringConcat") (EListLit (ELit (LString "impl ")) (EVar "iface"))))
 (DTypeSig true "documentSymbols" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Json"))))
-(DFunDef false "documentSymbols" ((PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EApp (EApp (EVar "symbolsZip") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions"))))))
-(DTypeSig false "symbolsZip" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "DeclPos")) (TyApp (TyCon "List") (TyCon "Json")))))
-(DFunDef false "symbolsZip" ((PCons (PVar "d") (PVar "ds")) (PCons (PVar "p") (PVar "ps"))) (EMatch (EApp (EApp (EVar "symbolOfDecl") (EVar "d")) (EVar "p")) (arm (PCon "None") () (EApp (EApp (EVar "symbolsZip") (EVar "ds")) (EVar "ps"))) (arm (PCon "Some" (PVar "s")) () (EBinOp "::" (EVar "s") (EApp (EApp (EVar "symbolsZip") (EVar "ds")) (EVar "ps"))))))
-(DFunDef false "symbolsZip" (PWild PWild) (EListLit))
+(DFunDef false "documentSymbols" ((PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EApp (EApp (EVar "map") (EVar "renderSymbol")) (EApp (EVar "collapseSymbols") (EApp (EApp (EVar "symbolParts") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions"))))))))
+(DData Private "SymRow" () ((variant "SymRow" (ConPos (TyCon "String") (TyCon "Int") (TyCon "Int") (TyCon "Int") (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Json"))))) ())
+(DTypeSig false "symbolParts" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "DeclPos")) (TyApp (TyCon "List") (TyCon "SymRow")))))
+(DFunDef false "symbolParts" ((PCons (PVar "d") (PVar "ds")) (PCons (PVar "p") (PVar "ps"))) (EBlock (DoLet false false (PVar "sl") (EBinOp "-" (EApp (EVar "declPosLine") (EVar "p")) (ELit (LInt 1)))) (DoLet false false (PVar "el") (EBinOp "-" (EApp (EVar "declPosEndLine") (EVar "p")) (ELit (LInt 1)))) (DoExpr (EMatch (EApp (EApp (EVar "symbolPartsOfDecl") (EVar "d")) (EApp (EApp (EApp (EApp (EVar "jRange") (EVar "sl")) (ELit (LInt 0))) (EVar "el")) (ELit (LInt 0)))) (arm (PCon "None") () (EApp (EApp (EVar "symbolParts") (EVar "ds")) (EVar "ps"))) (arm (PCon "Some" (PTuple (PVar "name") (PVar "kind") (PVar "clauseLike") (PVar "kids"))) () (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "name")) (EVar "kind")) (EVar "sl")) (EVar "el")) (EVar "clauseLike")) (EVar "kids")) (EApp (EApp (EVar "symbolParts") (EVar "ds")) (EVar "ps"))))))))
+(DFunDef false "symbolParts" (PWild PWild) (EListLit))
+(DTypeSig false "collapseSymbols" (TyFun (TyApp (TyCon "List") (TyCon "SymRow")) (TyApp (TyCon "List") (TyCon "SymRow"))))
+(DFunDef false "collapseSymbols" ((PList)) (EListLit))
+(DFunDef false "collapseSymbols" ((PCons (PVar "x") (PVar "xs"))) (EApp (EApp (EVar "collapseGo") (EVar "x")) (EVar "xs")))
+(DTypeSig false "collapseGo" (TyFun (TyCon "SymRow") (TyFun (TyApp (TyCon "List") (TyCon "SymRow")) (TyApp (TyCon "List") (TyCon "SymRow")))))
+(DFunDef false "collapseGo" ((PVar "cur") (PList)) (EListLit (EVar "cur")))
+(DFunDef false "collapseGo" ((PCon "SymRow" (PVar "n0") (PVar "k0") (PVar "s0") (PVar "e0") (PVar "cl0") (PVar "c0")) (PCons (PCon "SymRow" (PVar "n1") (PVar "k1") (PVar "s1") (PVar "e1") (PVar "cl1") (PVar "c1")) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "n0") (EVar "n1")) (EVar "cl0")) (EVar "cl1")) (EApp (EApp (EVar "collapseGo") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "n0")) (EVar "k1")) (EVar "s0")) (EVar "e1")) (EVar "True")) (EBinOp "++" (EVar "c0") (EVar "c1")))) (EVar "rest")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "n0")) (EVar "k0")) (EVar "s0")) (EVar "e0")) (EVar "cl0")) (EVar "c0")) (EApp (EApp (EVar "collapseGo") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "n1")) (EVar "k1")) (EVar "s1")) (EVar "e1")) (EVar "cl1")) (EVar "c1"))) (EVar "rest")))))
+(DTypeSig false "renderSymbol" (TyFun (TyCon "SymRow") (TyCon "Json")))
+(DFunDef false "renderSymbol" ((PCon "SymRow" (PVar "name") (PVar "kind") (PVar "sl") (PVar "el") PWild (PVar "kids"))) (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (EVar "kind")) (EApp (EApp (EApp (EApp (EVar "jRange") (EVar "sl")) (ELit (LInt 0))) (EVar "el")) (ELit (LInt 0)))) (EVar "kids")))
 (DTypeSig false "declDefines" (TyFun (TyCon "Decl") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "declDefines" ((PVar "d") (PVar "name")) (EMatch (EApp (EVar "innerDecl") (EVar "d")) (arm (PCon "DTypeSig" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DExtern" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DFunDef" PWild (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DLetGroup" PWild (PVar "binds")) () (EApp (EApp (EVar "anyName") (EApp (EApp (EVar "map") (EVar "letBindName")) (EVar "binds"))) (EVar "name"))) (arm (PCon "DData" PWild (PVar "n") PWild (PVar "vs") PWild) () (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "n") (EVar "name")) (EApp (EApp (EVar "anyName") (EApp (EApp (EVar "map") (EVar "variantName")) (EVar "vs"))) (EVar "name"))) (EApp (EApp (EVar "anyName") (EApp (EApp (EVar "flatMap") (EVar "variantFieldNames")) (EVar "vs"))) (EVar "name")))) (arm (PRec "DInterface" ((rf "name" (PVar "n")) (rf "methods" (PVar "ms"))) true) () (EBinOp "||" (EBinOp "==" (EVar "n") (EVar "name")) (EApp (EApp (EVar "anyName") (EApp (EApp (EVar "map") (EVar "ifaceMethodName")) (EVar "ms"))) (EVar "name")))) (arm (PRec "DImpl" ((rf "methods" (PVar "ms"))) true) () (EApp (EApp (EVar "anyName") (EApp (EApp (EVar "map") (EVar "implMethodName")) (EVar "ms"))) (EVar "name"))) (arm (PCon "DTypeAlias" PWild (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DNewtype" PWild (PVar "n") PWild (PVar "c") PWild PWild) () (EBinOp "||" (EBinOp "==" (EVar "n") (EVar "name")) (EBinOp "==" (EVar "c") (EVar "name")))) (arm (PCon "DUse" PWild PWild PWild) () (EVar "False")) (arm (PCon "DProp" PWild (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DTest" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DBench" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DEffect" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DAttrib" PWild PWild) () (EVar "False"))))
 (DTypeSig false "anyName" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Bool"))))
@@ -2125,15 +2179,24 @@ unit = ()
 (DFunDef false "implMethodName" ((PCon "ImplMethod" (PVar "n") PWild PWild)) (EVar "n"))
 (DTypeSig false "letBindName" (TyFun (TyCon "LetBind") (TyCon "String")))
 (DFunDef false "letBindName" ((PCon "LetBind" (PVar "n") PWild)) (EVar "n"))
-(DTypeSig false "symbolOfDecl" (TyFun (TyCon "Decl") (TyFun (TyCon "DeclPos") (TyApp (TyCon "Option") (TyCon "Json")))))
-(DFunDef false "symbolOfDecl" ((PVar "d") (PVar "dp")) (EBlock (DoLet false false (PVar "range") (EApp (EApp (EApp (EApp (EVar "jRange") (EBinOp "-" (EApp (EVar "declPosLine") (EVar "dp")) (ELit (LInt 1)))) (ELit (LInt 0))) (EBinOp "-" (EApp (EVar "declPosEndLine") (EVar "dp")) (ELit (LInt 1)))) (ELit (LInt 0)))) (DoExpr (EMatch (EApp (EVar "innerDecl") (EVar "d")) (arm (PCon "DTypeSig" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 13))) (EVar "range")) (EListLit)))) (arm (PCon "DExtern" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DFunDef" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DLetGroup" PWild (PVar "binds")) () (EMatch (EVar "binds") (arm (PList) () (EVar "None")) (arm (PCons (PCon "LetBind" (PVar "n0") PWild) PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EMethodRef "map") (ELam ((PCon "LetBind" (PVar "n") PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "n")) (ELit (LInt 12))) (EVar "range")))) (EVar "binds"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "n0")) (ELit (LInt 12))) (EVar "range")) (EVar "kids")))))))) (arm (PCon "DData" PWild (PVar "name") PWild (PVar "variants") PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EDictApp "flatMap") (EApp (EVar "variantSymChildren") (EVar "range"))) (EVar "variants"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 10))) (EVar "range")) (EVar "kids")))))) (arm (PRec "DInterface" ((rf "name" (PVar "n")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EMethodRef "map") (ELam ((PCon "IfaceMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "n")) (ELit (LInt 11))) (EVar "range")) (EVar "kids")))))) (arm (PRec "DImpl" ((rf "iface" (PVar "ifc")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "label") (EApp (EVar "implLabel") (EVar "ifc"))) (DoLet false false (PVar "kids") (EApp (EApp (EMethodRef "map") (ELam ((PCon "ImplMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "label")) (ELit (LInt 5))) (EVar "range")) (EVar "kids")))))) (arm (PCon "DTypeAlias" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 26))) (EVar "range")) (EListLit)))) (arm (PCon "DNewtype" PWild (PVar "name") PWild PWild PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 23))) (EVar "range")) (EListLit)))) (arm (PCon "DUse" PWild PWild PWild) () (EVar "None")) (arm (PCon "DProp" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DTest" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DBench" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 12))) (EVar "range")) (EListLit)))) (arm (PCon "DEffect" PWild (PVar "name") PWild) () (EApp (EVar "Some") (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (ELit (LInt 24))) (EVar "range")) (EListLit)))) (arm (PCon "DAttrib" PWild PWild) () (EVar "None"))))))
+(DTypeSig false "symbolPartsOfDecl" (TyFun (TyCon "Decl") (TyFun (TyCon "Json") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int") (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Json")))))))
+(DFunDef false "symbolPartsOfDecl" ((PVar "d") (PVar "range")) (EMatch (EApp (EVar "innerDecl") (EVar "d")) (arm (PCon "DTypeSig" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 13)) (EVar "True") (EListLit)))) (arm (PCon "DExtern" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DFunDef" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "True") (EListLit)))) (arm (PCon "DLetGroup" PWild (PVar "binds")) () (EMatch (EVar "binds") (arm (PList) () (EVar "None")) (arm (PCons (PCon "LetBind" (PVar "n0") PWild) PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EMethodRef "map") (ELam ((PCon "LetBind" (PVar "n") PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "n")) (ELit (LInt 12))) (EVar "range")))) (EVar "binds"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "n0") (ELit (LInt 12)) (EVar "True") (EVar "kids")))))))) (arm (PCon "DData" PWild (PVar "name") PWild (PVar "variants") PWild) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EDictApp "flatMap") (EApp (EVar "variantSymChildren") (EVar "range"))) (EVar "variants"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 10)) (EVar "False") (EVar "kids")))))) (arm (PRec "DInterface" ((rf "name" (PVar "n")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "kids") (EApp (EApp (EMethodRef "map") (ELam ((PCon "IfaceMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "n") (ELit (LInt 11)) (EVar "False") (EVar "kids")))))) (arm (PRec "DImpl" ((rf "iface" (PVar "ifc")) (rf "methods" (PVar "ms"))) true) () (EBlock (DoLet false false (PVar "label") (EApp (EVar "implLabel") (EVar "ifc"))) (DoLet false false (PVar "kids") (EApp (EApp (EMethodRef "map") (ELam ((PCon "ImplMethod" (PVar "mn") PWild PWild)) (EApp (EApp (EApp (EVar "jChild") (EVar "mn")) (ELit (LInt 6))) (EVar "range")))) (EVar "ms"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "label") (ELit (LInt 5)) (EVar "False") (EVar "kids")))))) (arm (PCon "DTypeAlias" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 26)) (EVar "False") (EListLit)))) (arm (PCon "DNewtype" PWild (PVar "name") PWild PWild PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 23)) (EVar "False") (EListLit)))) (arm (PCon "DUse" PWild PWild PWild) () (EVar "None")) (arm (PCon "DProp" PWild (PVar "name") PWild PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DTest" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DBench" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 12)) (EVar "False") (EListLit)))) (arm (PCon "DEffect" PWild (PVar "name") PWild) () (EApp (EVar "Some") (ETuple (EVar "name") (ELit (LInt 24)) (EVar "False") (EListLit)))) (arm (PCon "DAttrib" PWild PWild) () (EVar "None"))))
 (DTypeSig false "implLabel" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "implLabel" ((PVar "iface")) (EApp (EVar "stringConcat") (EListLit (ELit (LString "impl ")) (EVar "iface"))))
 (DTypeSig true "documentSymbols" (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "Json"))))
-(DFunDef false "documentSymbols" ((PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EApp (EApp (EVar "symbolsZip") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions"))))))
-(DTypeSig false "symbolsZip" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "DeclPos")) (TyApp (TyCon "List") (TyCon "Json")))))
-(DFunDef false "symbolsZip" ((PCons (PVar "d") (PVar "ds")) (PCons (PVar "p") (PVar "ps"))) (EMatch (EApp (EApp (EVar "symbolOfDecl") (EVar "d")) (EVar "p")) (arm (PCon "None") () (EApp (EApp (EVar "symbolsZip") (EVar "ds")) (EVar "ps"))) (arm (PCon "Some" (PVar "s")) () (EBinOp "::" (EVar "s") (EApp (EApp (EVar "symbolsZip") (EVar "ds")) (EVar "ps"))))))
-(DFunDef false "symbolsZip" (PWild PWild) (EListLit))
+(DFunDef false "documentSymbols" ((PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EApp (EApp (EMethodRef "map") (EVar "renderSymbol")) (EApp (EVar "collapseSymbols") (EApp (EApp (EVar "symbolParts") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions"))))))))
+(DData Private "SymRow" () ((variant "SymRow" (ConPos (TyCon "String") (TyCon "Int") (TyCon "Int") (TyCon "Int") (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Json"))))) ())
+(DTypeSig false "symbolParts" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "DeclPos")) (TyApp (TyCon "List") (TyCon "SymRow")))))
+(DFunDef false "symbolParts" ((PCons (PVar "d") (PVar "ds")) (PCons (PVar "p") (PVar "ps"))) (EBlock (DoLet false false (PVar "sl") (EBinOp "-" (EApp (EVar "declPosLine") (EVar "p")) (ELit (LInt 1)))) (DoLet false false (PVar "el") (EBinOp "-" (EApp (EVar "declPosEndLine") (EVar "p")) (ELit (LInt 1)))) (DoExpr (EMatch (EApp (EApp (EVar "symbolPartsOfDecl") (EVar "d")) (EApp (EApp (EApp (EApp (EVar "jRange") (EVar "sl")) (ELit (LInt 0))) (EVar "el")) (ELit (LInt 0)))) (arm (PCon "None") () (EApp (EApp (EVar "symbolParts") (EVar "ds")) (EVar "ps"))) (arm (PCon "Some" (PTuple (PVar "name") (PVar "kind") (PVar "clauseLike") (PVar "kids"))) () (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "name")) (EVar "kind")) (EVar "sl")) (EVar "el")) (EVar "clauseLike")) (EVar "kids")) (EApp (EApp (EVar "symbolParts") (EVar "ds")) (EVar "ps"))))))))
+(DFunDef false "symbolParts" (PWild PWild) (EListLit))
+(DTypeSig false "collapseSymbols" (TyFun (TyApp (TyCon "List") (TyCon "SymRow")) (TyApp (TyCon "List") (TyCon "SymRow"))))
+(DFunDef false "collapseSymbols" ((PList)) (EListLit))
+(DFunDef false "collapseSymbols" ((PCons (PVar "x") (PVar "xs"))) (EApp (EApp (EVar "collapseGo") (EVar "x")) (EVar "xs")))
+(DTypeSig false "collapseGo" (TyFun (TyCon "SymRow") (TyFun (TyApp (TyCon "List") (TyCon "SymRow")) (TyApp (TyCon "List") (TyCon "SymRow")))))
+(DFunDef false "collapseGo" ((PVar "cur") (PList)) (EListLit (EVar "cur")))
+(DFunDef false "collapseGo" ((PCon "SymRow" (PVar "n0") (PVar "k0") (PVar "s0") (PVar "e0") (PVar "cl0") (PVar "c0")) (PCons (PCon "SymRow" (PVar "n1") (PVar "k1") (PVar "s1") (PVar "e1") (PVar "cl1") (PVar "c1")) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "n0") (EVar "n1")) (EVar "cl0")) (EVar "cl1")) (EApp (EApp (EVar "collapseGo") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "n0")) (EVar "k1")) (EVar "s0")) (EVar "e1")) (EVar "True")) (EBinOp "++" (EVar "c0") (EVar "c1")))) (EVar "rest")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "n0")) (EVar "k0")) (EVar "s0")) (EVar "e0")) (EVar "cl0")) (EVar "c0")) (EApp (EApp (EVar "collapseGo") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "SymRow") (EVar "n1")) (EVar "k1")) (EVar "s1")) (EVar "e1")) (EVar "cl1")) (EVar "c1"))) (EVar "rest")))))
+(DTypeSig false "renderSymbol" (TyFun (TyCon "SymRow") (TyCon "Json")))
+(DFunDef false "renderSymbol" ((PCon "SymRow" (PVar "name") (PVar "kind") (PVar "sl") (PVar "el") PWild (PVar "kids"))) (EApp (EApp (EApp (EApp (EVar "jSymbol") (EVar "name")) (EVar "kind")) (EApp (EApp (EApp (EApp (EVar "jRange") (EVar "sl")) (ELit (LInt 0))) (EVar "el")) (ELit (LInt 0)))) (EVar "kids")))
 (DTypeSig false "declDefines" (TyFun (TyCon "Decl") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "declDefines" ((PVar "d") (PVar "name")) (EMatch (EApp (EVar "innerDecl") (EVar "d")) (arm (PCon "DTypeSig" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DExtern" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DFunDef" PWild (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DLetGroup" PWild (PVar "binds")) () (EApp (EApp (EVar "anyName") (EApp (EApp (EMethodRef "map") (EVar "letBindName")) (EVar "binds"))) (EVar "name"))) (arm (PCon "DData" PWild (PVar "n") PWild (PVar "vs") PWild) () (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "n") (EVar "name")) (EApp (EApp (EVar "anyName") (EApp (EApp (EMethodRef "map") (EVar "variantName")) (EVar "vs"))) (EVar "name"))) (EApp (EApp (EVar "anyName") (EApp (EApp (EDictApp "flatMap") (EVar "variantFieldNames")) (EVar "vs"))) (EVar "name")))) (arm (PRec "DInterface" ((rf "name" (PVar "n")) (rf "methods" (PVar "ms"))) true) () (EBinOp "||" (EBinOp "==" (EVar "n") (EVar "name")) (EApp (EApp (EVar "anyName") (EApp (EApp (EMethodRef "map") (EVar "ifaceMethodName")) (EVar "ms"))) (EVar "name")))) (arm (PRec "DImpl" ((rf "methods" (PVar "ms"))) true) () (EApp (EApp (EVar "anyName") (EApp (EApp (EMethodRef "map") (EVar "implMethodName")) (EVar "ms"))) (EVar "name"))) (arm (PCon "DTypeAlias" PWild (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DNewtype" PWild (PVar "n") PWild (PVar "c") PWild PWild) () (EBinOp "||" (EBinOp "==" (EVar "n") (EVar "name")) (EBinOp "==" (EVar "c") (EVar "name")))) (arm (PCon "DUse" PWild PWild PWild) () (EVar "False")) (arm (PCon "DProp" PWild (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DTest" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DBench" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DEffect" PWild (PVar "n") PWild) () (EBinOp "==" (EVar "n") (EVar "name"))) (arm (PCon "DAttrib" PWild PWild) () (EVar "False"))))
 (DTypeSig false "anyName" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Bool"))))
