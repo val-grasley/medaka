@@ -1482,21 +1482,46 @@ methodDispatchIdxRef = Ref []
 -- forceLocal, dictMonos, dictIfaces); the name/route/receiver-mono are the shared
 -- PendingEntry fields, and encl is unused ("") for RLocal sites.
 
--- P0-18: while typing a definer-shadow method occurrence that heads a single-arg
--- application (`size (Box 3)`), suppress recordRLocalSite's default push — the
--- standalone scheme's declared domain (`Int`) is NOT the actual receiver type.
--- inferDefinerShadowApp instead records the ACTUAL argument mono so per-receiver
--- routing sees `Box` (which has a `Sizeable` impl → method) vs `Int` (no impl →
--- standalone).  Set only around that occurrence's `infer env f`; false everywhere else.
-suppressRLocalRecord : Ref Bool
-suppressRLocalRecord = Ref False
+-- #158 PR4: the NON-REENTRANT global toggles — booleans a caller flips True around a
+-- sub-computation and restores after, so a reader lower in the SAME inference sees the
+-- flag.  Unlike the PerRun accumulators these are not per-push state, they are a dynamic
+-- context; bundled here as a record OF Refs and driven by SAVE/RESTORE brackets, NOT
+-- unconditional set-False:
+--   let saved = toggles.value.X.value in setRef toggles.value.X True; <body>; setRef toggles.value.X saved
+-- so a nested definer-shadow head that re-enters the same bracket inside <body> no longer
+-- clobbers the outer True on its way out (a bare set-False did).  Reset per-module in
+-- resetState alongside PerRun (shadowHeadCtxRef was a PerRun field before this PR — its
+-- resetState clearing is preserved by freshToggles being minted in the same reset).
+--   suppressRLocalRecord — P0-18: while typing a definer-shadow method occurrence that
+--     heads a single-arg application (`size (Box 3)`), suppress recordRLocalSite's default
+--     push: the standalone scheme's declared domain (`Int`) is NOT the actual receiver
+--     type.  inferDefinerShadowApp instead records the ACTUAL argument mono so per-receiver
+--     routing sees `Box` (which has a `Sizeable` impl → method) vs `Int` (no impl →
+--     standalone).  True only around that occurrence's head; false everywhere else.
+--   suppressArgStamp — P0-18: same idea for the EMIT path — suppress recordArgStamp's
+--     default push (standalone declared domain) so inferDefinerShadowApp can record the
+--     ACTUAL argument mono into pendingArgStamps instead.
+--   shadowHeadCtxRef — P0-19 d4b: True while typing a definer-shadow occurrence that is the
+--     HEAD of its own application (marked EMethodAt on run/build), so maybeStandaloneValueMono
+--     does NOT pin it to the value-position standalone scheme.
+data Toggles =
+  | Toggles {
+      suppressRLocalRecord : Ref Bool,
+      suppressArgStamp : Ref Bool,
+      shadowHeadCtxRef : Ref Bool,
+    }
 
--- P0-18: same idea as suppressRLocalRecord for the EMIT path — while typing a
--- definer-shadow method occurrence heading an application, suppress recordArgStamp's
--- default push (standalone declared domain) so inferDefinerShadowApp can record the
--- ACTUAL argument mono into pendingArgStamps instead.
-suppressArgStamp : Ref Bool
-suppressArgStamp = Ref False
+-- Construct all 3 toggle-Refs fresh (each reproduces its former initial — all False).
+freshToggles : Unit -> Toggles
+freshToggles _ = Toggles {
+  suppressRLocalRecord = Ref False,
+  suppressArgStamp = Ref False,
+  shadowHeadCtxRef = Ref False,
+}
+
+-- The single module-level cell holding the current run's dynamic-context toggles.
+toggles : Ref Toggles
+toggles = Ref (freshToggles ())
 
 -- one entry per occurrence of a registered interface method: (iface, typarams,
 -- declared method Ty, the occurrence's instantiated mono).  Resolved post-inference.
@@ -2023,7 +2048,7 @@ nthArgMono n m = match normalize m
 -- element dict for a parametric `requires` impl.
 recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> Unit
 recordArgStamp name tagRef implRef idx mono
-  | suppressArgStamp.value = ()
+  | toggles.value.suppressArgStamp.value = ()
   | otherwise = match nthArgMono idx mono
     Some am => setRef perRun.value.pendingArgStamps (PendingEntry name tagRef am perRun.value.currentFn.value (SKArg implRef) :: perRun.value.pendingArgStamps.value)
     None => ()
@@ -2309,7 +2334,7 @@ hadMatchWarnings _ = match matchWarnings.value
 matchOracle : Ref Oracle
 matchOracle = Ref (buildOracle [])
 
--- #158 PR3: the ~59 per-RUN accumulators/counters that `resetState` clears are bundled
+-- #158 PR3: the ~58 per-RUN accumulators/counters that `resetState` clears are bundled
 -- into ONE typed record so their reset lifecycle is a TYPE FACT, not a hand-maintained
 -- block.  `freshPerRun` constructs exactly the field-Refs `resetState` installs, so "what
 -- resetState clears" == "what PerRun holds" — enforced by the constructor: a new per-module
@@ -2317,8 +2342,9 @@ matchOracle = Ref (buildOracle [])
 -- is a record OF Refs (fields stay `Ref …`), NOT a record of values: the hot accumulators
 -- (pendingSites, typeErrors, pendingCallObligations, activeDictVars, …) are pushed with
 -- `setRef x (v :: x.value)`, so the field must be a Ref for that to stay one Ref-write — a
--- record of values would rebuild the whole 59-field record on every push.  (shadowHeadCtxRef
--- stays here for now: it IS resetState-cleared today; a later PR extracts it.)
+-- record of values would rebuild the whole 58-field record on every push.
+-- (#158 PR4 extracted shadowHeadCtxRef OUT of here into `Toggles`; its resetState clearing is
+-- preserved by freshToggles being minted in the same resetState — see resetState below.)
 data PerRun =
   | PerRun {
       tyvarCounter : Ref Int,
@@ -2334,7 +2360,6 @@ data PerRun =
       shadowStandaloneSchemesRef : Ref (List (String, Scheme)),
       definerShadowNamesRef : Ref (List String),
       definerShadowSigsRef : Ref (List (String, Ty)),
-      shadowHeadCtxRef : Ref Bool,
       shadowKeyTableRef : Ref (OrdMap (List KeyEntry)),
       pendingBinopSites : Ref (List PendingEntry),
       pendingUnopSites : Ref (List PendingEntry),
@@ -2382,7 +2407,7 @@ data PerRun =
       currentLevel : Ref Int,
     }
 
--- Construct all 59 field-Refs fresh (each reproduces its former top-level ref's initial).
+-- Construct all 58 field-Refs fresh (each reproduces its former top-level ref's initial).
 freshPerRun : Unit -> PerRun
 freshPerRun _ = PerRun {
   tyvarCounter = Ref 0,
@@ -2398,7 +2423,6 @@ freshPerRun _ = PerRun {
   shadowStandaloneSchemesRef = Ref [],
   definerShadowNamesRef = Ref [],
   definerShadowSigsRef = Ref [],
-  shadowHeadCtxRef = Ref False,
   shadowKeyTableRef = Ref omEmpty,
   pendingBinopSites = Ref [],
   pendingUnopSites = Ref [],
@@ -2460,8 +2484,14 @@ perRun = Ref (freshPerRun ())
 -- would then see only builtins.  effectDomains has exactly ONE writer (populateEffectDomains →
 -- seedEffectDomains + registerEffectDomain), so it persists untouched across the per-module
 -- resets — and it is NOT a PerRun field, so freshPerRun cannot disturb it.
+-- #158 PR4: mint a fresh Toggles in the SAME reset that mints freshPerRun, so
+-- shadowHeadCtxRef (formerly a PerRun field) is still cleared per-module at exactly this
+-- point.  The other two toggles are always False at a module boundary (their save/restore
+-- brackets never straddle one), so re-minting them here is a no-op — byte-identical.
 resetState : Unit -> Unit
-resetState _ = setRef perRun (freshPerRun ())
+resetState _ =
+  let _ = setRef perRun (freshPerRun ())
+  setRef toggles (freshToggles ())
 
 -- ── small helpers ─────────────────────────────────────────────────────────
 lookupAssocI : Int -> List (Int, b) -> Option b
@@ -3612,7 +3642,7 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
 -- shadowStandaloneDictSlotsAt.
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> Unit
 recordRLocalSite env name tagRef inst
-  | suppressRLocalRecord.value = ()
+  | toggles.value.suppressRLocalRecord.value = ()
   | not (contains name standaloneValuesRef.value) = ()
   | otherwise = match methodDispatchIdx name
     None => ()
@@ -5371,11 +5401,17 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- post-inference route resolver will.  See groundShadowReceiver.
   let _ = groundShadowReceiver (shadowDomainFor env name sym) xt isDictVar dloc
   let dispatches = definerReceiverDispatches name xt
-  let _ = setRef suppressRLocalRecord True
-  let _ = setRef suppressArgStamp True
+  -- #158 PR4: SAVE/RESTORE the three toggles around the head computation (restore to the
+  -- saved value, NOT unconditional False) so a nested definer-shadow head re-entering this
+  -- bracket inside `ft` cannot clobber an outer True on its way out.
+  let savedRLocal = toggles.value.suppressRLocalRecord.value
+  let savedArgStamp = toggles.value.suppressArgStamp.value
+  let savedShadowHead = toggles.value.shadowHeadCtxRef.value
+  let _ = setRef toggles.value.suppressRLocalRecord True
+  let _ = setRef toggles.value.suppressArgStamp True
   -- P0-19 d4b: this is an application head (marked EMethodAt on run/build) → keep the
   -- method scheme for per-receiver dispatch; suppress the value-position standalone pin.
-  let _ = setRef perRun.value.shadowHeadCtxRef True
+  let _ = setRef toggles.value.shadowHeadCtxRef True
   -- P0-18: for the STANDALONE arm, type the head against the STANDALONE scheme.  On the
   -- un-mangled run/check path `infer env f` already resolves the bare name to the
   -- standalone (which shadows the method in scope).  On the EMIT path the bare name
@@ -5393,9 +5429,9 @@ inferDefinerShadowApp env name tagRef implRef f x =
   -- and reject a live-impl receiver (`Box`).  STANDALONE arm: the standalone scheme
   -- (mangled sym on the emit path preserves the concrete result type).
   let ft = if dispatches then shadowVarHeadMethodScheme env name f else definerShadowHeadType env sym f
-  let _ = setRef perRun.value.shadowHeadCtxRef False
-  let _ = setRef suppressRLocalRecord False
-  let _ = setRef suppressArgStamp False
+  let _ = setRef toggles.value.shadowHeadCtxRef savedShadowHead
+  let _ = setRef toggles.value.suppressRLocalRecord savedRLocal
+  let _ = setRef toggles.value.suppressArgStamp savedArgStamp
   -- S-1: on the STANDALONE arm ONLY, compute that standalone's own `=>`-constraint
   -- dicts (and record its call obligations).  The DISPATCH arm typed `ft` against the
   -- interface METHOD scheme, whose dicts are the method's, not the standalone's — asking
@@ -5645,7 +5681,7 @@ standaloneShadowDomain name = match lookupAssoc name perRun.value.definerShadowS
 -- ordinary env lookup / method scheme, unchanged.
 maybeStandaloneValueMono : String -> Option Mono
 maybeStandaloneValueMono name
-  | perRun.value.shadowHeadCtxRef.value = None
+  | toggles.value.shadowHeadCtxRef.value = None
   | not (singleParamIfaceMethod name) = None
   | not (contains name perRun.value.definerShadowNamesRef.value) = None
   | otherwise = standaloneShadowScheme name
@@ -5706,9 +5742,11 @@ shadowVarHeadMethodScheme : TcEnv -> String -> Expr -> Mono
 shadowVarHeadMethodScheme env name f = match omLookup name perRun.value.methodIfaceParamsRef.value
   Some (_, _, ty) => instantiate (sigToScheme ty)
   None =>
-    let _ = setRef perRun.value.shadowHeadCtxRef True
+    -- #158 PR4: save/restore, not set-False (see inferDefinerShadowApp's bracket).
+    let saved = toggles.value.shadowHeadCtxRef.value
+    let _ = setRef toggles.value.shadowHeadCtxRef True
     let ft = infer env f
-    let _ = setRef perRun.value.shadowHeadCtxRef False
+    let _ = setRef toggles.value.shadowHeadCtxRef saved
     ft
 
 -- P0-19 (standalone arm): type the application against the LOCAL standalone scheme so
@@ -5734,9 +5772,11 @@ inferDefinerStandaloneVarApp env name f x xt dloc = match standaloneShadowScheme
     let _ = recordStandaloneSigObligations name "" xt
     r
   None =>
-    let _ = setRef perRun.value.shadowHeadCtxRef True
+    -- #158 PR4: save/restore, not set-False (see inferDefinerShadowApp's bracket).
+    let saved = toggles.value.shadowHeadCtxRef.value
+    let _ = setRef toggles.value.shadowHeadCtxRef True
     let ft = infer env f
-    let _ = setRef perRun.value.shadowHeadCtxRef False
+    let _ = setRef toggles.value.shadowHeadCtxRef saved
     let _ = enforceStandaloneDomain env name xt dloc
     inferApp (envAlphaLets env) (EApp f x) ft xt
 
