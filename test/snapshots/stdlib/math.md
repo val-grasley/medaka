@@ -1,5 +1,5 @@
 # META
-source_lines=188
+source_lines=294
 stages=DESUGAR,MARK
 # SOURCE
 {- math.mdk — floating-point math: roots, transcendentals, rounding, and a
@@ -62,6 +62,66 @@ isNaN x = x != x
 export isInfinite : Float -> Bool
 isInfinite x = not (isNaN x) && isNaN (x - x)
 
+-- | True iff the argument is neither NaN nor infinite — i.e. an ordinary,
+--   representable Float.  The third of the `isNaN`/`isInfinite`/`isFinite`
+--   trio.
+--
+-- > isFinite 1.0
+-- True
+export isFinite : Float -> Bool
+isFinite x = not (isNaN x) && not (isInfinite x)
+
+-- ── Interpolation ───────────────────────────────────────────────────────
+
+-- | Linear interpolation from `a` (at `t = 0.0`) to `b` (at `t = 1.0`):
+--   `lerp a b t = a + (b - a) * t`.  `t` is **not clamped** — `t` outside
+--   `[0.0, 1.0]` extrapolates past `a`/`b` rather than saturating, matching
+--   the usual graphics convention (GLSL `mix`, Rust's `f64::lerp`) and this
+--   module's own house style of leaving clamping to the generic `clamp` in
+--   `core` (see the module header) rather than baking it into every
+--   interpolant. Compose `lerp a b (clamp 0.0 1.0 t)` for a clamped result.
+--
+-- > lerp 0.0 10.0 0.5
+-- 5.0
+-- > lerp 0.0 10.0 0.0
+-- 0.0
+-- > lerp 0.0 10.0 1.0
+-- 10.0
+-- > lerp 0.0 10.0 2.0
+-- 20.0
+-- > lerp 0.0 10.0 (0.0 - 1.0)
+-- -10.0
+export lerp : Float -> Float -> Float -> Float
+lerp a b t = a + (b - a) * t
+
+-- | Approximate equality: `True` iff `|a - b| <= eps`.  Uses an ABSOLUTE
+--   epsilon (not relative/scale-aware) — the natural choice for a general
+--   tolerance-compare utility, since a relative epsilon is undefined at
+--   `a == b == 0.0` and requires a design decision (relative to which
+--   operand?) this module does not need to make.  Callers comparing
+--   large-magnitude Floats should pick an `eps` that accounts for scale.
+--
+--   NaN: `|NaN - x|` is NaN, and every IEEE `<=` involving NaN is `False`
+--   (this repo's decided semantics — see EMITTER-SEMANTICS.md §4 N5: derived
+--   `< <= > >=` stay IEEE). So `approxEq NaN NaN eps` is `False` for every
+--   `eps`, including `NaN` itself — consistent with `isNaN` (`x != x`) and
+--   with plain `==` already treating NaN as equal to nothing, itself
+--   included.
+--
+--   The same reasoning makes `approxEq Infinity Infinity eps` `False` too
+--   (not `True`, which may surprise): `Infinity - Infinity` is IEEE NaN, so
+--   it hits the exact same `NaN <= eps` dead end.  There is no special-cased
+--   "equal infinities" path — this function is arithmetic-only, on purpose.
+--
+-- > approxEq 1.0 1.0000001 0.001
+-- True
+-- > approxEq 1.0 2.0 0.001
+-- False
+-- > approxEq 0.0 0.0 0.0
+-- True
+export approxEq : Float -> Float -> Float -> Bool
+approxEq a b eps = abs (a - b) <= eps
+
 -- ── Logarithms ──────────────────────────────────────────────────────────
 
 -- | Logarithm of `x` in an arbitrary base: `logBase b x = log x / log b`.
@@ -74,6 +134,52 @@ export logBase : Float -> Float -> Float
 logBase base x = log x / log base
 
 -- ── Pure integer helpers ────────────────────────────────────────────────
+
+-- | Floor division: rounds the quotient toward negative infinity, unlike
+--   Medaka's `/` which truncates toward zero (see `stdlib/runtime.mdk` and
+--   `compiler/backend/llvm_emit.mdk`'s `sdiv`).  This is the variant index
+--   arithmetic and calendar math want — `stdlib/time.mdk`'s civil-calendar
+--   conversion needs it so a negative (pre-1970) epoch second maps to the
+--   correct earlier day rather than truncating toward 1970.
+--
+--   Promoted here from a private helper `time.mdk` hand-rolled internally
+--   (see #433) — this is the SAME algorithm, unchanged, so every caller's
+--   behavior at negative operands and at zero is unchanged.
+--
+-- > floorDiv 7 3
+-- 2
+-- > floorDiv (0 - 7) 3
+-- -3
+-- > floorDiv 7 (0 - 3)
+-- -3
+-- > floorDiv (0 - 7) (0 - 3)
+-- 2
+-- > floorDiv 0 5
+-- 0
+export floorDiv : Int -> Int -> Int
+floorDiv a b =
+  let q = a / b
+  let r = a - q * b
+  if r != 0 && r < 0 != (b < 0) then q - 1 else q
+
+-- | Floor modulo: the remainder that pairs with `floorDiv`, so
+--   `floorDiv a b * b + floorMod a b == a` always holds and the result
+--   takes the SIGN OF THE DIVISOR (unlike `%`, which takes the sign of the
+--   dividend because it pairs with truncating `/`) — the Python-`%`
+--   convention, not the C-`%`/Medaka-`%` one.
+--
+-- > floorMod 7 3
+-- 1
+-- > floorMod (0 - 7) 3
+-- 2
+-- > floorMod 7 (0 - 3)
+-- -2
+-- > floorMod (0 - 7) (0 - 3)
+-- -1
+-- > floorMod 0 5
+-- 0
+export floorMod : Int -> Int -> Int
+floorMod a b = a - floorDiv a b * b
 
 -- | Greatest common divisor via the Euclidean algorithm, on absolute
 --   values so the result is non-negative.  `gcdInt 0 0 = 0`.
@@ -199,8 +305,18 @@ prop "powInt b 0 equals 1" (b : Int) = eq (powInt b 0) 1
 (DFunDef false "isNaN" ((PVar "x")) (EBinOp "!=" (EVar "x") (EVar "x")))
 (DTypeSig true "isInfinite" (TyFun (TyCon "Float") (TyCon "Bool")))
 (DFunDef false "isInfinite" ((PVar "x")) (EBinOp "&&" (EApp (EVar "not") (EApp (EVar "isNaN") (EVar "x"))) (EApp (EVar "isNaN") (EBinOp "-" (EVar "x") (EVar "x")))))
+(DTypeSig true "isFinite" (TyFun (TyCon "Float") (TyCon "Bool")))
+(DFunDef false "isFinite" ((PVar "x")) (EBinOp "&&" (EApp (EVar "not") (EApp (EVar "isNaN") (EVar "x"))) (EApp (EVar "not") (EApp (EVar "isInfinite") (EVar "x")))))
+(DTypeSig true "lerp" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Float")))))
+(DFunDef false "lerp" ((PVar "a") (PVar "b") (PVar "t")) (EBinOp "+" (EVar "a") (EBinOp "*" (EBinOp "-" (EVar "b") (EVar "a")) (EVar "t"))))
+(DTypeSig true "approxEq" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Bool")))))
+(DFunDef false "approxEq" ((PVar "a") (PVar "b") (PVar "eps")) (EBinOp "<=" (EApp (EVar "abs") (EBinOp "-" (EVar "a") (EVar "b"))) (EVar "eps")))
 (DTypeSig true "logBase" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Float"))))
 (DFunDef false "logBase" ((PVar "base") (PVar "x")) (EBinOp "/" (EApp (EVar "log") (EVar "x")) (EApp (EVar "log") (EVar "base"))))
+(DTypeSig true "floorDiv" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
+(DFunDef false "floorDiv" ((PVar "a") (PVar "b")) (EBlock (DoLet false false (PVar "q") (EBinOp "/" (EVar "a") (EVar "b"))) (DoLet false false (PVar "r") (EBinOp "-" (EVar "a") (EBinOp "*" (EVar "q") (EVar "b")))) (DoExpr (EIf (EBinOp "&&" (EBinOp "!=" (EVar "r") (ELit (LInt 0))) (EBinOp "!=" (EBinOp "<" (EVar "r") (ELit (LInt 0))) (EBinOp "<" (EVar "b") (ELit (LInt 0))))) (EBinOp "-" (EVar "q") (ELit (LInt 1))) (EVar "q")))))
+(DTypeSig true "floorMod" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
+(DFunDef false "floorMod" ((PVar "a") (PVar "b")) (EBinOp "-" (EVar "a") (EBinOp "*" (EApp (EApp (EVar "floorDiv") (EVar "a")) (EVar "b")) (EVar "b"))))
 (DTypeSig true "gcdInt" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
 (DFunDef false "gcdInt" ((PVar "a") (PVar "b")) (EApp (EApp (EVar "gcdGo") (EApp (EVar "absInt") (EVar "a"))) (EApp (EVar "absInt") (EVar "b"))))
 (DTypeSig false "gcdGo" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
@@ -233,8 +349,18 @@ prop "powInt b 0 equals 1" (b : Int) = eq (powInt b 0) 1
 (DFunDef false "isNaN" ((PVar "x")) (EBinOp "!=" (EVar "x") (EVar "x")))
 (DTypeSig true "isInfinite" (TyFun (TyCon "Float") (TyCon "Bool")))
 (DFunDef false "isInfinite" ((PVar "x")) (EBinOp "&&" (EApp (EVar "not") (EApp (EVar "isNaN") (EVar "x"))) (EApp (EVar "isNaN") (EBinOp "-" (EVar "x") (EVar "x")))))
+(DTypeSig true "isFinite" (TyFun (TyCon "Float") (TyCon "Bool")))
+(DFunDef false "isFinite" ((PVar "x")) (EBinOp "&&" (EApp (EVar "not") (EApp (EVar "isNaN") (EVar "x"))) (EApp (EVar "not") (EApp (EVar "isInfinite") (EVar "x")))))
+(DTypeSig true "lerp" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Float")))))
+(DFunDef false "lerp" ((PVar "a") (PVar "b") (PVar "t")) (EBinOp "+" (EVar "a") (EBinOp "*" (EBinOp "-" (EVar "b") (EVar "a")) (EVar "t"))))
+(DTypeSig true "approxEq" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Bool")))))
+(DFunDef false "approxEq" ((PVar "a") (PVar "b") (PVar "eps")) (EBinOp "<=" (EApp (EMethodRef "abs") (EBinOp "-" (EVar "a") (EVar "b"))) (EVar "eps")))
 (DTypeSig true "logBase" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Float"))))
 (DFunDef false "logBase" ((PVar "base") (PVar "x")) (EBinOp "/" (EApp (EVar "log") (EVar "x")) (EApp (EVar "log") (EVar "base"))))
+(DTypeSig true "floorDiv" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
+(DFunDef false "floorDiv" ((PVar "a") (PVar "b")) (EBlock (DoLet false false (PVar "q") (EBinOp "/" (EVar "a") (EVar "b"))) (DoLet false false (PVar "r") (EBinOp "-" (EVar "a") (EBinOp "*" (EVar "q") (EVar "b")))) (DoExpr (EIf (EBinOp "&&" (EBinOp "!=" (EVar "r") (ELit (LInt 0))) (EBinOp "!=" (EBinOp "<" (EVar "r") (ELit (LInt 0))) (EBinOp "<" (EVar "b") (ELit (LInt 0))))) (EBinOp "-" (EVar "q") (ELit (LInt 1))) (EVar "q")))))
+(DTypeSig true "floorMod" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
+(DFunDef false "floorMod" ((PVar "a") (PVar "b")) (EBinOp "-" (EVar "a") (EBinOp "*" (EApp (EApp (EVar "floorDiv") (EVar "a")) (EVar "b")) (EVar "b"))))
 (DTypeSig true "gcdInt" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
 (DFunDef false "gcdInt" ((PVar "a") (PVar "b")) (EApp (EApp (EVar "gcdGo") (EApp (EVar "absInt") (EVar "a"))) (EApp (EVar "absInt") (EVar "b"))))
 (DTypeSig false "gcdGo" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))

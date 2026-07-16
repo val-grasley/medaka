@@ -1,5 +1,5 @@
 # META
-source_lines=228
+source_lines=224
 stages=DESUGAR,MARK
 # SOURCE
 {- time.mdk — durations + a UTC civil calendar, plus thin wrappers over the
@@ -16,7 +16,9 @@ stages=DESUGAR,MARK
      arithmetic, correct across leap years and for negative (pre-1970) epochs.
      Medaka's `/` truncates toward zero, so the seconds→days split uses a
      `floorDiv` helper; Hinnant's own `era` adjustments already assume
-     truncating division, so they are used verbatim.
+     truncating division, so they are used verbatim.  `floorDiv` itself now
+     lives in `math.mdk` (promoted in #433 — this file used to hand-roll a
+     private copy; same algorithm, unchanged).
 
    ── Effect labels ──────────────────────────────────────────────────────
    The three externs all carry the `<Clock>` effect.  `sleepMs` reuses
@@ -26,6 +28,8 @@ stages=DESUGAR,MARK
    oracle has no FFI to the clock, so `wallTimeSec` / `monotonicSec` return
    fixed plausible values and `sleepMs` is a no-op.  On native `build` they
    call the real C clock / `nanosleep`. -}
+
+import math.{floorDiv}
 
 -- ── Duration ────────────────────────────────────────────────────────────
 -- | A time span, stored as a whole number of MILLISECONDS.
@@ -102,14 +106,6 @@ public export data DateTime =
       minute : Int,
       second : Int,
     }
-
--- Floor division (Medaka `/` truncates toward zero; the calendar needs floor
--- so that a negative epoch maps to the correct earlier day).
-floorDiv : Int -> Int -> Int
-floorDiv a b =
-  let q = a / b
-  let r = a - q * b
-  if r != 0 && r < 0 != (b < 0) then q - 1 else q
 
 -- Days since 1970-01-01 for a civil (y, m, d).  Hinnant's days_from_civil.
 daysFromCivil : Int -> Int -> Int -> Int
@@ -231,6 +227,7 @@ prop "epoch round-trips through the civil calendar" (n : Int) =
   let s = 1000000 + (if n < 0 then 0 - n else n) % 3000000000
   toEpochSeconds (fromEpochSeconds s) == s
 # DESUGAR
+(DUse false (UseGroup ("math") ((mem "floorDiv" false))))
 (DData Public "Duration" () ((variant "Duration" (ConPos (TyCon "Int")))) ())
 (DTypeSig true "millis" (TyFun (TyCon "Int") (TyCon "Duration")))
 (DFunDef false "millis" ((PVar "n")) (EApp (EVar "Duration") (EVar "n")))
@@ -251,8 +248,6 @@ prop "epoch round-trips through the civil calendar" (n : Int) =
 (DTypeSig true "subDuration" (TyFun (TyCon "Duration") (TyFun (TyCon "Duration") (TyCon "Duration"))))
 (DFunDef false "subDuration" ((PCon "Duration" (PVar "a")) (PCon "Duration" (PVar "b"))) (EApp (EVar "Duration") (EBinOp "-" (EVar "a") (EVar "b"))))
 (DData Public "DateTime" () ((variant "DateTime" (ConNamed (field "year" (TyCon "Int")) (field "month" (TyCon "Int")) (field "day" (TyCon "Int")) (field "hour" (TyCon "Int")) (field "minute" (TyCon "Int")) (field "second" (TyCon "Int"))))) ())
-(DTypeSig false "floorDiv" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
-(DFunDef false "floorDiv" ((PVar "a") (PVar "b")) (EBlock (DoLet false false (PVar "q") (EBinOp "/" (EVar "a") (EVar "b"))) (DoLet false false (PVar "r") (EBinOp "-" (EVar "a") (EBinOp "*" (EVar "q") (EVar "b")))) (DoExpr (EIf (EBinOp "&&" (EBinOp "!=" (EVar "r") (ELit (LInt 0))) (EBinOp "!=" (EBinOp "<" (EVar "r") (ELit (LInt 0))) (EBinOp "<" (EVar "b") (ELit (LInt 0))))) (EBinOp "-" (EVar "q") (ELit (LInt 1))) (EVar "q")))))
 (DTypeSig false "daysFromCivil" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
 (DFunDef false "daysFromCivil" ((PVar "y0") (PVar "m") (PVar "d")) (EBlock (DoLet false false (PVar "y") (EIf (EBinOp "<=" (EVar "m") (ELit (LInt 2))) (EBinOp "-" (EVar "y0") (ELit (LInt 1))) (EVar "y0"))) (DoLet false false (PVar "era") (EBinOp "/" (EIf (EBinOp ">=" (EVar "y") (ELit (LInt 0))) (EVar "y") (EBinOp "-" (EVar "y") (ELit (LInt 399)))) (ELit (LInt 400)))) (DoLet false false (PVar "yoe") (EBinOp "-" (EVar "y") (EBinOp "*" (EVar "era") (ELit (LInt 400))))) (DoLet false false (PVar "mp") (EIf (EBinOp ">" (EVar "m") (ELit (LInt 2))) (EBinOp "-" (EVar "m") (ELit (LInt 3))) (EBinOp "+" (EVar "m") (ELit (LInt 9))))) (DoLet false false (PVar "doy") (EBinOp "-" (EBinOp "+" (EBinOp "/" (EBinOp "+" (EBinOp "*" (ELit (LInt 153)) (EVar "mp")) (ELit (LInt 2))) (ELit (LInt 5))) (EVar "d")) (ELit (LInt 1)))) (DoLet false false (PVar "doe") (EBinOp "+" (EBinOp "-" (EBinOp "+" (EBinOp "*" (EVar "yoe") (ELit (LInt 365))) (EBinOp "/" (EVar "yoe") (ELit (LInt 4)))) (EBinOp "/" (EVar "yoe") (ELit (LInt 100)))) (EVar "doy"))) (DoExpr (EBinOp "-" (EBinOp "+" (EBinOp "*" (EVar "era") (ELit (LInt 146097))) (EVar "doe")) (ELit (LInt 719468))))))
 (DTypeSig false "civilFromDays" (TyFun (TyCon "Int") (TyTuple (TyCon "Int") (TyCon "Int") (TyCon "Int"))))
@@ -281,6 +276,7 @@ prop "epoch round-trips through the civil calendar" (n : Int) =
 (DFunDef false "sleepSeconds" ((PVar "s")) (EApp (EVar "sleepMs") (EBinOp "*" (EVar "s") (ELit (LInt 1000)))))
 (DProp false "epoch round-trips through the civil calendar" ((pp "n" (TyCon "Int"))) (EBlock (DoLet false false (PVar "s") (EBinOp "+" (ELit (LInt 1000000)) (EBinOp "%" (EIf (EBinOp "<" (EVar "n") (ELit (LInt 0))) (EBinOp "-" (ELit (LInt 0)) (EVar "n")) (EVar "n")) (ELit (LInt 3000000000))))) (DoExpr (EBinOp "==" (EApp (EVar "toEpochSeconds") (EApp (EVar "fromEpochSeconds") (EVar "s"))) (EVar "s")))))
 # MARK
+(DUse false (UseGroup ("math") ((mem "floorDiv" false))))
 (DData Public "Duration" () ((variant "Duration" (ConPos (TyCon "Int")))) ())
 (DTypeSig true "millis" (TyFun (TyCon "Int") (TyCon "Duration")))
 (DFunDef false "millis" ((PVar "n")) (EApp (EVar "Duration") (EVar "n")))
@@ -301,8 +297,6 @@ prop "epoch round-trips through the civil calendar" (n : Int) =
 (DTypeSig true "subDuration" (TyFun (TyCon "Duration") (TyFun (TyCon "Duration") (TyCon "Duration"))))
 (DFunDef false "subDuration" ((PCon "Duration" (PVar "a")) (PCon "Duration" (PVar "b"))) (EApp (EVar "Duration") (EBinOp "-" (EVar "a") (EVar "b"))))
 (DData Public "DateTime" () ((variant "DateTime" (ConNamed (field "year" (TyCon "Int")) (field "month" (TyCon "Int")) (field "day" (TyCon "Int")) (field "hour" (TyCon "Int")) (field "minute" (TyCon "Int")) (field "second" (TyCon "Int"))))) ())
-(DTypeSig false "floorDiv" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))
-(DFunDef false "floorDiv" ((PVar "a") (PVar "b")) (EBlock (DoLet false false (PVar "q") (EBinOp "/" (EVar "a") (EVar "b"))) (DoLet false false (PVar "r") (EBinOp "-" (EVar "a") (EBinOp "*" (EVar "q") (EVar "b")))) (DoExpr (EIf (EBinOp "&&" (EBinOp "!=" (EVar "r") (ELit (LInt 0))) (EBinOp "!=" (EBinOp "<" (EVar "r") (ELit (LInt 0))) (EBinOp "<" (EVar "b") (ELit (LInt 0))))) (EBinOp "-" (EVar "q") (ELit (LInt 1))) (EVar "q")))))
 (DTypeSig false "daysFromCivil" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
 (DFunDef false "daysFromCivil" ((PVar "y0") (PVar "m") (PVar "d")) (EBlock (DoLet false false (PVar "y") (EIf (EBinOp "<=" (EVar "m") (ELit (LInt 2))) (EBinOp "-" (EVar "y0") (ELit (LInt 1))) (EVar "y0"))) (DoLet false false (PVar "era") (EBinOp "/" (EIf (EBinOp ">=" (EVar "y") (ELit (LInt 0))) (EVar "y") (EBinOp "-" (EVar "y") (ELit (LInt 399)))) (ELit (LInt 400)))) (DoLet false false (PVar "yoe") (EBinOp "-" (EVar "y") (EBinOp "*" (EVar "era") (ELit (LInt 400))))) (DoLet false false (PVar "mp") (EIf (EBinOp ">" (EVar "m") (ELit (LInt 2))) (EBinOp "-" (EVar "m") (ELit (LInt 3))) (EBinOp "+" (EVar "m") (ELit (LInt 9))))) (DoLet false false (PVar "doy") (EBinOp "-" (EBinOp "+" (EBinOp "/" (EBinOp "+" (EBinOp "*" (ELit (LInt 153)) (EVar "mp")) (ELit (LInt 2))) (ELit (LInt 5))) (EVar "d")) (ELit (LInt 1)))) (DoLet false false (PVar "doe") (EBinOp "+" (EBinOp "-" (EBinOp "+" (EBinOp "*" (EVar "yoe") (ELit (LInt 365))) (EBinOp "/" (EVar "yoe") (ELit (LInt 4)))) (EBinOp "/" (EVar "yoe") (ELit (LInt 100)))) (EVar "doy"))) (DoExpr (EBinOp "-" (EBinOp "+" (EBinOp "*" (EVar "era") (ELit (LInt 146097))) (EVar "doe")) (ELit (LInt 719468))))))
 (DTypeSig false "civilFromDays" (TyFun (TyCon "Int") (TyTuple (TyCon "Int") (TyCon "Int") (TyCon "Int"))))

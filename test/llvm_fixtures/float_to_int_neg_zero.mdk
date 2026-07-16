@@ -1,0 +1,12 @@
+-- #346 (S0): floatToInt (-0.0) -> 0.  The one domain point the saturation fixtures
+-- otherwise left unpinned (#476): provably UNAFFECTED by the fix (-0.0 is in range, so
+-- the clamp never touches it and fptosi.sat agrees with the old fptosi) — pinned anyway,
+-- because this PR's whole thesis is that a differential gate only covers what it samples.
+--
+-- The -0.0 is built as `-1.0 * 0.0`, NOT as the literal `-0.0`, ON PURPOSE: the `-0.0`
+-- LITERAL is a true -0.0 on native/wasm but collapses to +0.0 in eval (the known,
+-- deferred neg-zero literal divergence — `1.0 / -0.0` is -inf natively but inf under
+-- eval).  A literal here would therefore silently test +0.0 on eval and pin nothing.
+-- `-1.0 * 0.0` is a genuine -0.0 on ALL THREE engines (verified: `1.0 / (-1.0 * 0.0)`
+-- is -inf on eval, native and wasm alike).
+main = floatToInt (-1.0 * 0.0)

@@ -301,8 +301,12 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 6 | definer · N-way (2 impls + no-impl) · 1-file · applied | S3 | **REJECT** ×2 (`Box`, `Bar`); `size 3` → 4 | `d3_definer_nway.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,30,4`. S3 is now VACUOUS for a definer shadow: no receiver selects an impl. The impls still dispatch N-way through a `=>` dict — see `definer_shadow_nway`) |
 | 7 | definer · live impl at PARAMETRIC head (`impl … (P a)`) · applied | S2 | **REJECT** `Int vs P Bool` @ the `P a` receiver; 4 | `d6_definer_parametric_receiver.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `9,4`. A parametric impl head is no more privileged than a concrete one) |
 | 8 | definer · TWO-param method shadow · applied | S8 | **REJECT** `Int vs Box` @ `comb (Box 1) (Box 2)`; `comb 2 3` → 6 | `d7_definer_multiparam_method.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,6` via ordinary arg-dispatch. Multi-*param methods* now follow S2 like everything else; multi-*TYPARAM interfaces* still do NOT — row 26 / S-3) |
-| 9 | definer · value position · no-impl elements | S4 | standalone → [2, 3, 4] | `d4_definer_value_pos.mdk` | [2,3,4] | [2,3,4] | accept | **OK** |
-| 10 | definer · value position · LIVE-impl elements | S4 | located REJECT | `d4b_definer_value_pos_liveimpl.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 2 `ebb8ee90`; was a 3-way split) |
+| 9 | definer · value position · no-impl elements · **method/standalone arity EQUAL** | S4 | standalone → [2, 3, 4] | `d4_definer_value_pos.mdk` | [2,3,4] | [2,3,4] | accept | **OK** — ⚠️ arity-EQUAL, so this row is **blind to S1-RESIDUAL-A (#410)**; rows 9a/9b/9c are the arity-DIFFERING cells |
+| 9a | definer · value position · **method arity 2 / standalone arity 1** · annotated result | S4 | standalone → [2, 3, 4] | `d17_definer_value_pos_arity_differ.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — was `build` exit 0 printing PAP heap pointers as Ints, an S0 silent wrongness; see §6 S1-RESIDUAL-A (A)) |
+| 9b | definer · value position · arity-differing · **ZERO impls** of the iface | S2+S4 | standalone → [2, 3, 4] | `d19_definer_value_pos_arity_differ_zeroimpls.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — proves the impl universe is irrelevant: shadow-hood + arity mismatch + value position suffice) |
+| 9d | definer · value position · **method arity 1 / standalone arity 2** (opposite direction) · annotated | S4 | standalone → 3 | `d20_definer_value_pos_arity_differ_opposite.mdk` | 3 | 3 | accept | **OK** (**FIXED 2026-07-16 #410** — pins the other side of the route-derived arity) |
+| 9c | definer · value position · arity-differing · **UNANNOTATED** result | S4 | standalone → [2, 3, 4] | `d18_definer_value_pos_arity_differ_unannot.mdk` | [2,3,4] | accept, **binary SEGFAULTs** | accept | ❌ **KNOWN-BAD (#410 (B), open)** — `println`'s `Display` requirement gets a NULL element dict (RNone route). NOT the emitter: the route is stamped in `types/typecheck.mdk`. Pinned `BUILD_CRASH` (self-draining) |
+| 10 | definer · value position · LIVE-impl elements | S4 | located REJECT | `d4b_definer_value_pos_liveimpl.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 2 `ebb8ee90`; was a 3-way split) — ⚠️ also arity-EQUAL |
 | 11 | definer · ungrounded recv · wrapper used at standalone domain | S5 | 4; wrapper : Int -> Int | `d5_definer_poly_receiver.mdk` | 4 | 4 | accept (but `useIt : a -> Int` — over-general, the row-12 hole) | **OK** (value), caveat on scheme |
 | 12 | definer · ungrounded recv · wrapper CALLED at live-impl type | S5 | located REJECT | `d5b_definer_poly_liveimpl_call.mdk` | reject `Int vs Box` | reject | reject | **OK** (fixed P0-19 batch 1 `ef0874f3`; was a silent miscompile) |
 | 13 | definer · no-impl recv · domain mismatch (`size "hi"`) | S2 | located REJECT | `d9_definer_reject.mdk` | reject `Int vs String` | reject | reject | **OK** (fixed P0-19 batch 1 `ef0874f3`; was check-over-accept → build garbage) |
@@ -621,34 +625,60 @@ Found while closing S-1 (2026-07-13). **Neither is a regression and neither is a
 wrong answer** — both were already broken on `main`, and both now fail *loudly*. They are
 the two shadow occurrences that do **not** flow through an application-head arm.
 
-### S1-RESIDUAL-A — value-position shadow miscompiles at emit (NOT an S-1 bug)
+### S1-RESIDUAL-A — value-position shadow miscompiles at emit (NOT an S-1 bug) — ✅ **CONFIRMED REAL; emitter half FIXED 2026-07-16 (issue #410)**
 
-`map size [1,2,3]` (a bare shadow occurrence passed to a HOF) **segfaults at `build`** and
-`illegal cast`es under WasmGC. `run` is correct.
+`map size [1,2,3]` (a bare shadow occurrence passed to a HOF) miscompiles when the
+**interface method's arity DIFFERS from the standalone's**. `run` is correct throughout.
 
 ⚠️ **This is NOT caused by the constraint, and NOT by S-1.** Verified: an **unconstrained**
-shadow (`size : Int -> Int`) in value position segfaults *identically*, and that takes the
-`dicts == []` path — byte-identical to pre-S1 codegen. The bug is in the value-position
-lift itself (`llvm_emit.mdk` `emitMethodValue` / `emitMethodValDefine`, wasm's
-`emitRefExpr` peer), which builds a closure of `methodArityOf name` — the **interface
-method's** arity — for a body that calls the **standalone**. S-1's design doc mis-attributed
-this row's `build` failure (it saw a GC OOM) to the missing dict.
-*Fix location:* `compiler/backend/llvm_emit.mdk` `emitMethodValue`; wasm peer.
+shadow (`size : Int -> Int`) in value position fails *identically*, and that takes the
+`dicts == []` path — byte-identical to pre-S1 codegen. So does a shape with **zero impls**
+of the interface (`d19`): shadow-hood + arity mismatch + value position suffice. S-1's
+design doc mis-attributed this row's `build` failure (it saw a GC OOM) to the missing dict.
 
-> ⚠️ **DOES NOT REPRODUCE as written (2026-07-14, first run of the new gate, on
-> `main` post-`eb92cdff`).** Both shapes this entry names build and run
-> **correctly**: the unconstrained `size : Int -> Int` + `map size [1,2,3]` is
-> fixture `d10`'s neighbour `d4_definer_value_pos.mdk`, which the gate grades
-> ACCEPT/ACCEPT/ACCEPT with `build` printing `[2, 3, 4]` (30/30 runs, exit 0, no
-> SIGSEGV); the constrained `size : Num a => a -> a` in the same position also
-> prints `[2, 3, 4]` on check/run/build. So either the repro needs a shape not
-> named here (the stated mechanism — a closure built at `methodArityOf name` for
-> a body calling the standalone — requires the method and standalone arities to
-> **differ**, and in both shapes above they are both 1), or the S9 landing closed
-> it as a side effect. **Needs re-confirmation from the filer with an exact
-> repro.** Do not spend time chasing it from this text alone; `d4` now pins the
-> working behavior, so if it is a live latent bug the gate will catch it the
-> moment it bites.
+> **THE 2026-07-14 "DOES NOT REPRODUCE" NOTE WAS WRONG — AND ITS OWN SUSPICION WAS THE
+> ANSWER.** It observed that the stated mechanism "requires the method and standalone
+> arities to **differ**, and in both shapes above they are both 1" — then filed the entry
+> unreproducible anyway. It was right: **every fixture it tested (`d4`, `d4b`, `d10`) is
+> arity-EQUAL**, and when the arities coincide the arity lie is invisible. The corpus could
+> not express the bug, so the gate could not defend it — this spec's own lesson, paid twice.
+> **A "does not reproduce" that names its own missing ingredient has disproved nothing — it
+> has written the next repro.**
+
+**Two bugs stack here. They must not be conflated:**
+
+**(A) the arity lie — emitter — ✅ FIXED 2026-07-16.** The value-position lift built a
+closure of `methodArityOf name` — the **interface method's** arity — for a body calling the
+**standalone**. With the arities differing, a HOF applying the standalone's arity got a
+**partial application** back instead of a value: `map size [1,2,3]` produced a list of PAP
+heap pointers and `build` **printed them as Ints at exit 0 with no error**
+(`[70290166652896, …]`) — an S0 *silent wrongness*, worse than the segfault this entry
+originally described. Fixed by making the arity **route-derived**: `methValArity`
+(`llvm_emit.mdk`) and `methodValArity` (`wasm_emit.mdk`) resolve an `RLocal` route's target
+via `fnArity`/`progFnArity` **minus the route's dict count** (both are dict-INCLUSIVE — see
+the `trmcTryFn` note in `llvm_emit.mdk`), and keep the old name-derived arity for every
+non-RLocal route, so the self-compile fixpoint cannot move (C3a/C3b YES). Pinned by
+`d17`/`d19`/`d20` (**both** arity directions: method>standalone and method<standalone).
+Wasm carried the same lie via an arity helper taking **no Route**; pre-fix its
+symptom was a hard assembly failure (`unknown func: failed to find name $mdk_w_…__size`),
+**not** the `illegal cast` this entry guessed. Both backends fixed together.
+
+**(B) the NULL element dict — NOT the emitter — ❌ STILL OPEN.** With (A) fixed, the
+*unannotated* `println (map size [1,2,3])` still **segfaults** the built binary: `println`'s
+`Display (List Int)` requirement is emitted with a **NULL element dict**
+(`@mdk_dc_N = [2 x i64] [<List-display tag>, i64 0]`; the `0` is an **RNone** route), so
+`display` dereferences NULL. The element **type** resolves correctly to `Int` (annotating
+`List String` reports `Type mismatch: Int vs String` at the list literal), so this is not a
+typing failure — it is the requirement **route** stamped without being resolved against the
+inferred type. Annotating `let ys : List Int = map size [1,2,3]` makes the route resolve and
+the program correct, which is what isolates (B) from (A). Routes are stamped in
+`compiler/types/typecheck.mdk`, so **(B) is not an emitter fix**; it is plausibly the same
+root as the `#412` structured-requires pre-bake. Ledgered by `d18` (`BUILD_CRASH` —
+self-draining: it goes RED the day (B) is fixed).
+
+*Fix location (A, done):* `compiler/backend/llvm_emit.mdk` `methValArity`;
+`compiler/backend/wasm_emit.mdk` `methodValArity`.
+*Fix location (B, open):* `compiler/types/typecheck.mdk` — requirement-route resolution.
 
 > ⚠️ **UPDATE 2026-07-16 (#411): the DEFINER shape above still does not reproduce — but
 > its IMPORTER twin DID, and is now fixed.** `map size [1,2,3]` where `size` is

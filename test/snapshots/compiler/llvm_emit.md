@@ -1,5 +1,5 @@
 # META
-source_lines=10036
+source_lines=10071
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -3731,15 +3731,21 @@ emitMethod e env name (RLocal sym dicts) implRoutes methRoutes argOps =
 -- CAPTURES the dict word and rebinds it from `%clos` field 1 in the body, so the
 -- runtime impl switch still reads the caller's dict.  A nullary method (arity 0,
 -- e.g. `def`) is a plain value — keep the immediate `emitMethod .. []`.
--- ⚠️ S1-RESIDUAL-A (open; SHADOW-SEMANTICS.md §6): a VALUE-position standalone SHADOW
--- (`map size [1,2,3]`) miscompiles here — the built binary SEGFAULTs (wasm: `illegal
--- cast`), while `run` is correct.  NOT an S-1/dict bug: an UNCONSTRAINED shadow, which
--- takes the `dicts == []` path and is byte-identical to pre-S1 codegen, segfaults exactly
--- the same way.  The lift builds a closure of `methodArityOf name` — the interface
--- METHOD's arity — for a body that calls the STANDALONE, whose value arity need not match.
+-- S1-RESIDUAL-A (FIXED 2026-07-16, issue #410; SHADOW-SEMANTICS.md §6): a VALUE-position
+-- standalone SHADOW (`map size [1,2,3]`) used to miscompile here — the built binary
+-- SEGFAULTed (wasm: `illegal cast`) while `check`/`run` were both green.  The lift built
+-- the closure at `methodArityOf name` — the interface METHOD's arity — for a body that
+-- calls the STANDALONE, whose value arity need not match.  With the two arities EQUAL the
+-- lie is invisible, which is why every pre-#410 probe (and the whole d4/d10 corpus) missed
+-- it.  When they differ the closure advertises N args to the HOF but its body forwards
+-- them to an M-arg function: N>M makes `emitKnownFnSat` take the `emitOverApp` path
+-- (:3941), which calls the target, gets a SCALAR back, and hands that Int to
+-- `emitApplyAny`, which reads an arity out of the "cell header" of an integer ⇒ SEGFAULT.
+-- Fix: the arity is now ROUTE-derived (`methValArity`), not name-derived — the RLocal arm
+-- below already knew the truth via `fnArity e target`.
 emitMethodValue : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> (String, LTy)
 emitMethodValue e env name route implRoutes methRoutes =
-  let arity = methodArityOf name
+  let arity = methValArity e name route
   if arity <= 0 then emitMethod e env name route implRoutes methRoutes []
   else
     let capNames = methValDictNames route
@@ -3747,6 +3753,35 @@ emitMethodValue e env name route implRoutes methRoutes =
     let lamName = "mdk_methval_\{name}_\{intToString (freshId e)}"
     let _ = emitMethodValDefine e env lamName name route implRoutes methRoutes arity capNames
     emitClosureAllocA e lamName arity capWords
+
+-- the VALUE arity the lifted method-value closure must advertise to a HOF — i.e. the
+-- number of value args the body it wraps actually consumes, which is a property of the
+-- ROUTE, not of the method name (#410).
+--
+-- RLocal is the definer-shadow route: the body (`emitMethod`'s RLocal arm) forwards to
+-- the STANDALONE `mdk_<target>`, so the closure must expose the STANDALONE's value arity.
+-- `fnArity` is the right source precisely because it is what that arm's own
+-- `emitKnownFnSat`/`emitDictApp` measure against — deriving the closure arity from
+-- anything else re-opens the same mismatch from the other side.
+--
+-- ⚠️ the `- listLen dicts` is load-bearing and NOT cosmetic: `inferSigs` runs over the
+-- LOWERED (post-dict-pass) clauses, so `fnArity`'s `ptys` is DICT-INCLUSIVE (see the
+-- `trmcTryFn` note ~:7081).  A CONSTRAINED shadow's `fnArity` therefore counts its leading
+-- dict params, but the closure exposes VALUE args only — the dict words are CAPTURED (see
+-- `methValDictNames`) and re-prepended inside the body by `emitDictApp`.  Without the
+-- subtraction a constrained shadow would advertise nDicts too many and segfault exactly
+-- like the unconstrained case it fixes.  `dicts == []` ⇒ subtract 0 ⇒ plain `fnArity`.
+--
+-- A non-RLocal route (RDict/RDictFwd/RKey/RNone) really is dispatching the METHOD, so it
+-- keeps `methodArityOf` — byte-identical to pre-#410 codegen, so the fixpoint cannot move.
+-- `<= 0` means the target has no known signature (uninstalled sig table / unknown name);
+-- fall back to the old name-derived arity rather than emit a 0-arity closure.
+methValArity : Emit -> String -> Route -> Int
+methValArity e name (RLocal sym dicts) =
+  let target = if sym == "" then name else sym
+  let a = fnArity e target - listLen dicts
+  if a <= 0 then methodArityOf name else a
+methValArity _ name _ = methodArityOf name
 
 -- the dict-witness param name(s) a route reads at runtime (the names whose words the
 -- value-closure must capture so the lifted body can rebind them).  Only RDict/
@@ -10771,7 +10806,10 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EVar "emitMethodArgDispatch") (EVar "e")) (EVar "name")) (EVar "argOps")))
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EVar "isEmpty") (EVar "dicts")) (EApp (EApp (EApp (EApp (EApp (EVar "emitKnownFnSat") (EVar "e")) (EBinOp "++" (ELit (LString "mdk_")) (EVar "target"))) (EVar "argOps")) (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target"))) (EApp (EApp (EVar "fnRetTy") (EVar "e")) (EVar "target"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitDictApp") (EVar "e")) (EVar "env")) (EVar "target")) (EVar "dicts")) (EVar "argOps"))))))
 (DTypeSig false "emitMethodValue" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyTuple (TyCon "String") (TyCon "LTy")))))))))
-(DFunDef false "emitMethodValue" ((PVar "e") (PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes")) (EBlock (DoLet false false (PVar "arity") (EApp (EVar "methodArityOf") (EVar "name"))) (DoExpr (EIf (EBinOp "<=" (EVar "arity") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethod") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EListLit)) (EBlock (DoLet false false (PVar "capNames") (EApp (EVar "methValDictNames") (EVar "route"))) (DoLet false false (PVar "capWords") (EApp (EApp (EVar "capDictWords") (EVar "env")) (EVar "capNames"))) (DoLet false false (PVar "lamName") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_methval_")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EVar "display") (EApp (EVar "intToString") (EApp (EVar "freshId") (EVar "e"))))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValDefine") (EVar "e")) (EVar "env")) (EVar "lamName")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EVar "arity")) (EVar "capNames"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitClosureAllocA") (EVar "e")) (EVar "lamName")) (EVar "arity")) (EVar "capWords"))))))))
+(DFunDef false "emitMethodValue" ((PVar "e") (PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes")) (EBlock (DoLet false false (PVar "arity") (EApp (EApp (EApp (EVar "methValArity") (EVar "e")) (EVar "name")) (EVar "route"))) (DoExpr (EIf (EBinOp "<=" (EVar "arity") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethod") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EListLit)) (EBlock (DoLet false false (PVar "capNames") (EApp (EVar "methValDictNames") (EVar "route"))) (DoLet false false (PVar "capWords") (EApp (EApp (EVar "capDictWords") (EVar "env")) (EVar "capNames"))) (DoLet false false (PVar "lamName") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_methval_")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EVar "display") (EApp (EVar "intToString") (EApp (EVar "freshId") (EVar "e"))))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValDefine") (EVar "e")) (EVar "env")) (EVar "lamName")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EVar "arity")) (EVar "capNames"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitClosureAllocA") (EVar "e")) (EVar "lamName")) (EVar "arity")) (EVar "capWords"))))))))
+(DTypeSig false "methValArity" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyCon "Int")))))
+(DFunDef false "methValArity" ((PVar "e") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts"))) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoLet false false (PVar "a") (EBinOp "-" (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target")) (EApp (EVar "listLen") (EVar "dicts")))) (DoExpr (EIf (EBinOp "<=" (EVar "a") (ELit (LInt 0))) (EApp (EVar "methodArityOf") (EVar "name")) (EVar "a")))))
+(DFunDef false "methValArity" (PWild (PVar "name") PWild) (EApp (EVar "methodArityOf") (EVar "name")))
 (DTypeSig false "methValDictNames" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "methValDictNames" ((PCon "RDict" (PVar "d"))) (EListLit (EVar "d")))
 (DFunDef false "methValDictNames" ((PCon "RDictFwd" (PVar "d"))) (EListLit (EVar "d")))
@@ -12887,7 +12925,10 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RNone") (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EApp (EApp (EApp (EVar "emitMethodArgDispatch") (EVar "e")) (EVar "name")) (EVar "argOps")))
 (DFunDef false "emitMethod" ((PVar "e") (PVar "env") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts")) (PVar "implRoutes") (PVar "methRoutes") (PVar "argOps")) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoExpr (EIf (EApp (EMethodRef "isEmpty") (EVar "dicts")) (EApp (EApp (EApp (EApp (EApp (EVar "emitKnownFnSat") (EVar "e")) (EBinOp "++" (ELit (LString "mdk_")) (EVar "target"))) (EVar "argOps")) (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target"))) (EApp (EApp (EVar "fnRetTy") (EVar "e")) (EVar "target"))) (EApp (EApp (EApp (EApp (EApp (EVar "emitDictApp") (EVar "e")) (EVar "env")) (EVar "target")) (EVar "dicts")) (EVar "argOps"))))))
 (DTypeSig false "emitMethodValue" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyTuple (TyCon "String") (TyCon "LTy")))))))))
-(DFunDef false "emitMethodValue" ((PVar "e") (PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes")) (EBlock (DoLet false false (PVar "arity") (EApp (EVar "methodArityOf") (EVar "name"))) (DoExpr (EIf (EBinOp "<=" (EVar "arity") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethod") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EListLit)) (EBlock (DoLet false false (PVar "capNames") (EApp (EVar "methValDictNames") (EVar "route"))) (DoLet false false (PVar "capWords") (EApp (EApp (EVar "capDictWords") (EVar "env")) (EVar "capNames"))) (DoLet false false (PVar "lamName") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_methval_")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EApp (EVar "freshId") (EVar "e"))))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValDefine") (EVar "e")) (EVar "env")) (EVar "lamName")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EVar "arity")) (EVar "capNames"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitClosureAllocA") (EVar "e")) (EVar "lamName")) (EVar "arity")) (EVar "capWords"))))))))
+(DFunDef false "emitMethodValue" ((PVar "e") (PVar "env") (PVar "name") (PVar "route") (PVar "implRoutes") (PVar "methRoutes")) (EBlock (DoLet false false (PVar "arity") (EApp (EApp (EApp (EVar "methValArity") (EVar "e")) (EVar "name")) (EVar "route"))) (DoExpr (EIf (EBinOp "<=" (EVar "arity") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethod") (EVar "e")) (EVar "env")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EListLit)) (EBlock (DoLet false false (PVar "capNames") (EApp (EVar "methValDictNames") (EVar "route"))) (DoLet false false (PVar "capWords") (EApp (EApp (EVar "capDictWords") (EVar "env")) (EVar "capNames"))) (DoLet false false (PVar "lamName") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_methval_")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "_"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EApp (EVar "freshId") (EVar "e"))))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitMethodValDefine") (EVar "e")) (EVar "env")) (EVar "lamName")) (EVar "name")) (EVar "route")) (EVar "implRoutes")) (EVar "methRoutes")) (EVar "arity")) (EVar "capNames"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitClosureAllocA") (EVar "e")) (EVar "lamName")) (EVar "arity")) (EVar "capWords"))))))))
+(DTypeSig false "methValArity" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "Route") (TyCon "Int")))))
+(DFunDef false "methValArity" ((PVar "e") (PVar "name") (PCon "RLocal" (PVar "sym") (PVar "dicts"))) (EBlock (DoLet false false (PVar "target") (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EVar "name") (EVar "sym"))) (DoLet false false (PVar "a") (EBinOp "-" (EApp (EApp (EVar "fnArity") (EVar "e")) (EVar "target")) (EApp (EVar "listLen") (EVar "dicts")))) (DoExpr (EIf (EBinOp "<=" (EVar "a") (ELit (LInt 0))) (EApp (EVar "methodArityOf") (EVar "name")) (EVar "a")))))
+(DFunDef false "methValArity" (PWild (PVar "name") PWild) (EApp (EVar "methodArityOf") (EVar "name")))
 (DTypeSig false "methValDictNames" (TyFun (TyCon "Route") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "methValDictNames" ((PCon "RDict" (PVar "d"))) (EListLit (EVar "d")))
 (DFunDef false "methValDictNames" ((PCon "RDictFwd" (PVar "d"))) (EListLit (EVar "d")))
