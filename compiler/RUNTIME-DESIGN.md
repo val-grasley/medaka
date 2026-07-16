@@ -197,7 +197,7 @@ literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
 | `charMinBound` | `Char` | INTRINSIC | constant |
 | `charMaxBound` | `Char` | INTRINSIC | constant |
 | `intToFloat` | `Int -> Float` | INTRINSIC | `sitofp` |
-| `floatToInt` | `Float -> Int` | INTRINSIC | `fptosi` (truncates toward zero, matches OCaml `int_of_float`) |
+| `floatToInt` | `Float -> Int` | INTRINSIC | `llvm.fptosi.sat.i64.f64` + clamp to the 63-bit Int bounds (#346). Truncates toward zero in range; SATURATES outside it — NaN→0, ±inf/out-of-range→`intMaxBound`/`intMinBound`. The clamp is required: the intrinsic saturates to **i64** bounds, which §8's tagged word shifts out the top (a bare `fptosi` here was poison read back as a live pointer — an ASLR infoleak) |
 | `charCode` | `Char -> Int` | INTRINSIC | identity: same tagged word, re-typed `LTChar → LTInt` (slice 8) |
 
 ### Array slots — `INTRINSIC`

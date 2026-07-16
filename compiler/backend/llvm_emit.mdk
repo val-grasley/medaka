@@ -1593,12 +1593,35 @@ emitNumExtern e env "intToFloat" args = match emitArgs e env args
     let _ = emit e "  \{r} = sitofp i64 \{i} to double"
     (boxFloat e r, LTFloat)
   _ => panic "llvm spike: intToFloat takes exactly one argument (slice 2)"
+-- #346 (S0): floatToInt SATURATES — NaN -> 0, +inf/over -> intMaxBound,
+-- -inf/under -> intMinBound.  A raw `fptosi` on an out-of-range/NaN double is
+-- LLVM POISON, and on x86 it did not merely return a wrong number: the poison
+-- register was read back as a LIVE POINTER, so `println (floatToInt 1.0e19)`
+-- printed an ASLR-randomized address (stable under `setarch -R`, different every
+-- run with ASLR on) — an address-disclosure primitive reachable from safe,
+-- non-`internal` surface.  `llvm.fptosi.sat` makes the conversion total.
+--
+-- The clamp is NOT redundant: fptosi.sat saturates to *i64* bounds (+-2^63), but
+-- Medaka's Int is the 63-bit payload of the tagged word (RUNTIME-DESIGN §8), so
+-- its domain is [-2^62, 2^62-1].  Saturating to i64 and then tagging would shift
+-- INT64_MAX/MIN straight out the top and decode to -1/0 — so we must clamp to the
+-- Int bounds BEFORE tagInt.  Those literals are the UNTAGGED bounds; the tagged
+-- words emitVar uses for `intMaxBound`/`intMinBound` are these << 1 | 1.
+-- icmp+select (not llvm.smin/smax) keeps the preamble to a single new declare.
 emitNumExtern e env "floatToInt" args = match emitArgs e env args
   [a] =>
     let d = unboxFloat e a
     let r = freshReg e
-    let _ = emit e "  \{r} = fptosi double \{d} to i64"
-    (tagInt e r, LTInt)
+    let _ = emit e "  \{r} = call i64 @llvm.fptosi.sat.i64.f64(double \{d})"
+    let hi = freshReg e
+    let _ = emit e "  \{hi} = icmp sgt i64 \{r}, 4611686018427387903"
+    let rhi = freshReg e
+    let _ = emit e "  \{rhi} = select i1 \{hi}, i64 4611686018427387903, i64 \{r}"
+    let lo = freshReg e
+    let _ = emit e "  \{lo} = icmp slt i64 \{rhi}, -4611686018427387904"
+    let rlo = freshReg e
+    let _ = emit e "  \{rlo} = select i1 \{lo}, i64 -4611686018427387904, i64 \{rhi}"
+    (tagInt e rlo, LTInt)
   _ => panic "llvm spike: floatToInt takes exactly one argument (slice 2)"
 emitNumExtern e env "floatToString" args = match emitArgs e env args
   [a] =>

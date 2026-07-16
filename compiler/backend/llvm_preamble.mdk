@@ -37,6 +37,7 @@ preambleLines = [
   "declare void @mdk_print_str(i64)",
   "declare i64 @mdk_int_to_string(i64)",
   "declare i64 @mdk_float_to_string(double)",
+  "declare i64 @llvm.fptosi.sat.i64.f64(double)",
   "declare i64 @mdk_string_concat(i64)",
   "declare i64 @mdk_string_append(i64, i64)",
   "declare i64 @mdk_string_eq(i64, i64)",

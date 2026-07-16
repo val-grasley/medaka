@@ -1,0 +1,2 @@
+-- #346: in-range control — truncates toward zero, unchanged by the saturation fix.
+main = floatToInt 3.7
