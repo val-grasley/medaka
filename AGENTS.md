@@ -181,6 +181,24 @@ emitter was built from into `.medaka_emitter.srcstamp` and rebuilds any emitter 
 or mismatched provenance. (It used to decide this by **mtime**, which `cp` inverts — that
 is where the spurious "lagging seed" scares came from.)
 
+> ### 🚨 …but if you are a WORKTREE-ISOLATED SUBAGENT, do NOT borrow it. Cold-bootstrap.
+>
+> The paragraph above is written for a human (or an orchestrator) working in their own checkout.
+> **For an isolated subagent it can cost you your whole session — and the failure is not reliable
+> enough to predict.** `cp <other-tree>/medaka_emitter .` *reads* from a tree that is not yours,
+> which can trip the auto-mode isolation classifier — and the denial is **stateful**: it carries
+> forward and blocks every later `make` you attempt, *including a clean cold-bootstrap entirely
+> inside your own worktree*. In the same 2026-07-16 session, one subagent tripped the classifier on
+> this exact `cp` and **never built again** (its stated reasons for the successive denials even
+> contradicted each other — "you are in another agent's worktree" → "bare `make` risks the shared
+> main checkout"), while another warm-started from a borrowed emitter with no issue.
+> **Don't gamble the session on a coin-flip to save 4 seconds.**
+>
+> **Just run `make -C <your-absolute-worktree-path> medaka`.** A fresh worktree has NO
+> `./medaka_emitter` and **that is FINE** — it cold-bootstraps from `compiler/seed/emitter.ll.gz`
+> and works. The entire cost of not borrowing is ~4 s. **Never read from another tree; the speedup
+> is not worth the session.**
+
 **Environment.** opam/dune are NOT needed. The native build uses only **clang + Boehm GC**
 (Debian: `clang` + system `libgc-dev`, found via plain `-lgc`; macOS: Apple clang + `brew
 install bdw-gc`). `node` ≥ 24 is needed only for the wasm/sqlite/playground gates. If clang
@@ -318,6 +336,19 @@ move when wording changes.
 
 When **writing** a diagnostic, follow `compiler/ERROR-QUALITY.md` (the rubric) and add the
 code to `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
+
+**To see the emitted LLVM IR — `medaka build --keep-ir <file>` (or `MEDAKA_KEEP_IR=1`)**, which
+copies the IR to a predictable path and prints it (`effectiveKeepIr`,
+`compiler/driver/build_cmd.mdk:312`). Reach for this the moment a bug is "check/run are green but
+the built binary is wrong": it is the only way to see what the backend *actually* emitted, and it
+settles dispatch/arity/calling-convention questions that are pure speculation from the source. An
+agent debugging a dict-routing S0 on 2026-07-16 called it the single highest-value tool in the
+investigation — it turned "I think the wrong impl is selected" into `call
+@mdk_impl_S__List_a___s` on the screen, which disproved the filed root cause outright.
+⚠️ **`./medaka_emitter <file>` is NOT the way to get IR** — given too few args it prints a usage
+message to **stderr**, but still exits **0** with **empty stdout** (issue #440). A harness that
+redirects stdout to a file, or discards/merges stderr the usual way (`2>/dev/null`), sees a silent
+no-op: empty IR + apparent success, not an empty program.
 
 **Playground e2e:** `playground/e2e/` is a Playwright harness driving a real browser against
 the built CM6 playground (`cd playground/e2e && ./run.sh`). Needs **node v24+** and a

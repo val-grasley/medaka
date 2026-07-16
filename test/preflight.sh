@@ -26,6 +26,10 @@
 #
 # WHAT IT DELIBERATELY SKIPS (CI runs these):
 #   * diff_compiler_engines   — 346 fixtures × clang. The clang storm. ~2.5 min.
+#     ⚠️ That skip lives in ONE place — the LOCAL_SKIP block, which is BELOW the
+#     PREFLIGHT_DRY exit. It must never be expressed in the change→gate map: CI reads
+#     that map to narrow its PR run, so a "local" skip written there is not local. See
+#     #402 and the LOCAL_SKIP comment.
 #   * selfcompile_fixpoint    — minutes. Only forced locally on a BACKEND change,
 #                               because for the emitter it is the decisive gate and
 #                               finding out in CI is too late.
@@ -312,20 +316,53 @@ for f in $changed; do
       add 'diff_compiler_check*'; add 'diff_compiler_exhaust'
       add 'diff_compiler_diagnostics'; add 'diff_compiler_eval_typed*' ;;
 
+    # ── THE THREE ENGINES ─────────────────────────────────────────────────────
+    #
+    # diff_compiler_engines is the differential that proves eval == native == wasm on
+    # the SAME programs (it found 4 bug classes on its first run). Its subject is not a
+    # directory — it is the three engines themselves, and each one has an owning arm:
+    #
+    #     eval    -> compiler/eval/* , compiler/ir/core_ir_eval.mdk
+    #     native  -> compiler/backend/llvm_emit.mdk
+    #     wasm    -> compiler/backend/wasm_emit.mdk
+    #
+    # ...and compiler/ir/* is the Core IR lowering that FEEDS two of the three, so a
+    # change there moves what the differential compares just as directly.
+    #
+    # None of those arms derived it (#402). A WasmGC emitter change derived the llvm,
+    # core_ir and snapshot gates and NOT the gate whose entire job is to notice that the
+    # wasm engine now disagrees with the other two. It is the exclusion this file's own
+    # rule warns about — "when in doubt, run MORE" — and ci.yml's: "a gate wrongly
+    # INCLUDED costs CI minutes, which are free on a public repo. A gate wrongly
+    # EXCLUDED is a bug that reaches the queue."
+    #
+    # The CI cost is close to nil: `engines` owns its runner alone, so it is wall-clock
+    # parallel with the shard a backend/eval/ir change is already paying for (backend is
+    # 5.3 min against engines' 5.8 min). Locally it costs nothing at all — LOCAL_SKIP
+    # drops it below the PREFLIGHT_DRY exit, which is the whole point of that block.
+
     # ── eval: also the in-language suite and the capability matrix ──
     # diff_compiler_snapshot* covers diff_compiler_snapshot_eval, whose `# EVAL`
     # section is produced by the eval pipeline — an eval.mdk change moves it.
     compiler/eval/*|compiler/ir/core_ir_eval.mdk)
       add 'diff_compiler_eval*'; add 'diff_compiler_snapshot*'; add 'diff_compiler_core_ir*'
-      add 'diff_compiler_ported'; add 'diff_compiler_test'; add 'diff_compiler_capability_matrix' ;;
+      add 'diff_compiler_ported'; add 'diff_compiler_test'; add 'diff_compiler_capability_matrix'
+      add 'diff_compiler_engines' ;;
 
     compiler/ir/*)
-      add 'diff_compiler_core_ir*'; add 'diff_compiler_llvm*'; add 'diff_compiler_snapshot*' ;;
+      add 'diff_compiler_core_ir*'; add 'diff_compiler_llvm*'; add 'diff_compiler_snapshot*'
+      add 'diff_compiler_engines' ;;
 
     # ── backend: the FIXPOINT is the decisive gate; do not defer it to CI ──
+    #
+    # diff_compiler_tmc_parity is here and NOT on the arms above: it proves both backends
+    # TMC the SAME functions, and the shared analysis it guards (backend/trmc_analysis.mdk)
+    # plus both emitters that consume it all live under this arm. It self-provisions its
+    # own emit probes, so it needs no oracle wiring here.
     compiler/backend/*)
       add 'diff_compiler_llvm*'; add 'diff_compiler_build'; add 'diff_compiler_core_ir*'
       add 'diff_compiler_capability_matrix'
+      add 'diff_compiler_engines'; add 'diff_compiler_tmc_parity'
       need_fixpoint=1 ;;
 
     compiler/driver/*)
@@ -551,6 +588,14 @@ done
 # CI narrows a `pull_request` run ONLY when there is no FULL line and every UNMAPPED
 # path is provably prose (its own docs allowlist decides that). Anything else widens
 # it back to the full suite. `merge_group` is never narrowed, whatever this prints.
+#
+# ⚠️ EVERYTHING ABOVE THIS EXIT IS A STATEMENT ABOUT THE DIFF, NOT ABOUT THIS BOX (#402).
+# CI cannot tell the two apart — it just reads the GATE lines. So a gate this script
+# declines to RUN for local cost reasons must still be PRINTED here, and must be dropped
+# below, in LOCAL_SKIP. Putting a cost decision above this line silently exports it to
+# every PR: `gates (engines)` reported SUCCESS in 5s having run ZERO gates on every
+# backend PR because `diff_compiler_engines` was "locally skipped" by being absent from
+# the map that CI reads.
 if [ -n "${PREFLIGHT_DRY:-}" ]; then
   printf '── would run %s gate(s) ─────\n' "$(printf '%s\n' $gates | grep -c .)"
   for g in $gates; do printf '  GATE      %s\n' "${g#"$ROOT"/}"; done
@@ -568,6 +613,61 @@ if [ -n "${PREFLIGHT_DRY:-}" ]; then
 fi
 
 [ -n "$pats" ] || { echo "preflight: no gates map to these changes (docs/config only?) — nothing to run."; exit 0; }
+
+# ── LOCAL_SKIP: what THIS BOX declines to pay for. Not what the diff misses. ──
+#
+# ⚠️ THIS BLOCK IS BELOW THE PREFLIGHT_DRY EXIT ON PURPOSE. DO NOT MOVE IT UP. (#402)
+#
+# The two questions this script answers are different, and only one of them is CI's:
+#
+#     which gates does this diff TOUCH?   -> the change→gate map above. CI READS THIS.
+#     which of those will I run HERE?     -> this block. Local only. CI never sees it.
+#
+# They were the same answer until #402, and the map was where the cost decision lived —
+# `diff_compiler_engines` was skipped locally by simply never being added. .github/
+# workflows/ci.yml derives its `pull_request` gate set by running this script with
+# PREFLIGHT_DRY=1 (deliberately — one derivation, not two drifting copies), so it
+# inherited the omission and skipped the gate on the PR too. `gates (engines)` reported
+# SUCCESS in 5 seconds having run ZERO gates on every backend change, while the summary
+# at the bottom of this file promised "CI runs these on the PR". Both halves were
+# reasonable; composing them made the suite lie.
+#
+# The cost is real and the local skip is deliberate: 346 fixtures × (medaka build +
+# clang), ~2.5 min, on a box several agents share. It just is not a claim about the diff.
+#
+# Only an EXACT pattern is dropped. A wildcard ('diff_compiler_*', a blast-radius diff)
+# that still matches the gate legitimately pulls it back in and it runs like any other —
+# the re-resolve below is what makes that fall out for free rather than needing a rule.
+LOCAL_SKIP='diff_compiler_engines'
+
+local_skipped=""
+_np=""
+for _p in $pats; do
+  case " $LOCAL_SKIP " in
+    *" $_p "*) local_skipped="$local_skipped $_p" ;;
+    *)         _np="$_np $_p" ;;
+  esac
+done
+pats="$_np"
+
+if [ -n "$local_skipped" ]; then
+  # Re-resolve the surviving patterns against the same two roots the resolver above
+  # uses, so `$gates` keeps describing exactly what will run. Re-resolving (rather than
+  # subtracting a path) is what preserves the wildcard case: if 'diff_compiler_*' is
+  # still in $pats it matches the skipped gate again and it comes back, correctly.
+  gates=""
+  for pat in $pats; do
+    for g in "$ROOT"/test/$pat.sh "$ROOT"/$pat.sh; do
+      [ -f "$g" ] || continue
+      case " $gates " in *" $g "*) ;; *) gates="$gates $g" ;; esac
+    done
+  done
+  [ -n "$pats" ] || {
+    echo "preflight: every gate this diff derives is a local-only skip ($local_skipped) — nothing to run HERE."
+    echo "  That is a LOCAL cost decision, not a coverage gap: CI's pull_request run derives and RUNS them."
+    exit 0
+  }
+fi
 
 # ── build the compiler ───────────────────────────────────────────────────────
 if [ ! -x "$ROOT/medaka_emitter" ]; then
@@ -663,19 +763,28 @@ if [ "$remaining" -lt 0 ]; then
   remaining=0
 fi
 
+# WHERE a skipped gate actually runs is not one answer, it is three — and printing the
+# wrong one is how #402 stayed invisible. "CI runs these on the PR" was asserted
+# unconditionally, including for gates the PR run had ALSO just been told to skip.
+# Say which of the three this is, every time.
 engines_gate="$ROOT/test/diff_compiler_engines.sh"
-case " $gates " in
+case " $gates $local_skipped " in
   *" $engines_gate "*)
     engines_line="  diff_compiler_engines      ran above (pulled in by a wildcard gate match) — not a skip" ;;
+  *" diff_compiler_engines "*)
+    engines_line="  diff_compiler_engines      the 3-engine differential (346 fixtures × clang). This diff
+                             DOES touch it — skipped HERE for cost only; CI's PR run
+                             derives it and RUNS it." ;;
   *)
-    engines_line="  diff_compiler_engines      the 3-engine differential (346 fixtures × clang)" ;;
+    engines_line="  diff_compiler_engines      not derived for this diff — so the PR's \`gates (engines)\`
+                             shard will no-op too. It runs FULL in the merge queue." ;;
 esac
 
 cat <<EOF
 
-── NOT RUN LOCALLY (CI runs these on the PR) ─────────────────────
+── NOT RUN LOCALLY ───────────────────────────────────────────────
 $engines_line
-$([ "$need_fixpoint" -eq 1 ] || echo "  selfcompile_fixpoint       (not a backend change)")
+$([ "$need_fixpoint" -eq 1 ] || echo "  selfcompile_fixpoint       (not a backend change) — the \`soundness\` check runs it on every event; it is never narrowed.")
   the other $remaining of $total_gates gates
 
   This preflight is a FILTER, not an authority. A green run here means the gates

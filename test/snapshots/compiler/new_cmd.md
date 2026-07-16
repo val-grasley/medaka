@@ -1,5 +1,5 @@
 # META
-source_lines=64
+source_lines=69
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted implementation of `medaka new <name>`.
@@ -33,8 +33,13 @@ tomlTemplate name = stringConcat
 mainTemplate : String
 mainTemplate = "main : <IO> Unit\nmain = println \"Hello, Medaka\"\n"
 
+-- `.medaka/` holds `medaka lint --cache`'s per-file shard cache (#395) — derived
+-- data, regenerable by definition (a missing shard is a cache miss, which just
+-- re-lints the file), so a project must not commit it.  Listed here rather than
+-- left for the user to discover after their first `--cache` run puts a few MB of
+-- JSON in `git status`.
 gitignoreTemplate : String
-gitignoreTemplate = "_build/\n"
+gitignoreTemplate = "_build/\n.medaka/\n"
 
 readmeTemplate : String -> String
 readmeTemplate name = stringConcat ["# ", name, "\n\nA new Medaka project.\n"]
@@ -76,7 +81,7 @@ newProject name =
 (DTypeSig false "mainTemplate" (TyCon "String"))
 (DFunDef false "mainTemplate" () (ELit (LString "main : <IO> Unit\nmain = println \"Hello, Medaka\"\n")))
 (DTypeSig false "gitignoreTemplate" (TyCon "String"))
-(DFunDef false "gitignoreTemplate" () (ELit (LString "_build/\n")))
+(DFunDef false "gitignoreTemplate" () (ELit (LString "_build/\n.medaka/\n")))
 (DTypeSig false "readmeTemplate" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "readmeTemplate" ((PVar "name")) (EApp (EVar "stringConcat") (EListLit (ELit (LString "# ")) (EVar "name") (ELit (LString "\n\nA new Medaka project.\n")))))
 (DTypeSig false "writeProjectFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))
@@ -93,7 +98,7 @@ newProject name =
 (DTypeSig false "mainTemplate" (TyCon "String"))
 (DFunDef false "mainTemplate" () (ELit (LString "main : <IO> Unit\nmain = println \"Hello, Medaka\"\n")))
 (DTypeSig false "gitignoreTemplate" (TyCon "String"))
-(DFunDef false "gitignoreTemplate" () (ELit (LString "_build/\n")))
+(DFunDef false "gitignoreTemplate" () (ELit (LString "_build/\n.medaka/\n")))
 (DTypeSig false "readmeTemplate" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "readmeTemplate" ((PVar "name")) (EApp (EVar "stringConcat") (EListLit (ELit (LString "# ")) (EVar "name") (ELit (LString "\n\nA new Medaka project.\n")))))
 (DTypeSig false "writeProjectFile" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))
