@@ -419,8 +419,28 @@ for f in $changed; do
     # 'diff_compiler_lexer', 'native_fixtures/run', 'build_cmd'. run_gates.sh,
     # build_oracles.sh --for and the coverage gate all resolve a slash-bearing pattern
     # from the repo ROOT, so these are exactly the names CI's shards use.
+    #
+    # ── …but ONLY if the gate still EXISTS (#337) ────────────────────────────
+    # `changed` (see the `git diff --name-only` at the top) lists DELETED paths too,
+    # and a deleted gate script derives a gate NAME with no backing script — which the
+    # "matches NO gate" guard below then treats as a broken map and ABORTS on. That is
+    # a false positive: the map is fine, the gate is simply gone. You cannot run a gate
+    # that does not exist, and its absence is not a coverage gap in YOUR diff.
+    #
+    # This bites hardest via a STALE LOCAL `main`: `git diff main...HEAD` forks at an old
+    # merge-base, so every gate deleted on main since then reads as "deleted by you".
+    # That is exactly how #337 reproduced — `test/diff_compiler_check_modules_batch.sh`,
+    # deleted in 00afa27d, aborted `make preflight` for agents who had never heard of it.
+    #
+    # Derived from the filesystem, NOT an exception list: nothing here is named, so this
+    # cannot drift the way a hand-maintained skip list would.
     test/diff_compiler_*.sh|test/build_cmd.sh|test/native_fixtures/run.sh)
-      _p="${f#test/}"; add "${_p%.sh}" ;;
+      _p="${f#test/}"
+      if [ -f "$ROOT/$f" ]; then
+        add "${_p%.sh}"
+      else
+        echo "preflight: note — gate '${_p%.sh}' is DELETED in this diff; nothing to run for it."
+      fi ;;
 
     # ── the snapshot corpus: goldens, but NOT in a *fixtures*/*goldens* directory ──
     #
@@ -463,7 +483,15 @@ for f in $changed; do
         mark_full "unidentifiable-fixture-dir:$f"
       else
         _gset="$(_gates_for_fixture_dir "$_fdir")"
-        if [ -z "$_gset" ]; then
+        # A corpus DELETED in this diff has no consumers because it no longer exists —
+        # that is not the "dead fixture or derivation gap" the warning below diagnoses,
+        # and widening to the full suite over it is pure cost (#337). Same stale-`main`
+        # trigger as the deleted-gate arm above: test/core_ir_sexp_fixtures, removed in
+        # b5170cab by the snapshot migration, dragged agents into the full 84-gate suite.
+        # `_fixture_dir_for` is purely lexical, so it happily names a dir that is gone.
+        if [ ! -d "$ROOT/$_fdir" ]; then
+          echo "preflight: note — fixture dir '$_fdir' is DELETED in this diff; nothing to run for it."
+        elif [ -z "$_gset" ]; then
           echo "preflight: WARNING — '$_fdir' has NO discoverable consumer (checked live references across every tracked gate script in the repo — every .sh not listed in test/CI-COVERAGE-TOOLS.txt, which now includes sqlite/test/, test/native_fixtures/ and playground/e2e/ — including one hop through any helper script a gate invokes). This is either a DEAD fixture directory or a gap in this derivation — investigate '$_fdir'. Falling back to the FULL suite for safety."
           mark_full "no-consumer:$_fdir"
         else
@@ -669,13 +697,80 @@ if [ -n "$local_skipped" ]; then
   }
 fi
 
-# ── build the compiler ───────────────────────────────────────────────────────
-if [ ! -x "$ROOT/medaka_emitter" ]; then
-  echo "preflight: no ./medaka_emitter — borrowing one (a fresh worktree cannot cold-bootstrap)"
-  for src in /root/medaka/medaka_emitter "$ROOT"/../*/medaka_emitter; do
-    [ -x "$src" ] && { cp "$src" "$ROOT/medaka_emitter"; break; }
-  done
+# ── BLAST RADIUS: say so BEFORE you spend the box on it (#492) ───────────────
+#
+# `mark_full` adds the `diff_compiler_*` catch-all, so for a blast-radius path
+# (stdlib/core.mdk, compiler/support/*, compiler/entries/*, …) `make preflight` IS the
+# full 84-gate suite — the exact thing AGENTS.md tells agents never to run locally. The
+# WIDENING IS CORRECT AND STAYS: a prelude change moves essentially every golden, and a
+# narrow preflight would report green having run lexer + snapshot + doctests.
+#
+# The bug was that it was INVISIBLE. PREFLIGHT_DRY has printed this banner for a while,
+# but the run path — the one agents actually take — said nothing, so an agent obeyed
+# "the loop", the shared box hit load 30, and the agent got blamed for ignoring a brief
+# they had followed to the letter. Two were killed for this in one session. An
+# instruction that silently expands into what another instruction forbids is worse than
+# either alone: the person who obeys is the one who pays.
+#
+# So: announce it, and offer a documented way out that does NOT lie about coverage.
+# PREFLIGHT_NO_FULL=1 runs NOTHING and says so — it deliberately does NOT fall back to a
+# narrower subset, because a suite that reports green while testing less than it appears
+# to is this repo's #1 hazard, and the whole point here is that the narrow set is wrong.
+if [ "$full_suite" -eq 1 ]; then
+  echo
+  echo "── ⚠️  BLAST RADIUS — THIS IS THE FULL SUITE ─────────────────"
+  for r in $full_reasons; do echo "  FULL      $r"; done
+  echo "  A path in this diff is used everywhere, so the change→gate map widened to the"
+  echo "  'diff_compiler_*' catch-all: this run IS the whole local gate suite, not a"
+  echo "  targeted subset. On this SHARED box that takes the load average past 10 and"
+  echo "  turns everyone else's 30-second gate into minutes."
+  echo
+  echo "  The widening is CORRECT — a prelude/support change moves essentially every"
+  echo "  golden, and a narrow run here would be green for the wrong reason."
+  echo "  Preferred: push and let CI run it across its parallel runners."
+  echo
+  echo "  To decline locally:  PREFLIGHT_NO_FULL=1 sh test/preflight.sh"
+  echo "  Exact command this run is about to become:"
+  echo "      sh test/run_gates.sh $pats"
+  echo
+  if [ -n "${PREFLIGHT_NO_FULL:-}" ]; then
+    echo "── PREFLIGHT_NO_FULL=1 — DECLINED. RAN NOTHING. ──────────────"
+    echo "  This is NOT a pass and NOT a coverage statement: zero gates ran here."
+    echo "  Nothing about this diff has been verified locally. Push and let CI answer —"
+    echo "  CI is the authority regardless (preflight is a filter, never an authority)."
+    exit 0
+  fi
 fi
+
+# ── build the compiler ───────────────────────────────────────────────────────
+#
+# NO EMITTER BORROW. `make medaka` cold-bootstraps from compiler/seed/emitter.ll.gz.
+#
+# This block used to `cp` an emitter out of /root/medaka or a SIBLING WORKTREE, on the
+# stated grounds that "a fresh worktree cannot cold-bootstrap". That justification is
+# FALSE — measured on 2026-07-16 in a fresh worktree with no ./medaka_emitter:
+#
+#     BOOTSTRAP-FROM-SEED PASS: built .../medaka_emitter OCaml-free from the gzipped seed.
+#
+# and AGENTS.md says so directly: "A fresh worktree has NO ./medaka_emitter and that is
+# FINE — it cold-bootstraps from compiler/seed/emitter.ll.gz and works."
+#
+# The borrow was actively harmful. AGENTS.md bans exactly this cp for worktree-isolated
+# subagents: reading from a tree that is not yours can trip the auto-mode isolation
+# classifier, and the denial is STATEFUL — it carries forward and blocks every later
+# `make` you attempt, including a clean cold-bootstrap entirely inside your own worktree.
+# An agent lost a whole session to this cp on 2026-07-16. So THE SANCTIONED AGENT LOOP
+# was silently performing the one command the docs tell agents never to run, in the tree
+# of whichever sibling agent happened to be live. Same disease as #492 and #470: the
+# tooling made the banned path the silent default.
+#
+# The cost of not borrowing is the SEED BOOTSTRAP ONLY — measured 31s on this box
+# (2026-07-16, `time sh test/bootstrap_from_seed.sh` -> real 0m31.003s, exit 0). It is not
+# the ~1m52s a fresh `make medaka` takes: stages A and B run in the BORROW path too, because
+# `cp` copies the emitter binary but NOT $ROOT/.medaka_emitter.srcstamp, so the borrowed
+# emitter reads as "provenance unknown" and gets rebuilt from source anyway
+# (build_native_medaka.sh:212-221 — "fresh bootstrap, or copied in from another tree" is ONE
+# branch). Borrowing buys 31s and risks the session. Do not reintroduce it.
 echo "── building ./medaka ─────────────────────────────────────────"
 make -C "$ROOT" medaka >/dev/null 2>&1 || { echo "preflight: make medaka FAILED"; exit 1; }
 
