@@ -1,0 +1,18 @@
+-- Pin (#314 review): a value-let binding a LAMBDA that references an outer
+-- same-named binding must bind the OUTER one — value-lets do NOT self-scope
+-- (unlike function-lets, which the #314 fix makes self-recursive). The fix keys
+-- on the CLam shape, so this pins that it does NOT hijack a non-recursive
+-- value-let-lambda's outer reference into a self-call. All three engines must agree.
+outer x = x + 1
+base = 100
+incFn x = x + 5
+
+viaOuter =
+  let outer = x => outer x
+  outer 10
+
+viaCapture =
+  let incFn = y => incFn (y + base)
+  incFn 0
+
+main = println (debug (viaOuter + viaCapture))
