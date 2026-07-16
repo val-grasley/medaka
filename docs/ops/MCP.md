@@ -58,6 +58,16 @@ binary at the resolved repo root (`scripts/medaka-mcp-wrapper.sh` reads
 falling back to its own script location so it's robust to whatever cwd the
 server is launched from).
 
+If that binary is missing (a fresh worktree, or a checkout you haven't built
+yet), the server can't start and the wrapper exits with a specific stderr line
+— `medaka mcp: no built binary at <root>/medaka — run 'make medaka' …` — rather
+than an opaque "Failed to connect". The fix is always the same: `make medaka` in
+that checkout, then reconnect the server (`/mcp`) so the running session picks
+up the now-live tools. The wrapper deliberately does **not** auto-build (a
+multi-minute build would time out the MCP handshake) or fall back to another
+checkout's binary (the tools *are* the compiler's behavior, so a worktree must
+answer with its own binary).
+
 ## 4. Honesty caveats — read before trusting a result
 
 - ⚠️ **`medaka_test` runs under the INTERPRETER (eval), not the native
