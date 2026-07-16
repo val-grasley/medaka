@@ -1,5 +1,5 @@
 # META
-source_lines=14726
+source_lines=14799
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -2231,6 +2231,18 @@ pushTypeError code msg =
   setRef
     perRun.value.typeErrors
     (TcDiag code 1 currentLoc.value msg None None :: perRun.value.typeErrors.value)
+
+-- Push one type-error message attributed to [loc] rather than the live
+-- `currentLoc` (#414).  Same non-deduping semantics as `pushTypeError` — the
+-- deduping `pushTypeErrorOnceAt` is for obligation errors, which two checkers can
+-- each detect; a coherence conflict is pushed exactly once per run.  `None` falls
+-- back to `currentLoc`, i.e. the old behaviour.
+pushTypeErrorAt : String -> Option Loc -> String -> Unit
+pushTypeErrorAt code loc msg =
+  let _ = setRef typeErrorsSticky True
+  setRef
+    perRun.value.typeErrors
+    (TcDiag code 1 (orElseLoc loc currentLoc.value) msg None None :: perRun.value.typeErrors.value)
 
 -- #11 soundness: push an obligation error only if the SAME message isn't already
 -- accumulated.  A single missing impl can be detected by both checkImplObligations
@@ -8399,11 +8411,14 @@ implDefinesMethodAtGo ((ImplEntry tag2 methodNames _ _ _ _)::rest) method tag
 
 -- a user impl, reduced to what coherence needs: iface + head-arg monos (fresh
 -- vars).
--- CohImpl iface head-tys ownerModuleId.  The 3rd field is the id of the module
--- that PHYSICALLY declares this impl ("" for the single-file / entry path, so its
--- goldens stay byte-identical — only the global cross-module check threads a real
--- module id and uses it to name BOTH modules in a conflict).
-public export data CohImpl = CohImpl String (List Mono) String
+-- CohImpl iface head-tys ownerModuleId headLoc.  The 3rd field is the id of the
+-- module that PHYSICALLY declares this impl ("" for the single-file / entry path, so
+-- its goldens stay byte-identical — only the global cross-module check threads a real
+-- module id and uses it to name BOTH modules in a conflict).  The 4th is the span of
+-- the impl's head type constructor (#414), so a conflict can point AT an impl instead
+-- of fabricating a file-start caret; `None` for a synthesized impl with no source
+-- span (e.g. desugar's `deriving` lowering, which builds `TyCon tyName None`).
+public export data CohImpl = CohImpl String (List Mono) String (Option Loc)
 
 cohImplsOf : Decl -> List CohImpl
 cohImplsOf d = cohImplsOfMid "" d
@@ -8412,8 +8427,37 @@ cohImplsOf d = cohImplsOfMid "" d
 cohImplsOfMid : String -> Decl -> List CohImpl
 cohImplsOfMid mid (DAttrib _ d) = cohImplsOfMid mid d
 cohImplsOfMid mid (DImpl { iface, tys, ... }) =
-  [CohImpl iface (cohFreshTys tys) mid]
+  [CohImpl iface (cohFreshTys tys) mid (implHeadLoc tys)]
 cohImplsOfMid _ _ = []
+
+-- #414: the span to blame for an impl, taken from its head types.  A `DImpl` has no
+-- `Loc` of its own (`DUse` is the only `Decl` variant carrying one inline) — but the
+-- parser stamps every `TyCon` leaf with its span (`parser.mdk`'s parseTyAtom:
+-- `TyCon c (Some (locOfSpan s q))`), so the head's own tycon IS the impl's location.
+-- Pre-order, so `impl C (Pair a Int)` blames `Pair` — the head — not the argument.
+-- Mirrors `resolve.mdk`'s firstTyLoc, which locates a `DTypeSig` the same way (that
+-- copy is module-private, and typecheck deliberately keeps its own loc walkers —
+-- cf. `exprLoc` here vs resolve's `firstExprLoc`).
+--
+-- ⚠️ RESIDUAL (#414): only `TyCon` leaves carry spans, so a head with NO tycon —
+-- the fully-parametric `impl Foo a` — still yields `None` and falls back to the
+-- file-start caret.  That is the degenerate overlap case (`test/
+-- typecheck_error_fixtures/overlapping_impls.mdk`).  Closing it needs a span on
+-- `TyVar` (an ast.mdk change rippling through every `Ty` consumer) or the parser's
+-- `DeclPos` side-table threaded into typecheck; both are out of proportion to an
+-- S3 diagnostic-quality fix.  Every head naming a CONCRETE type is covered.
+implHeadLoc : List Ty -> Option Loc
+implHeadLoc [] = None
+implHeadLoc (t::rest) = orElseLoc (tyFirstLoc t) (implHeadLoc rest)
+
+tyFirstLoc : Ty -> Option Loc
+tyFirstLoc (TyCon _ l) = l
+tyFirstLoc (TyVar _) = None
+tyFirstLoc (TyApp f x) = orElseLoc (tyFirstLoc f) (tyFirstLoc x)
+tyFirstLoc (TyFun f x) = orElseLoc (tyFirstLoc f) (tyFirstLoc x)
+tyFirstLoc (TyTuple ts) = implHeadLoc ts
+tyFirstLoc (TyEffect _ _ t) = tyFirstLoc t
+tyFirstLoc (TyConstrained _ t) = tyFirstLoc t
 
 -- the impl's head args → monos under ONE shared fresh-var map (so a var reused
 -- across args, e.g. `Conv a a`, is the SAME fresh tyvar — the oracle shares one
@@ -8586,17 +8630,26 @@ cohOverlapMsg : String -> List Mono -> List Mono -> String
 cohOverlapMsg iface xs ys = match cohPpPair xs ys
   (s1, s2) => "Overlapping impls of \{iface}: \{s1} and \{s2} can match the same type. Make them disjoint, or wrap one type in a newtype"
 
--- scan all ordered pairs; return the FIRST conflict message (mirrors the oracle
--- raising on the first incoherent pair).  None ⇒ coherent.
-cohFirstConflict : List CohImpl -> Option String
+-- scan all ordered pairs; return the FIRST conflict (mirrors the oracle raising on
+-- the first incoherent pair).  None ⇒ coherent.  #414: the payload is the message
+-- PLUS the span to blame — the scan runs over a `reverseL`-ed list, so the outer
+-- element `e1` is the LATER-declared impl of the pair, which is also the head the
+-- message names FIRST.  Blaming it keeps caret and wording consistent.
+--
+-- Every T-CONFLICTING-IMPL push reaches a conflict through HERE, so this one return
+-- type is the seam that offers all of them a span.  The two cross-module pushes
+-- deliberately drop it (see globalCoherenceConflict) — a span is only useful to a
+-- consumer that files the diagnostic against the span's OWN file, which today only
+-- the single-file `checkCoherence` path does.
+cohFirstConflict : List CohImpl -> Option (String, Option Loc)
 cohFirstConflict [] = None
 cohFirstConflict (e::rest) = match cohConflictWith e rest
-  Some msg => Some msg
+  Some hit => Some hit
   None => cohFirstConflict rest
 
-cohConflictWith : CohImpl -> List CohImpl -> Option String
+cohConflictWith : CohImpl -> List CohImpl -> Option (String, Option Loc)
 cohConflictWith _ [] = None
-cohConflictWith (e1@(CohImpl if1 xs mid1)) ((CohImpl if2 ys mid2)::rest)
+cohConflictWith (e1@(CohImpl if1 xs mid1 _)) ((CohImpl if2 ys mid2 _)::rest)
   | if1 == if2 && cohOverlap xs ys = cohAnonConflict e1 xs ys mid1 mid2 rest
   | otherwise = cohConflictWith e1 rest
 
@@ -8605,13 +8658,13 @@ cohConflictWith (e1@(CohImpl if1 xs mid1)) ((CohImpl if2 ys mid2)::rest)
 -- overlap (mirrors the oracle's OverlappingImpls).  When the two impls come from
 -- DIFFERENT modules (mid1 /= mid2, both non-empty), the message names BOTH owning
 -- modules (the cross-module global-coherence case).
-cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option String
+cohAnonConflict : CohImpl -> List Mono -> List Mono -> String -> String -> List CohImpl -> Option (String, Option Loc)
 cohAnonConflict e1 xs ys mid1 mid2 rest
   | cohStrictlyMoreSpecific xs ys = cohConflictWith e1 rest
   | cohStrictlyMoreSpecific ys xs = cohConflictWith e1 rest
   | mid1 != "" && mid2 != "" && mid1 != mid2 =
-    Some (cohCrossModuleMsg (cohImplIface e1) mid1 mid2)
-  | otherwise = Some (cohOverlapMsg (cohImplIface e1) xs ys)
+    Some (cohCrossModuleMsg (cohImplIface e1) mid1 mid2, cohImplLoc e1)
+  | otherwise = Some (cohOverlapMsg (cohImplIface e1) xs ys, cohImplLoc e1)
 
 -- cross-module conflict wording: names the interface and BOTH owning modules.
 cohCrossModuleMsg : String -> String -> String -> String
@@ -8619,7 +8672,10 @@ cohCrossModuleMsg iface mid1 mid2 =
   "Conflicting `impl \{iface}`. Defined in \{mid2} and \{mid1}"
 
 cohImplIface : CohImpl -> String
-cohImplIface (CohImpl i _ _) = i
+cohImplIface (CohImpl i _ _ _) = i
+
+cohImplLoc : CohImpl -> Option Loc
+cohImplLoc (CohImpl _ _ _ l) = l
 
 -- run coherence over USER decls; push the first conflict (if any) into typeErrors.
 -- The impls are scanned in REVERSE declaration order to mirror the oracle, whose
@@ -8627,7 +8683,7 @@ cohImplIface (CohImpl i _ _) = i
 -- conflict message names the later-declared impl as the first head, byte-identical.
 checkCoherence : List Decl -> Unit
 checkCoherence userDecls = match cohFirstConflict (reverseL (cohCollectImpls userDecls))
-  Some msg => pushTypeError "T-CONFLICTING-IMPL" msg
+  Some (msg, loc) => pushTypeErrorAt "T-CONFLICTING-IMPL" loc msg
   None => ()
 
 -- ── D1 WS-1a: superinterface-existence gate ────────────────────────────────
@@ -9025,11 +9081,25 @@ cohCollectModuleImpls ((mid, prog)::rest) = flatMap (cohImplsOfMid mid) prog
   ++ cohCollectModuleImpls rest
 
 -- the first cross-module coherence conflict (if any) as a bare message — drivers
--- that thread errs as a VALUE (cmEntryCollect) prepend this themselves,
--- rather than relying on the typeErrors ref (cleared per-module by resetState).
+-- that thread errs as a VALUE (cmEntryCollect) prepend this themselves, rather than
+-- relying on the typeErrors ref (cleared per-module by resetState).
+--
+-- ⚠️ #414: this deliberately DROPS the blame-span `cohFirstConflict` now returns.
+-- Both consumers attach the diagnostic to the ENTRY module, but the span belongs to
+-- whichever module declares the offending impl — and the `--json`/human renderers
+-- key a diagnostic's file by the GROUP it is filed under, NOT by the filename
+-- inside its own `Loc`.  Attaching a foreign span therefore renders a caret at that
+-- line/col in the WRONG file.  Measured, with the impl 40 lines into a dependency:
+--     ./main.mdk:42:7: Conflicting `impl C`. Defined in amod and bmod
+-- — main.mdk is 5 lines long, so the caret block cannot even render.  That is worse
+-- than the file-start default: a confidently wrong location beats an obviously
+-- fabricated one only at misleading the reader.  The cross-module wording already
+-- names BOTH owning modules, which is the locating information that actually helps
+-- here.  Attaching a real span needs the renderers to honour `Loc`'s own filename
+-- (a driver/diagnostics.mdk change, well beyond an S3 caret fix).
 globalCoherenceConflict : List (String, List Decl) -> Option String
 globalCoherenceConflict modules =
-  cohFirstConflict (reverseL (cohCollectModuleImpls modules))
+  map fst (cohFirstConflict (reverseL (cohCollectModuleImpls modules)))
 
 -- the USER decls a driver wants coherence-checked.  Set by single-file drivers
 -- (check.mdk / typecheck_main.mdk / check_batch.mdk) to the desugared USER program
@@ -14006,6 +14076,8 @@ checkModulesDiags runtimeDecls coreDecls modules =
   -- D3 / WS-2 part-2: attach any cross-module coherence conflict to the ENTRY
   -- module's diagnostics (last in dependency-first order), so LSP/analyzeProject
   -- surfaces it too.  User modules only (prelude excluded).
+  -- #414: no span — see globalCoherenceConflict (the entry module it attaches to is
+  -- not the module the span would name, and the renderer keys the file by group).
   match globalCoherenceConflict modules
     Some msg => attachEntryDiag (TcDiag "T-CONFLICTING-IMPL" 1 None msg None None) perMod
     None => perMod
@@ -14054,6 +14126,7 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
   -- D3 / WS-2 part-2: cross-module coherence over the USER modules only (prelude
   -- excluded — it is checked separately and a user impl may override a prelude one).
   -- Prepend any conflict (dependency-first, ahead of the entry's own errors).
+  -- #414: no span — see globalCoherenceConflict.
   match globalCoherenceConflict modules
     Some msg => (schemes, TcDiag "T-CONFLICTING-IMPL" 1 None msg None None :: errs, warns)
     None => (schemes, errs, warns)
@@ -15165,6 +15238,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "hadTypeErrors" (PWild) (EFieldAccess (EVar "typeErrorsSticky") "value"))
 (DTypeSig false "pushTypeError" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))
 (DFunDef false "pushTypeError" ((PVar "code") (PVar "msg")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EVar "True"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "TcDiag") (EVar "code")) (ELit (LInt 1))) (EFieldAccess (EVar "currentLoc") "value")) (EVar "msg")) (EVar "None")) (EVar "None")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value"))))))
+(DTypeSig false "pushTypeErrorAt" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "String") (TyCon "Unit")))))
+(DFunDef false "pushTypeErrorAt" ((PVar "code") (PVar "loc") (PVar "msg")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EVar "True"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "TcDiag") (EVar "code")) (ELit (LInt 1))) (EApp (EApp (EVar "orElseLoc") (EVar "loc")) (EFieldAccess (EVar "currentLoc") "value"))) (EVar "msg")) (EVar "None")) (EVar "None")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value"))))))
 (DTypeSig false "pushTypeErrorOnce" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))
 (DFunDef false "pushTypeErrorOnce" ((PVar "code") (PVar "msg")) (EIf (EApp (EApp (EVar "anyList") (ELam ((PVar "e")) (EBinOp "==" (EApp (EVar "tcMsg") (EVar "e")) (EVar "msg")))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (ELit LUnit) (EApp (EApp (EVar "pushTypeError") (EVar "code")) (EVar "msg"))))
 (DTypeSig false "pushTypeErrorOnceAt" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "String") (TyCon "Unit")))))
@@ -16663,13 +16738,24 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "implDefinesMethodAtGo" (TyFun (TyApp (TyCon "List") (TyCon "ImplEntry")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool")))))
 (DFunDef false "implDefinesMethodAtGo" ((PList) PWild PWild) (EVar "False"))
 (DFunDef false "implDefinesMethodAtGo" ((PCons (PCon "ImplEntry" (PVar "tag2") (PVar "methodNames") PWild PWild PWild PWild) (PVar "rest")) (PVar "method") (PVar "tag")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "tag2") (EVar "tag")) (EApp (EApp (EVar "contains") (EVar "method")) (EVar "methodNames"))) (EVar "True") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implDefinesMethodAtGo") (EVar "rest")) (EVar "method")) (EVar "tag")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DData Public "CohImpl" () ((variant "CohImpl" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "String")))) ())
+(DData Public "CohImpl" () ((variant "CohImpl" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig false "cohImplsOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "CohImpl"))))
 (DFunDef false "cohImplsOf" ((PVar "d")) (EApp (EApp (EVar "cohImplsOfMid") (ELit (LString ""))) (EVar "d")))
 (DTypeSig false "cohImplsOfMid" (TyFun (TyCon "String") (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "CohImpl")))))
 (DFunDef false "cohImplsOfMid" ((PVar "mid") (PCon "DAttrib" PWild (PVar "d"))) (EApp (EApp (EVar "cohImplsOfMid") (EVar "mid")) (EVar "d")))
-(DFunDef false "cohImplsOfMid" ((PVar "mid") (PRec "DImpl" ((rf "iface" None) (rf "tys" None)) true)) (EListLit (EApp (EApp (EApp (EVar "CohImpl") (EVar "iface")) (EApp (EVar "cohFreshTys") (EVar "tys"))) (EVar "mid"))))
+(DFunDef false "cohImplsOfMid" ((PVar "mid") (PRec "DImpl" ((rf "iface" None) (rf "tys" None)) true)) (EListLit (EApp (EApp (EApp (EApp (EVar "CohImpl") (EVar "iface")) (EApp (EVar "cohFreshTys") (EVar "tys"))) (EVar "mid")) (EApp (EVar "implHeadLoc") (EVar "tys")))))
 (DFunDef false "cohImplsOfMid" (PWild PWild) (EListLit))
+(DTypeSig false "implHeadLoc" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "implHeadLoc" ((PList)) (EVar "None"))
+(DFunDef false "implHeadLoc" ((PCons (PVar "t") (PVar "rest"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "tyFirstLoc") (EVar "t"))) (EApp (EVar "implHeadLoc") (EVar "rest"))))
+(DTypeSig false "tyFirstLoc" (TyFun (TyCon "Ty") (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "tyFirstLoc" ((PCon "TyCon" PWild (PVar "l"))) (EVar "l"))
+(DFunDef false "tyFirstLoc" ((PCon "TyVar" PWild)) (EVar "None"))
+(DFunDef false "tyFirstLoc" ((PCon "TyApp" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "tyFirstLoc") (EVar "f"))) (EApp (EVar "tyFirstLoc") (EVar "x"))))
+(DFunDef false "tyFirstLoc" ((PCon "TyFun" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "tyFirstLoc") (EVar "f"))) (EApp (EVar "tyFirstLoc") (EVar "x"))))
+(DFunDef false "tyFirstLoc" ((PCon "TyTuple" (PVar "ts"))) (EApp (EVar "implHeadLoc") (EVar "ts")))
+(DFunDef false "tyFirstLoc" ((PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EVar "tyFirstLoc") (EVar "t")))
+(DFunDef false "tyFirstLoc" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "tyFirstLoc") (EVar "t")))
 (DTypeSig false "cohFreshTys" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Mono"))))
 (DFunDef false "cohFreshTys" ((PVar "tys")) (EBlock (DoLet false false (PVar "names") (EApp (EVar "dedup") (EApp (EApp (EVar "flatMap") (EVar "tyVarNames")) (EVar "tys")))) (DoLet false false (PVar "tvs") (EApp (EVar "freshTvMap") (EVar "names"))) (DoExpr (EApp (EApp (EVar "map") (EApp (EVar "fromAstType") (EVar "tvs"))) (EVar "tys")))))
 (DTypeSig false "cohOverlap" (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "Bool"))))
@@ -16723,20 +16809,22 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "cohPpEach" ((PVar "ctx") (PVar "cnt") (PCons (PVar "m") (PVar "ms"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "ppGo") (EVar "ctx")) (EVar "cnt")) (ELit (LInt 0))) (EVar "m")) (EApp (EApp (EApp (EVar "cohPpEach") (EVar "ctx")) (EVar "cnt")) (EVar "ms"))))
 (DTypeSig false "cohOverlapMsg" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "String")))))
 (DFunDef false "cohOverlapMsg" ((PVar "iface") (PVar "xs") (PVar "ys")) (EMatch (EApp (EApp (EVar "cohPpPair") (EVar "xs")) (EVar "ys")) (arm (PTuple (PVar "s1") (PVar "s2")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Overlapping impls of ")) (EApp (EVar "display") (EVar "iface"))) (ELit (LString ": "))) (EApp (EVar "display") (EVar "s1"))) (ELit (LString " and "))) (EApp (EVar "display") (EVar "s2"))) (ELit (LString " can match the same type. Make them disjoint, or wrap one type in a newtype"))))))
-(DTypeSig false "cohFirstConflict" (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyCon "String"))))
+(DTypeSig false "cohFirstConflict" (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "cohFirstConflict" ((PList)) (EVar "None"))
-(DFunDef false "cohFirstConflict" ((PCons (PVar "e") (PVar "rest"))) (EMatch (EApp (EApp (EVar "cohConflictWith") (EVar "e")) (EVar "rest")) (arm (PCon "Some" (PVar "msg")) () (EApp (EVar "Some") (EVar "msg"))) (arm (PCon "None") () (EApp (EVar "cohFirstConflict") (EVar "rest")))))
-(DTypeSig false "cohConflictWith" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyCon "String")))))
+(DFunDef false "cohFirstConflict" ((PCons (PVar "e") (PVar "rest"))) (EMatch (EApp (EApp (EVar "cohConflictWith") (EVar "e")) (EVar "rest")) (arm (PCon "Some" (PVar "hit")) () (EApp (EVar "Some") (EVar "hit"))) (arm (PCon "None") () (EApp (EVar "cohFirstConflict") (EVar "rest")))))
+(DTypeSig false "cohConflictWith" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))
 (DFunDef false "cohConflictWith" (PWild (PList)) (EVar "None"))
-(DFunDef false "cohConflictWith" ((PAs "e1" (PCon "CohImpl" (PVar "if1") (PVar "xs") (PVar "mid1"))) (PCons (PCon "CohImpl" (PVar "if2") (PVar "ys") (PVar "mid2")) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "if1") (EVar "if2")) (EApp (EApp (EVar "cohOverlap") (EVar "xs")) (EVar "ys"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "cohAnonConflict") (EVar "e1")) (EVar "xs")) (EVar "ys")) (EVar "mid1")) (EVar "mid2")) (EVar "rest")) (EIf (EVar "otherwise") (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "cohAnonConflict" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyCon "String")))))))))
-(DFunDef false "cohAnonConflict" ((PVar "e1") (PVar "xs") (PVar "ys") (PVar "mid1") (PVar "mid2") (PVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "xs")) (EVar "ys")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "ys")) (EVar "xs")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "!=" (EVar "mid1") (ELit (LString ""))) (EBinOp "!=" (EVar "mid2") (ELit (LString "")))) (EBinOp "!=" (EVar "mid1") (EVar "mid2"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "cohCrossModuleMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "mid1")) (EVar "mid2"))) (EIf (EVar "otherwise") (EApp (EVar "Some") (EApp (EApp (EApp (EVar "cohOverlapMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "xs")) (EVar "ys"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
+(DFunDef false "cohConflictWith" ((PAs "e1" (PCon "CohImpl" (PVar "if1") (PVar "xs") (PVar "mid1") PWild)) (PCons (PCon "CohImpl" (PVar "if2") (PVar "ys") (PVar "mid2") PWild) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "if1") (EVar "if2")) (EApp (EApp (EVar "cohOverlap") (EVar "xs")) (EVar "ys"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "cohAnonConflict") (EVar "e1")) (EVar "xs")) (EVar "ys")) (EVar "mid1")) (EVar "mid2")) (EVar "rest")) (EIf (EVar "otherwise") (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "cohAnonConflict" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))))))
+(DFunDef false "cohAnonConflict" ((PVar "e1") (PVar "xs") (PVar "ys") (PVar "mid1") (PVar "mid2") (PVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "xs")) (EVar "ys")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "ys")) (EVar "xs")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "!=" (EVar "mid1") (ELit (LString ""))) (EBinOp "!=" (EVar "mid2") (ELit (LString "")))) (EBinOp "!=" (EVar "mid1") (EVar "mid2"))) (EApp (EVar "Some") (ETuple (EApp (EApp (EApp (EVar "cohCrossModuleMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "mid1")) (EVar "mid2")) (EApp (EVar "cohImplLoc") (EVar "e1")))) (EIf (EVar "otherwise") (EApp (EVar "Some") (ETuple (EApp (EApp (EApp (EVar "cohOverlapMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "xs")) (EVar "ys")) (EApp (EVar "cohImplLoc") (EVar "e1")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "cohCrossModuleMsg" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String")))))
 (DFunDef false "cohCrossModuleMsg" ((PVar "iface") (PVar "mid1") (PVar "mid2")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Conflicting `impl ")) (EApp (EVar "display") (EVar "iface"))) (ELit (LString "`. Defined in "))) (EApp (EVar "display") (EVar "mid2"))) (ELit (LString " and "))) (EApp (EVar "display") (EVar "mid1"))) (ELit (LString ""))))
 (DTypeSig false "cohImplIface" (TyFun (TyCon "CohImpl") (TyCon "String")))
-(DFunDef false "cohImplIface" ((PCon "CohImpl" (PVar "i") PWild PWild)) (EVar "i"))
+(DFunDef false "cohImplIface" ((PCon "CohImpl" (PVar "i") PWild PWild PWild)) (EVar "i"))
+(DTypeSig false "cohImplLoc" (TyFun (TyCon "CohImpl") (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "cohImplLoc" ((PCon "CohImpl" PWild PWild PWild (PVar "l"))) (EVar "l"))
 (DTypeSig false "checkCoherence" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))
-(DFunDef false "checkCoherence" ((PVar "userDecls")) (EMatch (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectImpls") (EVar "userDecls")))) (arm (PCon "Some" (PVar "msg")) () (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-CONFLICTING-IMPL"))) (EVar "msg"))) (arm (PCon "None") () (ELit LUnit))))
+(DFunDef false "checkCoherence" ((PVar "userDecls")) (EMatch (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectImpls") (EVar "userDecls")))) (arm (PCon "Some" (PTuple (PVar "msg") (PVar "loc"))) () (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-CONFLICTING-IMPL"))) (EVar "loc")) (EVar "msg"))) (arm (PCon "None") () (ELit LUnit))))
 (DTypeSig false "checkSuperImpls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))
 (DFunDef false "checkSuperImpls" ((PVar "userDecls") (PVar "allDecls")) (EApp (EApp (EVar "foreachUnit") (EApp (EVar "pushTypeError") (ELit (LString "T-MISSING-SUPER-IMPL")))) (EApp (EApp (EVar "flatMap") (EApp (EVar "superImplMsgsOf") (EVar "allDecls"))) (EVar "userDecls"))))
 (DTypeSig false "foreachUnit" (TyFun (TyFun (TyVar "a") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Unit"))))
@@ -16865,7 +16953,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "cohCollectModuleImpls" ((PList)) (EListLit))
 (DFunDef false "cohCollectModuleImpls" ((PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EApp (EVar "cohImplsOfMid") (EVar "mid"))) (EVar "prog")) (EApp (EVar "cohCollectModuleImpls") (EVar "rest"))))
 (DTypeSig false "globalCoherenceConflict" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyCon "String"))))
-(DFunDef false "globalCoherenceConflict" ((PVar "modules")) (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectModuleImpls") (EVar "modules")))))
+(DFunDef false "globalCoherenceConflict" ((PVar "modules")) (EApp (EApp (EVar "map") (EVar "fst")) (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectModuleImpls") (EVar "modules"))))))
 (DTypeSig true "setCoherenceUserDecls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))
 (DFunDef false "setCoherenceUserDecls" ((PVar "ds")) (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "driverState") "value") "coherenceUserDecls")) (EVar "ds")))
 (DData Public "ImplEntry" () ((variant "ImplEntry" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyApp (TyCon "List") (TyCon "Require")) (TyApp (TyCon "List") (TyCon "Ty")) (TyCon "String")))) ())
@@ -18661,6 +18749,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "hadTypeErrors" (PWild) (EFieldAccess (EVar "typeErrorsSticky") "value"))
 (DTypeSig false "pushTypeError" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))
 (DFunDef false "pushTypeError" ((PVar "code") (PVar "msg")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EVar "True"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "TcDiag") (EVar "code")) (ELit (LInt 1))) (EFieldAccess (EVar "currentLoc") "value")) (EVar "msg")) (EVar "None")) (EVar "None")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value"))))))
+(DTypeSig false "pushTypeErrorAt" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "String") (TyCon "Unit")))))
+(DFunDef false "pushTypeErrorAt" ((PVar "code") (PVar "loc") (PVar "msg")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EVar "True"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EApp (EVar "TcDiag") (EVar "code")) (ELit (LInt 1))) (EApp (EApp (EVar "orElseLoc") (EVar "loc")) (EFieldAccess (EVar "currentLoc") "value"))) (EVar "msg")) (EVar "None")) (EVar "None")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value"))))))
 (DTypeSig false "pushTypeErrorOnce" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))
 (DFunDef false "pushTypeErrorOnce" ((PVar "code") (PVar "msg")) (EIf (EApp (EApp (EVar "anyList") (ELam ((PVar "e")) (EBinOp "==" (EApp (EVar "tcMsg") (EVar "e")) (EVar "msg")))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (ELit LUnit) (EApp (EApp (EVar "pushTypeError") (EVar "code")) (EVar "msg"))))
 (DTypeSig false "pushTypeErrorOnceAt" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "String") (TyCon "Unit")))))
@@ -20159,13 +20249,24 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "implDefinesMethodAtGo" (TyFun (TyApp (TyCon "List") (TyCon "ImplEntry")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool")))))
 (DFunDef false "implDefinesMethodAtGo" ((PList) PWild PWild) (EVar "False"))
 (DFunDef false "implDefinesMethodAtGo" ((PCons (PCon "ImplEntry" (PVar "tag2") (PVar "methodNames") PWild PWild PWild PWild) (PVar "rest")) (PVar "method") (PVar "tag")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "tag2") (EVar "tag")) (EApp (EApp (EVar "contains") (EVar "method")) (EVar "methodNames"))) (EVar "True") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implDefinesMethodAtGo") (EVar "rest")) (EVar "method")) (EVar "tag")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DData Public "CohImpl" () ((variant "CohImpl" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "String")))) ())
+(DData Public "CohImpl" () ((variant "CohImpl" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig false "cohImplsOf" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "CohImpl"))))
 (DFunDef false "cohImplsOf" ((PVar "d")) (EApp (EApp (EVar "cohImplsOfMid") (ELit (LString ""))) (EVar "d")))
 (DTypeSig false "cohImplsOfMid" (TyFun (TyCon "String") (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "CohImpl")))))
 (DFunDef false "cohImplsOfMid" ((PVar "mid") (PCon "DAttrib" PWild (PVar "d"))) (EApp (EApp (EVar "cohImplsOfMid") (EVar "mid")) (EVar "d")))
-(DFunDef false "cohImplsOfMid" ((PVar "mid") (PRec "DImpl" ((rf "iface" None) (rf "tys" None)) true)) (EListLit (EApp (EApp (EApp (EVar "CohImpl") (EVar "iface")) (EApp (EVar "cohFreshTys") (EVar "tys"))) (EVar "mid"))))
+(DFunDef false "cohImplsOfMid" ((PVar "mid") (PRec "DImpl" ((rf "iface" None) (rf "tys" None)) true)) (EListLit (EApp (EApp (EApp (EApp (EVar "CohImpl") (EVar "iface")) (EApp (EVar "cohFreshTys") (EVar "tys"))) (EVar "mid")) (EApp (EVar "implHeadLoc") (EVar "tys")))))
 (DFunDef false "cohImplsOfMid" (PWild PWild) (EListLit))
+(DTypeSig false "implHeadLoc" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "implHeadLoc" ((PList)) (EVar "None"))
+(DFunDef false "implHeadLoc" ((PCons (PVar "t") (PVar "rest"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "tyFirstLoc") (EVar "t"))) (EApp (EVar "implHeadLoc") (EVar "rest"))))
+(DTypeSig false "tyFirstLoc" (TyFun (TyCon "Ty") (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "tyFirstLoc" ((PCon "TyCon" PWild (PVar "l"))) (EVar "l"))
+(DFunDef false "tyFirstLoc" ((PCon "TyVar" PWild)) (EVar "None"))
+(DFunDef false "tyFirstLoc" ((PCon "TyApp" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "tyFirstLoc") (EVar "f"))) (EApp (EVar "tyFirstLoc") (EVar "x"))))
+(DFunDef false "tyFirstLoc" ((PCon "TyFun" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "tyFirstLoc") (EVar "f"))) (EApp (EVar "tyFirstLoc") (EVar "x"))))
+(DFunDef false "tyFirstLoc" ((PCon "TyTuple" (PVar "ts"))) (EApp (EVar "implHeadLoc") (EVar "ts")))
+(DFunDef false "tyFirstLoc" ((PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EVar "tyFirstLoc") (EVar "t")))
+(DFunDef false "tyFirstLoc" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "tyFirstLoc") (EVar "t")))
 (DTypeSig false "cohFreshTys" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Mono"))))
 (DFunDef false "cohFreshTys" ((PVar "tys")) (EBlock (DoLet false false (PVar "names") (EApp (EVar "dedup") (EApp (EApp (EDictApp "flatMap") (EVar "tyVarNames")) (EVar "tys")))) (DoLet false false (PVar "tvs") (EApp (EVar "freshTvMap") (EVar "names"))) (DoExpr (EApp (EApp (EMethodRef "map") (EApp (EVar "fromAstType") (EVar "tvs"))) (EVar "tys")))))
 (DTypeSig false "cohOverlap" (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "Bool"))))
@@ -20219,20 +20320,22 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "cohPpEach" ((PVar "ctx") (PVar "cnt") (PCons (PVar "m") (PVar "ms"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "ppGo") (EVar "ctx")) (EVar "cnt")) (ELit (LInt 0))) (EVar "m")) (EApp (EApp (EApp (EVar "cohPpEach") (EVar "ctx")) (EVar "cnt")) (EVar "ms"))))
 (DTypeSig false "cohOverlapMsg" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "String")))))
 (DFunDef false "cohOverlapMsg" ((PVar "iface") (PVar "xs") (PVar "ys")) (EMatch (EApp (EApp (EVar "cohPpPair") (EVar "xs")) (EVar "ys")) (arm (PTuple (PVar "s1") (PVar "s2")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Overlapping impls of ")) (EApp (EMethodRef "display") (EVar "iface"))) (ELit (LString ": "))) (EApp (EMethodRef "display") (EVar "s1"))) (ELit (LString " and "))) (EApp (EMethodRef "display") (EVar "s2"))) (ELit (LString " can match the same type. Make them disjoint, or wrap one type in a newtype"))))))
-(DTypeSig false "cohFirstConflict" (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyCon "String"))))
+(DTypeSig false "cohFirstConflict" (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "cohFirstConflict" ((PList)) (EVar "None"))
-(DFunDef false "cohFirstConflict" ((PCons (PVar "e") (PVar "rest"))) (EMatch (EApp (EApp (EVar "cohConflictWith") (EVar "e")) (EVar "rest")) (arm (PCon "Some" (PVar "msg")) () (EApp (EVar "Some") (EVar "msg"))) (arm (PCon "None") () (EApp (EVar "cohFirstConflict") (EVar "rest")))))
-(DTypeSig false "cohConflictWith" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyCon "String")))))
+(DFunDef false "cohFirstConflict" ((PCons (PVar "e") (PVar "rest"))) (EMatch (EApp (EApp (EVar "cohConflictWith") (EVar "e")) (EVar "rest")) (arm (PCon "Some" (PVar "hit")) () (EApp (EVar "Some") (EVar "hit"))) (arm (PCon "None") () (EApp (EVar "cohFirstConflict") (EVar "rest")))))
+(DTypeSig false "cohConflictWith" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))
 (DFunDef false "cohConflictWith" (PWild (PList)) (EVar "None"))
-(DFunDef false "cohConflictWith" ((PAs "e1" (PCon "CohImpl" (PVar "if1") (PVar "xs") (PVar "mid1"))) (PCons (PCon "CohImpl" (PVar "if2") (PVar "ys") (PVar "mid2")) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "if1") (EVar "if2")) (EApp (EApp (EVar "cohOverlap") (EVar "xs")) (EVar "ys"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "cohAnonConflict") (EVar "e1")) (EVar "xs")) (EVar "ys")) (EVar "mid1")) (EVar "mid2")) (EVar "rest")) (EIf (EVar "otherwise") (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "cohAnonConflict" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyCon "String")))))))))
-(DFunDef false "cohAnonConflict" ((PVar "e1") (PVar "xs") (PVar "ys") (PVar "mid1") (PVar "mid2") (PVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "xs")) (EVar "ys")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "ys")) (EVar "xs")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "!=" (EVar "mid1") (ELit (LString ""))) (EBinOp "!=" (EVar "mid2") (ELit (LString "")))) (EBinOp "!=" (EVar "mid1") (EVar "mid2"))) (EApp (EVar "Some") (EApp (EApp (EApp (EVar "cohCrossModuleMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "mid1")) (EVar "mid2"))) (EIf (EVar "otherwise") (EApp (EVar "Some") (EApp (EApp (EApp (EVar "cohOverlapMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "xs")) (EVar "ys"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
+(DFunDef false "cohConflictWith" ((PAs "e1" (PCon "CohImpl" (PVar "if1") (PVar "xs") (PVar "mid1") PWild)) (PCons (PCon "CohImpl" (PVar "if2") (PVar "ys") (PVar "mid2") PWild) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "if1") (EVar "if2")) (EApp (EApp (EVar "cohOverlap") (EVar "xs")) (EVar "ys"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "cohAnonConflict") (EVar "e1")) (EVar "xs")) (EVar "ys")) (EVar "mid1")) (EVar "mid2")) (EVar "rest")) (EIf (EVar "otherwise") (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "cohAnonConflict" (TyFun (TyCon "CohImpl") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "CohImpl")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))))))))))
+(DFunDef false "cohAnonConflict" ((PVar "e1") (PVar "xs") (PVar "ys") (PVar "mid1") (PVar "mid2") (PVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "xs")) (EVar "ys")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EApp (EApp (EVar "cohStrictlyMoreSpecific") (EVar "ys")) (EVar "xs")) (EApp (EApp (EVar "cohConflictWith") (EVar "e1")) (EVar "rest")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "!=" (EVar "mid1") (ELit (LString ""))) (EBinOp "!=" (EVar "mid2") (ELit (LString "")))) (EBinOp "!=" (EVar "mid1") (EVar "mid2"))) (EApp (EVar "Some") (ETuple (EApp (EApp (EApp (EVar "cohCrossModuleMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "mid1")) (EVar "mid2")) (EApp (EVar "cohImplLoc") (EVar "e1")))) (EIf (EVar "otherwise") (EApp (EVar "Some") (ETuple (EApp (EApp (EApp (EVar "cohOverlapMsg") (EApp (EVar "cohImplIface") (EVar "e1"))) (EVar "xs")) (EVar "ys")) (EApp (EVar "cohImplLoc") (EVar "e1")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "cohCrossModuleMsg" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String")))))
 (DFunDef false "cohCrossModuleMsg" ((PVar "iface") (PVar "mid1") (PVar "mid2")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Conflicting `impl ")) (EApp (EMethodRef "display") (EVar "iface"))) (ELit (LString "`. Defined in "))) (EApp (EMethodRef "display") (EVar "mid2"))) (ELit (LString " and "))) (EApp (EMethodRef "display") (EVar "mid1"))) (ELit (LString ""))))
 (DTypeSig false "cohImplIface" (TyFun (TyCon "CohImpl") (TyCon "String")))
-(DFunDef false "cohImplIface" ((PCon "CohImpl" (PVar "i") PWild PWild)) (EVar "i"))
+(DFunDef false "cohImplIface" ((PCon "CohImpl" (PVar "i") PWild PWild PWild)) (EVar "i"))
+(DTypeSig false "cohImplLoc" (TyFun (TyCon "CohImpl") (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "cohImplLoc" ((PCon "CohImpl" PWild PWild PWild (PVar "l"))) (EVar "l"))
 (DTypeSig false "checkCoherence" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))
-(DFunDef false "checkCoherence" ((PVar "userDecls")) (EMatch (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectImpls") (EVar "userDecls")))) (arm (PCon "Some" (PVar "msg")) () (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-CONFLICTING-IMPL"))) (EVar "msg"))) (arm (PCon "None") () (ELit LUnit))))
+(DFunDef false "checkCoherence" ((PVar "userDecls")) (EMatch (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectImpls") (EVar "userDecls")))) (arm (PCon "Some" (PTuple (PVar "msg") (PVar "loc"))) () (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-CONFLICTING-IMPL"))) (EVar "loc")) (EVar "msg"))) (arm (PCon "None") () (ELit LUnit))))
 (DTypeSig false "checkSuperImpls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))
 (DFunDef false "checkSuperImpls" ((PVar "userDecls") (PVar "allDecls")) (EApp (EApp (EVar "foreachUnit") (EApp (EVar "pushTypeError") (ELit (LString "T-MISSING-SUPER-IMPL")))) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "superImplMsgsOf") (EVar "allDecls"))) (EVar "userDecls"))))
 (DTypeSig false "foreachUnit" (TyFun (TyFun (TyVar "a") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Unit"))))
@@ -20361,7 +20464,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "cohCollectModuleImpls" ((PList)) (EListLit))
 (DFunDef false "cohCollectModuleImpls" ((PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EApp (EVar "cohImplsOfMid") (EVar "mid"))) (EVar "prog")) (EApp (EVar "cohCollectModuleImpls") (EVar "rest"))))
 (DTypeSig false "globalCoherenceConflict" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "Option") (TyCon "String"))))
-(DFunDef false "globalCoherenceConflict" ((PVar "modules")) (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectModuleImpls") (EVar "modules")))))
+(DFunDef false "globalCoherenceConflict" ((PVar "modules")) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EApp (EVar "cohFirstConflict") (EApp (EVar "reverseL") (EApp (EVar "cohCollectModuleImpls") (EVar "modules"))))))
 (DTypeSig true "setCoherenceUserDecls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))
 (DFunDef false "setCoherenceUserDecls" ((PVar "ds")) (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "driverState") "value") "coherenceUserDecls")) (EVar "ds")))
 (DData Public "ImplEntry" () ((variant "ImplEntry" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyApp (TyCon "List") (TyCon "Require")) (TyApp (TyCon "List") (TyCon "Ty")) (TyCon "String")))) ())
