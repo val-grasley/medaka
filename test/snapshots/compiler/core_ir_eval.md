@@ -1,5 +1,5 @@
 # META
-source_lines=571
+source_lines=584
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR evaluator — STAGE2-DESIGN §2.1's "trivial Core-IR tree-walker" that
@@ -154,7 +154,20 @@ ceval env (CRangeArray lo hi incl) =
 -- both eval.mdk's `awaitsArgs` guard and its `fwdReqs` truncation, and (with
 -- eval.mdk) applied the call site's impl dicts even to an impl method that declares
 -- none.  It now calls eval.mdk's `applyMethodDicts`, the SINGLE shared
--- implementation, so the two interpreters cannot silently diverge again.
+-- implementation.
+-- #315 CORRECTION: that alone did NOT stop the drift, and the comment here used to
+-- claim it did.  SHARING AN IMPLEMENTATION DOES NOT SHARE THE STATE IT READS:
+-- `applyMethodDicts` consults `methodReqCountRef`, which only eval.mdk's drivers
+-- filled, so every lookup on THIS path returned None, `implDictRoutes` took its
+-- None arm, and #413's fix was INERT here — `impl S (List a) requires S a where
+-- s _ = 2` gave 2 under `medaka run` and panicked "applied non-function: 2" under
+-- core_ir_typed_main, for months after #413 was called fixed.  The divergence had
+-- moved out of the code and into the DATA, where reading the shared function could
+-- not reveal it.  What makes the two agree now is `installDispatchTables`, which
+-- derives both tables from one decl list and installs them together, so no driver
+-- can fill one and miss the other (eval.mdk).  cevalProgram takes a CProgram and
+-- has no decls of its own, so it is served by lowerImpls installing at lowering
+-- time — the last point that still holds them.
 ceval env (CMethod name route implRoutes methRoutes) =
   let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) route
   applyMethodDicts env name route narrowed fwdReqs implRoutes methRoutes

@@ -1,5 +1,5 @@
 # META
-source_lines=3353
+source_lines=3394
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -339,10 +339,23 @@ takeN n (x::rest) = x :: takeN (n - 1) rest
 
 -- #413: Option-returning.  A MISSING entry (no ImplMethod for this (method, tag) —
 -- an interface DEFAULT method, or a tag the route never narrowed) must stay
--- distinguishable from a genuine reqCount of 0: 0 means "this impl method declares
--- NO leading dict params, so drop the call site's", while None means "unknown callee
--- — keep the pre-existing behaviour".  Collapsing the two would silently strip the
--- dicts a default method's lifted body needs.
+-- distinguishable from a genuine reqCount of 0:
+--   * Some 0 = "this impl DOES define the method, and it declares NO leading dict
+--     params" (a terminal body like `s _ = 2`, which dict_pass gave none because it
+--     reads none) ⇒ the call site's impl dicts must be DROPPED, or the dict lands in
+--     the first value param.  That is #413.
+--   * None  = "this impl does not define the method at all" ⇒ it inherits the
+--     interface DEFAULT, and dispatch will land on the generic default body.
+-- #315 CORRECTION: this comment used to justify None's old "apply the dicts anyway"
+-- arm with "collapsing the two would strip the dicts a default method's LIFTED body
+-- needs".  That reasoning is wrong, and it is why the None arm looked deliberate: a
+-- lifted default is one desugar's fillImplDefaults specialised INTO the impl, which
+-- makes it an ordinary ImplMethod — so it HAS an entry and returns Some, never None.
+-- The only body None ever reaches is the interface's own GENERIC default, shared by
+-- every impl, which declares no impl-dict params at all.  Applying them there bound
+-- the dict to `lt`'s first value param → "applied non-function: false" (#315).  The
+-- dicts are not stripped: specializeDefault routes them to the inner same-interface
+-- call that actually needs them.
 -- This scans methodReqCountRef, so it is once-per-dispatch on the hot path: callers
 -- take the Option ONCE and derive every consumer from it (see applyMethodDicts).
 lookupMethodReqCountOpt : String -> String -> Option Int
@@ -1233,15 +1246,34 @@ applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes =
 -- Fires ONLY on the inherited-default case: reqCount None (no ImplMethod entry for
 -- (name, tag) ⇒ this impl does not define [name]) AND a concrete route tag AND the
 -- impl actually has `requires` dicts to route.  Everything else — including the
--- same-module specialised default, which IS an ImplMethod and so has an entry — is
--- untouched and takes the pre-existing path.
+-- same-module specialised default, which IS an ImplMethod and so has an entry
+-- (Some), and an unnarrowed tag ("", the genuine unknown callee) — is untouched and
+-- takes the pre-existing path.
+--
+-- The empty-shadow case (no dict-taking sibling to bind) is deliberately still a
+-- HIT rather than a miss, but NOT because a live bug needs it: suppressing the dicts
+-- is simply not conditional on having somewhere to send them — the generic body
+-- declares no impl-dict params whatever it calls.  It is currently UNREACHABLE, and
+-- the reason is worth recording, because it is not obvious: [implRoutes] is stamped
+-- for `dictMethod = if implDefinesMethodAt … then method else innerDefaultMethod
+-- method` (typecheck.mdk stampOpRouteVal), i.e. for exactly the sibling this
+-- function shadows.  So "no dict-taking sibling" and "no impl dicts stamped" are the
+-- same fact, and the isEmptyL guard above already returns None first.  Written this
+-- way so that a change to that stamper cannot silently re-scope this fix to "the
+-- default happens to call a concrete sibling" and put every other inherited default
+-- back on the H1 path.
+--
+-- EXACT BOUND: [narrowed] must be a single default closure — withEnvFrame returns
+-- None for anything else, and the caller then takes the old path.  In practice that
+-- is only a VMulti of two-or-more untagged defaults (two interfaces declaring a
+-- same-named default method), left conservatively unchanged; a nullary VThunk
+-- default never reaches here at all, as applyMethodDicts' awaitsArgs guard returns
+-- it before this call.
 specializeDefault : EvalEnv (Value e) -> String -> String -> Option Int -> List Route -> Value e -> <e> Option (Value e)
 specializeDefault _ _ _ (Some _) _ _ = None
 specializeDefault env name tag None implRoutes narrowed
   | tag == "" || isEmptyL implRoutes = None
-  | otherwise = match siblingShadows env name tag implRoutes
-    [] => None
-    binds => withEnvFrame binds narrowed
+  | otherwise = withEnvFrame (siblingShadows env name tag implRoutes) narrowed
 
 -- One shadow binding per same-interface sibling that the impl at [tag] defines with
 -- leading dict params (reqCount > 0).  A sibling the impl does NOT define (None) is
@@ -1677,7 +1709,16 @@ clausesForName name ((n, c)::rest)
   | otherwise = clausesForName name rest
 
 -- ── typeclass impl / interface-default installation ───────────────────────
-export buildIfaceDispatch : List Decl -> List ((String, String), List Int)
+-- #315: deliberately NOT exported.  Its result is half of a pair that is only
+-- correct together (see installDispatchTables), and #413's regression was exactly a
+-- driver that obtained one half and never installed the other.  While this was
+-- exported, nothing but caller discipline stopped a new driver from importing it and
+-- reintroducing that shape by construction — the same "enforced by remembering"
+-- property the #452 fix was found to rely on.  Un-exported, installDispatchTables is
+-- the only way in, so the invariant is structural.  If a caller ever genuinely needs
+-- the dispatch table WITHOUT installing, export a reader for ifaceDispatchRef rather
+-- than re-exporting this.
+buildIfaceDispatch : List Decl -> List ((String, String), List Int)
 buildIfaceDispatch prog = flatMap ifaceDispatchEntries prog
 
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
@@ -3874,7 +3915,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "applyMethodDicts" ((PVar "env") (PVar "name") (PVar "route") (PVar "narrowed") (PVar "fwdReqs0") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "tag") (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route"))) (DoLet false false (PVar "reqCount") (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "name")) (EVar "tag"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "fromOption") (ELit (LInt 0))) (EVar "reqCount"))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "specializeDefault") (EVar "env")) (EVar "name")) (EVar "tag")) (EVar "reqCount")) (EVar "implRoutes")) (EVar "narrowed")) (arm (PCon "Some" (PVar "specialized")) () (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "specialized")) (EVar "methodRoutes"))) (arm (PCon "None") () (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EApp (EApp (EApp (EVar "implDictRoutes") (EVar "reqCount")) (EVar "methodRoutes")) (EVar "implRoutes")))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))))) (EVar "narrowed")))))
 (DTypeSig false "specializeDefault" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Int")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "Value") (TyVar "e")))))))))))
 (DFunDef false "specializeDefault" (PWild PWild PWild (PCon "Some" PWild) PWild PWild) (EVar "None"))
-(DFunDef false "specializeDefault" ((PVar "env") (PVar "name") (PVar "tag") (PCon "None") (PVar "implRoutes") (PVar "narrowed")) (EIf (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString ""))) (EApp (EVar "isEmptyL") (EVar "implRoutes"))) (EVar "None") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EApp (EApp (EVar "siblingShadows") (EVar "env")) (EVar "name")) (EVar "tag")) (EVar "implRoutes")) (arm (PList) () (EVar "None")) (arm (PVar "binds") () (EApp (EApp (EVar "withEnvFrame") (EVar "binds")) (EVar "narrowed")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "specializeDefault" ((PVar "env") (PVar "name") (PVar "tag") (PCon "None") (PVar "implRoutes") (PVar "narrowed")) (EIf (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString ""))) (EApp (EVar "isEmptyL") (EVar "implRoutes"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EVar "withEnvFrame") (EApp (EApp (EApp (EApp (EVar "siblingShadows") (EVar "env")) (EVar "name")) (EVar "tag")) (EVar "implRoutes"))) (EVar "narrowed")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "siblingShadows" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))))))))))
 (DFunDef false "siblingShadows" ((PVar "env") (PVar "name") (PVar "tag") (PVar "implRoutes")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "shadowBind") (EVar "env")) (EVar "tag")) (EVar "implRoutes"))) (EApp (EApp (EVar "filter") (ELam ((PVar "_s")) (EBinOp "!=" (EVar "_s") (EVar "name")))) (EApp (EVar "methodsOfIface") (EApp (EVar "ifaceOfMethod") (EVar "name"))))))
 (DTypeSig false "shadowBind" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyCon "String") (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))))))))))
@@ -4093,7 +4134,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DTypeSig false "clausesForName" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr")))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr"))))))
 (DFunDef false "clausesForName" (PWild (PList)) (EListLit))
 (DFunDef false "clausesForName" ((PVar "name") (PCons (PTuple (PVar "n") (PVar "c")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "name")) (EBinOp "::" (EVar "c") (EApp (EApp (EVar "clausesForName") (EVar "name")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "clausesForName") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "buildIfaceDispatch" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))
+(DTypeSig false "buildIfaceDispatch" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))
 (DFunDef false "buildIfaceDispatch" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "ifaceDispatchEntries")) (EVar "prog")))
 (DTypeSig false "ifaceDispatchEntries" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))
 (DFunDef false "ifaceDispatchEntries" ((PRec "DInterface" ((rf "name" (PVar "ifaceName")) (rf "typarams" (PVar "typeParams")) (rf "methods" None)) true)) (EApp (EApp (EVar "map") (EApp (EApp (EVar "ifaceMethodEntry") (EVar "ifaceName")) (EVar "typeParams"))) (EVar "methods")))
@@ -5264,7 +5305,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "applyMethodDicts" ((PVar "env") (PVar "name") (PVar "route") (PVar "narrowed") (PVar "fwdReqs0") (PVar "implRoutes") (PVar "methodRoutes")) (EBlock (DoLet false false (PVar "tag") (EApp (EApp (EVar "routeTag") (EVar "env")) (EVar "route"))) (DoLet false false (PVar "reqCount") (EApp (EApp (EVar "lookupMethodReqCountOpt") (EVar "name")) (EVar "tag"))) (DoLet false false (PVar "fwdReqs") (EApp (EApp (EVar "takeN") (EApp (EApp (EVar "fromOption") (ELit (LInt 0))) (EVar "reqCount"))) (EVar "fwdReqs0"))) (DoExpr (EIf (EApp (EVar "awaitsArgs") (EVar "narrowed")) (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "specializeDefault") (EVar "env")) (EVar "name")) (EVar "tag")) (EVar "reqCount")) (EVar "implRoutes")) (EVar "narrowed")) (arm (PCon "Some" (PVar "specialized")) () (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "specialized")) (EVar "methodRoutes"))) (arm (PCon "None") () (EBlock (DoLet false false (PVar "v1") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "narrowed")) (EVar "methodRoutes"))) (DoLet false false (PVar "v2") (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EVar "v1")) (EApp (EApp (EApp (EVar "implDictRoutes") (EVar "reqCount")) (EVar "methodRoutes")) (EVar "implRoutes")))) (DoExpr (EApp (EApp (EVar "applyValues") (EVar "v2")) (EVar "fwdReqs")))))) (EVar "narrowed")))))
 (DTypeSig false "specializeDefault" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Int")) (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Option") (TyApp (TyCon "Value") (TyVar "e")))))))))))
 (DFunDef false "specializeDefault" (PWild PWild PWild (PCon "Some" PWild) PWild PWild) (EVar "None"))
-(DFunDef false "specializeDefault" ((PVar "env") (PVar "name") (PVar "tag") (PCon "None") (PVar "implRoutes") (PVar "narrowed")) (EIf (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString ""))) (EApp (EVar "isEmptyL") (EVar "implRoutes"))) (EVar "None") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EApp (EApp (EVar "siblingShadows") (EVar "env")) (EVar "name")) (EVar "tag")) (EVar "implRoutes")) (arm (PList) () (EVar "None")) (arm (PVar "binds") () (EApp (EApp (EVar "withEnvFrame") (EVar "binds")) (EVar "narrowed")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "specializeDefault" ((PVar "env") (PVar "name") (PVar "tag") (PCon "None") (PVar "implRoutes") (PVar "narrowed")) (EIf (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString ""))) (EApp (EVar "isEmptyL") (EVar "implRoutes"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EVar "withEnvFrame") (EApp (EApp (EApp (EApp (EVar "siblingShadows") (EVar "env")) (EVar "name")) (EVar "tag")) (EVar "implRoutes"))) (EVar "narrowed")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "siblingShadows" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))))))))))
 (DFunDef false "siblingShadows" ((PVar "env") (PVar "name") (PVar "tag") (PVar "implRoutes")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "shadowBind") (EVar "env")) (EVar "tag")) (EVar "implRoutes"))) (EApp (EApp (EMethodRef "filter") (ELam ((PVar "_s")) (EBinOp "!=" (EVar "_s") (EVar "name")))) (EApp (EVar "methodsOfIface") (EApp (EVar "ifaceOfMethod") (EVar "name"))))))
 (DTypeSig false "shadowBind" (TyFun (TyApp (TyCon "EvalEnv") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Route")) (TyFun (TyCon "String") (TyEffect () (Some "e") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyApp (TyCon "Value") (TyVar "e")))))))))))
@@ -5483,7 +5524,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DTypeSig false "clausesForName" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr")))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr"))))))
 (DFunDef false "clausesForName" (PWild (PList)) (EListLit))
 (DFunDef false "clausesForName" ((PVar "name") (PCons (PTuple (PVar "n") (PVar "c")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "name")) (EBinOp "::" (EVar "c") (EApp (EApp (EVar "clausesForName") (EVar "name")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "clausesForName") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "buildIfaceDispatch" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))
+(DTypeSig false "buildIfaceDispatch" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))
 (DFunDef false "buildIfaceDispatch" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "ifaceDispatchEntries")) (EVar "prog")))
 (DTypeSig false "ifaceDispatchEntries" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))
 (DFunDef false "ifaceDispatchEntries" ((PRec "DInterface" ((rf "name" (PVar "ifaceName")) (rf "typarams" (PVar "typeParams")) (rf "methods" None)) true)) (EApp (EApp (EMethodRef "map") (EApp (EApp (EVar "ifaceMethodEntry") (EVar "ifaceName")) (EVar "typeParams"))) (EVar "methods")))
