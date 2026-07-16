@@ -1,0 +1,34 @@
+-- #326 regression: two impls of the SAME interface sharing ONE head tycon (`Box`),
+-- with DIFFERING `requires`, both landing in the same `Foo|Box` receiver-head bucket.
+-- `foo (Box 7)` dispatches to the MOST-SPECIFIC `impl Foo (Box Int)` (min⊑ over the
+-- shared-head overlap), so obligation checking must discharge THAT impl's OWN
+-- `requires Baz Int` — reporting `No impl of Baz for Int`.
+--
+-- The general `impl Foo (Box a) requires Bar a` is declared FIRST.  BEFORE #326 the
+-- obligation checker was only PARTIAL min⊑: it ranked the concrete bucket before the
+-- headless one, but WITHIN a shared head bucket it took DECLARATION-ORDER first-match
+-- (`firstReqMatch`), so it selected `Box a`'s `requires Bar a` (→ `No impl of Bar for
+-- Int`) — the WRONG impl's requirement, disagreeing with the dispatch ROUTER (PR #319),
+-- which stamps `Box Int`.  #326 routes the checker's within-bucket selection through the
+-- SAME shared min⊑ selector (`selectImplEntryByIface`) over the SAME all-impls registry
+-- the router uses, so `check` now names the right impl's requirement.  The swapped
+-- declaration order (overlap_same_head_req_wins_swapped.mdk) yields the IDENTICAL error,
+-- which a declaration-order first-match could not.
+interface Bar a where
+  bar : a -> Int
+
+interface Baz a where
+  baz : a -> Int
+
+interface Foo a where
+  foo : a -> Int
+
+data Box a = Box a
+
+impl Foo (Box a) requires Bar a where
+  foo _ = 0
+
+impl Foo (Box Int) requires Baz Int where
+  foo _ = 1
+
+main = foo (Box 7)

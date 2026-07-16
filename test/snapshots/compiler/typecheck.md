@@ -1,5 +1,5 @@
 # META
-source_lines=14503
+source_lines=14523
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -10830,30 +10830,50 @@ bucketRecvMatch ((tys, _)::rest) dm = match tys
     None => bucketRecvMatch rest dm
   [] => bucketRecvMatch rest dm
 
--- the FIRST impl of [iface] whose head pattern matches [args], with its (subst, reqs)
--- — the impl whose `requires` we then check (checkNestedReqs).  Scans the concrete
--- "iface|tag" bucket BEFORE the iface's headless bucket.
+-- the impl of [iface] whose `requires` we must check at a dispatch to [args] (the
+-- receiver-head mono [args[0]]), with its (subst, reqs) — the impl checkNestedReqs
+-- then discharges.  The concrete RECEIVER-head bucket is consulted BEFORE the iface's
+-- headless bucket, so a specific impl always outranks a `impl Foo a` catch-all.
 --
--- ⚠️ This is a DELIBERATE, sound non-identity vs the old flat declaration-order scan.
--- Coherence ACCEPTS a specific-vs-parametric overlap (`impl Foo Int` + `impl Foo a`,
--- most-specific-wins), so TWO impls can match one concrete mono (`Int`).  The old scan
--- picked whichever was DECLARED FIRST — so it checked the WRONG impl's requires when
--- the parametric one led: e.g. parametric `impl Foo a` (no reqs) first + concrete
--- `impl Foo Int requires Bar Int` (no `impl Bar`) → PRE ACCEPTED then CRASHED at
--- runtime (null dict), because `foo (3:Int)` actually dispatches to the MOST-SPECIFIC
--- `impl Foo Int`.  Concrete-bucket-first canonicalizes requires-selection to that
--- most-specific impl — the real dispatch target — so `check` now matches runtime.
--- Within a bucket, append order (declaration order) is preserved, so a same-tag
--- overlap keeps first-declared-wins.  Regression: test/typecheck_error_fixtures/
--- overlap_specific_req_wins.mdk (Case A above).
+-- ⚠️ Coherence ACCEPTS a specific-vs-general overlap (`impl Foo Int` + `impl Foo a`,
+-- most-specific-wins), so TWO impls can match one concrete mono.  Selecting the WRONG
+-- one's requires is a soundness hole: parametric `impl Foo a` (no reqs) first + concrete
+-- `impl Foo Int requires Bar Int` (no `impl Bar`) → an ACCEPT then a runtime null-dict
+-- crash, because `foo (3:Int)` dispatches to the MOST-SPECIFIC `impl Foo Int`.
+--
+-- #326: the within-bucket winner is now chosen by the SHARED min⊑ selector
+-- `selectImplEntryByIface` over the all-impls `KeyBuckets` registry (shadowKeyTableRef —
+-- the SAME registry, and the SAME selector, the dispatch ROUTER stamps with; PR #319
+-- fixed the router, this makes the CHECKER agree).  It returns the most-specific impl's
+-- OWN requires — [] for a no-requires specific `impl Foo (List Int)` sibling declared
+-- ALONGSIDE a `impl Foo (List a) requires Show a`, both in the same `List` head bucket —
+-- never the general sibling's.  The prior concrete-then-headless first-match ranked
+-- concrete-vs-headless correctly but took DECLARATION-ORDER first-match WITHIN a shared
+-- head bucket, so `Foo (List Int)` could inherit `List a`'s `Show a` requirement (a false
+-- reject/accept).  A non-overlapping receiver head has exactly one match, which
+-- pickMostSpecificEntry returns unchanged ⇒ byte-identical to the old first-match.
+-- Headless impls carry no head tycon and so are absent from KeyBuckets — the headless
+-- bucket fallback (still over the ImplUniverse) covers them.  Regression:
+-- test/typecheck_error_fixtures/overlap_specific_req_wins.mdk (concrete-vs-headless) and
+-- overlap_same_head_req_wins{,_swapped}.mdk (#326 within-bucket min⊑).
 findMatchingImplReqsU : ImplUniverse -> String -> List Mono -> Option (List (String, Mono), List Require)
-findMatchingImplReqsU univ iface args =
-  let concrete = match args
-    [] => []
-    a0::_ => univConcreteBucket univ iface (headTyconMono a0)
-  match firstReqMatch concrete args
-    Some r => Some r
-    None => firstReqMatch (univHeadless univ iface) args
+findMatchingImplReqsU univ iface [] = firstReqMatch (univHeadless univ iface) []
+findMatchingImplReqsU univ iface (a0::rest) = match concreteReqMatchByIface iface a0 (a0::rest)
+  Some r => Some r
+  None => firstReqMatch (univHeadless univ iface) (a0::rest)
+
+-- #326: the concrete-receiver-head requires match, routed through the shared min⊑
+-- selector over the all-impls KeyBuckets registry (the router's `selectReqImpl` /
+-- `argImplRequiresRoutesRecD` select the SAME entry the SAME way).  Bind the winning
+-- impl's typaram vars by matching its FULL head types against [args] (multi-param subst
+-- preserved), then hand back that impl's OWN requires.  A selected entry whose full head
+-- fails to match [args] yields None, so findMatchingImplReqsU falls through to the
+-- headless bucket, mirroring the old scan.
+concreteReqMatchByIface : String -> Mono -> List Mono -> Option (List (String, Mono), List Require)
+concreteReqMatchByIface iface receiverMono args = match selectImplEntryByIface shadowKeyTableRef.value iface receiverMono
+  Some (KeyEntry _ _ _ _ _ itys reqs) =>
+    map (sub => (sub, reqs)) (implHeadSubst itys args)
+  None => None
 
 firstReqMatch : List (List Ty, List Require) -> List Mono -> Option (List (String, Mono), List Require)
 firstReqMatch [] _ = None
@@ -17307,7 +17327,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "bucketRecvMatch" ((PList) PWild) (EVar "False"))
 (DFunDef false "bucketRecvMatch" ((PCons (PTuple (PVar "tys") PWild) (PVar "rest")) (PVar "dm")) (EMatch (EVar "tys") (arm (PCons (PVar "recv") PWild) () (EMatch (EApp (EApp (EVar "matchTyMono") (EVar "recv")) (EVar "dm")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EApp (EApp (EVar "bucketRecvMatch") (EVar "rest")) (EVar "dm"))))) (arm (PList) () (EApp (EApp (EVar "bucketRecvMatch") (EVar "rest")) (EVar "dm")))))
 (DTypeSig false "findMatchingImplReqsU" (TyFun (TyCon "ImplUniverse") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyApp (TyCon "List") (TyCon "Require"))))))))
-(DFunDef false "findMatchingImplReqsU" ((PVar "univ") (PVar "iface") (PVar "args")) (EBlock (DoLet false false (PVar "concrete") (EMatch (EVar "args") (arm (PList) () (EListLit)) (arm (PCons (PVar "a0") PWild) () (EApp (EApp (EApp (EVar "univConcreteBucket") (EVar "univ")) (EVar "iface")) (EApp (EVar "headTyconMono") (EVar "a0")))))) (DoExpr (EMatch (EApp (EApp (EVar "firstReqMatch") (EVar "concrete")) (EVar "args")) (arm (PCon "Some" (PVar "r")) () (EApp (EVar "Some") (EVar "r"))) (arm (PCon "None") () (EApp (EApp (EVar "firstReqMatch") (EApp (EApp (EVar "univHeadless") (EVar "univ")) (EVar "iface"))) (EVar "args")))))))
+(DFunDef false "findMatchingImplReqsU" ((PVar "univ") (PVar "iface") (PList)) (EApp (EApp (EVar "firstReqMatch") (EApp (EApp (EVar "univHeadless") (EVar "univ")) (EVar "iface"))) (EListLit)))
+(DFunDef false "findMatchingImplReqsU" ((PVar "univ") (PVar "iface") (PCons (PVar "a0") (PVar "rest"))) (EMatch (EApp (EApp (EApp (EVar "concreteReqMatchByIface") (EVar "iface")) (EVar "a0")) (EBinOp "::" (EVar "a0") (EVar "rest"))) (arm (PCon "Some" (PVar "r")) () (EApp (EVar "Some") (EVar "r"))) (arm (PCon "None") () (EApp (EApp (EVar "firstReqMatch") (EApp (EApp (EVar "univHeadless") (EVar "univ")) (EVar "iface"))) (EBinOp "::" (EVar "a0") (EVar "rest"))))))
+(DTypeSig false "concreteReqMatchByIface" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyApp (TyCon "List") (TyCon "Require"))))))))
+(DFunDef false "concreteReqMatchByIface" ((PVar "iface") (PVar "receiverMono") (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "selectImplEntryByIface") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "iface")) (EVar "receiverMono")) (arm (PCon "Some" (PCon "KeyEntry" PWild PWild PWild PWild PWild (PVar "itys") (PVar "reqs"))) () (EApp (EApp (EVar "map") (ELam ((PVar "sub")) (ETuple (EVar "sub") (EVar "reqs")))) (EApp (EApp (EVar "implHeadSubst") (EVar "itys")) (EVar "args")))) (arm (PCon "None") () (EVar "None"))))
 (DTypeSig false "firstReqMatch" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require")))) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyApp (TyCon "List") (TyCon "Require")))))))
 (DFunDef false "firstReqMatch" ((PList) PWild) (EVar "None"))
 (DFunDef false "firstReqMatch" ((PCons (PTuple (PVar "tys") (PVar "reqs")) (PVar "rest")) (PVar "args")) (EMatch (EApp (EApp (EVar "implHeadSubst") (EVar "tys")) (EVar "args")) (arm (PCon "Some" (PVar "sub")) () (EApp (EVar "Some") (ETuple (EVar "sub") (EVar "reqs")))) (arm (PCon "None") () (EApp (EApp (EVar "firstReqMatch") (EVar "rest")) (EVar "args")))))
@@ -20991,7 +21014,10 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "bucketRecvMatch" ((PList) PWild) (EVar "False"))
 (DFunDef false "bucketRecvMatch" ((PCons (PTuple (PVar "tys") PWild) (PVar "rest")) (PVar "dm")) (EMatch (EVar "tys") (arm (PCons (PVar "recv") PWild) () (EMatch (EApp (EApp (EVar "matchTyMono") (EVar "recv")) (EVar "dm")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EApp (EApp (EVar "bucketRecvMatch") (EVar "rest")) (EVar "dm"))))) (arm (PList) () (EApp (EApp (EVar "bucketRecvMatch") (EVar "rest")) (EVar "dm")))))
 (DTypeSig false "findMatchingImplReqsU" (TyFun (TyCon "ImplUniverse") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyApp (TyCon "List") (TyCon "Require"))))))))
-(DFunDef false "findMatchingImplReqsU" ((PVar "univ") (PVar "iface") (PVar "args")) (EBlock (DoLet false false (PVar "concrete") (EMatch (EVar "args") (arm (PList) () (EListLit)) (arm (PCons (PVar "a0") PWild) () (EApp (EApp (EApp (EVar "univConcreteBucket") (EVar "univ")) (EVar "iface")) (EApp (EVar "headTyconMono") (EVar "a0")))))) (DoExpr (EMatch (EApp (EApp (EVar "firstReqMatch") (EVar "concrete")) (EVar "args")) (arm (PCon "Some" (PVar "r")) () (EApp (EVar "Some") (EVar "r"))) (arm (PCon "None") () (EApp (EApp (EVar "firstReqMatch") (EApp (EApp (EVar "univHeadless") (EVar "univ")) (EVar "iface"))) (EVar "args")))))))
+(DFunDef false "findMatchingImplReqsU" ((PVar "univ") (PVar "iface") (PList)) (EApp (EApp (EVar "firstReqMatch") (EApp (EApp (EVar "univHeadless") (EVar "univ")) (EVar "iface"))) (EListLit)))
+(DFunDef false "findMatchingImplReqsU" ((PVar "univ") (PVar "iface") (PCons (PVar "a0") (PVar "rest"))) (EMatch (EApp (EApp (EApp (EVar "concreteReqMatchByIface") (EVar "iface")) (EVar "a0")) (EBinOp "::" (EVar "a0") (EVar "rest"))) (arm (PCon "Some" (PVar "r")) () (EApp (EVar "Some") (EVar "r"))) (arm (PCon "None") () (EApp (EApp (EVar "firstReqMatch") (EApp (EApp (EVar "univHeadless") (EVar "univ")) (EVar "iface"))) (EBinOp "::" (EVar "a0") (EVar "rest"))))))
+(DTypeSig false "concreteReqMatchByIface" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyApp (TyCon "List") (TyCon "Require"))))))))
+(DFunDef false "concreteReqMatchByIface" ((PVar "iface") (PVar "receiverMono") (PVar "args")) (EMatch (EApp (EApp (EApp (EVar "selectImplEntryByIface") (EFieldAccess (EVar "shadowKeyTableRef") "value")) (EVar "iface")) (EVar "receiverMono")) (arm (PCon "Some" (PCon "KeyEntry" PWild PWild PWild PWild PWild (PVar "itys") (PVar "reqs"))) () (EApp (EApp (EMethodRef "map") (ELam ((PVar "sub")) (ETuple (EMethodRef "sub") (EVar "reqs")))) (EApp (EApp (EVar "implHeadSubst") (EVar "itys")) (EVar "args")))) (arm (PCon "None") () (EVar "None"))))
 (DTypeSig false "firstReqMatch" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require")))) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyApp (TyCon "List") (TyCon "Require")))))))
 (DFunDef false "firstReqMatch" ((PList) PWild) (EVar "None"))
 (DFunDef false "firstReqMatch" ((PCons (PTuple (PVar "tys") (PVar "reqs")) (PVar "rest")) (PVar "args")) (EMatch (EApp (EApp (EVar "implHeadSubst") (EVar "tys")) (EVar "args")) (arm (PCon "Some" (PVar "sub")) () (EApp (EVar "Some") (ETuple (EMethodRef "sub") (EVar "reqs")))) (arm (PCon "None") () (EApp (EApp (EVar "firstReqMatch") (EVar "rest")) (EVar "args")))))
