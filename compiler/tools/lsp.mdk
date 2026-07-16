@@ -400,39 +400,45 @@ implMethodName (ImplMethod n _ _) = n
 letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
--- The outline (name, kind, children) for a decl, given its precomputed
--- decl-level `range` (used for the child symbols' spans), or None for decls that
--- don't surface in the outline (DUse).  The decl's own range is reattached by the
--- caller (symbolParts), which also spans it across collapsed clauses.
-symbolPartsOfDecl : Decl -> Json -> Option (String, Int, List Json)
+-- The outline (name, kind, clauseLike, children) for a decl, given its
+-- precomputed decl-level `range` (used for the child symbols' spans), or None for
+-- decls that don't surface in the outline (DUse).  The decl's own range is
+-- reattached by the caller (symbolParts), which also spans it across collapsed
+-- clauses.  `clauseLike` is True ONLY for a signature or a value-binding clause
+-- (DTypeSig/DFunDef/DLetGroup) — the decls that legitimately repeat under one name
+-- (a sig + its clauses) and so may coalesce.  Everything else is False: crucially
+-- DTest/DProp/DBench take a FREE string label (`test "double"`) that resolve.mdk
+-- never enters into any namespace or duplicate check, so a test named after the
+-- function it tests must NOT be swallowed into that function's outline entry.
+symbolPartsOfDecl : Decl -> Json -> Option (String, Int, Bool, List Json)
 symbolPartsOfDecl d range = match innerDecl d
-    DTypeSig _ name _ => Some (name, 13, [])
-    DExtern _ name _ => Some (name, 12, [])
-    DFunDef _ name _ _ => Some (name, 12, [])
+    DTypeSig _ name _ => Some (name, 13, True, [])
+    DExtern _ name _ => Some (name, 12, False, [])
+    DFunDef _ name _ _ => Some (name, 12, True, [])
     DLetGroup _ binds => match binds
       [] => None
       (LetBind n0 _)::_ =>
         let kids = map ((LetBind n _) => jChild n 12 range) binds
-        Some (n0, 12, kids)
+        Some (n0, 12, True, kids)
     DData _ name _ variants _ =>
       -- records (the `data X = { … }` short form, nameOmitted) expose their
       -- fields as child symbols (kind 8); ordinary variants show their ctor name.
       let kids = flatMap (variantSymChildren range) variants
-      Some (name, 10, kids)
+      Some (name, 10, False, kids)
     DInterface { name = n, methods = ms, ... } =>
       let kids = map ((IfaceMethod mn _ _) => jChild mn 6 range) ms
-      Some (n, 11, kids)
+      Some (n, 11, False, kids)
     DImpl { iface = ifc, methods = ms, ... } =>
       let label = implLabel ifc
       let kids = map ((ImplMethod mn _ _) => jChild mn 6 range) ms
-      Some (label, 5, kids)
-    DTypeAlias _ name _ _ => Some (name, 26, [])
-    DNewtype _ name _ _ _ _ => Some (name, 23, [])
+      Some (label, 5, False, kids)
+    DTypeAlias _ name _ _ => Some (name, 26, False, [])
+    DNewtype _ name _ _ _ _ => Some (name, 23, False, [])
     DUse _ _ _ => None
-    DProp _ name _ _ => Some (name, 12, [])
-    DTest _ name _ => Some (name, 12, [])
-    DBench _ name _ => Some (name, 12, [])
-    DEffect _ name _ => Some (name, 24, [])
+    DProp _ name _ _ => Some (name, 12, False, [])
+    DTest _ name _ => Some (name, 12, False, [])
+    DBench _ name _ => Some (name, 12, False, [])
+    DEffect _ name _ => Some (name, 24, False, [])
     DAttrib _ _ => None  -- unreachable post innerDecl
 -- Variable
 -- Function
@@ -465,37 +471,46 @@ documentSymbols src = match parseWithPositionsOpt src
   None => []
   Some (decls, positions) => map renderSymbol (collapseSymbols (symbolParts decls (positionsDecls positions)))
 
+-- One outline row before collapse: name, LSP SymbolKind, 0-based start/end line,
+-- whether it's a signature/clause row (only those coalesce — see
+-- symbolPartsOfDecl), and its child symbols.  A dedicated type rather than a tuple
+-- because it carries 6 fields (past the tuple ceiling) and reads better.
+data SymRow = SymRow String Int Int Int Bool (List Json)
+
 -- Zip decls with positions (1:1; defensive truncation to the shorter list) into
--- (name, kind, startLine0, endLine0, children) rows, dropping non-outline decls.
-symbolParts : List Decl -> List DeclPos -> List (String, Int, Int, Int, List Json)
+-- SymRow rows, dropping non-outline decls.
+symbolParts : List Decl -> List DeclPos -> List SymRow
 symbolParts (d::ds) (p::ps) =
   let sl = declPosLine p - 1
   let el = declPosEndLine p - 1
   match symbolPartsOfDecl d (jRange sl 0 el 0)
     None => symbolParts ds ps
-    Some (name, kind, kids) => (name, kind, sl, el, kids) :: symbolParts ds ps
+    Some (name, kind, clauseLike, kids) =>
+      SymRow name kind sl el clauseLike kids :: symbolParts ds ps
 symbolParts _ _ = []
 
--- Collapse consecutive rows that share the EXACT same name — a signature plus its
--- clauses, or a multi-clause function — into ONE outline symbol (#300 part 3):
--- the shared name, the LAST row's kind (so a `sig`(Variable)+`def`(Function) pair
+-- Collapse a signature+clauses run — consecutive rows that share the EXACT same
+-- name AND are BOTH clause-like — into ONE outline symbol (#300 part 3): the
+-- shared name, the LAST row's kind (so a `sig`(Variable)+`def`(Function) pair
 -- reads as the Function, not the sig), the range spanning first-start..last-end,
--- and the concatenated children.  Only ADJACENT exact-name matches collapse, so
--- distinct decls that merely share a prefix are never merged.
-collapseSymbols : List (String, Int, Int, Int, List Json) -> List (String, Int, Int, Int, List Json)
+-- and the concatenated children.  The clause-like gate is what stops a
+-- `test "double"`/`prop`/`bench` (free string label, never a duplicate) from being
+-- fused into an adjacent same-named function; only sig/clause runs coalesce, and
+-- only adjacent ones, so decls that merely share a prefix are never merged either.
+collapseSymbols : List SymRow -> List SymRow
 collapseSymbols [] = []
 collapseSymbols (x::xs) = collapseGo x xs
 
-collapseGo : (String, Int, Int, Int, List Json) -> List (String, Int, Int, Int, List Json) -> List (String, Int, Int, Int, List Json)
+collapseGo : SymRow -> List SymRow -> List SymRow
 collapseGo cur [] = [cur]
-collapseGo (n0, k0, s0, e0, c0) ((n1, k1, s1, e1, c1)::rest) =
-  if n0 == n1 then
-    collapseGo (n0, k1, s0, e1, c0 ++ c1) rest
+collapseGo (SymRow n0 k0 s0 e0 cl0 c0) ((SymRow n1 k1 s1 e1 cl1 c1)::rest) =
+  if n0 == n1 && cl0 && cl1 then
+    collapseGo (SymRow n0 k1 s0 e1 True (c0 ++ c1)) rest
   else
-    (n0, k0, s0, e0, c0) :: collapseGo (n1, k1, s1, e1, c1) rest
+    SymRow n0 k0 s0 e0 cl0 c0 :: collapseGo (SymRow n1 k1 s1 e1 cl1 c1) rest
 
-renderSymbol : (String, Int, Int, Int, List Json) -> Json
-renderSymbol (name, kind, sl, el, kids) =
+renderSymbol : SymRow -> Json
+renderSymbol (SymRow name kind sl el _ kids) =
   jSymbol name kind (jRange sl 0 el 0) kids
 
 -- ── textDocument/definition ─────────────────────────────────────────────────
