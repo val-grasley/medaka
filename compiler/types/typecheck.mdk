@@ -7111,7 +7111,9 @@ anyIn xs ys = anyList (x => containsI x ys) xs
 -- protects nothing) — is invisible to defaultGroupNum's exclusion filter.  The two
 -- pre-existing call sites (processLetGroup, processSCC) inherit that blind spot.
 -- defaultBodyLocalNum sidesteps it at the impl-method site by testing membership in
--- the WHOLE type instead.  See the ws:typecheck follow-up issue.
+-- the WHOLE type instead.  Tracked as #563 (which also records why tightening the
+-- two let-group sites is NOT obviously safe: there, a return-only var frequently IS
+-- ambiguous and SHOULD ground — `let n = 1` — so this filter is not simply wrong).
 monoArgUnboundIds : Mono -> List Int
 monoArgUnboundIds t = match normalize t
   TFun a _ b => monoUnboundIds a ++ monoArgUnboundIds b
@@ -11916,6 +11918,12 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- leaves a method-level constraint var in RETURN position (`lift : Num b => a ->
     -- Box b`) unprotected, and at an impl method body that var is dict-supplied by the
     -- CALLER.  Using defaultGroupNum here measurably traded #518's S0 for a new one.
+    --
+    -- NOT paired with registerAmbiguousConstraints, unlike processLetGroup/processSCC:
+    -- that helper reads `currentLevel + 1` and documents itself as running POST-
+    -- exitLevel, but this function has no enterLevel/exitLevel at all, so the level it
+    -- would compute here is meaningless.  It is also orthogonal to #518 (oblDispatchMonos
+    -- returns [] for Num).  Tracked as #564.
     let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
     let _ = defaultBodyLocalNum addedObls expected
     -- Eval-path method-dict threading (parity with inferDefaultMethod's
