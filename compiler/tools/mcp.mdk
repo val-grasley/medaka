@@ -166,6 +166,26 @@ writeMessage j =
 logMcp : String -> <IO> Unit
 logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
 
+-- ── opt-in call logging ──────────────────────────────────────────────────────
+--
+-- File logging is OPT-IN (unlike lsp.mdk's always-on debug log): when
+-- MEDAKA_MCP_LOG is unset, `logMcpCall` is a no-op — one getEnv check, no file
+-- I/O, no wall-clock read.  When set to a path, each event is appended as one
+-- tab-separated line: "<wall-clock epoch seconds>\t<method>\t<name>\t<args
+-- JSON>\n" (method-level events with no tool name/args leave those fields
+-- empty).  stdout stays protocol-only (see header) — this writes ONLY to the
+-- given file, via `appendFile`; a write failure falls back to stderr via
+-- `logMcp` rather than crashing the server.
+logMcpCall : String -> String -> String -> <IO> Unit
+logMcpCall method name args = match getEnv "MEDAKA_MCP_LOG"
+  None => unit
+  Some path =>
+    let ts = floatToString (wallTimeSec ())
+    let line = stringConcat [ts, "\t", method, "\t", name, "\t", args, "\n"]
+    match appendFile path line
+      Ok _ => unit
+      Err e => logMcp (stringConcat ["log write failed: ", e])
+
 -- ── handshake result values ──────────────────────────────────────────────────
 
 initializeResultFor : String -> Json
@@ -842,9 +862,12 @@ handleToolsCall : String -> String -> String -> Json -> Json -> <IO> Unit
 handleToolsCall runtimeSrc coreSrc stdlibDir idJson params = match fieldStr "name" params
   None =>
     writeMessage (errorMsg idJson (0 - 32602) "tools/call: missing 'name'")
-  Some name => match callTool runtimeSrc coreSrc stdlibDir name (fieldOr "arguments" params)
-    None => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Unknown tool: ", name]))
-    Some result => writeMessage (responseMsg idJson result)
+  Some name =>
+    let args = fieldOr "arguments" params
+    let _ = logMcpCall "tools/call" name (stringify args)
+    match callTool runtimeSrc coreSrc stdlibDir name args
+      None => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Unknown tool: ", name]))
+      Some result => writeMessage (responseMsg idJson result)
 
 -- ── request dispatch ─────────────────────────────────────────────────────────
 
@@ -866,6 +889,9 @@ dispatchMsg runtimeSrc coreSrc stdlibDir msg = match asArray msg
     None => logMcp "ignored: message has no string 'method' field"
     Some meth =>
       let params = fieldOr "params" msg
+      -- tools/call gets its own richer line (tool name + args) inside
+      -- handleToolsCall — don't double-log it here.
+      let _ = if meth == "tools/call" then unit else logMcpCall meth "" ""
       if meth == "notifications/initialized" then unit
       else match lookup "id" msg
         None => unit -- notification: no response for ANY method
