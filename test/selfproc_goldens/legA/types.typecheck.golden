@@ -1106,8 +1106,6 @@ rowArgOf : List (String, Ref Effvar) -> Ty -> EffRow
 rowFreeEffvars : EffRow -> List Int
 runFinalChecks : List Decl -> List Decl -> Unit
 sameRootId : Int -> Mono -> Bool
-scEdge : String -> String -> Map String (List String) -> Unit
-scEdges : String -> List String -> Map String (List String) -> Unit
 sccSchemes : List (String, Ty) -> Map String (List (List Pat, Expr)) -> Bool -> List (String, Mono) -> List (String, Scheme)
 schemeHasConcreteDomain : Scheme -> Bool
 schemeIds : Scheme -> List Int
@@ -1183,7 +1181,6 @@ stripArrows : Mono -> Mono
 stripEff : Ty -> Ty
 stripTyConstraints : Ty -> Ty
 stripTyWrap : Ty -> Ty
-strongconnect : String -> Map String (List String) -> Unit
 subTopOf : Param -> Param
 subsetStr : List String -> List String -> Bool
 substField : List (Int, Mono) -> (String, Mono) -> (String, Mono)
@@ -1212,8 +1209,6 @@ tailNameList : Option String -> List String
 taintAndDrop : Int -> List (Mono, Loc) -> List (Mono, Loc)
 takeFirst : Int -> List a -> List a
 takeUntilInclusiveS : String -> List String -> List String
-tarjanAll : List String -> Map String (List String) -> Unit
-tarjanSCCs : List String -> Map String (List String) -> List (List String)
 tcClauseDef : String -> FunClause -> (String, (List Pat, Expr))
 tcCode : TcDiag -> String
 tcFix : TcDiag -> Option (Loc, String)
@@ -1221,16 +1216,6 @@ tcHelp : TcDiag -> Option String
 tcLoc : TcDiag -> Option Loc
 tcMsg : TcDiag -> String
 tcSeverity : TcDiag -> Int
-tjCounter : Ref Int
-tjIndex : Ref (Map String Int)
-tjLow : Ref (Map String Int)
-tjLowOf : String -> Int
-tjOn : Ref (Map String Bool)
-tjOnStack : String -> Bool
-tjOut : Ref (List (List String))
-tjPop : String -> List String -> Unit
-tjStack : Ref (List String)
-tjVisit : String -> Map String (List String) -> Unit
 transitiveImporterDecls : String -> List (String, List Decl) -> List Decl
 transitiveImporterIds : String -> List (String, List Decl) -> List String
 transitivelyImports : String -> String -> List (String, List Decl) -> Bool
