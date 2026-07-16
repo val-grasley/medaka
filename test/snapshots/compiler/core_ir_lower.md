@@ -1,5 +1,5 @@
 # META
-source_lines=1096
+source_lines=1105
 stages=DESUGAR,MARK
 # SOURCE
 -- elaborated-AST → Core IR lowering (STAGE2-DESIGN §2.1).  Consumes the SAME
@@ -56,7 +56,7 @@ import eval.eval.{
   buildCtorToType,
   buildCtorFieldOrders,
   ctorFieldOrdersRef,
-  buildIfaceDispatch,
+  installDispatchTables,
   lookupPositions,
   tyvarsInArgs,
   headTyconHead,
@@ -761,8 +761,17 @@ lgToBind ((n, _), cs) = CBind n cs
 -- impl's concrete type head) and per interface default (untagged fallback).  The
 -- method BODY is lowered to CExpr; the tag / positions / score are pure AST
 -- computations reused from eval.mdk so the Core IR stays Ty-free.
+-- #315/#413: installDispatchTables both BUILDS the dispatch table (as
+-- buildIfaceDispatch did) and installs it alongside the method reqCount table that
+-- applyMethodDicts consults.  cevalProgram is handed a CProgram and so has no decls
+-- of its own to derive them from; lowering is the last point that still does.
+-- Without this the Core-IR interpreter's reqCount lookups all returned None and
+-- #413's fix was inert there (proven: `impl S (List a) requires S a where s _ = 2`
+-- ran correctly under `medaka run` but panicked "applied non-function: 2" under
+-- core_ir_typed_main).  The emit path lowers through here too and never reads the
+-- tables, so installing is a no-op for it.
 lowerImpls : List Decl -> List CImplEntry
-lowerImpls prog = lowerImplsWith (buildIfaceDispatch prog) prog
+lowerImpls prog = lowerImplsWith (installDispatchTables prog) prog
 
 -- lowerImpls against a PRE-BUILT dispatch table — the multi-module driver builds
 -- one `disp` from all modules' decls jointly (an impl in module B for an interface
@@ -1101,7 +1110,7 @@ nodeTag _ = "?"
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Expr" true) (mem "Arm" true) (mem "Guard" true) (mem "DoStmt" true) (mem "FieldAssign" true) (mem "LetBind" true) (mem "FunClause" true) (mem "Addr" true) (mem "Decl" true) (mem "Variant" true) (mem "ConPayload" true) (mem "Field" true) (mem "Ty" true) (mem "Constraint" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "Route" true))))
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CArm" true) (mem "CGuard" true) (mem "CStmt" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CImplEntry" true) (mem "CImplBody" true) (mem "CProgram" true) (mem "CTree" true) (mem "CTBranch" true) (mem "CHead" true))))
-(DUse false (UseGroup ("eval" "eval") ((mem "buildCtorToType" false) (mem "buildCtorFieldOrders" false) (mem "ctorFieldOrdersRef" false) (mem "buildIfaceDispatch" false) (mem "lookupPositions" false) (mem "tyvarsInArgs" false) (mem "headTyconHead" false) (mem "implKeyOf" false))))
+(DUse false (UseGroup ("eval" "eval") ((mem "buildCtorToType" false) (mem "buildCtorFieldOrders" false) (mem "ctorFieldOrdersRef" false) (mem "installDispatchTables" false) (mem "lookupPositions" false) (mem "tyvarsInArgs" false) (mem "headTyconHead" false) (mem "implKeyOf" false))))
 (DUse false (UseGroup ("list") ((mem "replicate" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "allList" false) (mem "anyList" false) (mem "lookupAssoc" false) (mem "noneHeadTag" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "startsWith" false))))
 (DTypeSig false "composeVar" (TyCon "String"))
@@ -1423,7 +1432,7 @@ nodeTag _ = "?"
 (DTypeSig false "lgToBind" (TyFun (TyTuple (TyTuple (TyCon "String") (TyCon "Int")) (TyApp (TyCon "List") (TyCon "CClause"))) (TyCon "CBind")))
 (DFunDef false "lgToBind" ((PTuple (PTuple (PVar "n") PWild) (PVar "cs"))) (EApp (EApp (EVar "CBind") (EVar "n")) (EVar "cs")))
 (DTypeSig false "lowerImpls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "CImplEntry"))))
-(DFunDef false "lowerImpls" ((PVar "prog")) (EApp (EApp (EVar "lowerImplsWith") (EApp (EVar "buildIfaceDispatch") (EVar "prog"))) (EVar "prog")))
+(DFunDef false "lowerImpls" ((PVar "prog")) (EApp (EApp (EVar "lowerImplsWith") (EApp (EVar "installDispatchTables") (EVar "prog"))) (EVar "prog")))
 (DTypeSig true "lowerImplsWith" (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "CImplEntry")))))
 (DFunDef false "lowerImplsWith" ((PVar "disp") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EVar "lowerDeclImpl") (EVar "disp"))) (EVar "prog")))
 (DTypeSig false "lowerDeclImpl" (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "CImplEntry")))))
@@ -1574,7 +1583,7 @@ nodeTag _ = "?"
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Expr" true) (mem "Arm" true) (mem "Guard" true) (mem "DoStmt" true) (mem "FieldAssign" true) (mem "LetBind" true) (mem "FunClause" true) (mem "Addr" true) (mem "Decl" true) (mem "Variant" true) (mem "ConPayload" true) (mem "Field" true) (mem "Ty" true) (mem "Constraint" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "Route" true))))
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CArm" true) (mem "CGuard" true) (mem "CStmt" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CImplEntry" true) (mem "CImplBody" true) (mem "CProgram" true) (mem "CTree" true) (mem "CTBranch" true) (mem "CHead" true))))
-(DUse false (UseGroup ("eval" "eval") ((mem "buildCtorToType" false) (mem "buildCtorFieldOrders" false) (mem "ctorFieldOrdersRef" false) (mem "buildIfaceDispatch" false) (mem "lookupPositions" false) (mem "tyvarsInArgs" false) (mem "headTyconHead" false) (mem "implKeyOf" false))))
+(DUse false (UseGroup ("eval" "eval") ((mem "buildCtorToType" false) (mem "buildCtorFieldOrders" false) (mem "ctorFieldOrdersRef" false) (mem "installDispatchTables" false) (mem "lookupPositions" false) (mem "tyvarsInArgs" false) (mem "headTyconHead" false) (mem "implKeyOf" false))))
 (DUse false (UseGroup ("list") ((mem "replicate" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "allList" false) (mem "anyList" false) (mem "lookupAssoc" false) (mem "noneHeadTag" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "startsWith" false))))
 (DTypeSig false "composeVar" (TyCon "String"))
@@ -1896,7 +1905,7 @@ nodeTag _ = "?"
 (DTypeSig false "lgToBind" (TyFun (TyTuple (TyTuple (TyCon "String") (TyCon "Int")) (TyApp (TyCon "List") (TyCon "CClause"))) (TyCon "CBind")))
 (DFunDef false "lgToBind" ((PTuple (PTuple (PVar "n") PWild) (PVar "cs"))) (EApp (EApp (EVar "CBind") (EVar "n")) (EVar "cs")))
 (DTypeSig false "lowerImpls" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "CImplEntry"))))
-(DFunDef false "lowerImpls" ((PVar "prog")) (EApp (EApp (EVar "lowerImplsWith") (EApp (EVar "buildIfaceDispatch") (EVar "prog"))) (EVar "prog")))
+(DFunDef false "lowerImpls" ((PVar "prog")) (EApp (EApp (EVar "lowerImplsWith") (EApp (EVar "installDispatchTables") (EVar "prog"))) (EVar "prog")))
 (DTypeSig true "lowerImplsWith" (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "CImplEntry")))))
 (DFunDef false "lowerImplsWith" ((PVar "disp") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "lowerDeclImpl") (EVar "disp"))) (EVar "prog")))
 (DTypeSig false "lowerDeclImpl" (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "CImplEntry")))))

@@ -83,7 +83,7 @@ import eval.eval.{
   coalesceImpls,
   buildCtorToType,
   collectCtors,
-  buildIfaceDispatch,
+  installDispatchTables,
   implMethodNames,
   methodCellsOf,
   importFrameOf,
@@ -492,7 +492,7 @@ cevalModules preludeDecls modules =
   let allDecls = preludeDecls ++ moduleDecls
   let _ = setRef ctorToTypeRef (buildCtorToType allDecls)
   let _ = setRef ctorFieldOrdersRef (buildCtorFieldOrders allDecls)
-  let disp = buildIfaceDispatch allDecls
+  let disp = installDispatchTables allDecls
   let ctors = collectCtors allDecls
   let preludeGroups = lowerGroups preludeDecls
   let preludeImpls = lowerImplsWith disp preludeDecls
