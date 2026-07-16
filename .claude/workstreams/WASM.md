@@ -73,13 +73,14 @@ is not already in hand: the gate exists *before* the fix, so the fix's own landi
 PROMOTE detector — **the gate proves the fix rather than the author's prose.** Same for #359's native arm
 against #349–#352.
 
-**The worked example is #396** (ws:emitter, 2026-07-16), and it is the strongest evidence in this file
-for grading TIME: wiring `lower`+`emit` into the detector **immediately caught a live native quadratic**
-— `xref:emit` at r2 = **3.96** — *while the ALLOC arm read a clean linear **2.04** and called it "ok"*.
-It landed **green on that dirty tree** by ledgering `xref:emit` at a ceiling, without widening `THRESH`.
-That is the #110/#115 thesis reproduced live: **a pure scan allocates nothing, so only TIME can see it.**
-Our own #381 replicated it on the wasm arm the same day (r2 = **5.30**). **Both were STATIC audit
-findings until someone measured them** — a grep-proven census names a *shape*, not a *cost*.
+**The worked example is #396** (ws:emitter, **open at time of writing**), and it is the strongest
+evidence in this file for grading TIME: wiring `lower`+`emit` into the detector **immediately caught a
+live native quadratic** — `xref:emit` at r2 = **3.96** — *while the ALLOC arm read a clean linear
+**2.04** and called it "ok"*. It lands **green on a dirty tree** by ledgering `xref:emit` at a ceiling,
+without widening `THRESH`. That is the #110/#115 thesis reproduced live: **a pure scan allocates
+nothing, so only TIME can see it** — the ALLOC arm was not broken, it was *right and blind*.
+Our own #381 replicated it on the wasm arm the same day. **Both were STATIC audit findings until
+someone measured them** — a grep-proven census names a *shape*, not a *cost*.
 
 > **How this section got here is the lesson.** It first asserted the DAG was *"not executable"* and that
 > *"gate-first only works on an already-clean tree"* — a categorical rule, derived from reading ONE line
@@ -89,18 +90,24 @@ findings until someone measured them** — a grep-proven census names a *shape*,
 > error as filing #381 STATIC and never measuring it. **Read the gate before you claim what it does, and
 > never let a plan you like become a rule in a doc without one adversarial pass over it.**
 >
-> **Coda — this section cited LINE NUMBERS three times, and was wrong three times.** Draft 1 cited
+> **Coda — this section cited LINE NUMBERS twice, and was wrong twice.** Draft 1 cited
 > `TIME_STAGES:453`, copied verbatim from #359's body where it had *already* drifted. Draft 2 "fixed" it
-> to `:497` and cited five ranges in the ledger. Then **#396 landed +102/-4 on that same file and moved
-> every one of them** — and added an `xref:emit` entry that falsified draft 2's *"`KNOWN_SLOW_TIME` is
-> empty today"*. Elapsed: about two hours.
+> to `:497` and cited five ranges in the ledger — then **#396 turned up carrying +102/-4 on that same
+> file**, moving every one of them, plus an `xref:emit` entry that falsifies draft 2's *"`KNOWN_SLOW_TIME`
+> is empty today"* the moment it merges. Both drafts landed inside one session.
 >
 > **So this section now cites SYMBOLS (`KNOWN_SLOW_TIME`, `is_known_time`, `PROMOTE`), not lines** — they
-> are greppable, they survive edits, and `make agent-doc-symbols` can actually check them. **A line number
-> is an encoded fact with no derivation and no expiry; a symbol name is a query.** Note what neither doc
-> gate could catch here: `docs-links` checks paths and `agent-doc-symbols` checks backticked symbols, but
-> a false claim *about behavior* and a stale `:NNN` in prose are invisible to both. **Prose about behavior
-> is the ungated surface — it is exactly where an adversarial reviewer, not a gate, is the control.**
+> are greppable and they survive edits. **A line number is an encoded fact with no derivation and no
+> expiry; a symbol name is a query.**
+>
+> ⚠️ **But do NOT assume a gate is checking them.** `agent-doc-symbols` extracts only **mixed-case**
+> tokens and resolves them against **`compiler/*.mdk` + `stdlib/*.mdk` + `runtime/*.c`** — so
+> `KNOWN_SLOW_TIME` (all caps), `is_known_time`/`gen_match` (all lower), and anything in `test/*.sh` are
+> **all outside its corpus**. None of this section's symbols are gate-checked. `docs-links` checks paths;
+> `agent-doc-symbols` checks mixed-case symbols in compiler/stdlib. **A false claim *about behavior*, a
+> stale `:NNN` in prose, and a wrong statement about a sibling PR's state are invisible to both.**
+> **Prose about behavior is the UNGATED surface — the control there is an adversarial reviewer, not a
+> gate.** Three of this section's four defects were caught by a reviewer; zero by CI.
 
 ---
 
