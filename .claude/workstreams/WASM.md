@@ -25,8 +25,10 @@ an open issue is an unfiled finding.
 > *"✗ STATIC"*. Both times this file was right and **the contract — the doc this very paragraph calls
 > ground truth — was the stale one.**
 >
-> **Every `#N` in that table is an encoded claim about N's state**, with no derivation and no expiry
-> (#383 tracks the sweep). So when you close a wasm issue:
+> **Every `#N` in that table is an encoded claim about N's state**, with no derivation and no expiry —
+> **#438** tracks that specifically (⚠️ **#383 does NOT**: it is the adjacent wasm stale-claims sweep,
+> but its 8 items never name the law table — I cited it here and was wrong, same shape as the #404 I'd
+> just cut two lines earlier). So when you close a wasm issue:
 > `grep -rn '#<N>' docs/spec/WASM-SEMANTICS.md test/engine_divergence.txt test/ENGINE-DIVERGENCE.md
 > test/CAPABILITY-EXCEPTIONS.txt .claude/workstreams/WASM.md` and drain **all** of it in the closing
 > commit. *A bug that is stale in three places is invisible in all three.*
@@ -36,8 +38,9 @@ an open issue is an unfiled finding.
 > state signal, and its own rows disprove it: **bold is used for CLOSED issues** precisely when a row
 > announces a fix (`**#369 FIXED** by #388`, `**#381 FIXED** by #401`), while **open** issues appear
 > **unbolded** (`the #349–#352 sibling census`, `shipped (#396)`), and some bold spans wrap prose
-> around the number rather than the number itself. A naive gate would flag the two rows this session
-> just FIXED and silently skip four open ones. **A gate here would need a consistent machine-readable
+> around the number rather than the number itself. Sharpest of all: **`#382` appears bolded once and
+> unbolded once IN THE SAME ROW.** A naive gate would flag the two rows this session just FIXED and
+> silently skip four open ones. **A gate here would need a consistent machine-readable
 > format to exist FIRST** — that is the actual prerequisite work, and nobody has done it. Until then
 > this rule is enforced by the grep above and by a reviewer, not by CI.
 
