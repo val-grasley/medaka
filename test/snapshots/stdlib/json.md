@@ -1,5 +1,5 @@
 # META
-source_lines=592
+source_lines=595
 stages=DESUGAR,MARK
 # SOURCE
 {- json.mdk — a JSON value type with a parser and serializer.
@@ -119,8 +119,11 @@ escapeGo arr i acc
   | i < 0 = acc
   | otherwise = escapeGo arr (i - 1) (escapeChar (arrayGetUnsafe i arr) :: acc)
 
--- A `String` as a quoted, escaped JSON string literal.
-escapeString : String -> String
+-- A `String` as a quoted, escaped JSON string literal.  Exported so callers
+-- outside this module (e.g. compiler/tools/mcp.mdk's opt-in call log) can
+-- safely embed an arbitrary, client-controlled String in a single-line
+-- record without it splitting across lines on an embedded '\n'/'\t'.
+export escapeString : String -> String
 escapeString s =
   let arr = stringToChars s
   let pieces = escapeGo arr (arrayLength arr - 1) []
@@ -620,7 +623,7 @@ prop "lookup finds an inserted key" (k : Int) (v : Int) =
 (DFunDef false "escapeChar" ((PVar "c")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 34))) (ELit (LString "\\\"")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 92))) (ELit (LString "\\\\")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 8))) (ELit (LString "\\b")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 9))) (ELit (LString "\\t")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 10))) (ELit (LString "\\n")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 12))) (ELit (LString "\\f")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 13))) (ELit (LString "\\r")) (EIf (EBinOp "<" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 32))) (EApp (EVar "unicodeEscape") (EApp (EVar "charCode") (EVar "c"))) (EIf (EVar "otherwise") (EApp (EVar "charToStr") (EVar "c")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))))))
 (DTypeSig false "escapeGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "escapeGo" ((PVar "arr") (PVar "i") (PVar "acc")) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EVar "acc") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "escapeGo") (EVar "arr")) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EBinOp "::" (EApp (EVar "escapeChar") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "escapeString" (TyFun (TyCon "String") (TyCon "String")))
+(DTypeSig true "escapeString" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "escapeString" ((PVar "s")) (EBlock (DoLet false false (PVar "arr") (EApp (EVar "stringToChars") (EVar "s"))) (DoLet false false (PVar "pieces") (EApp (EApp (EApp (EVar "escapeGo") (EVar "arr")) (EBinOp "-" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 1)))) (EListLit))) (DoExpr (EApp (EVar "stringConcat") (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "\""))) (EVar "pieces")) (EListLit (ELit (LString "\""))))))))
 (DTypeSig false "elemStrings" (TyFun (TyApp (TyCon "Array") (TyCon "Json")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "elemStrings" ((PVar "arr") (PVar "i") (PVar "acc")) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EVar "acc") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "elemStrings") (EVar "arr")) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EBinOp "::" (EApp (EVar "stringify") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -788,7 +791,7 @@ prop "lookup finds an inserted key" (k : Int) (v : Int) =
 (DFunDef false "escapeChar" ((PVar "c")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 34))) (ELit (LString "\\\"")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 92))) (ELit (LString "\\\\")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 8))) (ELit (LString "\\b")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 9))) (ELit (LString "\\t")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 10))) (ELit (LString "\\n")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 12))) (ELit (LString "\\f")) (EIf (EBinOp "==" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 13))) (ELit (LString "\\r")) (EIf (EBinOp "<" (EApp (EVar "charCode") (EVar "c")) (ELit (LInt 32))) (EApp (EVar "unicodeEscape") (EApp (EVar "charCode") (EVar "c"))) (EIf (EVar "otherwise") (EApp (EVar "charToStr") (EVar "c")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))))))
 (DTypeSig false "escapeGo" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "escapeGo" ((PVar "arr") (PVar "i") (PVar "acc")) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EVar "acc") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "escapeGo") (EVar "arr")) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EBinOp "::" (EApp (EVar "escapeChar") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "escapeString" (TyFun (TyCon "String") (TyCon "String")))
+(DTypeSig true "escapeString" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "escapeString" ((PVar "s")) (EBlock (DoLet false false (PVar "arr") (EApp (EVar "stringToChars") (EVar "s"))) (DoLet false false (PVar "pieces") (EApp (EApp (EApp (EVar "escapeGo") (EVar "arr")) (EBinOp "-" (EApp (EVar "arrayLength") (EVar "arr")) (ELit (LInt 1)))) (EListLit))) (DoExpr (EApp (EVar "stringConcat") (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "\""))) (EVar "pieces")) (EListLit (ELit (LString "\""))))))))
 (DTypeSig false "elemStrings" (TyFun (TyApp (TyCon "Array") (TyCon "Json")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "elemStrings" ((PVar "arr") (PVar "i") (PVar "acc")) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EVar "acc") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "elemStrings") (EVar "arr")) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EBinOp "::" (EApp (EVar "stringify") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))

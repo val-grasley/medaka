@@ -1,5 +1,5 @@
 # META
-source_lines=942
+source_lines=953
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/mcp.mdk — the `medaka mcp` MCP (Model Context Protocol) server.
@@ -42,6 +42,7 @@ import json.{
   asString,
   asInt,
   asArray,
+  escapeString,
 }
 import io.{stripCR}
 import driver.diagnostics.{
@@ -173,19 +174,29 @@ logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
 -- ── opt-in call logging ──────────────────────────────────────────────────────
 --
 -- File logging is OPT-IN (unlike lsp.mdk's always-on debug log): when
--- MEDAKA_MCP_LOG is unset, `logMcpCall` is a no-op — one getEnv check, no file
--- I/O, no wall-clock read.  When set to a path, each event is appended as one
--- tab-separated line: "<wall-clock epoch seconds>\t<method>\t<name>\t<args
--- JSON>\n" (method-level events with no tool name/args leave those fields
--- empty).  stdout stays protocol-only (see header) — this writes ONLY to the
--- given file, via `appendFile`; a write failure falls back to stderr via
--- `logMcp` rather than crashing the server.
+-- MEDAKA_MCP_LOG is unset OR set to the empty string (an exported-but-empty
+-- env var — treated identically to unset so it can't turn into a per-request
+-- `appendFile ""` failure loop on stderr), `logMcpCall` is a no-op — one
+-- getEnv check, no file I/O, no wall-clock read.  When set to a nonempty
+-- path, each event is appended as one tab-separated line: "<wall-clock epoch
+-- seconds>\t<method>\t<name>\t<args JSON>\n" (method-level events with no
+-- tool name/args leave those fields as `""`).  `method` and `name` are passed
+-- through json.escapeString (quoted + escaped) rather than interpolated raw:
+-- `name` is client-controlled (the `tools/call` "name" argument), and an
+-- unescaped embedded '\n'/'\t' would split one record across lines, breaking
+-- the one-record-per-line invariant this log format promises. `args` is
+-- already a `stringify`d Json value, which is single-line-safe on its own
+-- (see the file header on json.stringify's escaping). stdout stays
+-- protocol-only (see header) — this writes ONLY to the given file, via
+-- `appendFile`; a write failure falls back to stderr via `logMcp` rather
+-- than crashing the server.
 logMcpCall : String -> String -> String -> <IO> Unit
 logMcpCall method name args = match getEnv "MEDAKA_MCP_LOG"
   None => unit
+  Some "" => unit
   Some path =>
     let ts = floatToString (wallTimeSec ())
-    let line = stringConcat [ts, "\t", method, "\t", name, "\t", args, "\n"]
+    let line = stringConcat [ts, "\t", escapeString method, "\t", escapeString name, "\t", args, "\n"]
     match appendFile path line
       Ok _ => unit
       Err e => logMcp (stringConcat ["log write failed: ", e])
@@ -945,7 +956,7 @@ runMcpServer runtimeSrc coreSrc stdlibDir =
 unit : Unit
 unit = ()
 # DESUGAR
-(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JNull" false) (mem "JInt" false) (mem "JString" false) (mem "JBool" false) (mem "jObject" false) (mem "jArray" false) (mem "stringify" false) (mem "parse" false) (mem "lookup" false) (mem "asString" false) (mem "asInt" false) (mem "asArray" false))))
+(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JNull" false) (mem "JInt" false) (mem "JString" false) (mem "JBool" false) (mem "jObject" false) (mem "jArray" false) (mem "stringify" false) (mem "parse" false) (mem "lookup" false) (mem "asString" false) (mem "asInt" false) (mem "asArray" false) (mem "escapeString" false))))
 (DUse false (UseGroup ("io") ((mem "stripCR" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "checkJsonSingle" false) (mem "checkJsonFile" false) (mem "cjAllToJson" false) (mem "diagIsError" false) (mem "Diag" false))))
 (DUse false (UseGroup ("tools" "lsp") ((mem "typeAtPoint" false) (mem "documentSymbols" false) (mem "definitionResult" false))))
@@ -980,7 +991,7 @@ unit = ()
 (DTypeSig false "logMcp" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "logMcp" ((PVar "s")) (EApp (EVar "ePutStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "[mcp] ")) (EVar "s")))))
 (DTypeSig false "logMcpCall" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))
-(DFunDef false "logMcpCall" ((PVar "method") (PVar "name") (PVar "args")) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_MCP_LOG"))) (arm (PCon "None") () (EVar "unit")) (arm (PCon "Some" (PVar "path")) () (EBlock (DoLet false false (PVar "ts") (EApp (EVar "floatToString") (EApp (EVar "wallTimeSec") (ELit LUnit)))) (DoLet false false (PVar "line") (EApp (EVar "stringConcat") (EListLit (EVar "ts") (ELit (LString "\t")) (EVar "method") (ELit (LString "\t")) (EVar "name") (ELit (LString "\t")) (EVar "args") (ELit (LString "\n"))))) (DoExpr (EMatch (EApp (EApp (EVar "appendFile") (EVar "path")) (EVar "line")) (arm (PCon "Ok" PWild) () (EVar "unit")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "logMcp") (EApp (EVar "stringConcat") (EListLit (ELit (LString "log write failed: ")) (EVar "e")))))))))))
+(DFunDef false "logMcpCall" ((PVar "method") (PVar "name") (PVar "args")) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_MCP_LOG"))) (arm (PCon "None") () (EVar "unit")) (arm (PCon "Some" (PLit (LString ""))) () (EVar "unit")) (arm (PCon "Some" (PVar "path")) () (EBlock (DoLet false false (PVar "ts") (EApp (EVar "floatToString") (EApp (EVar "wallTimeSec") (ELit LUnit)))) (DoLet false false (PVar "line") (EApp (EVar "stringConcat") (EListLit (EVar "ts") (ELit (LString "\t")) (EApp (EVar "escapeString") (EVar "method")) (ELit (LString "\t")) (EApp (EVar "escapeString") (EVar "name")) (ELit (LString "\t")) (EVar "args") (ELit (LString "\n"))))) (DoExpr (EMatch (EApp (EApp (EVar "appendFile") (EVar "path")) (EVar "line")) (arm (PCon "Ok" PWild) () (EVar "unit")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "logMcp") (EApp (EVar "stringConcat") (EListLit (ELit (LString "log write failed: ")) (EVar "e")))))))))))
 (DTypeSig false "initializeResultFor" (TyFun (TyCon "String") (TyCon "Json")))
 (DFunDef false "initializeResultFor" ((PVar "version")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "protocolVersion")) (EApp (EVar "JString") (EVar "version"))) (ETuple (ELit (LString "capabilities")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "tools")) (EApp (EVar "jObject") (EListLit)))))) (ETuple (ELit (LString "serverInfo")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "name")) (EApp (EVar "JString") (ELit (LString "medaka")))) (ETuple (ELit (LString "version")) (EApp (EVar "JString") (EVar "mcpServerVersion")))))))))
 (DTypeSig false "toolsListResult" (TyCon "Json"))
@@ -1093,7 +1104,7 @@ unit = ()
 (DTypeSig false "unit" (TyCon "Unit"))
 (DFunDef false "unit" () (ELit LUnit))
 # MARK
-(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JNull" false) (mem "JInt" false) (mem "JString" false) (mem "JBool" false) (mem "jObject" false) (mem "jArray" false) (mem "stringify" false) (mem "parse" false) (mem "lookup" false) (mem "asString" false) (mem "asInt" false) (mem "asArray" false))))
+(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JNull" false) (mem "JInt" false) (mem "JString" false) (mem "JBool" false) (mem "jObject" false) (mem "jArray" false) (mem "stringify" false) (mem "parse" false) (mem "lookup" false) (mem "asString" false) (mem "asInt" false) (mem "asArray" false) (mem "escapeString" false))))
 (DUse false (UseGroup ("io") ((mem "stripCR" false))))
 (DUse false (UseGroup ("driver" "diagnostics") ((mem "checkJsonSingle" false) (mem "checkJsonFile" false) (mem "cjAllToJson" false) (mem "diagIsError" false) (mem "Diag" false))))
 (DUse false (UseGroup ("tools" "lsp") ((mem "typeAtPoint" false) (mem "documentSymbols" false) (mem "definitionResult" false))))
@@ -1128,7 +1139,7 @@ unit = ()
 (DTypeSig false "logMcp" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))
 (DFunDef false "logMcp" ((PVar "s")) (EApp (EVar "ePutStrLn") (EApp (EVar "stringConcat") (EListLit (ELit (LString "[mcp] ")) (EVar "s")))))
 (DTypeSig false "logMcpCall" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))
-(DFunDef false "logMcpCall" ((PVar "method") (PVar "name") (PVar "args")) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_MCP_LOG"))) (arm (PCon "None") () (EVar "unit")) (arm (PCon "Some" (PVar "path")) () (EBlock (DoLet false false (PVar "ts") (EApp (EVar "floatToString") (EApp (EVar "wallTimeSec") (ELit LUnit)))) (DoLet false false (PVar "line") (EApp (EVar "stringConcat") (EListLit (EVar "ts") (ELit (LString "\t")) (EVar "method") (ELit (LString "\t")) (EVar "name") (ELit (LString "\t")) (EVar "args") (ELit (LString "\n"))))) (DoExpr (EMatch (EApp (EApp (EVar "appendFile") (EVar "path")) (EVar "line")) (arm (PCon "Ok" PWild) () (EVar "unit")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "logMcp") (EApp (EVar "stringConcat") (EListLit (ELit (LString "log write failed: ")) (EVar "e")))))))))))
+(DFunDef false "logMcpCall" ((PVar "method") (PVar "name") (PVar "args")) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_MCP_LOG"))) (arm (PCon "None") () (EVar "unit")) (arm (PCon "Some" (PLit (LString ""))) () (EVar "unit")) (arm (PCon "Some" (PVar "path")) () (EBlock (DoLet false false (PVar "ts") (EApp (EVar "floatToString") (EApp (EVar "wallTimeSec") (ELit LUnit)))) (DoLet false false (PVar "line") (EApp (EVar "stringConcat") (EListLit (EVar "ts") (ELit (LString "\t")) (EApp (EVar "escapeString") (EVar "method")) (ELit (LString "\t")) (EApp (EVar "escapeString") (EVar "name")) (ELit (LString "\t")) (EVar "args") (ELit (LString "\n"))))) (DoExpr (EMatch (EApp (EApp (EVar "appendFile") (EVar "path")) (EVar "line")) (arm (PCon "Ok" PWild) () (EVar "unit")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "logMcp") (EApp (EVar "stringConcat") (EListLit (ELit (LString "log write failed: ")) (EVar "e")))))))))))
 (DTypeSig false "initializeResultFor" (TyFun (TyCon "String") (TyCon "Json")))
 (DFunDef false "initializeResultFor" ((PVar "version")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "protocolVersion")) (EApp (EVar "JString") (EVar "version"))) (ETuple (ELit (LString "capabilities")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "tools")) (EApp (EVar "jObject") (EListLit)))))) (ETuple (ELit (LString "serverInfo")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "name")) (EApp (EVar "JString") (ELit (LString "medaka")))) (ETuple (ELit (LString "version")) (EApp (EVar "JString") (EVar "mcpServerVersion")))))))))
 (DTypeSig false "toolsListResult" (TyCon "Json"))

@@ -38,6 +38,7 @@ import json.{
   asString,
   asInt,
   asArray,
+  escapeString,
 }
 import io.{stripCR}
 import driver.diagnostics.{
@@ -169,19 +170,29 @@ logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
 -- ── opt-in call logging ──────────────────────────────────────────────────────
 --
 -- File logging is OPT-IN (unlike lsp.mdk's always-on debug log): when
--- MEDAKA_MCP_LOG is unset, `logMcpCall` is a no-op — one getEnv check, no file
--- I/O, no wall-clock read.  When set to a path, each event is appended as one
--- tab-separated line: "<wall-clock epoch seconds>\t<method>\t<name>\t<args
--- JSON>\n" (method-level events with no tool name/args leave those fields
--- empty).  stdout stays protocol-only (see header) — this writes ONLY to the
--- given file, via `appendFile`; a write failure falls back to stderr via
--- `logMcp` rather than crashing the server.
+-- MEDAKA_MCP_LOG is unset OR set to the empty string (an exported-but-empty
+-- env var — treated identically to unset so it can't turn into a per-request
+-- `appendFile ""` failure loop on stderr), `logMcpCall` is a no-op — one
+-- getEnv check, no file I/O, no wall-clock read.  When set to a nonempty
+-- path, each event is appended as one tab-separated line: "<wall-clock epoch
+-- seconds>\t<method>\t<name>\t<args JSON>\n" (method-level events with no
+-- tool name/args leave those fields as `""`).  `method` and `name` are passed
+-- through json.escapeString (quoted + escaped) rather than interpolated raw:
+-- `name` is client-controlled (the `tools/call` "name" argument), and an
+-- unescaped embedded '\n'/'\t' would split one record across lines, breaking
+-- the one-record-per-line invariant this log format promises. `args` is
+-- already a `stringify`d Json value, which is single-line-safe on its own
+-- (see the file header on json.stringify's escaping). stdout stays
+-- protocol-only (see header) — this writes ONLY to the given file, via
+-- `appendFile`; a write failure falls back to stderr via `logMcp` rather
+-- than crashing the server.
 logMcpCall : String -> String -> String -> <IO> Unit
 logMcpCall method name args = match getEnv "MEDAKA_MCP_LOG"
   None => unit
+  Some "" => unit
   Some path =>
     let ts = floatToString (wallTimeSec ())
-    let line = stringConcat [ts, "\t", method, "\t", name, "\t", args, "\n"]
+    let line = stringConcat [ts, "\t", escapeString method, "\t", escapeString name, "\t", args, "\n"]
     match appendFile path line
       Ok _ => unit
       Err e => logMcp (stringConcat ["log write failed: ", e])
