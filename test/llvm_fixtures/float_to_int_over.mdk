@@ -1,0 +1,2 @@
+-- #346 (S0): above Int range saturates to intMaxBound (2^62-1).
+main = floatToInt 1.0e30

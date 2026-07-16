@@ -982,7 +982,8 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   and four constants (`pi`, `e`, `intMaxBound`, `intMinBound`).  All mechanical
   per the slice template.  **Spike-rep notes (extending (a)–(z)):** **(aa)
   INTRINSIC CONVERSIONS** — `intToFloat` is `untagInt` + `sitofp i64 → double` +
-  `boxFloat`; `floatToInt` is `unboxFloat` + `fptosi double → i64` + `tagInt`
+  `boxFloat`; `floatToInt` is `unboxFloat` + `llvm.fptosi.sat.i64.f64` + clamp to
+  the 63-bit Int bounds + `tagInt` (#346 — a bare `fptosi` is poison out of range)
   (truncates toward zero, matching OCaml `int_of_float`).  Both are intercepted in
   `emitApp`'s `CVar` arm (new `isNumExtern`/`emitNumExtern` helpers beside the
   existing `isStrExtern`/`emitStrExtern`).  **(bb) LEAF `floatToString`** — a new

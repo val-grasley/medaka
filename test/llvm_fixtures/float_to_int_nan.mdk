@@ -1,0 +1,4 @@
+-- #346 (S0): floatToInt SATURATES — NaN -> 0.  A raw fptosi/i64.trunc_f64_s here is
+-- UB/poison (native printed an ASLR-randomized ADDRESS) or a wasm trap.  Pinned in
+-- test/engine_value_pins/llvm/float_to_int_nan.pin.
+main = floatToInt (0.0 / 0.0)

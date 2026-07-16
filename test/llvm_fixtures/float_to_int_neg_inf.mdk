@@ -1,0 +1,2 @@
+-- #346 (S0): floatToInt SATURATES — -inf -> intMinBound (-2^62), NOT i64 min.
+main = floatToInt (-1.0 / 0.0)
