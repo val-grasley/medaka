@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","method":"ping"}
+{"jsonrpc":"2.0","method":"initialize","params":{}}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"bogus_tool","arguments":{}}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}

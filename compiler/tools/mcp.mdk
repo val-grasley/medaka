@@ -812,28 +812,39 @@ handleToolsCall runtimeSrc coreSrc stdlibDir idJson params = match fieldStr "nam
 -- ── request dispatch ─────────────────────────────────────────────────────────
 
 -- Handle one decoded JSON-RPC message.  Requests carry an `id` and get a
--- response; notifications have no `id` and get none.  An unrecognized *request*
--- returns method-not-found (-32601); an unrecognized *notification* is ignored.
+-- response; notifications have no `id` and get none — detected by whether the
+-- `id` KEY IS PRESENT at all (`lookup`), not by `fieldOr`'s JNull default,
+-- which can't tell "absent" from "explicitly null".  This id-presence check
+-- gates EVERY recognized method uniformly (a no-id `ping`/`tools/call`/
+-- `initialize` gets no reply, exactly like a no-id unrecognized method would).
+-- An unrecognized *request* returns method-not-found (-32601); an unrecognized
+-- *notification* is ignored.  A top-level batch array (`[{...},{...}]`) is not
+-- a supported transport shape here — it gets one Invalid Request error rather
+-- than being silently dropped.
 dispatchMsg : String -> String -> String -> Json -> <IO> Unit
-dispatchMsg runtimeSrc coreSrc stdlibDir msg = match methodOf msg
-  None => logMcp "ignored: message has no string 'method' field"
-  Some meth =>
-    let idJson = fieldOr "id" msg
-    let params = fieldOr "params" msg
-    if meth == "initialize" then writeMessage (responseMsg idJson initializeResult)
-    else
+dispatchMsg runtimeSrc coreSrc stdlibDir msg = match asArray msg
+  Some _ => writeMessage
+    (errorMsg JNull (0 - 32600) "Invalid Request: batch requests are not supported")
+  None => match methodOf msg
+    None => logMcp "ignored: message has no string 'method' field"
+    Some meth =>
+      let params = fieldOr "params" msg
       if meth == "notifications/initialized" then unit
-      else
-        if meth == "ping" then writeMessage (responseMsg idJson (jObject []))
-        else
-          if meth == "shutdown" then writeMessage (responseMsg idJson (jObject []))
+      else match lookup "id" msg
+        None => unit -- notification: no response for ANY method
+        Some idJson =>
+          if meth == "initialize" then writeMessage (responseMsg idJson initializeResult)
           else
-            if meth == "tools/list" then writeMessage (responseMsg idJson toolsListResult)
+            if meth == "ping" then writeMessage (responseMsg idJson (jObject []))
             else
-              if meth == "tools/call" then handleToolsCall runtimeSrc coreSrc stdlibDir idJson params
-              else match idJson
-                JNull => unit
-                _ => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Method not found: ", meth]))
+              if meth == "shutdown" then writeMessage (responseMsg idJson (jObject []))
+              else
+                if meth == "tools/list" then writeMessage (responseMsg idJson toolsListResult)
+                else
+                  if meth == "tools/call" then
+                    handleToolsCall runtimeSrc coreSrc stdlibDir idJson params
+                  else writeMessage
+                    (errorMsg idJson (0 - 32601) (stringConcat ["Method not found: ", meth]))
 
 -- ── read loop ────────────────────────────────────────────────────────────────
 

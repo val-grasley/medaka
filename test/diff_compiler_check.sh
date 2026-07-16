@@ -2,15 +2,32 @@
 # Validation for the COMPOSED self-hosted front-end (compiler/tools/check.mdk): one
 # driver runs parse → desugar → resolve → exhaust → typecheck and must reproduce
 # each stage's oracle depending on the input category:
-#   • diff_fixtures (clean, prelude-using) → the FROZEN === TYPES === golden (full
-#     prelude + user schemes), proving resolve+exhaust pass and typecheck runs;
+#   • diff_fixtures (clean, prelude-using) → the composed driver's TYPES output must
+#     CONTAIN every user scheme line committed in the `# TYPES_USER` snapshot
+#     (test/snapshots/diff_fixtures_types/<n>.md), proving resolve+exhaust pass,
+#     typecheck runs, AND the composed driver agrees with the snapshot runner
+#     (diff_compiler_snapshot_types_user.sh) on the USER schemes. See #81 Stage C
+#     below for why this is a SUBSET check, not the old full === TYPES === diff;
 #   • resolve_fixtures (broken)            → the committed resolve diagnostics
 #     golden <name>.expected (== dev/diagdump.exe --resolve at capture), proving
 #     the driver routes resolve errors;
 #   • import_error_fixtures (bad imports)  → committed .expected golden
 #     (UnknownModule S-expression), proving R3: bad imports halt with the right
 #     error category rather than falling through to a spurious typecheck error.
-# Both sides sorted before compare.
+# The resolve/import legs compare full sorted output; the clean leg is a subset.
+#
+# ── #81 Stage C: clean leg repointed to `# TYPES_USER` (was the full === TYPES ===) ──
+# The frozen === TYPES === golden dumps ~117 prelude schemes + the user schemes; the
+# prelude table is IDENTICAL across all 57 clean fixtures (~90% redundant). The #81
+# arc moved that invariant to two focused gates: the whole-prelude-inference dump
+# (diff_compiler_snapshot_prelude.sh, ONE core.mdk dump) and the user-only schemes
+# (diff_compiler_snapshot_types_user.sh, `# TYPES_USER`). This gate's remaining job
+# is to prove the COMPOSED driver (check_main) agrees with the snapshot runner on
+# the user schemes WITHOUT re-pinning the prelude table 57×: for each clean fixture,
+# every `# TYPES_USER` line must be PRESENT in check_main's TYPES output (subset,
+# via grep -Fxv membership — order-independent, no full-dump equality). Proven at
+# introduction: 0 missing across all 57, including the match_nonexhaustive fixture's
+# `Warning:` line (check_main emits it too, so it needs no special-casing).
 #
 # OCaml-free (REROOT-PLAN §2b): native host test/bin/check_main; every oracle leg
 # is a committed golden (no live main.exe / diagdump re-derivation).
@@ -43,15 +60,24 @@ RT="$ROOT/stdlib/runtime.mdk"; CORE="$ROOT/stdlib/core.mdk"
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
+# Extract the `# TYPES_USER` section (the last section) of a snapshot .md.
+tu_section() { awk '/^# TYPES_USER$/{f=1;next} /^# /{f=0} f'; }
 pass=0; fail=0
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
 for g in "$ROOT"/test/diff_fixtures/*.golden; do
   fix="$(basename "$g" .golden)"
   [ -f "$ROOT/test/diff_fixtures/$fix.mdk" ] || continue
-  self="$("$CHECK" "$RT" "$CORE" "$ROOT/test/diff_fixtures/$fix.mdk" 2>/dev/null | strip_unit | LC_ALL=C sort)"
-  want="$(sed -n '/=== TYPES ===/,/=== EVAL ===/p' "$g" | sed '1d;$d' | LC_ALL=C sort)"
-  if [ "$self" = "$want" ]; then pass=$((pass+1)); printf 'ok   types/%s\n' "$fix"
-  else fail=$((fail+1)); printf 'FAIL types/%s\n' "$fix"; fi
+  snap="$ROOT/test/snapshots/diff_fixtures_types/$fix.md"
+  [ -f "$snap" ] || { fail=$((fail+1)); printf 'FAIL types/%s (no # TYPES_USER snapshot)\n' "$fix"; continue; }
+  # Composed-driver TYPES output (prelude-bearing, as before). Subset check: every
+  # committed `# TYPES_USER` line must appear verbatim; prelude schemes are unpinned.
+  "$CHECK" "$RT" "$CORE" "$ROOT/test/diff_fixtures/$fix.mdk" 2>/dev/null | strip_unit > "$WORK/self"
+  miss="$(tu_section < "$snap" | grep -Fxv -f "$WORK/self")"
+  if [ -z "$miss" ]; then pass=$((pass+1)); printf 'ok   types/%s\n' "$fix"
+  else fail=$((fail+1)); printf 'FAIL types/%s\n' "$fix"
+    printf '%s\n' "$miss" | sed 's/^/  missing from check_main TYPES: /'; fi
 done
 
 for f in "$ROOT"/test/resolve_fixtures/*.mdk; do

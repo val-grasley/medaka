@@ -239,6 +239,7 @@ composeOp : Mono -> Mono -> Bool -> Mono
 computeMangledShadowMap : List Decl -> List (String, List Decl) -> List (String, String)
 concreteDomainScheme : String -> List (String, Scheme) -> Option Scheme
 concreteHeadVarIds : Mono -> List Int
+concreteReqMatchByIface : String -> Mono -> List Mono -> Option (List (String, Mono), List Require)
 consOp : Mono -> Mono -> Mono
 consSiteFn : String -> a -> Map String (List a) -> Map String (List a)
 constrainedSigArity : Decl -> List (String, List Int)

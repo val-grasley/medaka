@@ -1,5 +1,5 @@
 # META
-source_lines=867
+source_lines=878
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/mcp.mdk — the `medaka mcp` MCP (Model Context Protocol) server.
@@ -816,28 +816,39 @@ handleToolsCall runtimeSrc coreSrc stdlibDir idJson params = match fieldStr "nam
 -- ── request dispatch ─────────────────────────────────────────────────────────
 
 -- Handle one decoded JSON-RPC message.  Requests carry an `id` and get a
--- response; notifications have no `id` and get none.  An unrecognized *request*
--- returns method-not-found (-32601); an unrecognized *notification* is ignored.
+-- response; notifications have no `id` and get none — detected by whether the
+-- `id` KEY IS PRESENT at all (`lookup`), not by `fieldOr`'s JNull default,
+-- which can't tell "absent" from "explicitly null".  This id-presence check
+-- gates EVERY recognized method uniformly (a no-id `ping`/`tools/call`/
+-- `initialize` gets no reply, exactly like a no-id unrecognized method would).
+-- An unrecognized *request* returns method-not-found (-32601); an unrecognized
+-- *notification* is ignored.  A top-level batch array (`[{...},{...}]`) is not
+-- a supported transport shape here — it gets one Invalid Request error rather
+-- than being silently dropped.
 dispatchMsg : String -> String -> String -> Json -> <IO> Unit
-dispatchMsg runtimeSrc coreSrc stdlibDir msg = match methodOf msg
-  None => logMcp "ignored: message has no string 'method' field"
-  Some meth =>
-    let idJson = fieldOr "id" msg
-    let params = fieldOr "params" msg
-    if meth == "initialize" then writeMessage (responseMsg idJson initializeResult)
-    else
+dispatchMsg runtimeSrc coreSrc stdlibDir msg = match asArray msg
+  Some _ => writeMessage
+    (errorMsg JNull (0 - 32600) "Invalid Request: batch requests are not supported")
+  None => match methodOf msg
+    None => logMcp "ignored: message has no string 'method' field"
+    Some meth =>
+      let params = fieldOr "params" msg
       if meth == "notifications/initialized" then unit
-      else
-        if meth == "ping" then writeMessage (responseMsg idJson (jObject []))
-        else
-          if meth == "shutdown" then writeMessage (responseMsg idJson (jObject []))
+      else match lookup "id" msg
+        None => unit -- notification: no response for ANY method
+        Some idJson =>
+          if meth == "initialize" then writeMessage (responseMsg idJson initializeResult)
           else
-            if meth == "tools/list" then writeMessage (responseMsg idJson toolsListResult)
+            if meth == "ping" then writeMessage (responseMsg idJson (jObject []))
             else
-              if meth == "tools/call" then handleToolsCall runtimeSrc coreSrc stdlibDir idJson params
-              else match idJson
-                JNull => unit
-                _ => writeMessage (errorMsg idJson (0 - 32601) (stringConcat ["Method not found: ", meth]))
+              if meth == "shutdown" then writeMessage (responseMsg idJson (jObject []))
+              else
+                if meth == "tools/list" then writeMessage (responseMsg idJson toolsListResult)
+                else
+                  if meth == "tools/call" then
+                    handleToolsCall runtimeSrc coreSrc stdlibDir idJson params
+                  else writeMessage
+                    (errorMsg idJson (0 - 32601) (stringConcat ["Method not found: ", meth]))
 
 -- ── read loop ────────────────────────────────────────────────────────────────
 
@@ -1000,7 +1011,7 @@ unit = ()
 (DTypeSig false "handleToolsCall" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyFun (TyCon "Json") (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "handleToolsCall" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "idJson") (PVar "params")) (EMatch (EApp (EApp (EVar "fieldStr") (ELit (LString "name"))) (EVar "params")) (arm (PCon "None") () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32602)))) (ELit (LString "tools/call: missing 'name'"))))) (arm (PCon "Some" (PVar "name")) () (EMatch (EApp (EApp (EApp (EApp (EApp (EVar "callTool") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "name")) (EApp (EApp (EVar "fieldOr") (ELit (LString "arguments"))) (EVar "params"))) (arm (PCon "None") () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32601)))) (EApp (EVar "stringConcat") (EListLit (ELit (LString "Unknown tool: ")) (EVar "name")))))) (arm (PCon "Some" (PVar "result")) () (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "result"))))))))
 (DTypeSig false "dispatchMsg" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyEffect ("IO") None (TyCon "Unit")))))))
-(DFunDef false "dispatchMsg" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "msg")) (EMatch (EApp (EVar "methodOf") (EVar "msg")) (arm (PCon "None") () (EApp (EVar "logMcp") (ELit (LString "ignored: message has no string 'method' field")))) (arm (PCon "Some" (PVar "meth")) () (EBlock (DoLet false false (PVar "idJson") (EApp (EApp (EVar "fieldOr") (ELit (LString "id"))) (EVar "msg"))) (DoLet false false (PVar "params") (EApp (EApp (EVar "fieldOr") (ELit (LString "params"))) (EVar "msg"))) (DoExpr (EIf (EBinOp "==" (EVar "meth") (ELit (LString "initialize"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "initializeResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "notifications/initialized"))) (EVar "unit") (EIf (EBinOp "==" (EVar "meth") (ELit (LString "ping"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "shutdown"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/list"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "toolsListResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/call"))) (EApp (EApp (EApp (EApp (EApp (EVar "handleToolsCall") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "idJson")) (EVar "params")) (EMatch (EVar "idJson") (arm (PCon "JNull") () (EVar "unit")) (arm PWild () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32601)))) (EApp (EVar "stringConcat") (EListLit (ELit (LString "Method not found: ")) (EVar "meth"))))))))))))))))))
+(DFunDef false "dispatchMsg" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "msg")) (EMatch (EApp (EVar "asArray") (EVar "msg")) (arm (PCon "Some" PWild) () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "JNull")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32600)))) (ELit (LString "Invalid Request: batch requests are not supported"))))) (arm (PCon "None") () (EMatch (EApp (EVar "methodOf") (EVar "msg")) (arm (PCon "None") () (EApp (EVar "logMcp") (ELit (LString "ignored: message has no string 'method' field")))) (arm (PCon "Some" (PVar "meth")) () (EBlock (DoLet false false (PVar "params") (EApp (EApp (EVar "fieldOr") (ELit (LString "params"))) (EVar "msg"))) (DoExpr (EIf (EBinOp "==" (EVar "meth") (ELit (LString "notifications/initialized"))) (EVar "unit") (EMatch (EApp (EApp (EVar "lookup") (ELit (LString "id"))) (EVar "msg")) (arm (PCon "None") () (EVar "unit")) (arm (PCon "Some" (PVar "idJson")) () (EIf (EBinOp "==" (EVar "meth") (ELit (LString "initialize"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "initializeResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "ping"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "shutdown"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/list"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "toolsListResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/call"))) (EApp (EApp (EApp (EApp (EApp (EVar "handleToolsCall") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "idJson")) (EVar "params")) (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32601)))) (EApp (EVar "stringConcat") (EListLit (ELit (LString "Method not found: ")) (EVar "meth"))))))))))))))))))))
 (DTypeSig false "handleLine" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))))
 (DFunDef false "handleLine" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "raw")) (EBlock (DoLet false false (PVar "line") (EApp (EVar "stripCR") (EVar "raw"))) (DoExpr (EIf (EBinOp "==" (EVar "line") (ELit (LString ""))) (EVar "unit") (EMatch (EApp (EVar "parse") (EVar "line")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "logMcp") (EApp (EVar "stringConcat") (EListLit (ELit (LString "parse error (skipped): ")) (EVar "e"))))) (arm (PCon "Ok" (PVar "msg")) () (EApp (EApp (EApp (EApp (EVar "dispatchMsg") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "msg"))))))))
 (DTypeSig false "serveLoop" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))
@@ -1140,7 +1151,7 @@ unit = ()
 (DTypeSig false "handleToolsCall" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyFun (TyCon "Json") (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "handleToolsCall" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "idJson") (PVar "params")) (EMatch (EApp (EApp (EVar "fieldStr") (ELit (LString "name"))) (EVar "params")) (arm (PCon "None") () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32602)))) (ELit (LString "tools/call: missing 'name'"))))) (arm (PCon "Some" (PVar "name")) () (EMatch (EApp (EApp (EApp (EApp (EApp (EVar "callTool") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "name")) (EApp (EApp (EVar "fieldOr") (ELit (LString "arguments"))) (EVar "params"))) (arm (PCon "None") () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32601)))) (EApp (EVar "stringConcat") (EListLit (ELit (LString "Unknown tool: ")) (EVar "name")))))) (arm (PCon "Some" (PVar "result")) () (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "result"))))))))
 (DTypeSig false "dispatchMsg" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyEffect ("IO") None (TyCon "Unit")))))))
-(DFunDef false "dispatchMsg" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "msg")) (EMatch (EApp (EVar "methodOf") (EVar "msg")) (arm (PCon "None") () (EApp (EVar "logMcp") (ELit (LString "ignored: message has no string 'method' field")))) (arm (PCon "Some" (PVar "meth")) () (EBlock (DoLet false false (PVar "idJson") (EApp (EApp (EVar "fieldOr") (ELit (LString "id"))) (EVar "msg"))) (DoLet false false (PVar "params") (EApp (EApp (EVar "fieldOr") (ELit (LString "params"))) (EVar "msg"))) (DoExpr (EIf (EBinOp "==" (EVar "meth") (ELit (LString "initialize"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "initializeResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "notifications/initialized"))) (EVar "unit") (EIf (EBinOp "==" (EVar "meth") (ELit (LString "ping"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "shutdown"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/list"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "toolsListResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/call"))) (EApp (EApp (EApp (EApp (EApp (EVar "handleToolsCall") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "idJson")) (EVar "params")) (EMatch (EVar "idJson") (arm (PCon "JNull") () (EVar "unit")) (arm PWild () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32601)))) (EApp (EVar "stringConcat") (EListLit (ELit (LString "Method not found: ")) (EVar "meth"))))))))))))))))))
+(DFunDef false "dispatchMsg" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "msg")) (EMatch (EApp (EVar "asArray") (EVar "msg")) (arm (PCon "Some" PWild) () (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "JNull")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32600)))) (ELit (LString "Invalid Request: batch requests are not supported"))))) (arm (PCon "None") () (EMatch (EApp (EVar "methodOf") (EVar "msg")) (arm (PCon "None") () (EApp (EVar "logMcp") (ELit (LString "ignored: message has no string 'method' field")))) (arm (PCon "Some" (PVar "meth")) () (EBlock (DoLet false false (PVar "params") (EApp (EApp (EVar "fieldOr") (ELit (LString "params"))) (EVar "msg"))) (DoExpr (EIf (EBinOp "==" (EVar "meth") (ELit (LString "notifications/initialized"))) (EVar "unit") (EMatch (EApp (EApp (EVar "lookup") (ELit (LString "id"))) (EVar "msg")) (arm (PCon "None") () (EVar "unit")) (arm (PCon "Some" (PVar "idJson")) () (EIf (EBinOp "==" (EVar "meth") (ELit (LString "initialize"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "initializeResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "ping"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "shutdown"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EApp (EVar "jObject") (EListLit)))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/list"))) (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "toolsListResult"))) (EIf (EBinOp "==" (EVar "meth") (ELit (LString "tools/call"))) (EApp (EApp (EApp (EApp (EApp (EVar "handleToolsCall") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "idJson")) (EVar "params")) (EApp (EVar "writeMessage") (EApp (EApp (EApp (EVar "errorMsg") (EVar "idJson")) (EBinOp "-" (ELit (LInt 0)) (ELit (LInt 32601)))) (EApp (EVar "stringConcat") (EListLit (ELit (LString "Method not found: ")) (EVar "meth"))))))))))))))))))))
 (DTypeSig false "handleLine" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))))
 (DFunDef false "handleLine" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "stdlibDir") (PVar "raw")) (EBlock (DoLet false false (PVar "line") (EApp (EVar "stripCR") (EVar "raw"))) (DoExpr (EIf (EBinOp "==" (EVar "line") (ELit (LString ""))) (EVar "unit") (EMatch (EApp (EVar "parse") (EVar "line")) (arm (PCon "Err" (PVar "e")) () (EApp (EVar "logMcp") (EApp (EVar "stringConcat") (EListLit (ELit (LString "parse error (skipped): ")) (EVar "e"))))) (arm (PCon "Ok" (PVar "msg")) () (EApp (EApp (EApp (EApp (EVar "dispatchMsg") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "stdlibDir")) (EVar "msg"))))))))
 (DTypeSig false "serveLoop" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))
