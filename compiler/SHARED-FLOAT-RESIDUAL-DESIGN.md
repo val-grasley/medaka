@@ -2,8 +2,18 @@
 
 **Status:** IMPLEMENTED — approach C shipped `f3d4f71d` (C-core) + `27969e7f` (C3 wasm
 wiring), 2026-06-30. Confirmed by `compiler/EMITTER-GAPS.md`'s closing note ("Float on
-WasmGC is CLOSED"). One item explicitly deferred: C4 (bare-Float-main auto-print),
-orthogonal to the arithmetic fix.
+WasmGC is CLOSED"). C4 (bare-Float-main auto-print) was planned as a DEFERRED follow-up
+(§6/§7 below) but is now fixed-or-mooted rather than open (#361, re-probed 2026-07-16):
+`main = fold (acc x => acc + x) 0.0 [1.0, 2.0, 3.0]` — bug #1 in the table below, which
+this doc's own capture recorded as `2187642768` (garbage) on native — now builds and
+auto-prints `6.0` correctly (`medaka build … && ./…` on the current binary). Whichever
+later change closed it, C4's specific proposed implementation (a dedicated `Ref String`
+main-type stamp) was never separately built; the outcome it targeted is simply no longer
+reproducible. Separately, `medaka run` on the same bare-Float-main source now REJECTS it
+with a clean diagnostic ("'main' must be a value of type Unit…") rather than printing
+anything — a deliberate `run`-vs-`build` CLI/UX asymmetry, not a regression; see
+`compiler/entries/eval_autoprint_main.mdk`'s header for where that asymmetry is pinned
+for the 3-engine differential gate.
 
 Original header (predates the fix): **Status:** DESIGN (read-mostly scoping). No emitter/lib source changed. This doc
 scopes the residual left after the two signature-driven fixes closed the anchored
@@ -264,5 +274,9 @@ per sub-stage; verify `selfcompile_fixpoint` once at the checkpoint).
 - **C-core (Opus) = C0 + C1 + C2** as one coupled unit: add the scalar-tag field to `Route`/`CBinPrim` + `lowerBinop` passthrough (C0, do first + verify goldens inert/recaptured — IR-shape lockstep footgun); typecheck grounded-only stamp into the `pendingBinopSites` infra (C1); native `emitBin` reads the tag → `LTFloat` (C2). Gate: native #6/#9 fixtures run==build correct Float; `diff_compiler_llvm`/`check`/sexp-lower goldens recaptured; `selfcompile_fixpoint` C3a/C3b YES. Incremental-landing OK (land C0 alone + STOP if the AST lockstep balloons).
 - **C3 (Sonnet)** = wasm `emitBinRef`/`cexprIsFloat` read the tag → float path. Gate: wasm #5/#6/#8/#9 fixtures wasm==native; `diff_wasm` + `diff_sqlite` green.
 - **Seed re-mint ONCE** after C3 (orchestrator): C touches the native self-compile closure → one re-mint unit; verify `selfcompile_fixpoint` + cold `bootstrap_from_seed`.
-- **C4 (auto-print bare Float mains) DEFERRED** — orthogonal nicety, not part of the arithmetic fix.
+- **C4 (auto-print bare Float mains) DEFERRED at the time this plan was locked** —
+  orthogonal nicety, not part of the arithmetic fix. ⚠️ See the Status line at the top of
+  this doc: re-probed 2026-07-16 (#361), the specific symptom C4 targeted no longer
+  reproduces (native now auto-prints correctly). This plan is kept for the record, not as
+  a live TODO.
 - **NEXT workstream (after C):** wasm polymorphic-Num arithmetic (§4, #12–13) — its own design pass (`$mdk_value_add` runtime dispatch vs monomorphization).
