@@ -1,0 +1,11 @@
+-- #171, `intBoundFor` arm: 2^62 as a pattern RANGE bound. Third distinct
+-- rejection site (the range hi-bound is parsed by `intBound`, not by
+-- `parseAtomRaw` or `parsePatAtom`). Untested, this silently becomes the range
+-- `0..intMinBound` — an EMPTY range that matches nothing, with no diagnostic.
+-- The negated bound stays legal and is covered by the accept fixture in
+-- run_check_agreement_fixtures/accept_int_lit_min_bound.
+f n = match n
+  0..4611686018427387904 => 1
+  _ => 0
+
+main = println (f 1)

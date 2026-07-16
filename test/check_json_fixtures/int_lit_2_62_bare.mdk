@@ -1,0 +1,8 @@
+-- #171 (S0): pins the exact DIAGNOSTIC for a bare positive 2^62 int literal.
+-- Before the fix this program was ACCEPTED and silently printed
+-- -4611686018427387904 (intMinBound — sign flip AND wrong magnitude), exit 0.
+-- It is a frontend defect, so eval/native/wasm all agreed on the wrong answer
+-- and no engine-parity gate could see it; the diagnostic is the only assertion
+-- that discriminates. `-4611686018427387904` stays legal (it is the writable
+-- minimum) — pinned by run_check_agreement_fixtures/accept_int_lit_min_bound.
+main = println 4611686018427387904

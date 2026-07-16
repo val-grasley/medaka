@@ -1,0 +1,5 @@
+-- #171 (S0): a bare positive 2^62 int literal silently wrapped to intMinBound —
+-- check, run AND build all accepted it and all three printed -4611686018427387904.
+-- Because this is a FRONTEND defect, eval/native/wasm agreed perfectly on the
+-- wrong answer and no parity gate could catch it. Pin that all three now REJECT.
+main = println 4611686018427387904
