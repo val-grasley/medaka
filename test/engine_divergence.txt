@@ -30,7 +30,17 @@
 #                eval:no-tco                eval:unsupported-node
 #                eval:intended-abort        native:prelude-collision
 #                native:autoprint-ambiguous wasm:emitter-gap
-#                wasm:codegen-bug
+#                wasm:codegen-bug           emitter:shared-eager-init
+#
+#              `emitter:shared-eager-init` (added 2026-07-16 for #553) is the first
+#              category naming a defect in a SHARED emitter primitive rather than in one
+#              engine.  It was added rather than bending an existing label because every
+#              existing one would have been a FALSE claim: the `wasm:*` categories are
+#              wrong (native is broken too — it SIGSEGVs on the boxed shape and silently
+#              prints a zero on the unboxed one), and there is no `native:*` codegen
+#              category at all.  The taxonomy simply had no cell for "one shared helper
+#              (`eagerVars`), both backends wrong", and this file's own rule — THE
+#              CATEGORY IS A CLAIM — forbids writing the nearest label instead.
 #
 #   reason     the specific bug, one line.  NEVER leave it as TODO.
 #
@@ -108,6 +118,7 @@ llvm/adt_list_fold                 na:na:na:ran:na:na         native:prelude-col
 llvm/adt_option                    na:na:na:ran:na:na         native:prelude-collision native+wasm: the prelude-free fixture redefines a core type, which collides under a real `medaka build` ('orElse' expects a container (like List or Array) here, but got Maybe). Both shipping backends reject it identically.
 llvm/clo_adt                       na:na:na:ran:na:na         native:prelude-collision native+wasm: the prelude-free fixture redefines a core type, which collides under a real `medaka build` (Type mismatch: IntList vs a b). Both shipping backends reject it identically.
 llvm/clock_monotonic_sleep         eq:na:na:ran:ran:na        wasm:emitter-gap wasm: emit: runtime error [E-PANIC]: unbound variable 'monotonicSec' (not a local, global value, constructor, or known function) [in ?]
+llvm/eager_global_call_hidden      ne:ne:ne:ran:ran:ran      emitter:shared-eager-init  WP10/#553: `cell = mkVal ()` reads the `base` global only INSIDE mkVal's body, but the eager-global topo sort's edges come from the SHARED `eagerVars` (backend/emit_support.mdk), a DIRECT free-var scan that does NOT follow calls -> the single edge is `mkVal` (a function, not a value bind) -> NO edge -> source order wins -> `cell` inits before `base` and reads its still-zero cell. eval 42 (right) | native 0 exit 0 (a WRONG ANSWER, no diagnostic - the S0) | wasm traps at instantiate (that is #543, which killed the playground and is the only reason this was noticed). NOT wasm-only and NOT playground-only: llvm_emit's `orderedValBinds` uses the same `eagerVars`. Severity tracks the global's TYPE - unboxed Int lies silently, boxed segfaults (exit 139). Control: `eager_global_call_ordered.mdk` is the same program with `base` declared first and is green on all 3 engines, so declaration order is the ONLY variable. DRAINS when #553 lands (native starts printing 42 -> this row promotes).
 llvm/env_args_empty                na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no args — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
 llvm/env_getenv_none               na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no getEnv — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter
 llvm/env_getenv_some               na:eq:na:na:ran:ran        eval:extern-not-implemented eval.mdk's primitive table has no getEnv — declared in stdlib/runtime.mdk, implemented in medaka_rt.c, absent from the interpreter

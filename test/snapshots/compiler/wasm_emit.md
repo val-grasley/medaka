@@ -1,5 +1,5 @@
 # META
-source_lines=8488
+source_lines=8497
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -7980,10 +7980,14 @@ firstTyIsW tym c ty = match omLookup c tym
   Some t => eqStr t ty
   None => False
 
--- `ctorsOfType`'s dispatch, off the memo and without a `Prog` (the indices are built
--- before the Prog exists).  Keep in lockstep with `ctorsOfType`.
-ctorsOfTypeIxW : OrdMap (List String) -> String -> List String
-ctorsOfTypeIxW tcm ty =
+-- the shared 5-branch ctor-list dispatch used by BOTH `ctorsOfTypeIxW` (memo-only,
+-- called before the `Prog` exists) and `ctorsOfType` (Prog-based). Parameterized
+-- over the fallback for a plain user type, so each caller supplies its own way to
+-- resolve that case (a direct memo lookup vs `ctorsOfTypeUser`) while the
+-- reserved/List/Bool/tuple branches — and their order — exist exactly once, so
+-- the two can no longer drift apart.
+ctorsOfTypeDispatchW : (String -> List String) -> String -> List String
+ctorsOfTypeDispatchW userFallback ty =
   if isReservedType ty then
     reservedCtorsOfType ty
   else if ty == "List" then
@@ -7993,7 +7997,14 @@ ctorsOfTypeIxW tcm ty =
   else if isTupleType ty then
     [tupleCtorName (tupleTypeArity ty)]
   else
-    orEmptyCtors (omLookup ty tcm)
+    userFallback ty
+
+-- `ctorsOfType`'s dispatch, off the memo and without a `Prog` (the indices are built
+-- before the Prog exists). Shares its branches with `ctorsOfType` via
+-- `ctorsOfTypeDispatchW` — nothing left to keep in lockstep by hand.
+ctorsOfTypeIxW : OrdMap (List String) -> String -> List String
+ctorsOfTypeIxW tcm ty =
+  ctorsOfTypeDispatchW (t => orEmptyCtors (omLookup t tcm)) ty
 
 ctorArity : Prog -> String -> Int
 ctorArity (Prog ctorArs _ _ _ _ _ _ _ _) name = match ctorArLookupW ctorArs name
@@ -8044,18 +8055,16 @@ orNeg1Ord None = -1
 
 -- the declaration-ordered ctor list of a user type (the ctor→type map lists each
 -- type's ctors consecutively in declaration order — filter to this type).
+-- Bool's ctors are SYNTHETIC (registered via syntheticCtor* helpers, not in the
+-- program's ctorTypes table), so `ctorsOfTypeUser` would return [] → a 0-slot
+-- br_table tower → both arms dropped → fall-through `unreachable` if it weren't
+-- special-cased in the shared dispatch below. A genuine `match <Bool> { True =>
+-- …; False => … }` (a CDecision switch, not a lowered CIf) hits this.
+-- Index-aligned to syntheticCtorOrdinal: False=0, True=1.
+-- Shares its branches with `ctorsOfTypeIxW` via `ctorsOfTypeDispatchW` — nothing
+-- left to keep in lockstep by hand.
 ctorsOfType : Prog -> String -> List String
-ctorsOfType prog ty =
-  if isReservedType ty then reservedCtorsOfType ty
-  else if ty == "List" then ["Cons", "Nil"]
-  -- Bool's ctors are SYNTHETIC (registered via syntheticCtor* helpers, not in the
-  -- program's ctorTypes table), so ctorsOfTypeUser would return [] → a 0-slot
-  -- br_table tower → both arms dropped → fall-through `unreachable`.  A genuine
-  -- `match <Bool> { True => …; False => … }` (a CDecision switch, not a lowered CIf)
-  -- hits this.  Index-aligned to syntheticCtorOrdinal: False=0, True=1.
-  else if ty == "Bool" then ["False", "True"]
-  else if isTupleType ty then [tupleCtorName (tupleTypeArity ty)]
-  else ctorsOfTypeUser prog ty
+ctorsOfType prog ty = ctorsOfTypeDispatchW (ctorsOfTypeUser prog) ty
 
 -- a synthetic tuple type name "$Tuple<n>" and its arity.
 isTupleType : String -> Bool
@@ -10378,8 +10387,10 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "indexCtorsW" ((PVar "tym") (PVar "ty") (PCons (PVar "c") (PVar "cs")) (PVar "i") (PVar "m")) (EApp (EApp (EApp (EApp (EApp (EVar "indexCtorsW") (EVar "tym")) (EVar "ty")) (EVar "cs")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EIf (EApp (EApp (EVar "omHasKey") (EVar "c")) (EVar "m")) (EVar "m") (EIf (EApp (EApp (EApp (EVar "firstTyIsW") (EVar "tym")) (EVar "c")) (EVar "ty")) (EApp (EApp (EApp (EVar "omInsert") (EVar "c")) (EVar "i")) (EVar "m")) (EVar "m")))))
 (DTypeSig false "firstTyIsW" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool")))))
 (DFunDef false "firstTyIsW" ((PVar "tym") (PVar "c") (PVar "ty")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "c")) (EVar "tym")) (arm (PCon "Some" (PVar "t")) () (EApp (EApp (EVar "eqStr") (EVar "t")) (EVar "ty"))) (arm (PCon "None") () (EVar "False"))))
+(DTypeSig false "ctorsOfTypeDispatchW" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "ctorsOfTypeDispatchW" ((PVar "userFallback") (PVar "ty")) (EIf (EApp (EVar "isReservedType") (EVar "ty")) (EApp (EVar "reservedCtorsOfType") (EVar "ty")) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "List"))) (EListLit (ELit (LString "Cons")) (ELit (LString "Nil"))) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "Bool"))) (EListLit (ELit (LString "False")) (ELit (LString "True"))) (EIf (EApp (EVar "isTupleType") (EVar "ty")) (EListLit (EApp (EVar "tupleCtorName") (EApp (EVar "tupleTypeArity") (EVar "ty")))) (EApp (EVar "userFallback") (EVar "ty")))))))
 (DTypeSig false "ctorsOfTypeIxW" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "ctorsOfTypeIxW" ((PVar "tcm") (PVar "ty")) (EIf (EApp (EVar "isReservedType") (EVar "ty")) (EApp (EVar "reservedCtorsOfType") (EVar "ty")) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "List"))) (EListLit (ELit (LString "Cons")) (ELit (LString "Nil"))) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "Bool"))) (EListLit (ELit (LString "False")) (ELit (LString "True"))) (EIf (EApp (EVar "isTupleType") (EVar "ty")) (EListLit (EApp (EVar "tupleCtorName") (EApp (EVar "tupleTypeArity") (EVar "ty")))) (EApp (EVar "orEmptyCtors") (EApp (EApp (EVar "omLookup") (EVar "ty")) (EVar "tcm"))))))))
+(DFunDef false "ctorsOfTypeIxW" ((PVar "tcm") (PVar "ty")) (EApp (EApp (EVar "ctorsOfTypeDispatchW") (ELam ((PVar "t")) (EApp (EVar "orEmptyCtors") (EApp (EApp (EVar "omLookup") (EVar "t")) (EVar "tcm"))))) (EVar "ty")))
 (DTypeSig false "ctorArity" (TyFun (TyCon "Prog") (TyFun (TyCon "String") (TyCon "Int"))))
 (DFunDef false "ctorArity" ((PCon "Prog" (PVar "ctorArs") PWild PWild PWild PWild PWild PWild PWild PWild) (PVar "name")) (EMatch (EApp (EApp (EVar "ctorArLookupW") (EVar "ctorArs")) (EVar "name")) (arm (PCon "Some" (PVar "a")) () (EVar "a")) (arm (PCon "None") () (EIf (EApp (EVar "isSyntheticCtor") (EVar "name")) (EApp (EVar "syntheticCtorArity") (EVar "name")) (EApp (EVar "reservedCtorArity") (EVar "name"))))))
 (DTypeSig false "ctorArLookupW" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int")))))
@@ -10394,7 +10405,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "orNeg1Ord" ((PCon "Some" (PVar "o"))) (EVar "o"))
 (DFunDef false "orNeg1Ord" ((PCon "None")) (EUnOp "-" (ELit (LInt 1))))
 (DTypeSig false "ctorsOfType" (TyFun (TyCon "Prog") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "ctorsOfType" ((PVar "prog") (PVar "ty")) (EIf (EApp (EVar "isReservedType") (EVar "ty")) (EApp (EVar "reservedCtorsOfType") (EVar "ty")) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "List"))) (EListLit (ELit (LString "Cons")) (ELit (LString "Nil"))) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "Bool"))) (EListLit (ELit (LString "False")) (ELit (LString "True"))) (EIf (EApp (EVar "isTupleType") (EVar "ty")) (EListLit (EApp (EVar "tupleCtorName") (EApp (EVar "tupleTypeArity") (EVar "ty")))) (EApp (EApp (EVar "ctorsOfTypeUser") (EVar "prog")) (EVar "ty")))))))
+(DFunDef false "ctorsOfType" ((PVar "prog") (PVar "ty")) (EApp (EApp (EVar "ctorsOfTypeDispatchW") (EApp (EVar "ctorsOfTypeUser") (EVar "prog"))) (EVar "ty")))
 (DTypeSig false "isTupleType" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isTupleType" ((PVar "ty")) (EApp (EApp (EVar "startsWithStr") (EVar "ty")) (ELit (LString "$Tuple"))))
 (DTypeSig false "tupleTypeArity" (TyFun (TyCon "String") (TyCon "Int")))
@@ -12490,8 +12501,10 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "indexCtorsW" ((PVar "tym") (PVar "ty") (PCons (PVar "c") (PVar "cs")) (PVar "i") (PVar "m")) (EApp (EApp (EApp (EApp (EApp (EVar "indexCtorsW") (EVar "tym")) (EVar "ty")) (EVar "cs")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EIf (EApp (EApp (EVar "omHasKey") (EVar "c")) (EVar "m")) (EVar "m") (EIf (EApp (EApp (EApp (EVar "firstTyIsW") (EVar "tym")) (EVar "c")) (EVar "ty")) (EApp (EApp (EApp (EVar "omInsert") (EVar "c")) (EVar "i")) (EVar "m")) (EVar "m")))))
 (DTypeSig false "firstTyIsW" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool")))))
 (DFunDef false "firstTyIsW" ((PVar "tym") (PVar "c") (PVar "ty")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "c")) (EVar "tym")) (arm (PCon "Some" (PVar "t")) () (EApp (EApp (EVar "eqStr") (EVar "t")) (EVar "ty"))) (arm (PCon "None") () (EVar "False"))))
+(DTypeSig false "ctorsOfTypeDispatchW" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "ctorsOfTypeDispatchW" ((PVar "userFallback") (PVar "ty")) (EIf (EApp (EVar "isReservedType") (EVar "ty")) (EApp (EVar "reservedCtorsOfType") (EVar "ty")) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "List"))) (EListLit (ELit (LString "Cons")) (ELit (LString "Nil"))) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "Bool"))) (EListLit (ELit (LString "False")) (ELit (LString "True"))) (EIf (EApp (EVar "isTupleType") (EVar "ty")) (EListLit (EApp (EVar "tupleCtorName") (EApp (EVar "tupleTypeArity") (EVar "ty")))) (EApp (EVar "userFallback") (EVar "ty")))))))
 (DTypeSig false "ctorsOfTypeIxW" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "ctorsOfTypeIxW" ((PVar "tcm") (PVar "ty")) (EIf (EApp (EVar "isReservedType") (EVar "ty")) (EApp (EVar "reservedCtorsOfType") (EVar "ty")) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "List"))) (EListLit (ELit (LString "Cons")) (ELit (LString "Nil"))) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "Bool"))) (EListLit (ELit (LString "False")) (ELit (LString "True"))) (EIf (EApp (EVar "isTupleType") (EVar "ty")) (EListLit (EApp (EVar "tupleCtorName") (EApp (EVar "tupleTypeArity") (EVar "ty")))) (EApp (EVar "orEmptyCtors") (EApp (EApp (EVar "omLookup") (EVar "ty")) (EVar "tcm"))))))))
+(DFunDef false "ctorsOfTypeIxW" ((PVar "tcm") (PVar "ty")) (EApp (EApp (EVar "ctorsOfTypeDispatchW") (ELam ((PVar "t")) (EApp (EVar "orEmptyCtors") (EApp (EApp (EVar "omLookup") (EVar "t")) (EVar "tcm"))))) (EVar "ty")))
 (DTypeSig false "ctorArity" (TyFun (TyCon "Prog") (TyFun (TyCon "String") (TyCon "Int"))))
 (DFunDef false "ctorArity" ((PCon "Prog" (PVar "ctorArs") PWild PWild PWild PWild PWild PWild PWild PWild) (PVar "name")) (EMatch (EApp (EApp (EVar "ctorArLookupW") (EVar "ctorArs")) (EVar "name")) (arm (PCon "Some" (PVar "a")) () (EVar "a")) (arm (PCon "None") () (EIf (EApp (EVar "isSyntheticCtor") (EVar "name")) (EApp (EVar "syntheticCtorArity") (EVar "name")) (EApp (EVar "reservedCtorArity") (EVar "name"))))))
 (DTypeSig false "ctorArLookupW" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Int")))))
@@ -12506,7 +12519,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "orNeg1Ord" ((PCon "Some" (PVar "o"))) (EVar "o"))
 (DFunDef false "orNeg1Ord" ((PCon "None")) (EUnOp "-" (ELit (LInt 1))))
 (DTypeSig false "ctorsOfType" (TyFun (TyCon "Prog") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "ctorsOfType" ((PVar "prog") (PVar "ty")) (EIf (EApp (EVar "isReservedType") (EVar "ty")) (EApp (EVar "reservedCtorsOfType") (EVar "ty")) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "List"))) (EListLit (ELit (LString "Cons")) (ELit (LString "Nil"))) (EIf (EBinOp "==" (EVar "ty") (ELit (LString "Bool"))) (EListLit (ELit (LString "False")) (ELit (LString "True"))) (EIf (EApp (EVar "isTupleType") (EVar "ty")) (EListLit (EApp (EVar "tupleCtorName") (EApp (EVar "tupleTypeArity") (EVar "ty")))) (EApp (EApp (EVar "ctorsOfTypeUser") (EVar "prog")) (EVar "ty")))))))
+(DFunDef false "ctorsOfType" ((PVar "prog") (PVar "ty")) (EApp (EApp (EVar "ctorsOfTypeDispatchW") (EApp (EVar "ctorsOfTypeUser") (EVar "prog"))) (EVar "ty")))
 (DTypeSig false "isTupleType" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isTupleType" ((PVar "ty")) (EApp (EApp (EVar "startsWithStr") (EVar "ty")) (ELit (LString "$Tuple"))))
 (DTypeSig false "tupleTypeArity" (TyFun (TyCon "String") (TyCon "Int")))

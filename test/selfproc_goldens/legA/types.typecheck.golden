@@ -441,7 +441,7 @@ foldrFun : List Mono -> Mono -> Mono
 foreachUnit : (a -> Unit) -> List a -> Unit
 freeEffvars : Mono -> List Int
 freeGenVars : Int -> Mono -> List Int
-freshCrossRun : Unit -> CrossRun
+freshCrossRun : TcEnv -> CrossRun
 freshDriverState : Unit -> DriverState
 freshEffMap : List String -> List (String, Ref Effvar)
 freshEffSubst : List Int -> List (Int, Ref Effvar)

@@ -38,32 +38,87 @@ const USER_PATH = './main.mdk';
 const USER_MODID = 'main';
 
 // ── host ABI (ported from test/wasm/run.js / dev_compile_node.mjs) ──────────────
+// --- BEGIN SHARED SHIM fmt12g --- (byte-identical in test/wasm/run.js,
+// playground/worker.js and playground/compile.mjs — WASM-SEMANTICS WH3; enforced by
+// test/diff_compiler_wasm_shim_parity.sh)
 function fmt12g(d) {
   if (Number.isNaN(d)) return 'nan';
   if (d === Infinity) return 'inf';
   if (d === -Infinity) return '-inf';
   if (d === 0) return (1 / d === -Infinity) ? '-0.0' : '0.0';
   const neg = d < 0, ad = Math.abs(d);
-  const m = ad.toExponential(11).match(/^(\d)\.(\d+)e([+-]\d+)$/);
-  const digits = m[1] + m[2];
+  const m = ad.toExponential().match(/^(\d)(?:\.(\d+))?e([+-]\d+)$/);
+  let digits = m[1] + (m[2] || '');     // shortest significant digits
   const exp = parseInt(m[3], 10);
+  digits = digits.replace(/0+$/, '');   // trim (defensive)
+  if (digits === '') digits = '0';
+  const nd = digits.length;
   let out;
   if (exp < -4 || exp >= 12) {
-    let mant = digits.replace(/0+$/, '');
-    if (mant.length > 1) mant = mant[0] + '.' + mant.slice(1);
+    const mant = (nd === 1) ? digits : (digits[0] + '.' + digits.slice(1));
     const ea = Math.abs(exp).toString().padStart(2, '0');
     out = mant + 'e' + (exp < 0 ? '-' : '+') + ea;
   } else {
     const pointPos = exp + 1;
     if (pointPos <= 0) out = '0.' + '0'.repeat(-pointPos) + digits;
-    else if (pointPos >= digits.length) out = digits + '0'.repeat(pointPos - digits.length);
+    else if (pointPos >= nd) out = digits + '0'.repeat(pointPos - nd);
     else out = digits.slice(0, pointPos) + '.' + digits.slice(pointPos);
-    if (out.indexOf('.') >= 0) out = out.replace(/0+$/, '').replace(/\.$/, '');
   }
   if (neg) out = '-' + out;
-  if (!/[.eEni]/.test(out)) out = out + '.0';
+  if (!/[.eEni]/.test(out)) out = out + '.0';   // the `.0` append rule
   return out;
 }
+// --- END SHARED SHIM fmt12g ---
+
+// --- BEGIN SHARED SHIM mdkStrToFloat --- (byte-identical in test/wasm/run.js,
+// playground/worker.js and playground/compile.mjs — WASM-SEMANTICS WH2/WH3; enforced
+// by test/diff_compiler_wasm_shim_parity.sh)
+// #370 stringToFloat host seam. The C runtime is the oracle (WH2): medaka_rt.c
+// mdk_string_to_float is `strtod` + an endptr FULL-CONSUMPTION check + an empty-string
+// reject. JS Number() is NOT strtod: Number("") === 0, Number("1.5 ") trims,
+// Number("nan"/"inf") is NaN, and Number rejects C99 hex floats ("0x1p3" -> NaN).
+// strtod skips LEADING whitespace only, accepts inf/infinity and nan/nan(chars)
+// case-insensitively, and accepts hex floats. Because native requires full
+// consumption, longest-match is unnecessary — the whole post-whitespace string must
+// match the grammar, or the endptr check would reject it anyway.
+// Returns { ok, value }; ok === 0 means None. Verified case-for-case against the
+// native C oracle over a 621-case battery (test/llvm_fixtures/str_to_float_frontier.mdk).
+function mdkStrToFloat(s) {
+  if (s.length === 0) return { ok: 0, value: 0 };   // medaka_rt.c: bl == 0 -> None
+  const b = s.replace(/^[ \t\n\v\f\r]+/, '');       // strtod skips leading isspace
+  let m;
+  if ((m = /^([+-]?)(?:inf|infinity)$/i.exec(b)))
+    return { ok: 1, value: m[1] === '-' ? -Infinity : Infinity };
+  if ((m = /^([+-]?)nan(?:\([0-9A-Za-z_]*\))?$/i.exec(b)))
+    // strtod propagates the SIGN onto the NaN, and the sign bit is OBSERVABLE
+    // through floatToBytes64 (native "-nan" -> byte0 0xff, not 0x7f). JS unary
+    // minus is an IEEE negate, so it sets the bit; the f64 crosses the import
+    // boundary uncanonicalised.
+    return { ok: 1, value: m[1] === '-' ? -NaN : NaN };
+  if ((m = /^([+-]?)0[xX](?:([0-9A-Fa-f]+)(?:\.([0-9A-Fa-f]*))?|\.([0-9A-Fa-f]+))(?:[pP]([+-]?[0-9]+))?$/.exec(b))) {
+    const ip = m[2] !== undefined ? m[2] : '';
+    const fp = m[2] !== undefined ? (m[3] || '') : m[4];
+    const v = mdkHexFloat(ip, fp, m[5] ? parseInt(m[5], 10) : 0);
+    return { ok: 1, value: m[1] === '-' ? -v : v };
+  }
+  if (/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(b))
+    return { ok: 1, value: Number(b) };             // decimal: Number() is correctly rounded
+  return { ok: 0, value: 0 };
+}
+// C99 hex float -> double, correctly rounded like strtod. The value is M * 2^e for an
+// exact BigInt M, so rendering it as an EXACT decimal string (2^-k = 5^k / 10^k) and
+// handing that to Number() gets round-to-nearest-even for free.
+function mdkHexFloat(ip, fp, pexp) {
+  const M = BigInt('0x' + (ip + fp || '0'));
+  if (M === 0n) return 0;
+  const e = pexp - 4 * fp.length, bits = M.toString(2).length;
+  if (bits + e > 1100) return Infinity;             // clamp keeps the BigInt bounded
+  if (bits + e < -1100) return 0;
+  if (e >= 0) return Number((M << BigInt(e)).toString());
+  const k = -e, num = (M * 5n ** BigInt(k)).toString().padStart(k + 1, '0');
+  return Number(num.slice(0, num.length - k) + '.' + num.slice(num.length - k));
+}
+// --- END SHARED SHIM mdkStrToFloat ---
 
 const enc = (s) => new TextEncoder().encode(s);
 const dec = (a) => new TextDecoder('utf8').decode(new Uint8Array(a));
@@ -101,6 +156,7 @@ function runGuest(wasmModuleOrBytes, vfsMap, argv) {
     let floatFmtBuf = [];
     let pathBuf = [];
     let resultBuf = new Uint8Array(0);
+    let strToFloatOk = 0;   // #370: latched by mdk_str_to_float, read by mdk_str_to_float_ok
     const takePath = () => { const s = dec(pathBuf); pathBuf = []; return s; };
     let exited = false;
     const finish = (code) => {
@@ -122,7 +178,12 @@ function runGuest(wasmModuleOrBytes, vfsMap, argv) {
       mdk_asin: Math.asin, mdk_acos: Math.acos, mdk_atan: Math.atan,
       mdk_sinh: Math.sinh, mdk_cosh: Math.cosh, mdk_tanh: Math.tanh,
       mdk_pow: Math.pow, mdk_atan2: Math.atan2, mdk_hypot: Math.hypot,
-      mdk_str_to_float: () => { const s = dec(pathBuf); pathBuf = []; return Number(s); },
+      // layer-6 stringToFloat (#370): the guest calls mdk_path_reset+mdk_path_push to
+      // populate pathBuf, then mdk_str_to_float (which parses AND latches the ok flag),
+      // then mdk_str_to_float_ok. Two channels because Some(nan) is a LEGAL strtod
+      // result, so NaN cannot double as the failure signal (that collapse was #370).
+      mdk_str_to_float: () => { const r = mdkStrToFloat(takePath()); strToFloatOk = r.ok; return r.value; },
+      mdk_str_to_float_ok: () => strToFloatOk,
       mdk_path_reset: () => { pathBuf = []; },
       mdk_path_push: (b) => { pathBuf.push(b & 0xff); },
       mdk_read_file: () => {

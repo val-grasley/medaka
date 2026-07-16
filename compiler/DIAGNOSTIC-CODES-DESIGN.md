@@ -172,7 +172,7 @@ kebab-case; never renumber (append only).
 | `L-HS-DOLLAR` | stray `$` (Haskell low-precedence apply; suggest direct apply/parens/`\|>`) |
 | `L-BLOCKCOMMENT` | `/* … */` C-style block comment (suggest `{- … -}` block / `--` line) |
 | `L-SEMICOLON` | trailing `;` statement terminator (suggest newline/indentation separation) |
-| `L-INT-OVERFLOW` | integer literal whose magnitude exceeds `2^62` (the 63-bit tagged-`Int` range is `[-2^62, 2^62-1]`; the lexer admits magnitude `2^62` for the writable negative minimum `-2^62` and rejects `2^62+1` and above) |
+| `L-INT-OVERFLOW` | integer literal out of the 63-bit tagged-`Int` range `[-2^62, 2^62-1]`. Raised from **two** stages, deliberately under one code (#171): the **lexer** rejects magnitude `2^62+1` and above; the **parser** rejects exactly `2^62` in POSITIVE position, which the lexer must admit (it sees only unsigned digits — the `-` is a separate token) so that the writable minimum `-2^62` survives. Splitting these by catching stage would make a consumer key on two codes for one user-facing defect, so both messages share the `"integer literal too large"` prefix that `parseErrCode` (`compiler/driver/diagnostics.mdk`) keys on, and the parser-raised one keeps `kind: "lex"` for the same reason |
 | `L-FLOAT-OVERFLOW` | float literal whose magnitude overflows the IEEE-754 double range (e.g. `2e308`) and would parse to `inf` — rejected at the source so it never reaches codegen as an invalid `store double inf` |
 
 ### Parse

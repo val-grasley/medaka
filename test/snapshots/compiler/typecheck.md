@@ -1,5 +1,5 @@
 # META
-source_lines=14959
+source_lines=14991
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -1894,8 +1894,40 @@ data CrossRun = CrossRun {
   }
 
 -- Construct all 22 field-Refs fresh (each reproduces its former top-level ref's initial).
-freshCrossRun : Unit -> CrossRun
-freshCrossRun _ = CrossRun {
+-- ⚠️ `env` is the initial TcEnv (always `initialEnv`) and is a PARAMETER rather than a
+-- direct `initialEnv` reference on purpose — do NOT "simplify" it back to a `Unit` arg.
+-- `crossRun` below is a nullary top-level binding, i.e. a wasm value GLOBAL eagerly
+-- initialized in `$__init`, and the WasmGC backend orders those globals with a topo sort
+-- whose edges come from `eagerVars` (backend/emit_support.mdk) — a DIRECT free-var scan of
+-- the binding's body that does NOT follow calls into a callee's body.  So a global read
+-- that hides inside this function is INVISIBLE to that sort: `crossRun = Ref (freshCrossRun
+-- ())` yielded the single edge `freshCrossRun` (a function, not a value bind ⇒ no edge at
+-- all), `crossRun` was emitted before `initialEnv`, and `$__init` read a `ref.null` →
+-- "dereferencing a null pointer" at instantiate, which killed the whole playground (#543).
+-- Taking the env as an ARG puts `initialEnv` back in `crossRun`'s own body, where
+-- `eagerVars` can see it and order the two globals correctly.
+--
+-- ⚠️ NATIVE HAS THE SAME BUG — it is merely not EXPLOITED.  An earlier draft of this
+-- comment claimed "native is unaffected (it does not eagerly init these)"; that was FALSE
+-- and is corrected here with receipts, because it is exactly the kind of unproven claim
+-- that steers a later general fix wrong.  `llvm_emit.mdk`'s `orderedValBinds` is fed by
+-- `bindFreeVars` = the SAME shared `eagerVars`, with the same does-not-follow-calls blind
+-- spot, and its own doc comment says an unordered eager forward ref "captures the
+-- still-zero global cell".  Emitting the PRE-FIX source with the native emitter proves the
+-- inversion was live there too: in the init prologue `crossRun` stored at IR line 1693
+-- (calling `freshCrossRun` at 1687) while `initialEnv` stored at 1768 — 75 lines later —
+-- and `@mdk_g_types_typecheck__initialEnv = global i64 0` with a `load` of it inside
+-- `freshCrossRun`.  Native really did read a ZERO.
+-- It never BIT because the zero is overwritten before anything dereferences it: the only
+-- readers of `universeDataEnv` sit on the `Module` arm (`registerAllData
+-- crossRun.value.universeDataEnv.value`), and every multi-module entry calls
+-- `resetCrossModuleState ()` FIRST (`checkModulesPreamble`, `elaborateModules`), which
+-- replaces the whole poisoned bundle once `initialEnv` is properly set.  That is luck, not
+-- design — native's failure mode is a SILENT zero where wasm traps loudly, which is the
+-- only reason #543 was noticed at all.  The general fix (an emitter-side eager-reachability
+-- closure that follows calls) is #553 and MUST cover both backends.
+freshCrossRun : TcEnv -> CrossRun
+freshCrossRun env = CrossRun {
   universeIfaceMethodsRef = Ref omEmpty,
   universeFunNamesRef = Ref omEmpty,
   universeKeyBucketsRef = Ref omEmpty,
@@ -1908,7 +1940,7 @@ freshCrossRun _ = CrossRun {
   universeFieldOwners = Ref omEmpty,
   universeDataParamKinds = Ref [],
   universeAliasTable = Ref [],
-  universeDataEnv = Ref initialEnv,
+  universeDataEnv = Ref env,
   obUnivConcreteRef = Ref omEmpty,
   obUnivHeadlessRef = Ref omEmpty,
   obUnivIfaceTagsRef = Ref omEmpty,
@@ -1922,7 +1954,7 @@ freshCrossRun _ = CrossRun {
 
 -- The single module-level cell holding the current run's accumulator bundle.
 crossRun : Ref CrossRun
-crossRun = Ref (freshCrossRun ())
+crossRun = Ref (freshCrossRun initialEnv)
 
 -- ── the ONE lifecycle owner for the 22 cross-module accumulators (#143/#144, #154) ──
 -- These 22 deliberately SURVIVE the per-module `resetState` (so dict arities/ifaces and
@@ -1940,7 +1972,7 @@ crossRun = Ref (freshCrossRun ())
 -- field, so the set that resets == the set in CrossRun, enforced by the constructor.
 -- Scoped to exactly these 22; do NOT fold into `resetState` (they must survive THAT).
 resetCrossModuleState : Unit -> Unit
-resetCrossModuleState _ = setRef crossRun (freshCrossRun ())
+resetCrossModuleState _ = setRef crossRun (freshCrossRun initialEnv)
 
 -- self/mutually-recursive constrained-fn call sites.  At such a site the callee's
 -- own constraints are not yet registered (its letrec group is still inferring),
@@ -15340,12 +15372,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "pushDictApp" (TyFun (TyTuple (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Unit")))
 (DFunDef false "pushDictApp" ((PVar "app")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictApps")) (EBinOp "::" (EVar "app") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictApps") "value")))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictAppsN")) (EBinOp "+" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictAppsN") "value") (ELit (LInt 1)))))))
 (DData Private "CrossRun" () ((variant "CrossRun" (ConNamed (field "universeIfaceMethodsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "Unit")))) (field "universeFunNamesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "Unit")))) (field "universeKeyBucketsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "KeyEntry"))))) (field "universeIfaceRequiredRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))) (field "universeMethodIfaceParamsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))))) (field "universeRegisteredIfacesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "Unit")))) (field "universeMethodDispatchIdxRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))) (field "universeRecords" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "RecordInfo"))))) (field "universeRecordByName" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "RecordInfo")))) (field "universeFieldOwners" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))) (field "universeDataParamKinds" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Kind")))))) (field "universeAliasTable" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty")))))) (field "universeDataEnv" (TyApp (TyCon "Ref") (TyCon "TcEnv"))) (field "obUnivConcreteRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require"))))))) (field "obUnivHeadlessRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require"))))))) (field "obUnivIfaceTagsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "OrdMap") (TyCon "Unit"))))) (field "crossModuleFunConstraintsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))))) (field "crossModuleFunConstraintsQualRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))))) (field "crossModuleFunConstraintIfacesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))) (field "crossModuleFunConstraintIfacesQualRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))) (field "crossModuleMethodConstraintsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))))) (field "crossModuleMethodConstraintsQualRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))))) ())
-(DTypeSig false "freshCrossRun" (TyFun (TyCon "Unit") (TyCon "CrossRun")))
-(DFunDef false "freshCrossRun" (PWild) (ERecordCreate "CrossRun" ((fa "universeIfaceMethodsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFunNamesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeKeyBucketsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeIfaceRequiredRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodIfaceParamsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeRegisteredIfacesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodDispatchIdxRef" (EApp (EVar "Ref") (EListLit))) (fa "universeRecords" (EApp (EVar "Ref") (EListLit))) (fa "universeRecordByName" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFieldOwners" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeDataParamKinds" (EApp (EVar "Ref") (EListLit))) (fa "universeAliasTable" (EApp (EVar "Ref") (EListLit))) (fa "universeDataEnv" (EApp (EVar "Ref") (EVar "initialEnv"))) (fa "obUnivConcreteRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivHeadlessRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivIfaceTagsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "crossModuleFunConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintsQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsQualRef" (EApp (EVar "Ref") (EListLit))))))
+(DTypeSig false "freshCrossRun" (TyFun (TyCon "TcEnv") (TyCon "CrossRun")))
+(DFunDef false "freshCrossRun" ((PVar "env")) (ERecordCreate "CrossRun" ((fa "universeIfaceMethodsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFunNamesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeKeyBucketsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeIfaceRequiredRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodIfaceParamsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeRegisteredIfacesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodDispatchIdxRef" (EApp (EVar "Ref") (EListLit))) (fa "universeRecords" (EApp (EVar "Ref") (EListLit))) (fa "universeRecordByName" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFieldOwners" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeDataParamKinds" (EApp (EVar "Ref") (EListLit))) (fa "universeAliasTable" (EApp (EVar "Ref") (EListLit))) (fa "universeDataEnv" (EApp (EVar "Ref") (EVar "env"))) (fa "obUnivConcreteRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivHeadlessRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivIfaceTagsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "crossModuleFunConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintsQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsQualRef" (EApp (EVar "Ref") (EListLit))))))
 (DTypeSig false "crossRun" (TyApp (TyCon "Ref") (TyCon "CrossRun")))
-(DFunDef false "crossRun" () (EApp (EVar "Ref") (EApp (EVar "freshCrossRun") (ELit LUnit))))
+(DFunDef false "crossRun" () (EApp (EVar "Ref") (EApp (EVar "freshCrossRun") (EVar "initialEnv"))))
 (DTypeSig false "resetCrossModuleState" (TyFun (TyCon "Unit") (TyCon "Unit")))
-(DFunDef false "resetCrossModuleState" (PWild) (EApp (EApp (EVar "setRef") (EVar "crossRun")) (EApp (EVar "freshCrossRun") (ELit LUnit))))
+(DFunDef false "resetCrossModuleState" (PWild) (EApp (EApp (EVar "setRef") (EVar "crossRun")) (EApp (EVar "freshCrossRun") (EVar "initialEnv"))))
 (DData Public "RecDictApp" () ((variant "RecDictApp" (ConPos (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyCon "String") (TyCon "String") (TyCon "Mono")))) ())
 (DTypeSig false "consSiteFn" (TyFun (TyCon "String") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyVar "a"))) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyVar "a")))))))
 (DFunDef false "consSiteFn" ((PVar "fn") (PVar "x") (PVar "idx")) (EApp (EApp (EApp (EVar "omInsert") (EVar "fn")) (EBinOp "::" (EVar "x") (EApp (EApp (EVar "sitesFor") (EVar "fn")) (EVar "idx")))) (EVar "idx")))
@@ -18877,12 +18909,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "pushDictApp" (TyFun (TyTuple (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Unit")))
 (DFunDef false "pushDictApp" ((PVar "app")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictApps")) (EBinOp "::" (EVar "app") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictApps") "value")))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictAppsN")) (EBinOp "+" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingDictAppsN") "value") (ELit (LInt 1)))))))
 (DData Private "CrossRun" () ((variant "CrossRun" (ConNamed (field "universeIfaceMethodsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "Unit")))) (field "universeFunNamesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "Unit")))) (field "universeKeyBucketsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "KeyEntry"))))) (field "universeIfaceRequiredRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))) (field "universeMethodIfaceParamsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty"))))) (field "universeRegisteredIfacesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "Unit")))) (field "universeMethodDispatchIdxRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))) (field "universeRecords" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "RecordInfo"))))) (field "universeRecordByName" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyCon "RecordInfo")))) (field "universeFieldOwners" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))) (field "universeDataParamKinds" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Kind")))))) (field "universeAliasTable" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty")))))) (field "universeDataEnv" (TyApp (TyCon "Ref") (TyCon "TcEnv"))) (field "obUnivConcreteRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require"))))))) (field "obUnivHeadlessRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Require"))))))) (field "obUnivIfaceTagsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "OrdMap") (TyApp (TyCon "OrdMap") (TyCon "Unit"))))) (field "crossModuleFunConstraintsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))))) (field "crossModuleFunConstraintsQualRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))))) (field "crossModuleFunConstraintIfacesRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))) (field "crossModuleFunConstraintIfacesQualRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))) (field "crossModuleMethodConstraintsRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))))) (field "crossModuleMethodConstraintsQualRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int"))))))))) ())
-(DTypeSig false "freshCrossRun" (TyFun (TyCon "Unit") (TyCon "CrossRun")))
-(DFunDef false "freshCrossRun" (PWild) (ERecordCreate "CrossRun" ((fa "universeIfaceMethodsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFunNamesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeKeyBucketsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeIfaceRequiredRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodIfaceParamsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeRegisteredIfacesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodDispatchIdxRef" (EApp (EVar "Ref") (EListLit))) (fa "universeRecords" (EApp (EVar "Ref") (EListLit))) (fa "universeRecordByName" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFieldOwners" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeDataParamKinds" (EApp (EVar "Ref") (EListLit))) (fa "universeAliasTable" (EApp (EVar "Ref") (EListLit))) (fa "universeDataEnv" (EApp (EVar "Ref") (EVar "initialEnv"))) (fa "obUnivConcreteRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivHeadlessRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivIfaceTagsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "crossModuleFunConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintsQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsQualRef" (EApp (EVar "Ref") (EListLit))))))
+(DTypeSig false "freshCrossRun" (TyFun (TyCon "TcEnv") (TyCon "CrossRun")))
+(DFunDef false "freshCrossRun" ((PVar "env")) (ERecordCreate "CrossRun" ((fa "universeIfaceMethodsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFunNamesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeKeyBucketsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeIfaceRequiredRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodIfaceParamsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeRegisteredIfacesRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeMethodDispatchIdxRef" (EApp (EVar "Ref") (EListLit))) (fa "universeRecords" (EApp (EVar "Ref") (EListLit))) (fa "universeRecordByName" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeFieldOwners" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "universeDataParamKinds" (EApp (EVar "Ref") (EListLit))) (fa "universeAliasTable" (EApp (EVar "Ref") (EListLit))) (fa "universeDataEnv" (EApp (EVar "Ref") (EVar "env"))) (fa "obUnivConcreteRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivHeadlessRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "obUnivIfaceTagsRef" (EApp (EVar "Ref") (EVar "omEmpty"))) (fa "crossModuleFunConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintsQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleFunConstraintIfacesQualRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsRef" (EApp (EVar "Ref") (EListLit))) (fa "crossModuleMethodConstraintsQualRef" (EApp (EVar "Ref") (EListLit))))))
 (DTypeSig false "crossRun" (TyApp (TyCon "Ref") (TyCon "CrossRun")))
-(DFunDef false "crossRun" () (EApp (EVar "Ref") (EApp (EVar "freshCrossRun") (ELit LUnit))))
+(DFunDef false "crossRun" () (EApp (EVar "Ref") (EApp (EVar "freshCrossRun") (EVar "initialEnv"))))
 (DTypeSig false "resetCrossModuleState" (TyFun (TyCon "Unit") (TyCon "Unit")))
-(DFunDef false "resetCrossModuleState" (PWild) (EApp (EApp (EVar "setRef") (EVar "crossRun")) (EApp (EVar "freshCrossRun") (ELit LUnit))))
+(DFunDef false "resetCrossModuleState" (PWild) (EApp (EApp (EVar "setRef") (EVar "crossRun")) (EApp (EVar "freshCrossRun") (EVar "initialEnv"))))
 (DData Public "RecDictApp" () ((variant "RecDictApp" (ConPos (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyCon "String") (TyCon "String") (TyCon "Mono")))) ())
 (DTypeSig false "consSiteFn" (TyFun (TyCon "String") (TyFun (TyVar "a") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyVar "a"))) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyVar "a")))))))
 (DFunDef false "consSiteFn" ((PVar "fn") (PVar "x") (PVar "idx")) (EApp (EApp (EApp (EVar "omInsert") (EVar "fn")) (EBinOp "::" (EVar "x") (EApp (EApp (EVar "sitesFor") (EVar "fn")) (EVar "idx")))) (EVar "idx")))

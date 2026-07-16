@@ -1890,8 +1890,40 @@ data CrossRun = CrossRun {
   }
 
 -- Construct all 22 field-Refs fresh (each reproduces its former top-level ref's initial).
-freshCrossRun : Unit -> CrossRun
-freshCrossRun _ = CrossRun {
+-- ⚠️ `env` is the initial TcEnv (always `initialEnv`) and is a PARAMETER rather than a
+-- direct `initialEnv` reference on purpose — do NOT "simplify" it back to a `Unit` arg.
+-- `crossRun` below is a nullary top-level binding, i.e. a wasm value GLOBAL eagerly
+-- initialized in `$__init`, and the WasmGC backend orders those globals with a topo sort
+-- whose edges come from `eagerVars` (backend/emit_support.mdk) — a DIRECT free-var scan of
+-- the binding's body that does NOT follow calls into a callee's body.  So a global read
+-- that hides inside this function is INVISIBLE to that sort: `crossRun = Ref (freshCrossRun
+-- ())` yielded the single edge `freshCrossRun` (a function, not a value bind ⇒ no edge at
+-- all), `crossRun` was emitted before `initialEnv`, and `$__init` read a `ref.null` →
+-- "dereferencing a null pointer" at instantiate, which killed the whole playground (#543).
+-- Taking the env as an ARG puts `initialEnv` back in `crossRun`'s own body, where
+-- `eagerVars` can see it and order the two globals correctly.
+--
+-- ⚠️ NATIVE HAS THE SAME BUG — it is merely not EXPLOITED.  An earlier draft of this
+-- comment claimed "native is unaffected (it does not eagerly init these)"; that was FALSE
+-- and is corrected here with receipts, because it is exactly the kind of unproven claim
+-- that steers a later general fix wrong.  `llvm_emit.mdk`'s `orderedValBinds` is fed by
+-- `bindFreeVars` = the SAME shared `eagerVars`, with the same does-not-follow-calls blind
+-- spot, and its own doc comment says an unordered eager forward ref "captures the
+-- still-zero global cell".  Emitting the PRE-FIX source with the native emitter proves the
+-- inversion was live there too: in the init prologue `crossRun` stored at IR line 1693
+-- (calling `freshCrossRun` at 1687) while `initialEnv` stored at 1768 — 75 lines later —
+-- and `@mdk_g_types_typecheck__initialEnv = global i64 0` with a `load` of it inside
+-- `freshCrossRun`.  Native really did read a ZERO.
+-- It never BIT because the zero is overwritten before anything dereferences it: the only
+-- readers of `universeDataEnv` sit on the `Module` arm (`registerAllData
+-- crossRun.value.universeDataEnv.value`), and every multi-module entry calls
+-- `resetCrossModuleState ()` FIRST (`checkModulesPreamble`, `elaborateModules`), which
+-- replaces the whole poisoned bundle once `initialEnv` is properly set.  That is luck, not
+-- design — native's failure mode is a SILENT zero where wasm traps loudly, which is the
+-- only reason #543 was noticed at all.  The general fix (an emitter-side eager-reachability
+-- closure that follows calls) is #553 and MUST cover both backends.
+freshCrossRun : TcEnv -> CrossRun
+freshCrossRun env = CrossRun {
   universeIfaceMethodsRef = Ref omEmpty,
   universeFunNamesRef = Ref omEmpty,
   universeKeyBucketsRef = Ref omEmpty,
@@ -1904,7 +1936,7 @@ freshCrossRun _ = CrossRun {
   universeFieldOwners = Ref omEmpty,
   universeDataParamKinds = Ref [],
   universeAliasTable = Ref [],
-  universeDataEnv = Ref initialEnv,
+  universeDataEnv = Ref env,
   obUnivConcreteRef = Ref omEmpty,
   obUnivHeadlessRef = Ref omEmpty,
   obUnivIfaceTagsRef = Ref omEmpty,
@@ -1918,7 +1950,7 @@ freshCrossRun _ = CrossRun {
 
 -- The single module-level cell holding the current run's accumulator bundle.
 crossRun : Ref CrossRun
-crossRun = Ref (freshCrossRun ())
+crossRun = Ref (freshCrossRun initialEnv)
 
 -- ── the ONE lifecycle owner for the 22 cross-module accumulators (#143/#144, #154) ──
 -- These 22 deliberately SURVIVE the per-module `resetState` (so dict arities/ifaces and
@@ -1936,7 +1968,7 @@ crossRun = Ref (freshCrossRun ())
 -- field, so the set that resets == the set in CrossRun, enforced by the constructor.
 -- Scoped to exactly these 22; do NOT fold into `resetState` (they must survive THAT).
 resetCrossModuleState : Unit -> Unit
-resetCrossModuleState _ = setRef crossRun (freshCrossRun ())
+resetCrossModuleState _ = setRef crossRun (freshCrossRun initialEnv)
 
 -- self/mutually-recursive constrained-fn call sites.  At such a site the callee's
 -- own constraints are not yet registered (its letrec group is still inferring),

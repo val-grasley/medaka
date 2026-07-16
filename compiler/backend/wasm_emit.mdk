@@ -7976,10 +7976,14 @@ firstTyIsW tym c ty = match omLookup c tym
   Some t => eqStr t ty
   None => False
 
--- `ctorsOfType`'s dispatch, off the memo and without a `Prog` (the indices are built
--- before the Prog exists).  Keep in lockstep with `ctorsOfType`.
-ctorsOfTypeIxW : OrdMap (List String) -> String -> List String
-ctorsOfTypeIxW tcm ty =
+-- the shared 5-branch ctor-list dispatch used by BOTH `ctorsOfTypeIxW` (memo-only,
+-- called before the `Prog` exists) and `ctorsOfType` (Prog-based). Parameterized
+-- over the fallback for a plain user type, so each caller supplies its own way to
+-- resolve that case (a direct memo lookup vs `ctorsOfTypeUser`) while the
+-- reserved/List/Bool/tuple branches — and their order — exist exactly once, so
+-- the two can no longer drift apart.
+ctorsOfTypeDispatchW : (String -> List String) -> String -> List String
+ctorsOfTypeDispatchW userFallback ty =
   if isReservedType ty then
     reservedCtorsOfType ty
   else if ty == "List" then
@@ -7989,7 +7993,14 @@ ctorsOfTypeIxW tcm ty =
   else if isTupleType ty then
     [tupleCtorName (tupleTypeArity ty)]
   else
-    orEmptyCtors (omLookup ty tcm)
+    userFallback ty
+
+-- `ctorsOfType`'s dispatch, off the memo and without a `Prog` (the indices are built
+-- before the Prog exists). Shares its branches with `ctorsOfType` via
+-- `ctorsOfTypeDispatchW` — nothing left to keep in lockstep by hand.
+ctorsOfTypeIxW : OrdMap (List String) -> String -> List String
+ctorsOfTypeIxW tcm ty =
+  ctorsOfTypeDispatchW (t => orEmptyCtors (omLookup t tcm)) ty
 
 ctorArity : Prog -> String -> Int
 ctorArity (Prog ctorArs _ _ _ _ _ _ _ _) name = match ctorArLookupW ctorArs name
@@ -8040,18 +8051,16 @@ orNeg1Ord None = -1
 
 -- the declaration-ordered ctor list of a user type (the ctor→type map lists each
 -- type's ctors consecutively in declaration order — filter to this type).
+-- Bool's ctors are SYNTHETIC (registered via syntheticCtor* helpers, not in the
+-- program's ctorTypes table), so `ctorsOfTypeUser` would return [] → a 0-slot
+-- br_table tower → both arms dropped → fall-through `unreachable` if it weren't
+-- special-cased in the shared dispatch below. A genuine `match <Bool> { True =>
+-- …; False => … }` (a CDecision switch, not a lowered CIf) hits this.
+-- Index-aligned to syntheticCtorOrdinal: False=0, True=1.
+-- Shares its branches with `ctorsOfTypeIxW` via `ctorsOfTypeDispatchW` — nothing
+-- left to keep in lockstep by hand.
 ctorsOfType : Prog -> String -> List String
-ctorsOfType prog ty =
-  if isReservedType ty then reservedCtorsOfType ty
-  else if ty == "List" then ["Cons", "Nil"]
-  -- Bool's ctors are SYNTHETIC (registered via syntheticCtor* helpers, not in the
-  -- program's ctorTypes table), so ctorsOfTypeUser would return [] → a 0-slot
-  -- br_table tower → both arms dropped → fall-through `unreachable`.  A genuine
-  -- `match <Bool> { True => …; False => … }` (a CDecision switch, not a lowered CIf)
-  -- hits this.  Index-aligned to syntheticCtorOrdinal: False=0, True=1.
-  else if ty == "Bool" then ["False", "True"]
-  else if isTupleType ty then [tupleCtorName (tupleTypeArity ty)]
-  else ctorsOfTypeUser prog ty
+ctorsOfType prog ty = ctorsOfTypeDispatchW (ctorsOfTypeUser prog) ty
 
 -- a synthetic tuple type name "$Tuple<n>" and its arity.
 isTupleType : String -> Bool

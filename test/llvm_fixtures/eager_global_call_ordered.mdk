@@ -1,0 +1,25 @@
+-- WP10 (docs/spec/WASM-SEMANTICS.md §1) — the CONTROL for `eager_global_call_hidden.mdk`.
+--
+-- Byte-for-byte the same program as its peer EXCEPT that `base` is declared ABOVE `cell`.
+-- All three engines answer 42 here (eval / native / wasm, measured 2026-07-16), so this
+-- fixture is green today and must STAY green.
+--
+-- Why it exists: without it, `eager_global_call_hidden`'s `0` is unfalsifiable — it could
+-- be blamed on the corpus, the probe, the auto-print path, `Unit`-arg lambdas, or this
+-- gate's link line rather than on the ONE thing that actually differs. Holding every one
+-- of those constant and moving a single declaration flips 0 -> 42, which is what makes
+-- "the eager-init topo sort loses the edge through a call" a demonstrated claim instead of
+-- an argued one. It is also the tripwire for a wrong fix to #553: an over-broad change to
+-- eager-global ordering that regresses the ALREADY-CORRECT case turns this red.
+--
+-- Do not merge these two fixtures into one file. A single fixture cannot express a
+-- control — the corpus is one-program-per-file and the differential compares engines on
+-- the same program, not two programs against each other.
+
+base = 42
+
+mkVal _ = base
+
+cell = mkVal ()
+
+main = cell

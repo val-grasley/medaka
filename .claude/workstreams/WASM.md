@@ -1,7 +1,14 @@
 # Workstream: WASM (the WasmGC backend)
 
 **Owns:** `compiler/backend/wasm_emit.mdk`, `compiler/backend/wasm_preamble.mdk`, the wasm
-gates, **and the two JS host shims** (`test/wasm/run.js`, `playground/worker.js`) — the
+gates, **and the three JS host shims** (`test/wasm/run.js`, `playground/worker.js`,
+`playground/compile.mjs`) — ⚠️ this line said **two** until 2026-07-16 and the omitted
+third is exactly where #543 landed: `compile.mjs` is the seam that runs the COMPILER
+(playground.wasm), it holds its own copy of both shared blocks, and because neither this
+line nor `diff_compiler_wasm_shim_parity.sh` counted it, #370's fix updated the two
+"known" copies and left it on raw `Number()` + missing `mdk_str_to_float_ok` → LinkError,
+playground dead. **Derive the set, never trust the count:**
+`grep -rln 'BEGIN SHARED SHIM' test/ playground/` — the
 2026-07-16 conformance audit made the shims first-class: parts of the observable semantics
 (float formatting, string→float parsing, exit, the whole IO surface) execute in JS, so a
 shim edit is a semantics edit.
@@ -336,10 +343,17 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
   current is stale.
 - **Poly Float `%` on wasm agrees with EVAL** (`1e300 % 3.0` → `0.0` on both); NATIVE is
   the odd engine out there (#345). Wasm did not copy the native trunc-cast bug.
-- **The float formatter three-copy law (N9) HOLDS where probed**: `mdk_float_lexeme` vs
-  the two JS copies, element-by-element review + a 22-case battery (−0.0, denormals,
-  3-digit exponents, 17-digit shortest) — byte-identical. Only the comments are stale
-  (`%.12g`; #383, closes #361's wasm item).
+- ~~**The float formatter three-copy law (N9) HOLDS where probed**: `mdk_float_lexeme` vs
+  the two JS copies … Only the comments are stale (`%.12g`)~~ — ⚠️ **THIS ENTRY WAS WRONG,
+  and its own name says why: the law is THREE-copy and the probe checked TWO** (`run.js`,
+  `worker.js`). The third, `playground/compile.mjs`, was still running the pre-#361 `%.12g`
+  formatter *in code* (`toExponential(11)`, i.e. 12 significant digits) — so "only the
+  comments are stale" was false of the copy nobody looked at, and the playground's emitted
+  float literals were truncated. Found + fixed 2026-07-16 (#543); all three are now byte-
+  identical and `diff_compiler_wasm_shim_parity.sh` covers the full set.
+  **A disproof inherits the scope of its probe.** This entry read as a probe-run fact (the
+  ledger's own bar) and was — for a SUBSET it never named. *"VERIFY THE SET, NOT A SAMPLE"*
+  failing inside the ledger that teaches it.
 - **`intMinBound`/`intMaxBound` work on wasm** (fixed 2026-07-14); the TRAP-STUB rows in
   `test/CAPABILITY-EXCEPTIONS.txt` are stale, and the capability gate HARDCODES that
   trap list instead of deriving it, which is why nothing self-drained (#383).

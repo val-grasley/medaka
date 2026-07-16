@@ -212,6 +212,7 @@ parseErrHelpFix msg (Loc f sl sc el ec)
     Some "replace '/=' with '!=' for not-equal",
     Some (Fix (Loc f sl sc sl (sc + 2)) "!="),
   )
+  | startsWith "integer literal too large for Int (max 4611686018427387903)" msg = (Some "`Int` is 63-bit, spanning [-4611686018427387904, 4611686018427387903]; 4611686018427387904 fits only as the NEGATIVE -4611686018427387904, so write it with its `-`", None)
   | otherwise = (None, None)
 
 -- ── rendering ──────────────────────────────────────────────────────────────
