@@ -52,7 +52,7 @@ seed:
 ##             (unless you touched the backend, where it IS the decisive gate).
 ##             ⚠️ A FILTER, NOT AN AUTHORITY. It runs a SUBSET and prints what it
 ##             skipped. CI on the PR is the authority. Do not merge on a green
-##             preflight.  Usage: make preflight [BASE=main]
+##             preflight.  Usage: make preflight [BASE=<ref>]   (default: origin/main)
 preflight:
 	sh test/preflight.sh $(BASE)
 

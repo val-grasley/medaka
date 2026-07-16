@@ -510,7 +510,17 @@ jobs:
             # REQUIRED shard on purpose: the `wasm` job is advisory (not a required
             # context), so a shim-only PR could otherwise break playground/runner parity
             # and still go green.
-            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_fmt' 'diff_compiler_fmt_roundtrip' 'diff_compiler_wasm_shim_parity' 'native_fixtures/run' 'build_construct_coverage'"
+            #
+            # 'diff_compiler_preflight_base' (#560): parked here for COST, not theme —
+            # it is pure git (builds its own synthetic repo with `git init`), needs no
+            # compiler, no oracle and no ambient checkout, so it costs ~0 CPU-s wherever
+            # it lands. It pins the base-ref derivation in preflight.sh, which is THE
+            # agent loop and the input to CI's own narrowing: a stale base there invents
+            # phantom changed files, enrols gates the diff never touched, and can trip
+            # the #492 blast-radius carve-out into the ~84-gate run. In a REQUIRED shard
+            # on purpose — the thing every agent runs before pushing should not be the
+            # one thing no gate watches.
+            pattern: "'diff_compiler_lex*' 'diff_compiler_parse*' 'diff_compiler_snapshot*' 'diff_compiler_resolve*' 'diff_compiler_fmt' 'diff_compiler_fmt_roundtrip' 'diff_compiler_wasm_shim_parity' 'diff_compiler_preflight_base' 'native_fixtures/run' 'build_construct_coverage'"
           - name: types
             # 'diff_compiler_shadow_semantics': the SHADOW-SEMANTICS.md decision matrix
             # (standalone fn ⇄ interface-method shadowing). It lives here rather than in
