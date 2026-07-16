@@ -173,6 +173,11 @@ callBin fn a b = EApp (EApp (EVar fn) a) b
 binOp : String -> Expr -> Expr -> Expr
 binOp op a b = EBinOp op a b (Ref RNone)
 
+-- an integer literal in EXPRESSION position.  `ENumLit`, never `ELit (LInt)` —
+-- that is the shape the parser emits and the only one dictPass rewrites away.
+intLit : Int -> Expr
+intLit n = ENumLit n (Ref None) (Ref RNone)
+
 -- a derived impl head with the fixed pub / non-default / no-name shape;
 -- applyDeriveParams rewrites tys + reqs afterwards for the type's params.
 derivedImpl : String -> String -> List ImplMethod -> Decl
@@ -393,6 +398,10 @@ dataDerivers name params variants = [
     "Generic",
     _ => applyDeriveParams name params (deriveGenericData name variants),
   ),
+  (
+    "Hashable",
+    _ => applyDeriveParams name params (deriveHashData name variants),
+  ),
 ]
 
 -- Force the deriver `iface` selects, or None when no deriver claims the name.
@@ -430,6 +439,13 @@ newtypeDerivers name params con fty =
     (
       "Display",
       _ => applyDeriveParams name params (deriveShowData "Display" "display" name synthetic),
+    ),
+    -- Hashable needs no specialized newtype deriver: the synthetic variant is
+    -- ordinal 0 with one field, so the fold collapses to `0 * 33 + hash x` —
+    -- exactly "hash the wrapped value", which is what a newtype key should do.
+    (
+      "Hashable",
+      _ => applyDeriveParams name params (deriveHashData name synthetic),
     ),
   ]
 
@@ -679,6 +695,41 @@ lexCompareExprs ((ea, eb)::rest) = EMatch
     Arm (PCon "Eq" []) [] (lexCompareExprs rest),
     Arm (PVar "__c") [] (EVar "__c"),
   ]
+
+-- Hashable: the djb2-style fold core.mdk's `Hashable` doc specifies — seed the
+-- accumulator with the constructor's ordinal, then `acc = acc * 33 + hash field`
+-- left-to-right.  One arm per constructor, so the ordinal seed is what keeps
+-- `A 1` and `B 1` apart.  This is the SAME fold the hand-written compound impls
+-- next to that doc use (`hash (a, b) = hash a * 33 + hash b`, `hashListItems`),
+-- which is why a derived and a hand-written impl of the same shape agree.
+--
+-- Deliberately does NOT mask the result non-negative.  `Int` wraps, so the fold
+-- goes negative routinely — that is safe and intended: the `Hashable` contract
+-- requires only that equal values hash equal, never non-negativity, and both
+-- consumers mask at the point of use (`slotOf` in hash_map/hash_set, #416).
+-- Masking here would buy nothing, cost a bit of hash space, and make derived
+-- impls silently disagree with the unmasked compound impls in core.mdk.
+deriveHashData : String -> List Variant -> Decl
+deriveHashData name variants = derivedImpl
+  "Hashable"
+  name
+  [
+    ImplMethod "hash" [PVar "__x"] (EMatch (EVar "__x") (map hashArm (indexFrom 0 variants)))
+  ]
+
+hashArm : (Int, Variant) -> Arm
+hashArm (i, v) =
+  let vars = genVars "__a" (conArity v)
+  Arm (conBindPat v vars) [] (hashFold (intLit i) vars)
+
+-- `acc * 33 + hash field` per field, left-to-right.  A field-less constructor
+-- hashes to its bare ordinal (matching core.mdk's `hash None = 1`).
+hashFold : Expr -> List String -> Expr
+hashFold acc [] = acc
+hashFold acc (v::vs) =
+  hashFold
+    (binOp "+" (binOp "*" acc (intLit 33)) (EApp (EVar "hash") (EVar v)))
+    vs
 
 -- Generic: one arm per constructor → RCon name [to_rep a0, …]
 deriveGenericData : String -> List Variant -> Decl

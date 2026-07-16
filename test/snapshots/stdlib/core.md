@@ -1,5 +1,5 @@
 # META
-source_lines=1520
+source_lines=1522
 stages=DESUGAR,MARK
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -544,8 +544,10 @@ derivedNextDepth c depth
    specified deterministic hashers, byte-identical across the tree-walker and the
    native backend); derived and compound impls use a djb2-style fold: seed with
    constructor ordinal, then `acc = acc * 33 + hash field` left-to-right over
-   fields.  `deriving (Hashable)` generates this fold for `data` and `record`
-   types. -}
+   fields.  `deriving (Hashable)` generates this fold for `data`, `record`, and
+   `newtype` types.  The fold is NOT masked non-negative — `Int` wraps, so a hash
+   may be negative; only eq-agreement is contractual, and hash_map/hash_set mask
+   at the point of use. -}
 export interface Hashable a where
   hash : a -> Int
 
