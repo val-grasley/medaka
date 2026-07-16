@@ -51,6 +51,7 @@ Live design docs: **OPEN** = not started, **PARTIAL** = in progress. Read before
 
 | Doc | What it is | Status |
 |-----|------------|--------|
+| [`ASYNC-RUNTIME-DESIGN.md`](design/ASYNC-RUNTIME-DESIGN.md) | Async runtime v2 — the ASYNC-DESIGN §5 swap | DESIGN LOCKED |
 | [`AT-IMPL-PORT-DESIGN.md`](design/AT-IMPL-PORT-DESIGN.md) | `@Impl` Named-Instance-Selection Hint — Native Port Design | SUPERSEDED |
 | [`CAPABILITY-EFFECTS.md`](design/CAPABILITY-EFFECTS.md) | Capability-safe effects — Medaka's headline direction | PARTIAL |
 | [`CAPABILITY-PLATFORM.md`](design/CAPABILITY-PLATFORM.md) | The capability platform — runtime/product architecture | OPEN |
