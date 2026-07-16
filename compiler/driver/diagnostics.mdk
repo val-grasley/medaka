@@ -164,6 +164,7 @@ codeKind code
   | startsWith "R-" code = "resolve"
   | startsWith "T-" code = "type"
   | startsWith "W-" code = "warning"
+  | startsWith "rule-" code = "lint"
   | otherwise = "error"
 
 -- Stable code for a parse/lex diagnostic, recovered at the ParseError→Diag
@@ -813,6 +814,25 @@ readDiagSrc (path, diags) = match readFile path
   Ok src => (path, src, diags)
   Err _ => (path, "", diags)
 
+-- Normalize an emitted diagnostic `file` path to project-root-relative (#298).
+-- Target + project imports resolve relative to cwd and stay relative, but a
+-- stdlib dependency resolves through the absolute stdlibDir root and would
+-- otherwise be echoed verbatim — leaking the private worktree layout and making
+-- the response internally inconsistent + goldens non-portable.  Stripping the
+-- project-root prefix turns `<root>/stdlib/list.mdk` into `stdlib/list.mdk`,
+-- matching the already-relative target + project imports (we run from the root,
+-- so root == cwd).  A path without the prefix (already relative) passes through.
+export relDiagPath : String -> String -> String
+relDiagPath root path =
+  let pre = root ++ "/"
+  if startsWith pre path then
+    stringSlice (stringLength pre) (stringLength path) path
+  else
+    path
+
+relDiagTriple : String -> (String, String, List Diag) -> (String, String, List Diag)
+relDiagTriple root (path, src, diags) = (relDiagPath root path, src, diags)
+
 -- ── check → structured-diagnostics JSON ─────────────────────────────────────
 --
 -- Shared by `medaka check --json` (runCheckJsonCmd in medaka_cli) and the
@@ -909,4 +929,8 @@ checkJsonFile allowInternal rsrc csrc target stdlibDir =
           let parseCacheRef = Ref []
           let results = analyzeProject cacheRef parseCacheRef (_ => None) target roots rsrc csrc
           let triples = map readDiagSrc results
-          (cjAllToJson triples, anyList cjHasErrD results)
+          let root = dirOf stdlibDir
+          (
+            cjAllToJson (map (relDiagTriple root) triples),
+            anyList cjHasErrD results,
+          )
