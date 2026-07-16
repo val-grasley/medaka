@@ -53,6 +53,7 @@ appArgLoc : Expr -> Option Loc
 appFallback : List (String, Ref Effvar) -> List (String, Mono) -> String -> List Ty -> Mono
 appSpineArgCount : Expr -> Int
 appSpineName : Expr -> Option String
+appendDataUniverse : List Decl -> Unit
 appendOp : Mono -> Mono -> Mono
 appendUniverseAccums : List Decl -> Unit
 applyParams : Mono -> List Mono -> Mono
@@ -1292,11 +1293,17 @@ unitMangledShadows : List String -> (String, List Decl) -> List (String, String)
 univConcreteBucket : ImplUniverse -> String -> Option String -> List (List Ty, List Require)
 univHeadless : ImplUniverse -> String -> List (List Ty, List Require)
 univReceiverTag : List Ty -> Option String
+universeAliasTable : Ref (List (String, (List String, Ty)))
+universeDataEnv : Ref TcEnv
+universeDataParamKinds : Ref (List (String, List Kind))
+universeFieldOwners : Ref (Map String (List String))
 universeFunNamesRef : Ref (Map String Unit)
 universeIfaceMethodsRef : Ref (Map String Unit)
 universeIfaceRequiredRef : Ref (Map String (List String))
 universeKeyBucketsRef : Ref (Map String (List KeyEntry))
 universeMethodIfaceParamsRef : Ref (Map String (String, List String, Ty))
+universeRecordByName : Ref (Map String RecordInfo)
+universeRecords : Ref (List (String, RecordInfo))
 universeRegisteredIfacesRef : Ref (Map String Unit)
 unknownCtorMsg : String -> String
 unknownFieldFresh : String -> String -> List String -> Mono

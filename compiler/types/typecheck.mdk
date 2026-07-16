@@ -1434,6 +1434,36 @@ obUnivHeadlessRef = Ref omEmpty
 obUnivIfaceTagsRef : Ref (OrdMap (OrdMap Unit))
 obUnivIfaceTagsRef = Ref omEmpty
 
+-- #154 PR-A: PERSISTENT per-run DATA-universe accumulators for the multi-module path.
+-- checkBodyImpl's Module arm used to `registerAllData initialEnv (accData ++ prog0)`,
+-- RE-REGISTERING every earlier module's public data (and RE-MINTING its tyvars) once per
+-- module — the dominant remaining O(N²) the perf `modules` shape charts.  `registerData` /
+-- `registerVariants` / `registerRecordInfoKeyed` side-effect FIVE tables wiped by resetState
+-- (records / recordByName / fieldOwners / dataParamKinds / aliasTable) PLUS the ctor ENV; an
+-- env-only accumulator would silently drop the 5-table side effects and the compiler would
+-- fail to self-typecheck, so all SIX persist.  Seeded by the core pass (also Module mode),
+-- grown ONE module at a time by `appendDataUniverse (publicDataDecls prog0)` AFTER the module
+-- (so module k sees pub 1..k-1, never its own pub twice), copied into the resetState-wiped
+-- working refs and OVERLAID with prog0 at the `dataEnv` binding.  First-wins order preserved:
+-- persistent [pub_{k-1}..pub_1] + overlay conses prog0 → [prog0, pub_{k-1}..pub_1], the same
+-- winner the old left fold over `accData ++ prog0` yielded.  Stored tyvar ids never leak —
+-- every reader (instantiateRecord / ctor-scheme instantiation) refreshes them; only the
+-- COUNT of tyvars minted shifts (registered once, not per module), argued invisible via the
+-- ppMono/ppScheme normalization (the TYPE-dump goldens + fixpoint are the oracle).  Survive
+-- per-module `resetState`; cleared per RUN by `resetCrossModuleState`.
+universeRecords : Ref (List (String, RecordInfo))
+universeRecords = Ref []
+universeRecordByName : Ref (OrdMap RecordInfo)
+universeRecordByName = Ref omEmpty
+universeFieldOwners : Ref (OrdMap (List String))
+universeFieldOwners = Ref omEmpty
+universeDataParamKinds : Ref (List (String, List Kind))
+universeDataParamKinds = Ref []
+universeAliasTable : Ref (List (String, (List String, Ty)))
+universeAliasTable = Ref []
+universeDataEnv : Ref TcEnv
+universeDataEnv = Ref initialEnv
+
 -- P0-19 (constrained-receiver arm): the `=>`-constraint variables of the top-level
 -- group CURRENTLY being inferred, as (interface name, the constraint's instantiated
 -- mono).  Set by processSCC between preunifySigsEx (which instantiates the sigs) and
@@ -1913,7 +1943,14 @@ resetCrossModuleState _ =
   -- shares the same per-run reset boundary.
   let _ = setRef obUnivConcreteRef omEmpty
   let _ = setRef obUnivHeadlessRef omEmpty
-  setRef obUnivIfaceTagsRef omEmpty
+  let _ = setRef obUnivIfaceTagsRef omEmpty
+  -- #154 PR-A: the DATA-universe accumulators share the same per-run reset boundary.
+  let _ = setRef universeRecords []
+  let _ = setRef universeRecordByName omEmpty
+  let _ = setRef universeFieldOwners omEmpty
+  let _ = setRef universeDataParamKinds []
+  let _ = setRef universeAliasTable []
+  setRef universeDataEnv initialEnv
 
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
@@ -10302,7 +10339,7 @@ checkProgramSeededSplit seed coreProg userProg =
 -- DICT-SEMANTICS §7's single-evaluator law: one elaboration ⇒ `check` and `emit`
 -- cannot silently disagree on a dispatch decision.  Everything is shared EXCEPT the
 -- SIX load-bearing divergences, each a `match mode` branch below:
---   (1) decl universe (prog / dataUniverse / fullUniverse / groundUniverse)
+--   (1) decl universe (prog / persistent DATA-universe / fullUniverse / groundUniverse)
 --   (2) inference plan — flat's TWO-PHASE prelude-then-user vs module's single pass
 --   (3) cross-module dict-threading restore + snapshot (module only; flat SKIPS)
 --   (4) importer/definer shadows + the shadowMethodSchemes env layer
@@ -10324,14 +10361,17 @@ checkBodyImpl seed mode prog0 =
   -- the full visible universe (shadows / key table / iface-param registration /
   -- completeness / obligations): Flat = whole flattened program; Module = imported
   -- data + impl universe + this module.
+  -- #154 PR-A: every consumer of `fullUniverse` is a `Flat _ =>` arm (grep confirms:
+  -- buildDefinerShadows / buildKeyTable / registerMethodIfaceParamsAll / checkImplCompleteness
+  -- / checkImplObligations / checkCallObligations — all Flat).  Medaka is STRICT, so the
+  -- Module arm's `accData ++ implDecls ++ prog0` allocated an O(|accData|) list every module
+  -- and discarded it unread — a dead per-module O(N) concat.  Bind `[]` on Module.
   let fullUniverse = match mode
     Flat _ => prog
-    Module _ accData implDecls => accData ++ implDecls ++ prog0
-  -- registerAllData universe: Module re-registers prior modules' public data (NOT the
-  -- impl universe); Flat has everything in prog already.
-  let dataUniverse = match mode
-    Flat _ => prog
-    Module _ accData _ => accData ++ prog0
+    Module _ _ _ => []
+  -- registerAllData universe (#154 PR-A): the Module path no longer builds `accData ++ prog0`
+  -- here — prior modules' public data lives in the persistent DATA-universe accumulators
+  -- (universeRecords/…/universeDataEnv), copied+overlaid at the `dataEnv` binding below.
   -- groundMultiParamObligations universe: Flat grounds over prog; Module over implDecls.
   let groundUniverse = match mode
     Flat _ => prog
@@ -10417,7 +10457,24 @@ checkBodyImpl seed mode prog0 =
     Module _ _ _ =>
       let _ = setRef methodIfaceParamsRef universeMethodIfaceParamsRef.value
       setRef registeredIfacesRef universeRegisteredIfacesRef.value
-  let dataEnv = registerAllData initialEnv dataUniverse
+  -- #154 PR-A: the dominant remaining O(N²) in the multi-module typecheck.  The Module arm
+  -- used to `registerAllData initialEnv (accData ++ prog0)` — re-registering (and re-minting
+  -- the tyvars of) EVERY earlier module's public data ONCE PER MODULE.  Now: COPY the six
+  -- persistent DATA-universe accumulators (prior modules' public data + ctor env, each minted
+  -- exactly once) into the resetState-wiped working refs, then register ONLY this module's
+  -- `prog0` as a transient FRONT overlay.  Ordering is byte-identical: the persistent list is
+  -- [pub_{k-1}..pub_1] and `registerData` conses prog0 on top → [prog0, pub_{k-1}..pub_1],
+  -- the same lookupAssoc (first-wins) / omInsert (last-write-wins) winner the old left fold
+  -- over `accData ++ prog0` produced.  Per module O(|prog0|); total O(N).  Flat is unchanged.
+  let dataEnv = match mode
+    Flat _ => registerAllData initialEnv prog
+    Module _ _ _ =>
+      let _ = setRef recordsRef universeRecords.value
+      let _ = setRef recordByNameRef universeRecordByName.value
+      let _ = setRef fieldOwnersRef universeFieldOwners.value
+      let _ = setRef dataParamKindsRef universeDataParamKinds.value
+      let _ = setRef aliasTableRef universeAliasTable.value
+      registerAllData universeDataEnv.value prog0
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   -- methodNames: FLAT's SECOND ifaceMethodSchemes call over prog — dedup-skipped by
@@ -10520,6 +10577,14 @@ checkBodyImpl seed mode prog0 =
       ()
   let _ = setRef localSchemesOut (mapLocalSchemes localBindRefs.value)
   let _ = setRef seedSchemesOut seed
+  -- #154 PR-A: grow the persistent DATA-universe by THIS module's PUBLIC data, AFTER the
+  -- module's inference is complete (so the copy+overlay above saw pub 1..k-1 and NEVER this
+  -- module's own pub twice) — the register-time mirror of foldModules' `accData ++
+  -- publicDataDecls prog` threading.  appendDataUniverse clobbers the working table refs,
+  -- which are DEAD here (the next module's resetState wipes them).  Flat leaves it untouched.
+  let _ = match mode
+    Flat _ => ()
+    Module _ _ _ => appendDataUniverse (publicDataDecls prog0)
   globalS ++ topSchemes
 -- D2: check top-level `let rec` bindings for non-function members before
 -- type-checking the DFunDef groups (mirrors oracle's LetRecNonFunction guard,
@@ -13085,6 +13150,30 @@ appendUniverseAccums prog =
       let _ = setRef obUnivConcreteRef c
       let _ = setRef obUnivHeadlessRef h
       setRef obUnivIfaceTagsRef t
+
+-- #154 PR-A: grow the persistent DATA-universe by [pubDecls] (THIS module's public data).
+-- `registerData` / `registerVariants` hardcode the five working table refs, so grow by
+-- pointing those refs at the persistent values, registering pubDecls over the accumulated
+-- ctor env, and snapshotting all six results back.  Called at the END of checkBodyImpl's
+-- Module arm, where the working table refs are DEAD (this module's inference is done and the
+-- next module's resetState wipes them), so the clobber is invisible.  Registers each public
+-- decl exactly ONCE across the whole run — the O(N) replacing the Module arm's old
+-- per-module O(|accData|) re-registration.  Only publicDataDecls are folded in (private data
+-- stays module-local), matching foldModules' `accData ++ publicDataDecls prog` threading.
+appendDataUniverse : List Decl -> Unit
+appendDataUniverse pubDecls =
+  let _ = setRef recordsRef universeRecords.value
+  let _ = setRef recordByNameRef universeRecordByName.value
+  let _ = setRef fieldOwnersRef universeFieldOwners.value
+  let _ = setRef dataParamKindsRef universeDataParamKinds.value
+  let _ = setRef aliasTableRef universeAliasTable.value
+  let env2 = registerAllData universeDataEnv.value pubDecls
+  let _ = setRef universeRecords recordsRef.value
+  let _ = setRef universeRecordByName recordByNameRef.value
+  let _ = setRef universeFieldOwners fieldOwnersRef.value
+  let _ = setRef universeDataParamKinds dataParamKindsRef.value
+  let _ = setRef universeAliasTable aliasTableRef.value
+  setRef universeDataEnv env2
 
 -- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
 -- replaced by the persistent interface-method membership SET.  `direct` still filters
