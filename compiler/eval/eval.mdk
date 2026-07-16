@@ -254,6 +254,48 @@ ctorFieldOrdersRef = Ref []
 methodReqCountRef : Ref (List ((String, String), Int))
 methodReqCountRef = Ref []
 
+-- #315: the ((iface, method), positions) table, kept for the REVERSE direction the
+-- default-method specialiser needs: method → its interface → that interface's other
+-- methods.  Populated by every module driver beside methodReqCountRef (both tables
+-- are derived from the same `allDecls`, so they must be installed together — see
+-- installDispatchTables).
+ifaceDispatchRef : Ref (List ((String, String), List Int))
+ifaceDispatchRef = Ref []
+
+-- The two dispatch tables applyMethodDicts consults are derived from the SAME decl
+-- list and are only correct together, so every driver installs them through ONE
+-- call.  (#413's fix shipped as a shared `applyMethodDicts` that both interpreters
+-- call — but only eval.mdk's drivers filled methodReqCountRef, so on the Core-IR
+-- interpreter the lookup always returned None and the fix was INERT.  Sharing the
+-- code is not sharing the DATA: bind them here so a driver cannot install one
+-- without the other.)
+export installDispatchTables : List Decl -> List ((String, String), List Int)
+installDispatchTables allDecls =
+  let disp = buildIfaceDispatch allDecls
+  let _ = setRef methodReqCountRef (buildMethodReqCounts allDecls)
+  let _ = setRef ifaceDispatchRef disp
+  disp
+
+-- the interface a method belongs to ("" if it is not an interface method).
+ifaceOfMethod : String -> String
+ifaceOfMethod mname = ifaceOfMethodIn mname ifaceDispatchRef.value
+
+ifaceOfMethodIn : String -> List ((String, String), List Int) -> String
+ifaceOfMethodIn _ [] = ""
+ifaceOfMethodIn mname (((i, m), _)::rest)
+  | m == mname = i
+  | otherwise = ifaceOfMethodIn mname rest
+
+-- every method name declared by [iface].
+methodsOfIface : String -> List String
+methodsOfIface iface = methodsOfIfaceIn iface ifaceDispatchRef.value
+
+methodsOfIfaceIn : String -> List ((String, String), List Int) -> List String
+methodsOfIfaceIn _ [] = []
+methodsOfIfaceIn iface (((i, m), _)::rest)
+  | i == iface = m :: methodsOfIfaceIn iface rest
+  | otherwise = methodsOfIfaceIn iface rest
+
 export buildMethodReqCounts : List Decl -> List ((String, String), Int)
 buildMethodReqCounts prog =
   let arities = flatMap methodDeclArities prog
@@ -293,10 +335,23 @@ takeN n (x::rest) = x :: takeN (n - 1) rest
 
 -- #413: Option-returning.  A MISSING entry (no ImplMethod for this (method, tag) —
 -- an interface DEFAULT method, or a tag the route never narrowed) must stay
--- distinguishable from a genuine reqCount of 0: 0 means "this impl method declares
--- NO leading dict params, so drop the call site's", while None means "unknown callee
--- — keep the pre-existing behaviour".  Collapsing the two would silently strip the
--- dicts a default method's lifted body needs.
+-- distinguishable from a genuine reqCount of 0:
+--   * Some 0 = "this impl DOES define the method, and it declares NO leading dict
+--     params" (a terminal body like `s _ = 2`, which dict_pass gave none because it
+--     reads none) ⇒ the call site's impl dicts must be DROPPED, or the dict lands in
+--     the first value param.  That is #413.
+--   * None  = "this impl does not define the method at all" ⇒ it inherits the
+--     interface DEFAULT, and dispatch will land on the generic default body.
+-- #315 CORRECTION: this comment used to justify None's old "apply the dicts anyway"
+-- arm with "collapsing the two would strip the dicts a default method's LIFTED body
+-- needs".  That reasoning is wrong, and it is why the None arm looked deliberate: a
+-- lifted default is one desugar's fillImplDefaults specialised INTO the impl, which
+-- makes it an ordinary ImplMethod — so it HAS an entry and returns Some, never None.
+-- The only body None ever reaches is the interface's own GENERIC default, shared by
+-- every impl, which declares no impl-dict params at all.  Applying them there bound
+-- the dict to `lt`'s first value param → "applied non-function: false" (#315).  The
+-- dicts are not stripped: specializeDefault routes them to the inner same-interface
+-- call that actually needs them.
 -- This scans methodReqCountRef, so it is once-per-dispatch on the hot path: callers
 -- take the Option ONCE and derive every consumer from it (see applyMethodDicts).
 lookupMethodReqCountOpt : String -> String -> Option Int
@@ -1150,10 +1205,116 @@ applyMethodDicts env name route narrowed fwdReqs0 implRoutes methodRoutes =
   let reqCount = lookupMethodReqCountOpt name tag
   let fwdReqs = takeN (fromOption 0 reqCount) fwdReqs0
   if awaitsArgs narrowed then
-    let v1 = applyDicts env narrowed methodRoutes
-    let v2 = applyDicts env v1 (implDictRoutes reqCount methodRoutes implRoutes)
-    applyValues v2 fwdReqs
+    match specializeDefault env name tag reqCount implRoutes narrowed
+      Some specialized => applyDicts env specialized methodRoutes
+      None =>
+        let v1 = applyDicts env narrowed methodRoutes
+        let v2 = applyDicts env v1 (implDictRoutes reqCount methodRoutes implRoutes)
+        applyValues v2 fwdReqs
   else narrowed
+
+-- ── #315: the eval twin of llvm_emit's emitDefaultDefine/restampIfaceDicts ──
+-- A user impl of a PRELUDE interface, in another module, that inherits a DEFAULT
+-- method (`impl Ord (Box a) requires Ord a` defining only `compare`, called via
+-- `lt`).  desugar's fillImplDefaults is SAME-MODULE only (desugar.mdk:698-700 — it
+-- is handed one module's decl list at a time, so it never sees core.mdk's
+-- DInterface), so no specialised `lt` is synthesised for Box and dispatch falls to
+-- the interface's own generic default body.  That body is shared by every impl, so:
+--   * it declares NO impl-dict params — applying the call site's implRoutes to it
+--     binds the DICT to its first VALUE param (`lt`'s `x`), the body returns False,
+--     and the real argument is then applied to False → "applied non-function:
+--     false"; and
+--   * its inner same-interface call (`compare x y`) is stamped RNone, so it falls to
+--     arg-tag dispatch — which cannot supply the leading `$dict_compare_0` param
+--     that Box's `requires`-bearing `compare` declares, and mis-binds it too.
+-- Both halves are the SAME missing step, and the dicts needed are the ones already
+-- in hand: implRoutes, stamped by the call site for the impl at [tag].  Native
+-- lifts a per-tag copy of the default, eta-prepends those dicts and RE-STAMPS the
+-- inner same-iface calls to `RKey tag` (emitDefaultDefine + restampIfaceDicts).
+-- eval cannot re-stamp routes -- the Core-IR interpreter's default bodies are
+-- opaque CExpr inside a VClosureF, so a route rewrite would have to be written
+-- twice and could drift.  The env is the representation-independent equivalent:
+-- shadow each same-interface sibling the impl at [tag] DOES define with that
+-- sibling already dict-applied, so the generic body's RNone `compare` resolves to
+-- Box's compare with its element dict supplied.  Shared by both interpreters (they
+-- share Value + EvalEnv), so the two cannot diverge.
+--
+-- Fires ONLY on the inherited-default case: reqCount None (no ImplMethod entry for
+-- (name, tag) ⇒ this impl does not define [name]) AND a concrete route tag AND the
+-- impl actually has `requires` dicts to route.  Everything else — including the
+-- same-module specialised default, which IS an ImplMethod and so has an entry
+-- (Some), and an unnarrowed tag ("", the genuine unknown callee) — is untouched and
+-- takes the pre-existing path.
+--
+-- The empty-shadow case (no dict-taking sibling to bind) is deliberately still a
+-- HIT rather than a miss, but NOT because a live bug needs it: suppressing the dicts
+-- is simply not conditional on having somewhere to send them — the generic body
+-- declares no impl-dict params whatever it calls.  It is currently UNREACHABLE, and
+-- the reason is worth recording, because it is not obvious: [implRoutes] is stamped
+-- for `dictMethod = if implDefinesMethodAt … then method else innerDefaultMethod
+-- method` (typecheck.mdk stampOpRouteVal), i.e. for exactly the sibling this
+-- function shadows.  So "no dict-taking sibling" and "no impl dicts stamped" are the
+-- same fact, and the isEmptyL guard above already returns None first.  Written this
+-- way so that a change to that stamper cannot silently re-scope this fix to "the
+-- default happens to call a concrete sibling" and put every other inherited default
+-- back on the H1 path.
+--
+-- EXACT BOUND: [narrowed] must be a single default closure — withEnvFrame returns
+-- None for anything else, and the caller then takes the old path.  In practice that
+-- is only a VMulti of two-or-more untagged defaults (two interfaces declaring a
+-- same-named default method), left conservatively unchanged; a nullary VThunk
+-- default never reaches here at all, as applyMethodDicts' awaitsArgs guard returns
+-- it before this call.
+specializeDefault : EvalEnv (Value e) -> String -> String -> Option Int -> List Route -> Value e -> <e> Option (Value e)
+specializeDefault _ _ _ (Some _) _ _ = None
+specializeDefault env name tag None implRoutes narrowed
+  | tag == "" || isEmptyL implRoutes = None
+  | otherwise = withEnvFrame (siblingShadows env name tag implRoutes) narrowed
+
+-- One shadow binding per same-interface sibling that the impl at [tag] defines with
+-- leading dict params (reqCount > 0).  A sibling the impl does NOT define (None) is
+-- another inherited default — it has no dicts to take, and shadowing it would pin it
+-- to [tag], so leave it to normal dispatch.  reqCount 0 needs no dicts, so binding it
+-- would only risk pinning: skip.  [name] itself is excluded — the body being
+-- specialised IS [name]'s default, and binding it would make a self-recursive default
+-- resolve to a non-existent tagged impl.
+siblingShadows : EvalEnv (Value e) -> String -> String -> List Route -> <e> List (String, Ref (Value e))
+siblingShadows env name tag implRoutes =
+  flatMap
+    (shadowBind env tag implRoutes)
+    (filter (!= name) (methodsOfIface (ifaceOfMethod name)))
+
+shadowBind : EvalEnv (Value e) -> String -> List Route -> String -> <e> List (String, Ref (Value e))
+shadowBind env tag implRoutes m = match lookupMethodReqCountOpt m tag
+  Some r => shadowBindAt env tag implRoutes m r
+  None => []
+
+shadowBindAt : EvalEnv (Value e) -> String -> List Route -> String -> Int -> <e> List (String, Ref (Value e))
+shadowBindAt env tag implRoutes m r
+  | r <= 0 = []
+  | otherwise =
+    shadowOf env tag implRoutes m r (narrowMethod (lookupMethod env m) tag)
+
+-- Only a still-dispatching candidate is worth shadowing: narrowMethod returning a
+-- non-VTypedImpl means the tag matched nothing tagged (the sibling is itself an
+-- inherited default), so there is no impl body to dict-apply.  Keeping the binding a
+-- VTypedImpl also keeps it a METHOD binding, so the body's lookupMethod finds it
+-- rather than walking past it to the global VMulti (isMethodBinding).
+shadowOf : EvalEnv (Value e) -> String -> List Route -> String -> Int -> Value e -> <e> List (String, Ref (Value e))
+shadowOf env _ implRoutes m r (v@(VTypedImpl _ _ _ _ _)) =
+  [(m, Ref (applyDicts env v (takeN r implRoutes)))]
+shadowOf _ _ _ _ _ _ = []
+
+-- prepend a frame to a closure's captured env.  Both closure forms carry an EvalEnv
+-- (VClosureF is the Core-IR interpreter's), so this is representation-independent.
+-- None for any other value: there is no env to extend, so the caller must fall
+-- through to the normal path rather than silently drop its dicts.
+withEnvFrame : List (String, Ref (Value e)) -> Value e -> Option (Value e)
+withEnvFrame binds (VClosure (EvalEnv fs) ps b) =
+  Some (VClosure (EvalEnv (binds::fs)) ps b)
+withEnvFrame binds (VClosureF (EvalEnv fs) ps f) =
+  Some (VClosureF (EvalEnv (binds::fs)) ps f)
+withEnvFrame _ _ = None
 
 -- #413: a call site stamps the impl-`requires` dict routes UNCONDITIONALLY, but
 -- dict_pass only gives the impl method matching PARAMS when its body actually reads
@@ -1544,7 +1705,16 @@ clausesForName name ((n, c)::rest)
   | otherwise = clausesForName name rest
 
 -- ── typeclass impl / interface-default installation ───────────────────────
-export buildIfaceDispatch : List Decl -> List ((String, String), List Int)
+-- #315: deliberately NOT exported.  Its result is half of a pair that is only
+-- correct together (see installDispatchTables), and #413's regression was exactly a
+-- driver that obtained one half and never installed the other.  While this was
+-- exported, nothing but caller discipline stopped a new driver from importing it and
+-- reintroducing that shape by construction — the same "enforced by remembering"
+-- property the #452 fix was found to rely on.  Un-exported, installDispatchTables is
+-- the only way in, so the invariant is structural.  If a caller ever genuinely needs
+-- the dispatch table WITHOUT installing, export a reader for ifaceDispatchRef rather
+-- than re-exporting this.
+buildIfaceDispatch : List Decl -> List ((String, String), List Int)
 buildIfaceDispatch prog = flatMap ifaceDispatchEntries prog
 
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
@@ -2622,8 +2792,7 @@ evalModulesWith extraExterns preludeDecls modules =
   let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = setRef ctorToTypeRef (buildCtorToType allDecls)
-  let _ = setRef methodReqCountRef (buildMethodReqCounts allDecls)
-  let disp = buildIfaceDispatch allDecls
+  let disp = installDispatchTables allDecls
   let ctors = collectCtors allDecls
   let preludeGroups = groupsOf preludeDecls
   let globalNames = map fst boolSeeds ++ map fst externs ++ map fst ctors ++ implMethodNames allDecls ++ map fst preludeGroups
@@ -2740,8 +2909,7 @@ evalModulesRootEnvWith extraExterns preludeDecls modules =
   let moduleDecls = flatMap snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = setRef ctorToTypeRef (buildCtorToType allDecls)
-  let _ = setRef methodReqCountRef (buildMethodReqCounts allDecls)
-  let disp = buildIfaceDispatch allDecls
+  let disp = installDispatchTables allDecls
   let ctors = collectCtors allDecls
   let preludeGroups = groupsOf preludeDecls
   let globalNames = map fst boolSeeds ++ map fst externs ++ map fst ctors ++ implMethodNames allDecls ++ map fst preludeGroups
