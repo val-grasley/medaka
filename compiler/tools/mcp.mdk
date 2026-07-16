@@ -38,7 +38,6 @@ import json.{
   asString,
   asInt,
   asArray,
-  escapeString,
 }
 import io.{stripCR}
 import driver.diagnostics.{
@@ -177,22 +176,32 @@ logMcp s = ePutStrLn (stringConcat ["[mcp] ", s])
 -- path, each event is appended as one tab-separated line: "<wall-clock epoch
 -- seconds>\t<method>\t<name>\t<args JSON>\n" (method-level events with no
 -- tool name/args leave those fields as `""`).  `method` and `name` are passed
--- through json.escapeString (quoted + escaped) rather than interpolated raw:
--- `name` is client-controlled (the `tools/call` "name" argument), and an
--- unescaped embedded '\n'/'\t' would split one record across lines, breaking
--- the one-record-per-line invariant this log format promises. `args` is
--- already a `stringify`d Json value, which is single-line-safe on its own
--- (see the file header on json.stringify's escaping). stdout stays
--- protocol-only (see header) — this writes ONLY to the given file, via
--- `appendFile`; a write failure falls back to stderr via `logMcp` rather
--- than crashing the server.
+-- through `stringify (JString …)` (quoted + escaped — the same already-public
+-- machinery `stringify` uses internally for any `JString`) rather than
+-- interpolated raw: `name` is client-controlled (the `tools/call` "name"
+-- argument), and an unescaped embedded '\n'/'\t' would split one record
+-- across lines, breaking the one-record-per-line invariant this log format
+-- promises. `args` is already a `stringify`d Json value, which is
+-- single-line-safe on its own (see the file header on json.stringify's
+-- escaping). stdout stays protocol-only (see header) — this writes ONLY to
+-- the given file, via `appendFile`; a write failure falls back to stderr via
+-- `logMcp` rather than crashing the server.
 logMcpCall : String -> String -> String -> <IO> Unit
 logMcpCall method name args = match getEnv "MEDAKA_MCP_LOG"
   None => unit
   Some "" => unit
   Some path =>
     let ts = floatToString (wallTimeSec ())
-    let line = stringConcat [ts, "\t", escapeString method, "\t", escapeString name, "\t", args, "\n"]
+    let line = stringConcat [
+      ts,
+      "\t",
+      stringify (JString method),
+      "\t",
+      stringify (JString name),
+      "\t",
+      args,
+      "\n",
+    ]
     match appendFile path line
       Ok _ => unit
       Err e => logMcp (stringConcat ["log write failed: ", e])

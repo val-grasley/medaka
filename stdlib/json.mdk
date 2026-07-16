@@ -115,11 +115,8 @@ escapeGo arr i acc
   | i < 0 = acc
   | otherwise = escapeGo arr (i - 1) (escapeChar (arrayGetUnsafe i arr) :: acc)
 
--- A `String` as a quoted, escaped JSON string literal.  Exported so callers
--- outside this module (e.g. compiler/tools/mcp.mdk's opt-in call log) can
--- safely embed an arbitrary, client-controlled String in a single-line
--- record without it splitting across lines on an embedded '\n'/'\t'.
-export escapeString : String -> String
+-- A `String` as a quoted, escaped JSON string literal.
+escapeString : String -> String
 escapeString s =
   let arr = stringToChars s
   let pieces = escapeGo arr (arrayLength arr - 1) []
