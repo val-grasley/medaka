@@ -20,15 +20,20 @@
 # carried is NOT this gate's job — it moved (#81 Stage B1) to a single full-prelude dump,
 # diff_compiler_snapshot_prelude.sh (a `# TYPES` snapshot of stdlib/core.mdk).
 #
-# Proven at introduction: every `# TYPES_USER` line appears verbatim in the frozen
+# Proven at introduction: every `# TYPES_USER` line appeared verbatim in the frozen
 # diff_fixtures/*.golden `=== TYPES ===` section — 57/57, zero prelude leakage — so the
-# user schemes are byte-correct AND prelude-aware.
+# user schemes are byte-correct AND prelude-aware. That redundancy was the whole point:
+# #81 Stage C2 then EMPTIED those golden `=== TYPES ===` sections (header kept, content
+# deleted) — this snapshot IS the surviving pin for the user schemes, so re-cut it here,
+# not there.
 #
 # ── SHARED CORPUS ────────────────────────────────────────────────────────────
 # test/diff_fixtures/ is now read by this gate ALSO (also: the frontend snapshot gate's
-# diff_fixtures family + the diff_compiler_check.sh / check_batch.sh probe gates, which
-# read the frozen `=== TYPES ===`/`=== EVAL ===` goldens). Adding, moving, or deleting a
-# fixture there enrolls/de-enrolls it here too.
+# diff_fixtures family; the diff_compiler_check.sh / check_batch.sh probe gates, whose
+# clean leg is a subset check against THIS `# TYPES_USER` snapshot since #81 Stage C; and
+# the eval/core_ir run gates, which read the frozen `=== EVAL ===` golden — the
+# `=== TYPES ===` section is empty since Stage C2). Adding, moving, or deleting a fixture
+# there enrolls/de-enrolls it here too.
 #
 # ── RE-CUTTING ───────────────────────────────────────────────────────────────
 # match_nonexhaustive renders a diagnostic `# TYPES_USER` (a non-exhaustive-match
