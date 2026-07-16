@@ -356,8 +356,19 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
   Refs and there is no disable for the census-mode gap flag; process-per-emit masks it.
 - **`$boxint` equality/compare through a poly HOF is by VALUE** (no ref-identity bug).
 - **NaN `compare`/`min`/`max` are engine-UNIFORM today** (all three engines: `Eq`,
-  `nan`, `nan`, `1.0`, `1.0`) — the N6 interim bar holds there; the live NaN defect is
-  the HOF-routed `<=`/`>=` path (#305, native+wasm in lockstep, eval correct).
+  `nan`, `nan`, `1.0`, `1.0`) — the N6 interim bar holds there. ⚠️ **The second half of this
+  entry is now DRAINED: the HOF-routed `<=`/`>=` NaN defect (#305) is FIXED** — ws:emitter's
+  #484 made Float relational ops IEEE predicates on the **type-lost path** too (both backends,
+  one atomic PR), and took a latent `== NaN` bug with it. `WASM-SEMANTICS`'s **N5 row is now ✅**.
+  N6 (`compare`/`min`/`max` at NaN → totalOrder, **#360**) remains decided-and-unimplemented.
+
+  > **Why this line is worth reading twice.** It sat in a ledger headed *"do NOT re-file"* —
+  > whose purpose is to tell you a question is **settled**. A stale entry here does not merely
+  > misinform: **it discourages the very check that would catch it.** It survived #484 because
+  > ws:emitter correctly drained the *contract* (`WASM-SEMANTICS.md`) but cannot reach this
+  > file — **the same-commit drain rule stops at the workstream boundary.** So: when a sibling
+  > closes an issue this file's disproof ledger cites, **the drain is YOURS**, and nobody will
+  > do it for you. Run the rule's grep on every closed `#N`, not just your own.
 
 ## Before you measure anything
 
