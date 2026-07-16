@@ -131,6 +131,12 @@ N="${PERF_N:-250}"
 # out of noise. So: raise N, keep the floor honest.
 XREF_N="${PERF_XREF_N:-4000}"
 
+# `comments` samples at its own N so the `fmt` stage clears the 200ms TIME_FLOOR at
+# the largest size (4N): at base 1000 → 4000, fmt is ~0.46s on a correct compiler,
+# comfortably gradeable. Smaller and the floor would (correctly) refuse to grade
+# it, blinding the gate to the formatter/comment quadratic it exists to catch.
+COMMENTS_N="${PERF_COMMENTS_N:-1000}"
+
 # min-of-K sample count for the TIME signal. K>=5 required (see file header);
 # allocation needs no such thing — it is deterministic, one run suffices.
 PERF_K="${PERF_K:-5}"
@@ -246,6 +252,14 @@ trap 'rm -rf "$WORK"' EXIT
 #              actually walks the scope chain, which is where #78's resolve
 #              quadratic lived. Graded on TIME (see file header), not
 #              allocation — the #78 bug was a pure scan, near-zero extra alloc.
+#   comments — the COMMENT side-channel + the FORMATTER. N functions each with a
+#              leading + two trailing comments, so comment count scales with N.
+#              The ONLY shape that exercises `fmt` (profile_main runs formatSource):
+#              lexer.collectComments/posLineColFrom and fmt.formatProgram. Both
+#              historical quadratics here were pure scans (offset→line rescanned
+#              from 0 per comment; remaining-comment-tail rescanned per decl), so
+#              like #78/#115 they are graded on TIME — allocation is blind to them.
+#              See gen_comments and the fmt entry in TIME_STAGES.
 #   modules  — MULTI-MODULE (issue #153). The five shapes above are single-file,
 #              so they run only the single-file driver and are STRUCTURALLY BLIND
 #              to the O(modules^2) family in checkModuleFullImpl / elabModuleStamp.
@@ -290,6 +304,27 @@ gen_nesting() {
   printf 'deep : Int\ndeep =\n' >> "$f"
   i=0; while [ "$i" -lt "$n" ]; do printf '  let v%s = %s\n' "$i" "$i" >> "$f"; i=$((i+1)); done
   printf '  v0\n' >> "$f"
+}
+
+gen_comments() {
+  n=$1; f=$2; : > "$f"
+  # N functions, each carrying a LEADING comment line + a TRAILING comment on both
+  # its signature and its body. This is the ONLY shape that populates the comment
+  # side-channel, and the comment count scales with N — the input a formatter
+  # quadratic needs. It exercises `fmt` (profile_main runs `formatSource`):
+  #   * lexer.collectComments/rawToComments/posLineColFrom — offset→(line,col) for
+  #     every comment (was rescanned from offset 0 per comment → O(comments×bytes));
+  #   * fmt.formatProgram — the per-decl comment interleaving (was a full remaining-
+  #     tail rescan per decl → O(decls×comments)).
+  # BOTH are pure scans that allocate ~nothing, so this shape is graded on fmt TIME
+  # (the alloc verdict is blind to it — the issue #110 class). Sized (COMMENTS_N)
+  # so fmt time at 4N clears the 200ms floor; see the base_n case in the loop.
+  i=0; while [ "$i" -lt "$n" ]; do
+    printf -- '-- leading comment %s describing the function defined just below it\n' "$i"
+    printf 'f%s : Int -> Int  -- trailing comment on the signature of f%s\n' "$i" "$i"
+    printf 'f%s x = x + %s  -- trailing comment on the body of f%s\n' "$i" "$i" "$i"
+    i=$((i+1))
+  done >> "$f"
 }
 
 gen_xref() {
@@ -450,7 +485,16 @@ stage_times_min_modules() {
 # Stages to grade. `parse-prelude` is the FIXED one-time cost of runtime+core and
 # does not scale with N, so grading it is meaningless; `total` is a sum and rule 1
 # says never grade a sum.
-TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck"
+#
+# `fmt` is the comment-preserving format pass (profile_main runs `formatSource` on
+# the target: collectComments + parseWithPositions + formatProgram). It is a pure
+# scan — its two historical quadratics (lexer.posLineColFrom rescanned from offset
+# 0 per comment; formatProgram rescanned the whole remaining comment tail per decl)
+# allocated almost NOTHING, so allocation was blind to them and only the `comments`
+# shape's TIME signal catches the class. On every OTHER shape fmt is under the
+# 200ms floor and SKIPs (loud, harmless); the `comments` shape is sized so its fmt
+# time clears the floor and is graded.
+TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt"
 
 # ── KNOWN SLOW (TIME) — a ledger, NOT a skip-list ────────────────────────────
 #
@@ -541,10 +585,11 @@ printf -- '---------------------------------------------------------------------
 # contaminated by the constant term. Also flag a CLIMBING trend (r2 meaningfully above
 # r1) even when r2 is still under the ceiling, because that is a quadratic caught early,
 # while it is small.
-for shape in bindings match listlit nesting xref; do
+for shape in bindings match listlit nesting xref comments; do
   case "$shape" in
-    xref) base_n="$XREF_N" ;;
-    *)    base_n="$N" ;;
+    xref)     base_n="$XREF_N" ;;
+    comments) base_n="$COMMENTS_N" ;;
+    *)        base_n="$N" ;;
   esac
   n1="$base_n"; n2=$((base_n * 2)); n3=$((base_n * 4))
   f1="$WORK/${shape}_$n1.mdk"; f2="$WORK/${shape}_$n2.mdk"; f3="$WORK/${shape}_$n3.mdk"

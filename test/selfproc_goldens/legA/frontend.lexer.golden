@@ -102,6 +102,7 @@ radixEnd : Array Char -> Int -> Int -> Char -> Int
 radixKind : Char -> Bool
 rawChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 rawToComments : Array Char -> List RawTok -> List Comment
+rawToCommentsGo : Array Char -> List RawTok -> Int -> Int -> Int -> List Comment
 readChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 readCharUnicode : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 resolveCont : Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)

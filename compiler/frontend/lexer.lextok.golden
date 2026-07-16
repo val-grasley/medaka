@@ -12828,13 +12828,44 @@ UPPER "Comment"
 NEWLINE
 IDENT "rawToComments"
 IDENT "src"
+IDENT "toks"
+EQUAL
+IDENT "rawToCommentsGo"
+IDENT "src"
+IDENT "toks"
+INT 0
+INT 1
+INT 0
+NEWLINE
+IDENT "rawToCommentsGo"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Comment"
+NEWLINE
+IDENT "rawToCommentsGo"
+UNDERSCORE
 LBRACKET
 RBRACKET
+UNDERSCORE
+UNDERSCORE
+UNDERSCORE
 EQUAL
 LBRACKET
 RBRACKET
 NEWLINE
-IDENT "rawToComments"
+IDENT "rawToCommentsGo"
 IDENT "src"
 LPAREN
 LPAREN
@@ -12845,43 +12876,62 @@ RPAREN
 CONS
 IDENT "rest"
 RPAREN
+IDENT "p"
+IDENT "line"
+IDENT "lineStart"
 EQUAL
 MATCH
 IDENT "posLineColFrom"
 IDENT "src"
 IDENT "startPos"
-INT 0
-INT 1
-INT 0
+IDENT "p"
+IDENT "line"
+IDENT "lineStart"
 INDENT
 LPAREN
-IDENT "line"
+IDENT "line2"
 COMMA
 IDENT "col"
 RPAREN
 FAT_ARROW
 UPPER "Comment"
-IDENT "line"
+IDENT "line2"
 IDENT "col"
 IDENT "text"
 CONS
-IDENT "rawToComments"
+IDENT "rawToCommentsGo"
 IDENT "src"
 IDENT "rest"
+IDENT "startPos"
+IDENT "line2"
+LPAREN
+IDENT "startPos"
+MINUS
+IDENT "col"
+RPAREN
 NEWLINE
 DEDENT
 NEWLINE
-IDENT "rawToComments"
+IDENT "rawToCommentsGo"
 IDENT "src"
 LPAREN
 UNDERSCORE
 CONS
 IDENT "rest"
 RPAREN
+IDENT "p"
+IDENT "line"
+IDENT "lineStart"
 EQUAL
-IDENT "rawToComments"
+INDENT
+IDENT "rawToCommentsGo"
 IDENT "src"
 IDENT "rest"
+IDENT "p"
+IDENT "line"
+IDENT "lineStart"
+NEWLINE
+DEDENT
 NEWLINE
 EXPORT
 IDENT "collectComments"

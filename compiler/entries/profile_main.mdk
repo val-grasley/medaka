@@ -26,6 +26,7 @@ import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
 import frontend.marker.{markWithPrelude}
 import types.typecheck.{checkToLinesWithRuntime}
+import tools.fmt.{formatSource}
 import frontend.exhaust.{checkGuardExhaustivenessWith}
 import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
 import support.util.{listLen}
@@ -107,7 +108,19 @@ runStaged on rsrc csrc tsrc =
   let _ = checkToLinesWithRuntime rDecls cDecls desugared
   let tT1 = now ()
   let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
-  emitTotalA on (tT1 - tTotal) (allocSnap () - aTotal)
+  -- fmt: the whole comment-preserving format pass (collectComments +
+  -- parseWithPositions + formatProgram).  Profiled because it was NOT before, and
+  -- an unprofiled pass is where a quadratic hides: the comment side-channel's
+  -- offset→line map (lexer.posLineColFrom) was rescanned from offset 0 per comment
+  -- (O(comments × filesize)) and formatProgram rescanned the whole remaining
+  -- comment tail per decl (O(decls × comments)) — BOTH pure scans that allocate
+  -- almost nothing, so only the TIME signal (the `comments` shape) catches them.
+  let tF0 = now ()
+  let aF0 = allocSnap ()
+  let _ = formatSource tsrc
+  let tF1 = now ()
+  let _ = emitPhaseA on "fmt" (tF1 - tF0) (allocSnap () - aF0) "format"
+  emitTotalA on (tF1 - tTotal) (allocSnap () - aTotal)
 -- parse-prelude: parse + desugar runtime.mdk and core.mdk.
 -- rRaw/cRaw (raw) go to resolve; rDecls/cDecls (desugared) go to mark+typecheck.
 

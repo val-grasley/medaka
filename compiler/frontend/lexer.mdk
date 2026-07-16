@@ -1646,11 +1646,22 @@ posLineColFrom src target p line lineStart
   | otherwise = posLineColFrom src target (p + 1) line lineStart
 
 -- Turn each `RComment startPos text` into a `Comment line col text`.
+-- `RComment` tokens arrive in strictly-ascending `startPos` order (scan is a
+-- single left-to-right pass), so a running `(p, line, lineStart)` cursor lets
+-- `posLineColFrom` resume from the previous comment instead of rescanning from
+-- offset 0 every time — turning what was O(comments × filesize) (a fresh scan
+-- per comment; the dominant cost of `medaka fmt` on a comment-dense file) into
+-- one O(filesize) walk.  `lineStart` for the next hop is `startPos - col`, since
+-- `posLineColFrom` returns `col = startPos - lineStart`.
 rawToComments : Array Char -> List RawTok -> List Comment
-rawToComments src [] = []
-rawToComments src ((RComment startPos text)::rest) = match posLineColFrom src startPos 0 1 0
-  (line, col) => Comment line col text :: rawToComments src rest
-rawToComments src (_::rest) = rawToComments src rest
+rawToComments src toks = rawToCommentsGo src toks 0 1 0
+
+rawToCommentsGo : Array Char -> List RawTok -> Int -> Int -> Int -> List Comment
+rawToCommentsGo _ [] _ _ _ = []
+rawToCommentsGo src ((RComment startPos text)::rest) p line lineStart = match posLineColFrom src startPos p line lineStart
+  (line2, col) => Comment line2 col text :: rawToCommentsGo src rest startPos line2 (startPos - col)
+rawToCommentsGo src (_::rest) p line lineStart =
+  rawToCommentsGo src rest p line lineStart
 
 -- Tokenize-and-collect the comment side channel, in source order.
 export collectComments : String -> List Comment
