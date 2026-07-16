@@ -1,4 +1,5 @@
 abstractFieldMsg : String -> String -> String
+activeDictPredOf : String -> Mono -> String -> Option String
 activeDictVarForEncl : Mono -> String -> Option String
 activeDictVarOf : Mono -> Option String
 activeDictVarOfEncl : Mono -> String -> Option String
@@ -372,6 +373,7 @@ enclSlot : String -> Mono -> Option Int
 endsWithStr : String -> String -> Bool
 enforceStandaloneDomain : TcEnv -> String -> Mono -> Option Loc -> Unit
 entail : Map String (List ImplEntry) -> String -> Mono -> String -> EntailKind -> (Route, List Route)
+entailAssum : Mono -> String -> String -> EntailKind -> Option String
 entailAssumRoute : String -> EntailKind -> Route
 entailAssumVar : Mono -> String -> String -> EntailKind -> Option String
 entailFallback : Map String (List ImplEntry) -> EntailKind -> Route
@@ -427,6 +429,7 @@ firstDispatchIdx : List String -> Int -> List Ty -> Option Int
 firstFieldName : List FieldAssign -> Option String
 firstImplMethodLoc : List ImplMethod -> Option Loc
 firstOrZero : List Int -> Int
+firstPredForEncl : String -> Mono -> String -> List (String, Mono, String) -> Option String
 firstReqMatch : List (List Ty, List Require) -> List Mono -> Option (List (String, Mono), List Require)
 firstTupleCallHint : List Mono -> Option (String, Option (Loc, String))
 firstTvar : Mono -> Mono -> Int -> Option Mono
@@ -506,6 +509,7 @@ ifaceFromDictApps : Int -> List (Ref (List Route), List Mono, List String) -> St
 ifaceMethodNames : List IfaceMethod -> List String
 ifaceMethodSchemes : List Decl -> List (String, Scheme)
 ifaceMethodTy : List Decl -> String -> String -> Option (List String, Ty)
+ifaceOfMethodName : String -> Option String
 ifaceParamMonos : String -> Mono -> Option (List Mono)
 ifaceRegistered : String -> Bool
 ifaceRequiredMethods : List Decl -> String -> Option (List String)
@@ -772,10 +776,12 @@ monoArgUnboundIds : Mono -> List Int
 monoConcrete : Mono -> Bool
 monoHeadCon : Mono -> Option String
 monoIsApp : Mono -> Bool
+monoIsBareTyvar : Mono -> Bool
 monoIsFloat : Mono -> Bool
 monoIsFunction : Mono -> Bool
 monoIsNumeric : Mono -> Bool
 monoIsTyvarId : Mono -> Int -> Bool
+monoSameGiven : Mono -> Mono -> Bool
 monoSameShape : Mono -> Mono -> Bool
 monoScheme : Mono -> Scheme
 monoSpineHeadIsCon : Mono -> Bool
@@ -965,6 +971,7 @@ registerMethodIfaceParamsMethods : String -> List String -> List IfaceMethod -> 
 registerNamedFieldVariants : String -> List String -> List Variant -> Unit
 registerOneAmbiguous : String -> List String -> Ty -> Mono -> Option Loc -> Int -> List Int -> List Int -> Unit
 registerOneMethodDict : String -> Int -> Int -> List (Int, Mono) -> Unit
+registerPredGiven : String -> List Mono -> String -> Unit
 registerRecordInfoKeyed : String -> String -> List String -> List Field -> Unit
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> Unit
 registerSchemeObligations : List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit

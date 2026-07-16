@@ -1,0 +1,52 @@
+-- #412 CONTROL — DICT-SEMANTICS §6.1.3 (rigid commit) must survive the #412 fix.
+--
+-- The #412 fix makes `assum` reachable for a STRUCTURED given (`requires S (List a)`), so
+-- an impl body forwards the construction site's most-specific dict instead of statically
+-- committing to the general instance. This fixture pins the boundary of that: with a
+-- BARE-TYVAR given (`requires S a`), the given `S a` does NOT match the body's goal
+-- `S (List a)` — matching is structural on rigid variables, never unification — so `assum`
+-- correctly stays silent, `inst` fires on a rigid goal, and the goal matches only the
+-- GENERAL `impl S (List a)`, even though `impl S (List Int)` exists and the call is at
+-- `List Int`. §6.1.3: selection commits at the elaboration site; it is not retroactively
+-- re-resolved when `a := Int`.
+--
+-- ⚠️ The expected value here is 2, NOT 3. A reading of the fix that makes this print 3 is
+-- WRONG — it would mean the given was matched by unification.
+--
+-- BUILD-ONLY on purpose: `medaka run` on this exact shape crashes
+-- (`E-NOT-A-FUNCTION: applied non-function: 2`) — a separate, PRE-EXISTING bug, measured
+-- unchanged on a pre-#412 binary, so the #412 fix neither caused nor cures it. This cell
+-- is pinned where it is measurable rather than not pinned at all.
+--
+-- Two things about that crash are MEASURED (both on this fixture, this tree): it needs the
+-- overlapping `impl S (List Int)` to be in scope — delete that impl and `run` prints 2
+-- again — and its symptom is character-for-character the one
+-- test/eval_dict_fixtures/impl_requires_terminal_body.mdk's header describes for #413 ("the
+-- dict lands in the first value param and the real argument is then applied to the RESULT
+-- — applied non-function: 2"). Whether it IS that gate re-opening under overlap is a
+-- HYPOTHESIS, not something this fixture establishes — do not cite it as a root cause.
+interface S a where
+  s : a -> Int
+
+interface P a where
+  p : a -> Int
+
+impl S Int where
+  s _ = 1
+
+impl S (List a) requires S a where
+  s _ = 2
+
+impl S (List Int) where
+  s _ = 3
+
+-- BARE-TYVAR given: `S a`, not `S (List a)`
+impl P (List a) requires S a where
+  p x = s x
+
+main : <IO> Unit
+main =
+  -- p [1,2] → impl P (List a) at a:=Int. Body goal is S (List a) over RIGID a; the given
+  -- in scope is S a, which is not that goal ⇒ assum silent ⇒ inst at the rigid goal ⇒
+  -- only impl S (List a) matches ⇒ 2. NOT 3.
+  println (p [1, 2])
