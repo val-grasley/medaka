@@ -156,5 +156,31 @@ else
   fail=$((fail + 1)); printf 'FAIL test_decls.mdk exit code: expected nonzero (has failing tests), got 0\n'
 fi
 
+# Issue #416 (S1): a NEGATIVE hash from a contract-compliant `Hashable` impl (the
+# contract requires eq-agreement ONLY, not non-negativity) used to reach a negative
+# bucket index and an OOB `arrayGetUnsafe` in hash_map/hash_set `slotOf` — under
+# eval a misleading "no matching impl for dispatch" panic, and once BUILT a
+# segfault.  This is the EVAL-side guard; the native one is
+# test/build_diff_fixtures/hash_negative_hash.mdk (diff_compiler_build.sh).
+# Like test_decls above it imports stdlib (`test`, `hash_map`, `hash_set`), so
+# stdlib must be a search root alongside the fixture dir — hence a bespoke block
+# rather than a row in the single-root $files loop.
+nh="$ROOT/test/compiler_test_fixtures/hash_negative_hash.mdk"
+nh_out="$("$RUN" "$RUNTIME" "$CORE" "$nh" "$ROOT/test/compiler_test_fixtures" "$ROOT/stdlib" 2>/dev/null | sed "s#$ROOT/##g")"
+nh_expected="running doctests in test/compiler_test_fixtures/hash_negative_hash.mdk
+  (no doctests found)
+running tests in test/compiler_test_fixtures/hash_negative_hash.mdk
+  ok   test/compiler_test_fixtures/hash_negative_hash.mdk:32: hash_map: negative hash finds its key (#416)
+  ok   test/compiler_test_fixtures/hash_negative_hash.mdk:35: hash_set: negative hash finds its element (#416)
+  ok   test/compiler_test_fixtures/hash_negative_hash.mdk:38: hash_map: intMinBound hash (#416)
+  ok   test/compiler_test_fixtures/hash_negative_hash.mdk:40: hash_set: intMinBound hash (#416)
+
+test/compiler_test_fixtures/hash_negative_hash.mdk: 4/4 passed"
+if [ "$nh_out" = "$nh_expected" ]; then
+  pass=$((pass + 1)); printf 'ok   hash_negative_hash.mdk (#416: negative Hashable hash does not OOB the bucket array)\n'
+else
+  fail=$((fail + 1)); printf 'FAIL hash_negative_hash.mdk report mismatch\n  --- expected ---\n%s\n  --- actual ---\n%s\n' "$nh_expected" "$nh_out"
+fi
+
 printf '\n%d matched, %d differing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

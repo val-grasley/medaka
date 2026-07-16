@@ -1,5 +1,5 @@
 # META
-source_lines=255
+source_lines=260
 stages=DESUGAR,MARK
 # SOURCE
 {- hash_map.mdk — a mutable hash table (Module 6).
@@ -40,9 +40,14 @@ public export data HashMap k v = HashMap (Ref (Array (List (k, v)))) (Ref Int)
 initialCapacity : Int
 initialCapacity = 8
 
--- Bucket index of a key at a given capacity (hash is non-negative, cap > 0).
+{- Bucket index of a key at a given capacity (cap > 0). The `Hashable` contract
+   requires only eq-agreement, NOT a non-negative hash, so a contract-compliant
+   user impl may hand us any `Int` — and `%` on a negative dividend is negative,
+   which would index the bucket array out of bounds (issue #416: an OOB
+   `arrayGetUnsafe`). Clearing the sign bit maps every `Int`, `intMinBound`
+   included, into `[0, intMaxBound]` before the `%`. -}
 slotOf : Hashable k => k -> Int -> Int
-slotOf key cap = hash key % cap
+slotOf key cap = bitAnd (hash key) intMaxBound % cap
 
 -- ── Construction ────────────────────────────────────────────────────────
 
@@ -263,7 +268,7 @@ export impl Debug (HashMap k v) requires Debug k, Debug v where
 (DTypeSig false "initialCapacity" (TyCon "Int"))
 (DFunDef false "initialCapacity" () (ELit (LInt 8)))
 (DTypeSig false "slotOf" (TyConstrained ((cstr "Hashable" (TyVar "k"))) (TyFun (TyVar "k") (TyFun (TyCon "Int") (TyCon "Int")))))
-(DFunDef false "slotOf" ((PVar "key") (PVar "cap")) (EBinOp "%" (EApp (EVar "hash") (EVar "key")) (EVar "cap")))
+(DFunDef false "slotOf" ((PVar "key") (PVar "cap")) (EBinOp "%" (EApp (EApp (EVar "bitAnd") (EApp (EVar "hash") (EVar "key"))) (EVar "intMaxBound")) (EVar "cap")))
 (DTypeSig true "new" (TyFun (TyCon "Unit") (TyApp (TyApp (TyCon "HashMap") (TyVar "k")) (TyVar "v"))))
 (DFunDef false "new" (PWild) (EApp (EApp (EVar "HashMap") (EApp (EVar "Ref") (EApp (EApp (EVar "arrayMake") (EVar "initialCapacity")) (EListLit)))) (EApp (EVar "Ref") (ELit (LInt 0)))))
 (DTypeSig true "size" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyVar "k")) (TyVar "v")) (TyCon "Int")))
@@ -333,7 +338,7 @@ export impl Debug (HashMap k v) requires Debug k, Debug v where
 (DTypeSig false "initialCapacity" (TyCon "Int"))
 (DFunDef false "initialCapacity" () (ELit (LInt 8)))
 (DTypeSig false "slotOf" (TyConstrained ((cstr "Hashable" (TyVar "k"))) (TyFun (TyVar "k") (TyFun (TyCon "Int") (TyCon "Int")))))
-(DFunDef false "slotOf" ((PVar "key") (PVar "cap")) (EBinOp "%" (EApp (EMethodRef "hash") (EVar "key")) (EVar "cap")))
+(DFunDef false "slotOf" ((PVar "key") (PVar "cap")) (EBinOp "%" (EApp (EApp (EVar "bitAnd") (EApp (EMethodRef "hash") (EVar "key"))) (EVar "intMaxBound")) (EVar "cap")))
 (DTypeSig true "new" (TyFun (TyCon "Unit") (TyApp (TyApp (TyCon "HashMap") (TyVar "k")) (TyVar "v"))))
 (DFunDef false "new" (PWild) (EApp (EApp (EVar "HashMap") (EApp (EVar "Ref") (EApp (EApp (EVar "arrayMake") (EVar "initialCapacity")) (EListLit)))) (EApp (EVar "Ref") (ELit (LInt 0)))))
 (DTypeSig true "size" (TyFun (TyApp (TyApp (TyCon "HashMap") (TyVar "k")) (TyVar "v")) (TyCon "Int")))

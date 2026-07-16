@@ -56,8 +56,12 @@ IDENT "slotOf"
 IDENT "x"
 IDENT "cap"
 EQUAL
+IDENT "bitAnd"
+LPAREN
 IDENT "hash"
 IDENT "x"
+RPAREN
+IDENT "intMaxBound"
 MOD
 IDENT "cap"
 NEWLINE

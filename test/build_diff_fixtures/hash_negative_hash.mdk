@@ -1,0 +1,38 @@
+-- Issue #416: a contract-compliant `Hashable` impl may return a NEGATIVE hash.
+-- The `Hashable` contract requires only eq-agreement, NOT non-negativity, so
+-- this impl is legal. `slotOf` used to be `hash k % cap`, so a negative hash
+-- produced a negative bucket index and an OOB `arrayGetUnsafe`: this program
+-- SEGFAULTed (exit 139) once built. slotOf now clears the sign bit first.
+--
+-- Covers hash_map AND hash_set (both carried the bug) across the sign frontier:
+-- -7 (the issue's repro), intMinBound, 0, intMaxBound, and a large positive.
+-- Each probe also stores a hash-COLLIDING second key (K 2 h hashes equal to
+-- K 1 h but is not eq to it), so the bucket chain walk is exercised too.
+import hash_map.{new as hmNew, set as hmSet, get as hmGet}
+import hash_set.{new as hsNew, insert as hsInsert, has as hsHas}
+
+-- `K tag h` hashes on `h` ONLY, so `K 1 h` and `K 2 h` COLLIDE while staying
+-- un-equal. Eq is STRUCTURAL (derived) over both fields, so eq-equal values
+-- always hash equal — the impl is fully `Hashable`-contract-compliant, which is
+-- the whole point: safe user code must not reach a memory-unsafe index.
+data K = K Int Int deriving (Eq)
+
+impl Hashable K where
+  hash (K _ h) = h
+
+probe : Int -> (Option Int, Option Int, Bool)
+probe h =
+  let m = hmNew ()
+  let _ = hmSet (K 1 h) 10 m
+  let _ = hmSet (K 2 h) 20 m
+  let s = hsNew ()
+  let _ = hsInsert (K 1 h) s
+  (hmGet (K 1 h) m, hmGet (K 2 h) m, hsHas (K 1 h) s)
+
+main : <IO> Unit
+main =
+  let _ = println (probe (0 - 7))
+  let _ = println (probe intMinBound)
+  let _ = println (probe 0)
+  let _ = println (probe intMaxBound)
+  println (probe 1000000007)
