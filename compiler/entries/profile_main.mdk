@@ -21,7 +21,8 @@
 -- times the full multi-module loader path with elaborate as a single phase).
 
 import frontend.ast.{Decl}
-import frontend.parser.{parse}
+import frontend.parser.{parse, parseWithPositions}
+import tools.lint.{lintProgram, allRules}
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
 import frontend.marker.{markWithPrelude}
@@ -120,7 +121,23 @@ runStaged on rsrc csrc tsrc =
   let _ = formatSource tsrc
   let tF1 = now ()
   let _ = emitPhaseA on "fmt" (tF1 - tF0) (allocSnap () - aF0) "format"
-  emitTotalA on (tF1 - tTotal) (allocSnap () - aTotal)
+  -- lint: the PER-FILE lint tier (lintProgram over allRules on the RAW pre-desugar
+  -- AST). Profiled because it was not, and its dead-code rule's reachability pass
+  -- (reachableNames -> mergeRefs/bfsReach) is an assoc-list-as-map that allocates
+  -- O(defs^2) — a quadratic the `lint` shape's ALLOCATION ratio catches sharply.
+  -- (Cross-file rules need ≥2 files and are not exercised here; they measured
+  -- linear in practice — distinct-key sexp compares short-circuit at char 0.)
+  -- Parsed OUTSIDE the timed region so the lint stage measures rule work, not the
+  -- position-collecting parse (lint runs on the RAW pre-desugar AST + Positions).
+  let lparsed = parseWithPositions tsrc
+  let lprog = fst lparsed
+  let lpos = snd lparsed
+  let tL0 = now ()
+  let aL0 = allocSnap ()
+  let _ = lintProgram allRules "target.mdk" tsrc lpos lprog
+  let tL1 = now ()
+  let _ = emitPhaseA on "lint" (tL1 - tL0) (allocSnap () - aL0) declsOp
+  emitTotalA on (tL1 - tTotal) (allocSnap () - aTotal)
 -- parse-prelude: parse + desugar runtime.mdk and core.mdk.
 -- rRaw/cRaw (raw) go to resolve; rDecls/cDecls (desugared) go to mark+typecheck.
 

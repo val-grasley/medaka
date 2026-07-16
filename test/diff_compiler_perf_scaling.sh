@@ -137,6 +137,13 @@ XREF_N="${PERF_XREF_N:-4000}"
 # it, blinding the gate to the formatter/comment quadratic it exists to catch.
 COMMENTS_N="${PERF_COMMENTS_N:-1000}"
 
+# `manydefs` samples at its own N for the same reason `xref` does: the stage it
+# must be able to see (`lint`) only reaches ~0.62s at N=16000 (4N of 4000). At a
+# 2000-base range its largest-N lint time is 0.28s — barely over the 200ms floor,
+# so a faster runner could drop it UNDER and the floor would silently SKIP the one
+# stage this shape exists to grade. Sized for ~3x floor headroom instead.
+MANYDEFS_N="${PERF_MANYDEFS_N:-4000}"
+
 # min-of-K sample count for the TIME signal. K>=5 required (see file header);
 # allocation needs no such thing — it is deterministic, one run suffices.
 PERF_K="${PERF_K:-5}"
@@ -260,6 +267,15 @@ trap 'rm -rf "$WORK"' EXIT
 #              from 0 per comment; remaining-comment-tail rescanned per decl), so
 #              like #78/#115 they are graded on TIME — allocation is blind to them.
 #              See gen_comments and the fmt entry in TIME_STAGES.
+#   manydefs — the LINTER's per-file tier. N signed tiny private defs + one export.
+#              The other shapes are blind to it: `bindings` has no signatures (so
+#              ruleMissingSignature's set stays empty) and its defs are too few to
+#              separate the O(defs^2) term from the rule's heavy linear term. Both
+#              of this rule's fixed quadratics were List-as-a-SET (dead-code's
+#              assoc-list ref map + `contains`-over-visited; missing-signature's
+#              `contains` over signed names) — the same shape as #78/#115 — and
+#              BOTH are invisible to the alloc verdict (see the `lint` note in
+#              TIME_STAGES), so this shape is graded on lint TIME.
 #   modules  — MULTI-MODULE (issue #153). The five shapes above are single-file,
 #              so they run only the single-file driver and are STRUCTURALLY BLIND
 #              to the O(modules^2) family in checkModuleFullImpl / elabModuleStamp.
@@ -304,6 +320,24 @@ gen_nesting() {
   printf 'deep : Int\ndeep =\n' >> "$f"
   i=0; while [ "$i" -lt "$n" ]; do printf '  let v%s = %s\n' "$i" "$i" >> "$f"; i=$((i+1)); done
   printf '  v0\n' >> "$f"
+}
+
+gen_manydefs() {
+  n=$1; f=$2; : > "$f"
+  # N SIGNED, private, tiny top-level defs + one exported `main`. Two shapes in one:
+  #   * many defs  -> the dead-code rule's ref-map/closure (reachableNames) and the
+  #     exported/reachable membership tests scale with the DEF COUNT;
+  #   * one signature per def -> ruleMissingSignature's signed-name set scales too.
+  # Bodies are deliberately TINY: the rule's honest linear term (declToString +
+  # identTokens per decl) is proportional to body size, so small bodies keep it from
+  # diluting the O(defs^2) term. With real bodies the pre-fix ratio only reached
+  # 3.05 (under the 3.0 gate) at 3200 defs; with tiny ones it hits 3.32/3.59 (alloc)
+  # and 3.45/4.47 (time) — an unmistakable signal.
+  printf 'export main : Int\nmain = p0 + p1\n' >> "$f"
+  i=0; while [ "$i" -lt "$n" ]; do
+    printf 'p%s : Int\np%s = %s\n' "$i" "$i" "$i"
+    i=$((i+1))
+  done >> "$f"
 }
 
 gen_comments() {
@@ -494,7 +528,16 @@ stage_times_min_modules() {
 # shape's TIME signal catches the class. On every OTHER shape fmt is under the
 # 200ms floor and SKIPs (loud, harmless); the `comments` shape is sized so its fmt
 # time clears the floor and is graded.
-TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt"
+#
+# `lint` is the PER-FILE lint tier (profile_main runs lintProgram over allRules on
+# the raw AST). Graded on TIME, and the `manydefs` shape is sized so it clears the
+# floor: its two historical quadratics were BOTH invisible to the alloc verdict —
+# one (mergeRefs' assoc-list ref map) allocates quadratically but is only ~11% of
+# `total`, so the total-alloc ratio DILUTES it to 2.24/2.53 ("ok") while the lint
+# stage itself read 3.32/3.59; the other (missingSigPair's `contains` over the
+# signed-name list) is a PURE SCAN that allocates nothing at all. Per-stage time is
+# the only signal that sees both.
+TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint"
 
 # ── KNOWN SLOW (TIME) — a ledger, NOT a skip-list ────────────────────────────
 #
@@ -585,10 +628,11 @@ printf -- '---------------------------------------------------------------------
 # contaminated by the constant term. Also flag a CLIMBING trend (r2 meaningfully above
 # r1) even when r2 is still under the ceiling, because that is a quadratic caught early,
 # while it is small.
-for shape in bindings match listlit nesting xref comments; do
+for shape in bindings match listlit nesting xref comments manydefs; do
   case "$shape" in
     xref)     base_n="$XREF_N" ;;
     comments) base_n="$COMMENTS_N" ;;
+    manydefs) base_n="$MANYDEFS_N" ;;
     *)        base_n="$N" ;;
   esac
   n1="$base_n"; n2=$((base_n * 2)); n3=$((base_n * 4))
