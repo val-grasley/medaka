@@ -246,6 +246,7 @@ import backend.emit_support.{
   ftPrefix,
   ftLabelOf,
   labelFallthrough,
+  rngBound,
 }
 
 -- ── D4 emitter-completeness inventory (record-and-skip) ──────────────────────
@@ -6950,12 +6951,8 @@ emitRangeTest e v lo hi incl failL =
   let _ = emit e "  br i1 \{cHi}, label %\{ok}, label %\{failL}"
   emit e (ok ++ ":")
 
--- the Int codepoint of a range bound literal (Int directly, Char as its
--- codepoint); other literal kinds can't form a range pattern (parser-rejected).
-rngBound : Lit -> Int
-rngBound (LInt n) = n
-rngBound (LChar c) = charCode (arrayGetUnsafe 0 (stringToChars c))
-rngBound _ = 0
+-- (`rngBound` — the Int codepoint of a range bound literal — is backend-neutral and
+-- now lives in backend.emit_support, shared with the WasmGC emitter.)
 
 -- the i-th element of a list, or `dflt` if out of range.
 nthOr : List String -> Int -> String -> String
