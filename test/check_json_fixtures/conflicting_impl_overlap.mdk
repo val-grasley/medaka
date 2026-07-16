@@ -1,0 +1,20 @@
+-- #414: two ⊑-incomparable overlapping impls are correctly rejected with
+-- T-CONFLICTING-IMPL — this fixture pins the RANGE.  It used to be a fabricated
+-- file-start caret (0:0) on every coherence conflict, which is unusable for an
+-- editor/LSP consumer: the message names the heads, but nothing points at either
+-- impl.  The range must now span the head tycon of the LATER-declared impl
+-- (`Pair` on the `impl C (Pair a Int)` line) — which is also the head the message
+-- names FIRST, so caret and wording agree.
+data Pair a b = Pair a b
+
+interface C a where
+  c : a -> Int
+
+impl C (Pair Int b) where
+  c _ = 1
+
+impl C (Pair a Int) where
+  c _ = 2
+
+main : <IO> Unit
+main = println (c (Pair 1 2))

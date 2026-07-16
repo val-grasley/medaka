@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"T-CONFLICTING-IMPL","kind":"type","message":"Overlapping impls of C: Int and Int can match the same type. Make them disjoint, or wrap one type in a newtype","range":{"end":{"character":10,"line":11},"start":{"character":7,"line":11}},"severity":1,"source":"medaka"}]}]}

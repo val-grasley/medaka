@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"T-CONFLICTING-IMPL","kind":"type","message":"Overlapping impls of C: Pair a Int and Pair Int b can match the same type. Make them disjoint, or wrap one type in a newtype","range":{"end":{"character":12,"line":15},"start":{"character":8,"line":15}},"severity":1,"source":"medaka"}]}]}
