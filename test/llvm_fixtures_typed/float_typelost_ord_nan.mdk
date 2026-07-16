@@ -1,0 +1,74 @@
+-- #305 (S0 silent wrongness): the COMPARISON sibling of float_typelost_hof (which
+-- covers type-lost Float ARITHMETIC).  A genuinely-poly `Ord a` forwarded through a
+-- HOF: at the emit site `f` is opaque, so the operands' Float-ness is invisible and
+-- the comparison cannot use inline `fcmp`/`f64.le` — it must fall to the runtime
+-- value-shape discriminator.  That discriminator was THREE-WAY (-1/0/1: native
+-- mdk_value_cmp_raw, wasm $mdk_value_cmp), a model that STRUCTURALLY CANNOT express
+-- NaN's unorderedness — an unordered pair collapsed to 0 (EQ), so the caller's
+-- `cmp <= 0` read `nan <= nan` as TRUE on native AND wasm while eval said False.
+-- Fixed by per-op IEEE predicates (mdk_value_lt/le/gt/ge + the $mdk_value_* WAT peers)
+-- that answer a boxed-Float operand with a direct f64 compare and fall back to the
+-- 3-way only for the String/immediate shapes.
+-- EMITTER-SEMANTICS §4 N5/N6: `<` `<=` `>` `>=` at Float are PRIMITIVE IEEE predicates
+-- on EVERY path (never derived from `compare`), and ALL FOUR are False at NaN.
+--
+-- This fixture pins the DOMAIN, not just the headline repro (#476: a differential gate
+-- only covers what it samples).  `main` reduces to a scalar per this corpus's
+-- convention, so the cells are packed into one Int:
+--
+--   nanBits — all 12 NaN cells (4 ops x {NaN both, NaN left, NaN right}).  Each is
+--             IEEE False, so a CORRECT engine contributes 0.  Pre-fix, native and wasm
+--             set the `<=`/`>=` bits.  Expected: 0.
+--   ctlBits — 9 CONTROL cells that must NOT regress: ordinary Floats through the SAME
+--             type-lost HOF, and Int poly-Ord through it.  Expected: 379, i.e.
+--               b0 lt 1.0 2.0 = True  -> 1     b5 le 1.0 1.0 = True  -> 32
+--               b1 le 1.0 2.0 = True  -> 2     b6 lt 1   2   = True  -> 64
+--               b2 le 2.0 1.0 = False -> 0     b7 le 2   1   = False -> 0
+--               b3 gt 2.0 1.0 = True  -> 8     b8 ge 2   2   = True  -> 256
+--               b4 ge 1.0 1.0 = True  -> 16    sum = 1+2+8+16+32+64+256 = 379
+--
+-- main = nanBits * 1000 + ctlBits = 0 * 1000 + 379 = 379.  A flipped NaN cell shows up
+-- in the thousands digits; a broken control changes the low three.
+
+applyCmp f x y = f x y
+
+cmpLt a b = a < b
+cmpLe a b = a <= b
+cmpGt a b = a > b
+cmpGe a b = a >= b
+
+nan = 0.0 / 0.0
+
+bit b = if b then 1 else 0
+
+nanBits : Int
+nanBits =
+  let n0 = bit (applyCmp cmpLt nan nan)
+  let n1 = bit (applyCmp cmpLe nan nan)
+  let n2 = bit (applyCmp cmpGt nan nan)
+  let n3 = bit (applyCmp cmpGe nan nan)
+  let n4 = bit (applyCmp cmpLt nan 1.0)
+  let n5 = bit (applyCmp cmpLe nan 1.0)
+  let n6 = bit (applyCmp cmpGt nan 1.0)
+  let n7 = bit (applyCmp cmpGe nan 1.0)
+  let n8 = bit (applyCmp cmpLt 1.0 nan)
+  let n9 = bit (applyCmp cmpLe 1.0 nan)
+  let n10 = bit (applyCmp cmpGt 1.0 nan)
+  let n11 = bit (applyCmp cmpGe 1.0 nan)
+  n0 + 2 * n1 + 4 * n2 + 8 * n3 + 16 * n4 + 32 * n5 + 64 * n6 + 128 * n7 + 256 * n8 + 512 * n9 + 1024 * n10 + 2048 * n11
+
+ctlBits : Int
+ctlBits =
+  let c0 = bit (applyCmp cmpLt 1.0 2.0)
+  let c1 = bit (applyCmp cmpLe 1.0 2.0)
+  let c2 = bit (applyCmp cmpLe 2.0 1.0)
+  let c3 = bit (applyCmp cmpGt 2.0 1.0)
+  let c4 = bit (applyCmp cmpGe 1.0 1.0)
+  let c5 = bit (applyCmp cmpLe 1.0 1.0)
+  let c6 = bit (applyCmp cmpLt 1 2)
+  let c7 = bit (applyCmp cmpLe 2 1)
+  let c8 = bit (applyCmp cmpGe 2 2)
+  c0 + 2 * c1 + 4 * c2 + 8 * c3 + 16 * c4 + 32 * c5 + 64 * c6 + 128 * c7 + 256 * c8
+
+main : Int
+main = nanBits * 1000 + ctlBits

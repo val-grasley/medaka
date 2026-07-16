@@ -1,5 +1,5 @@
 # META
-source_lines=8340
+source_lines=8348
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -710,11 +710,13 @@ floatLocalsRef = Ref []
 -- #288: top-level nullary value bindings whose RHS is statically Float (e.g.
 -- `nan = 0.0 / 0.0`).  A `global.get` of such a binding carries no static Float
 -- tag at the USE site, so a `nan <= nan` comparison would fall to the poly
--- $mdk_value_cmp path (3-way -1/0/1) which cannot represent NaN's unorderedness —
--- `<=`/`>=` then wrongly report True on NaN.  Seeding these names (in emitRefProgram,
--- before any body emission) lets `cexprIsFloat` recognize the operand as Float so the
--- comparison lowers to inline `f64.le`/`f64.ge` (IEEE-correct, NaN → False), mirroring
--- native's `staticIsFloat`-reads-the-global fcmp path.
+-- runtime-dispatched path.  Seeding these names (in emitRefProgram, before any body
+-- emission) lets `cexprIsFloat` recognize the operand as Float so the comparison
+-- lowers to inline `f64.le`/`f64.ge` (IEEE-correct, NaN → False), mirroring native's
+-- `staticIsFloat`-reads-the-global fcmp path.
+-- (#305: the poly path is IEEE-correct at NaN too now — ordering there calls the
+-- per-op $mdk_value_lt/le/gt/ge rather than comparing a 3-way against 0 — so this
+-- seeding is a code-quality win (inline f64, no call), no longer a correctness fix.)
 floatGlobalsRef : Ref (List String)
 floatGlobalsRef = Ref []
 
@@ -2152,7 +2154,8 @@ emitRefProgram prog groups =
   -- #288: record the top-level nullary bindings whose RHS is statically Float, BEFORE
   -- any fn / init body emission, so `cexprIsFloat` recognizes a `global.get` of one as
   -- Float and a `<=`/`>=` over it lowers to inline `f64.le`/`f64.ge` (IEEE NaN → False)
-  -- rather than the poly $mdk_value_cmp path (which collapses NaN to EQ).
+  -- rather than the poly runtime-dispatched path (which since #305 is IEEE-correct at
+  -- NaN as well, via $mdk_value_lt/le/gt/ge — this is now a code-quality win).
   let _ = setRef floatGlobalsRef (floatValGlobalNames prog (filterList isValBind groups))
   -- Stage-2/3 (b′) WASMGC-TRMC: detect dispatch-graph TMC groups (the lexer's `scan`
   -- token spine, the offside-rule `layout` family, `intersperse`) BEFORE emitting fns,
@@ -4571,8 +4574,11 @@ emitValueCmpRef prog env d op l r =
   else if op == "!=" then
     lv ++ rv ++ ["call $mdk_value_eq", "ref.cast (ref i31)", "i31.get_u", "i32.eqz", "ref.i31"]
   else
-    -- ordering: $mdk_value_cmp -> i32 -1/0/1, then compare against 0.
-    lv ++ rv ++ ["call $mdk_value_cmp", "i32.const 0", wasmBinOp op, "ref.i31"]
+    -- #305: ordering calls the per-op IEEE predicate $mdk_value_lt/le/gt/ge,
+    -- which returns an i31 Bool directly.  It USED to be `$mdk_value_cmp` then
+    -- `i32.const 0` + compare — but a 3-way -1/0/1 cannot express NaN's
+    -- unorderedness, so `nan <= nan` read `0 <= 0` = True.
+    lv ++ rv ++ ["call $mdk_value_" ++ valueRelName op]
 
 -- A1 (poly-`Ord`-on-Float, string-free program): the num-only peer of emitValueCmpRef.
 -- `==`/`!=` go through $mdk_value_eq_num (-> i31 Bool); ordering through $mdk_value_cmp_num
@@ -4593,7 +4599,18 @@ emitValueCmpNumRef prog env d op l r =
       "ref.i31",
     ]
   else
-    lv ++ rv ++ ["call $mdk_value_cmp_num", "i32.const 0", wasmBinOp op, "ref.i31"]
+    -- #305: per-op IEEE predicate (num-only peer), returns an i31 Bool directly
+    -- — see the note at emitValueCmpRef.
+    lv ++ rv ++ ["call $mdk_value_" ++ valueRelName op ++ "_num"]
+
+-- #305: the $mdk_value_* suffix for an ordering op.  Only `<`/`>`/`<=`/`>=` reach
+-- the ordering arms — `==`/`!=` are routed to $mdk_value_eq(_num) before them.
+valueRelName : String -> String
+valueRelName "<" = "lt"
+valueRelName ">" = "gt"
+valueRelName "<=" = "le"
+valueRelName ">=" = "ge"
+valueRelName op = panic ("wasm: unsupported value ordering op " ++ op)
 
 -- W8b: emit a Float binop.  Arith (+,-,*,/) → unbox both, f64 op, rebox.  `%` has no
 -- f64 instruction, so it calls $mdk_float_rem (exact power-of-two-reduction fmod == LLVM frem).
@@ -7657,25 +7674,16 @@ patVars _ = []
 
 -- ── operator tables (both modes) ─────────────────────────────────────────────
 
-wasmBinOp : String -> String
-wasmBinOp "+" = "i32.add"
-wasmBinOp "-" = "i32.sub"
-wasmBinOp "*" = "i32.mul"
-wasmBinOp "/" = "i32.div_s"
-wasmBinOp "%" = "i32.rem_s"
-wasmBinOp "==" = "i32.eq"
-wasmBinOp "!=" = "i32.ne"
-wasmBinOp "<" = "i32.lt_s"
-wasmBinOp ">" = "i32.gt_s"
-wasmBinOp "<=" = "i32.le_s"
-wasmBinOp ">=" = "i32.ge_s"
-wasmBinOp op =
-  gapS
-    ("unsupported binary operator '" ++ op ++ "' (`::`/`++` are list/string ops — W6/W7)")
-
--- layer-17 §2.1: the i64 peer of wasmBinOp for ref-mode Int arithmetic over the
--- box/unbox seam.  Division/modulo are i64 signed (i64.div_s/i64.rem_s) — matching
--- native's truncated-toward-zero div and sign-of-dividend rem (medaka_rt.c).
+-- Ref-mode Int arithmetic/comparison over the box/unbox seam (layer-17 §2.1):
+-- i64 throughout, so values outside +/-2^30 no longer truncate.  Division/modulo are
+-- i64 signed (i64.div_s/i64.rem_s) — matching native's truncated-toward-zero div and
+-- sign-of-dividend rem (medaka_rt.c).
+--
+-- (The i32 peer `wasmBinOp` was removed with #305: its last two callers were the
+-- ordering arms of emitValueCmpRef/emitValueCmpNumRef, which compared a 3-way
+-- -1/0/1 against 0 — the derivation that could not express NaN's unorderedness.
+-- Those now call the per-op IEEE $mdk_value_lt/le/gt/ge(_num) instead, and every
+-- surviving caller was already on wasmBinOp64.)
 wasmBinOp64 : String -> String
 wasmBinOp64 "+" = "i64.add"
 wasmBinOp64 "-" = "i64.sub"
@@ -9438,9 +9446,15 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "emitDivZeroGuard" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "emitDivZeroGuard" ((PVar "op") (PVar "dloc")) (EBlock (DoLet false false (PVar "code") (EIf (EBinOp "==" (EVar "op") (ELit (LString "/"))) (ELit (LString "E-DIV-ZERO")) (ELit (LString "E-MOD-ZERO")))) (DoLet false false (PVar "msg") (EIf (EBinOp "==" (EVar "op") (ELit (LString "/"))) (ELit (LString "division by zero")) (ELit (LString "modulo by zero")))) (DoExpr (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (ELit (LString "local.set ")) (EVar "dloc")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "dloc")) (ELit (LString "i64.eqz")) (ELit (LString "if"))) (EApp (EVar "indent") (EApp (EApp (EVar "wasmTrap") (EVar "code")) (EVar "msg")))) (EListLit (ELit (LString "end")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "dloc")))))))
 (DTypeSig false "emitValueCmpRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitValueCmpRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_cmp")) (ELit (LString "i32.const 0")) (EApp (EVar "wasmBinOp") (EVar "op")) (ELit (LString "ref.i31")))))))))
+(DFunDef false "emitValueCmpRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueRelName") (EVar "op"))))))))))
 (DTypeSig false "emitValueCmpNumRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitValueCmpNumRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_cmp_num")) (ELit (LString "i32.const 0")) (EApp (EVar "wasmBinOp") (EVar "op")) (ELit (LString "ref.i31")))))))))
+(DFunDef false "emitValueCmpNumRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueRelName") (EVar "op"))) (ELit (LString "_num"))))))))))
+(DTypeSig false "valueRelName" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "valueRelName" ((PLit (LString "<"))) (ELit (LString "lt")))
+(DFunDef false "valueRelName" ((PLit (LString ">"))) (ELit (LString "gt")))
+(DFunDef false "valueRelName" ((PLit (LString "<="))) (ELit (LString "le")))
+(DFunDef false "valueRelName" ((PLit (LString ">="))) (ELit (LString "ge")))
+(DFunDef false "valueRelName" ((PVar "op")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "wasm: unsupported value ordering op ")) (EVar "op"))))
 (DTypeSig false "emitFloatBinRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))))))
 (DFunDef false "emitFloatBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lf") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "struct.get $float 0"))))) (DoLet false false (PVar "rf") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "struct.get $float 0"))))) (DoExpr (EIf (EApp (EVar "isCmpOp") (EVar "op")) (EBinOp "++" (EBinOp "++" (EVar "lf") (EVar "rf")) (EListLit (EApp (EVar "wasmFloatCmp") (EVar "op")) (ELit (LString "ref.i31")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "%"))) (EBinOp "++" (EBinOp "++" (EVar "lf") (EVar "rf")) (EListLit (ELit (LString "call $mdk_float_rem")) (ELit (LString "struct.new $float")))) (EBinOp "++" (EBinOp "++" (EVar "lf") (EVar "rf")) (EListLit (EApp (EVar "wasmFloatArith") (EVar "op")) (ELit (LString "struct.new $float")))))))))
 (DTypeSig false "isArithOrCmp" (TyFun (TyCon "String") (TyCon "Bool")))
@@ -10150,19 +10164,6 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "patVars" ((PCon "PList" (PVar "ps"))) (EApp (EApp (EVar "flatMap") (EVar "patVars")) (EVar "ps")))
 (DFunDef false "patVars" ((PCon "PAs" (PVar "x") (PVar "p"))) (EBinOp "::" (EVar "x") (EApp (EVar "patVars") (EVar "p"))))
 (DFunDef false "patVars" (PWild) (EListLit))
-(DTypeSig false "wasmBinOp" (TyFun (TyCon "String") (TyCon "String")))
-(DFunDef false "wasmBinOp" ((PLit (LString "+"))) (ELit (LString "i32.add")))
-(DFunDef false "wasmBinOp" ((PLit (LString "-"))) (ELit (LString "i32.sub")))
-(DFunDef false "wasmBinOp" ((PLit (LString "*"))) (ELit (LString "i32.mul")))
-(DFunDef false "wasmBinOp" ((PLit (LString "/"))) (ELit (LString "i32.div_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString "%"))) (ELit (LString "i32.rem_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString "=="))) (ELit (LString "i32.eq")))
-(DFunDef false "wasmBinOp" ((PLit (LString "!="))) (ELit (LString "i32.ne")))
-(DFunDef false "wasmBinOp" ((PLit (LString "<"))) (ELit (LString "i32.lt_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString ">"))) (ELit (LString "i32.gt_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString "<="))) (ELit (LString "i32.le_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString ">="))) (ELit (LString "i32.ge_s")))
-(DFunDef false "wasmBinOp" ((PVar "op")) (EApp (EVar "gapS") (EBinOp "++" (EBinOp "++" (ELit (LString "unsupported binary operator '")) (EVar "op")) (ELit (LString "' (`::`/`++` are list/string ops — W6/W7)")))))
 (DTypeSig false "wasmBinOp64" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "wasmBinOp64" ((PLit (LString "+"))) (ELit (LString "i64.add")))
 (DFunDef false "wasmBinOp64" ((PLit (LString "-"))) (ELit (LString "i64.sub")))
@@ -11549,9 +11550,15 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "emitDivZeroGuard" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "emitDivZeroGuard" ((PVar "op") (PVar "dloc")) (EBlock (DoLet false false (PVar "code") (EIf (EBinOp "==" (EVar "op") (ELit (LString "/"))) (ELit (LString "E-DIV-ZERO")) (ELit (LString "E-MOD-ZERO")))) (DoLet false false (PVar "msg") (EIf (EBinOp "==" (EVar "op") (ELit (LString "/"))) (ELit (LString "division by zero")) (ELit (LString "modulo by zero")))) (DoExpr (EBinOp "++" (EBinOp "++" (EListLit (EBinOp "++" (ELit (LString "local.set ")) (EVar "dloc")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "dloc")) (ELit (LString "i64.eqz")) (ELit (LString "if"))) (EApp (EVar "indent") (EApp (EApp (EVar "wasmTrap") (EVar "code")) (EVar "msg")))) (EListLit (ELit (LString "end")) (EBinOp "++" (ELit (LString "local.get ")) (EVar "dloc")))))))
 (DTypeSig false "emitValueCmpRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitValueCmpRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_cmp")) (ELit (LString "i32.const 0")) (EApp (EVar "wasmBinOp") (EVar "op")) (ELit (LString "ref.i31")))))))))
+(DFunDef false "emitValueCmpRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueRelName") (EVar "op"))))))))))
 (DTypeSig false "emitValueCmpNumRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))))))
-(DFunDef false "emitValueCmpNumRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_cmp_num")) (ELit (LString "i32.const 0")) (EApp (EVar "wasmBinOp") (EVar "op")) (ELit (LString "ref.i31")))))))))
+(DFunDef false "emitValueCmpNumRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (DoLet false false (PVar "rv") (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (DoExpr (EIf (EBinOp "==" (EVar "op") (ELit (LString "=="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "!="))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (ELit (LString "call $mdk_value_eq_num")) (ELit (LString "ref.cast (ref i31)")) (ELit (LString "i31.get_u")) (ELit (LString "i32.eqz")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "lv") (EVar "rv")) (EListLit (EBinOp "++" (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueRelName") (EVar "op"))) (ELit (LString "_num"))))))))))
+(DTypeSig false "valueRelName" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "valueRelName" ((PLit (LString "<"))) (ELit (LString "lt")))
+(DFunDef false "valueRelName" ((PLit (LString ">"))) (ELit (LString "gt")))
+(DFunDef false "valueRelName" ((PLit (LString "<="))) (ELit (LString "le")))
+(DFunDef false "valueRelName" ((PLit (LString ">="))) (ELit (LString "ge")))
+(DFunDef false "valueRelName" ((PVar "op")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "wasm: unsupported value ordering op ")) (EVar "op"))))
 (DTypeSig false "emitFloatBinRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))))))
 (DFunDef false "emitFloatBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "lf") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "struct.get $float 0"))))) (DoLet false false (PVar "rf") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r")) (EListLit (ELit (LString "ref.cast (ref $float)")) (ELit (LString "struct.get $float 0"))))) (DoExpr (EIf (EApp (EVar "isCmpOp") (EVar "op")) (EBinOp "++" (EBinOp "++" (EVar "lf") (EVar "rf")) (EListLit (EApp (EVar "wasmFloatCmp") (EVar "op")) (ELit (LString "ref.i31")))) (EIf (EBinOp "==" (EVar "op") (ELit (LString "%"))) (EBinOp "++" (EBinOp "++" (EVar "lf") (EVar "rf")) (EListLit (ELit (LString "call $mdk_float_rem")) (ELit (LString "struct.new $float")))) (EBinOp "++" (EBinOp "++" (EVar "lf") (EVar "rf")) (EListLit (EApp (EVar "wasmFloatArith") (EVar "op")) (ELit (LString "struct.new $float")))))))))
 (DTypeSig false "isArithOrCmp" (TyFun (TyCon "String") (TyCon "Bool")))
@@ -12261,19 +12268,6 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DFunDef false "patVars" ((PCon "PList" (PVar "ps"))) (EApp (EApp (EDictApp "flatMap") (EVar "patVars")) (EVar "ps")))
 (DFunDef false "patVars" ((PCon "PAs" (PVar "x") (PVar "p"))) (EBinOp "::" (EVar "x") (EApp (EVar "patVars") (EVar "p"))))
 (DFunDef false "patVars" (PWild) (EListLit))
-(DTypeSig false "wasmBinOp" (TyFun (TyCon "String") (TyCon "String")))
-(DFunDef false "wasmBinOp" ((PLit (LString "+"))) (ELit (LString "i32.add")))
-(DFunDef false "wasmBinOp" ((PLit (LString "-"))) (ELit (LString "i32.sub")))
-(DFunDef false "wasmBinOp" ((PLit (LString "*"))) (ELit (LString "i32.mul")))
-(DFunDef false "wasmBinOp" ((PLit (LString "/"))) (ELit (LString "i32.div_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString "%"))) (ELit (LString "i32.rem_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString "=="))) (ELit (LString "i32.eq")))
-(DFunDef false "wasmBinOp" ((PLit (LString "!="))) (ELit (LString "i32.ne")))
-(DFunDef false "wasmBinOp" ((PLit (LString "<"))) (ELit (LString "i32.lt_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString ">"))) (ELit (LString "i32.gt_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString "<="))) (ELit (LString "i32.le_s")))
-(DFunDef false "wasmBinOp" ((PLit (LString ">="))) (ELit (LString "i32.ge_s")))
-(DFunDef false "wasmBinOp" ((PVar "op")) (EApp (EVar "gapS") (EBinOp "++" (EBinOp "++" (ELit (LString "unsupported binary operator '")) (EVar "op")) (ELit (LString "' (`::`/`++` are list/string ops — W6/W7)")))))
 (DTypeSig false "wasmBinOp64" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "wasmBinOp64" ((PLit (LString "+"))) (ELit (LString "i64.add")))
 (DFunDef false "wasmBinOp64" ((PLit (LString "-"))) (ELit (LString "i64.sub")))
