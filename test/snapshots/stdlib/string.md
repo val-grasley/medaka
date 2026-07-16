@@ -1,5 +1,5 @@
 # META
-source_lines=621
+source_lines=623
 stages=DESUGAR,MARK
 # SOURCE
 -- string.mdk — operations on String and Char
@@ -189,6 +189,8 @@ utf8ByteLength s = arrayLength (toUtf8 s)
    None
    > toInt "-4611686018427387904"
    Some -4611686018427387904
+   > toInt "-4611686018427387905"
+   None
    > toInt "99999999999999999999"
    None -}
 export toInt : String -> Option Int
