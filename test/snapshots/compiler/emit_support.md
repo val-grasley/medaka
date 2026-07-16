@@ -1,5 +1,5 @@
 # META
-source_lines=213
+source_lines=225
 stages=DESUGAR,MARK
 # SOURCE
 -- BACKEND-NEUTRAL EMIT SUPPORT — helpers shared verbatim by BOTH the LLVM
@@ -20,6 +20,7 @@ import ir.core_ir.{
   CArm(..),
   CGuard(..),
 }
+import frontend.ast.{Lit(..)}
 import backend.trmc_analysis.{patVars, bindNames}
 import support.util.{contains, lookupAssoc, startsWith, fallthroughName}
 
@@ -215,8 +216,20 @@ labelFallthroughArm (CArm p gs b) label = CArm
 labelFallthroughGuard : CGuard -> String -> CGuard
 labelFallthroughGuard (CGBool e) label = CGBool (labelFallthrough e label)
 labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
+
+-- ── range patterns (G6, #379) ────────────────────────────────────────────────
+-- the Int codepoint of a `PRng` bound literal (Int directly, Char as its codepoint);
+-- other literal kinds can't form a range pattern (parser-rejected).  Backend-neutral:
+-- both emitters compare a range bound as a plain Int (LLVM against its `n*2+1` tagged
+-- word, WasmGC against an untagged i31), and only the COMPARISON differs — so the bound
+-- decoding is shared and the emit is not.
+export rngBound : Lit -> Int
+rngBound (LInt n) = n
+rngBound (LChar c) = charCode (arrayGetUnsafe 0 (stringToChars c))
+rngBound _ = 0
 # DESUGAR
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CStmt" true) (mem "CArm" true) (mem "CGuard" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true))))
 (DUse false (UseGroup ("backend" "trmc_analysis") ((mem "patVars" false) (mem "bindNames" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "fallthroughName" false))))
 (DTypeSig true "eagerVars" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))
@@ -297,8 +310,13 @@ labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 (DTypeSig false "labelFallthroughGuard" (TyFun (TyCon "CGuard") (TyFun (TyCon "String") (TyCon "CGuard"))))
 (DFunDef false "labelFallthroughGuard" ((PCon "CGBool" (PVar "e")) (PVar "label")) (EApp (EVar "CGBool") (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
 (DFunDef false "labelFallthroughGuard" ((PCon "CGBind" (PVar "p") (PVar "e")) (PVar "label")) (EApp (EApp (EVar "CGBind") (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
+(DTypeSig true "rngBound" (TyFun (TyCon "Lit") (TyCon "Int")))
+(DFunDef false "rngBound" ((PCon "LInt" (PVar "n"))) (EVar "n"))
+(DFunDef false "rngBound" ((PCon "LChar" (PVar "c"))) (EApp (EVar "charCode") (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EApp (EVar "stringToChars") (EVar "c")))))
+(DFunDef false "rngBound" (PWild) (ELit (LInt 0)))
 # MARK
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CStmt" true) (mem "CArm" true) (mem "CGuard" true))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true))))
 (DUse false (UseGroup ("backend" "trmc_analysis") ((mem "patVars" false) (mem "bindNames" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "fallthroughName" false))))
 (DTypeSig true "eagerVars" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))
@@ -379,3 +397,7 @@ labelFallthroughGuard (CGBind p e) label = CGBind p (labelFallthrough e label)
 (DTypeSig false "labelFallthroughGuard" (TyFun (TyCon "CGuard") (TyFun (TyCon "String") (TyCon "CGuard"))))
 (DFunDef false "labelFallthroughGuard" ((PCon "CGBool" (PVar "e")) (PVar "label")) (EApp (EVar "CGBool") (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
 (DFunDef false "labelFallthroughGuard" ((PCon "CGBind" (PVar "p") (PVar "e")) (PVar "label")) (EApp (EApp (EVar "CGBind") (EVar "p")) (EApp (EApp (EVar "labelFallthrough") (EVar "e")) (EVar "label"))))
+(DTypeSig true "rngBound" (TyFun (TyCon "Lit") (TyCon "Int")))
+(DFunDef false "rngBound" ((PCon "LInt" (PVar "n"))) (EVar "n"))
+(DFunDef false "rngBound" ((PCon "LChar" (PVar "c"))) (EApp (EVar "charCode") (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EApp (EVar "stringToChars") (EVar "c")))))
+(DFunDef false "rngBound" (PWild) (ELit (LInt 0)))
