@@ -402,19 +402,30 @@ narrative lives at the link.
   per-module **local** ctor frame that shadows the global.
 - ⚠️ **A FIXTURE DIRECTORY IS A SHARED CORPUS.** Adding, moving, or deleting a fixture
   silently enrolls (or de-enrolls) you in gates you never named. Before touching one,
-  **`grep -rl '<fixture_dir>' test/` to ENUMERATE every consumer, then run all of them.**
-  ⚠️ **The set GROWS. Do not trust any count — including this sentence.** This bullet used to
-  say `test/wasm/fixtures/` had *"four"* consumers; it has **eight** (it drifted the moment
-  someone added `build_wasm_cmd.sh`), and `llvm_fixtures_typed/` has ~6. An agent obeying the
-  number literally runs half the gates and believes it was exhaustive — **the count
-  manufactured the very confidence this warning exists to prevent.** That is
-  *"check the SET, not one member"* failing inside the sentence that teaches it: a count is an
-  encoded fact with no derivation and no expiry, and the `grep` one clause earlier already
-  derives it. Cautionary example, not a list to trust: `test/eval_modules_fixtures/*/` feeds
+  **ENUMERATE every consumer, then run all of them.**
+  ⚠️ **Do not trust any count — including this sentence — and WORD-BOUND your grep.** Both
+  halves of that matter, and this bullet has been wrong in both directions:
+  - It used to say `test/wasm/fixtures/` had *"four"* consumers. That was wrong (it missed
+    `diff_compiler_prelude_obj.sh`). A **"correction" to eight was also wrong** — a naive
+    `grep -rl 'wasm/fixtures' test/` matches the **real sibling corpora**
+    `test/wasm/fixtures_typed/` (9 files) and `test/wasm/fixtures_modules/` (36), which
+    `diff_wasm_typed.sh`/`diff_wasm_modules.sh`/`build_wasm_cmd.sh` read *instead* of this
+    directory. **The true count is five.** ⚠️ `test/preflight.sh` (grep `Word-boundaries`)
+    already solves this — *"Word-boundaries on both sides so `llvm_fixtures` cannot match
+    `llvm_fixtures_modules`/`llvm_fixtures_typed` (real sibling corpora in this tree)"* — so
+    bound your pattern the same way, or the recipe this bullet hands you lies to you.
+  - **That two successive "verified" recounts each produced a different wrong number is the
+    point**, not an embarrassing footnote: a count is an encoded fact with no derivation and no
+    expiry, while the enumeration is one command away. Write the command, never the number. An
+    agent obeying a count literally runs a subset and believes it was exhaustive — the count
+    manufactures the very confidence this warning exists to prevent. It is *"check the SET, not
+    one member"* failing inside the sentence that teaches it.
+
+  Cautionary example, not a list to trust: `test/eval_modules_fixtures/*/` feeds
   `diff_compiler_eval_modules.sh` **and** `diff_compiler_core_ir_modules.sh` — **P0-9 shipped
-  "green" having run only the first.** ⚠️ Also note `test/wasm/diff_wasm.sh` lives under
-  `test/wasm/`, not directly under `test/` like every other gate; guessing costs two failed
-  invocations.
+  "green" having run only the first.** ⚠️ Also note `test/wasm/diff_wasm.sh` and its `test/wasm/`
+  siblings live under `test/wasm/`, not at `test/diff_wasm.sh`; guessing cost an agent two failed
+  invocations on 2026-07-16.
 - ⚠️ **The compiler's own sources are IN the snapshot corpus, so a source change MOVES ITS
   OWN GOLDEN. Bless it in the SAME commit.** Push the source without the golden and `main`
   goes red, and the hook then forces the *next* agent to bless a file they never touched —
@@ -422,10 +433,9 @@ narrative lives at the link.
   by NAMING the path; `--bless` refuses to rubber-stamp a whole corpus.
   ⚠️ **Bless via the GATE, not the CLI:** `sh test/diff_compiler_snapshot_<suite>.sh --bless <path>`
   (e.g. `…_frontend.sh`, `…_eval.sh`, `…_types.sh`). **`medaka snapshot --bless <compiler source>`
-  is a dead end** — it looks for the `.md` next to the source, fails with *"no snapshot … `--bless`
-  never creates one — run `medaka snapshot --new` first"*, **and exits 0** while reporting
-  `1 failed`. Two agents lost time to this on 2026-07-16 because this bullet said *what* to do
-  and never *which command*.
+  is a dead end** — it looks for the `.md` next to the source and fails with *"no snapshot …
+  `--bless` never creates one — run `medaka snapshot --new` first"* (exit 1). Two agents lost time
+  to this on 2026-07-16 because this bullet said *what* to do and never *which command*.
 - **The compiler MAY import `stdlib/`** — deliberately, per module (policy changed
   2026-06-29; the old blanket ban is retired). **Weigh it per module, don't import
   reflexively.** Measured:
