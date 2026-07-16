@@ -75,11 +75,17 @@ against #349–#352.
 
 > **How this section got here is the lesson.** It first asserted the DAG was *"not executable"* and that
 > *"gate-first only works on an already-clean tree"* — a categorical rule, derived from reading ONE line
-> (`TIME_STAGES`, `:453`) and never reading the ledger 100 lines below it. **An independent reviewer
-> killed it.** That is this repo's #1 lesson (*"reproduce before you trust"*) pointed at a **gate** instead
-> of a bug: a static read named a mechanism, not its behavior — the same error as filing #381 STATIC and
-> never measuring it. **Read the gate before you claim what it does, and never let a plan you like turn
-> into a rule in a doc without one adversarial pass over it.**
+> (`TIME_STAGES`, `:497`) and never reading the `KNOWN_SLOW_TIME` ledger **57 lines below it** (`:554`).
+> **An independent reviewer killed it.** That is this repo's #1 lesson (*"reproduce before you trust"*)
+> pointed at a **gate** instead of a bug: a static read named a mechanism, not its behavior — the same
+> error as filing #381 STATIC and never measuring it. **Read the gate before you claim what it does, and
+> never let a plan you like become a rule in a doc without one adversarial pass over it.**
+>
+> Coda, because it is the same disease one level down: the first draft cited `TIME_STAGES` as **`:453`** —
+> copied verbatim from #359's body, where it had **already drifted** (it is `:497` today). So the claim was
+> wrong *and* its only citation was stale, and the doc-symbol gate could not see either, because both are
+> **prose about behavior**, not a symbol reference. **Line numbers in an issue body are encoded facts with
+> no derivation and no expiry — re-derive them against the file before you quote them.**
 
 ---
 
