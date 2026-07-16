@@ -296,6 +296,7 @@ dedupPairsGo : List (String, Int) -> List (String, Int) -> List (String, Int)
 dedupStr : List String -> List String
 dedupStrGo : List String -> List String -> List String
 defaultAmbiguousNum : List (String, List String, Ty, Mono, Option Loc) -> Mono -> Unit
+defaultBodyLocalNum : List (String, List String, Ty, Mono, Option Loc) -> Mono -> Unit
 defaultEachMember : List (String, List String, Ty, Mono, Option Loc) -> List (String, Mono) -> Unit
 defaultGroupNum : List (String, List String, Ty, Mono, Option Loc) -> List Mono -> Unit
 definerReceiverDispatches : String -> Mono -> Bool

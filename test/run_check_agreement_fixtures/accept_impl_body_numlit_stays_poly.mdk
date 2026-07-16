@@ -1,0 +1,59 @@
+-- #518, the OTHER direction: what must NOT default.  The #518 fix makes an impl
+-- method body a Num-defaulting boundary; this pins the vars it must keep its hands
+-- off, so a future widening of that boundary cannot pass the suite.
+--
+-- This fixture is not hypothetical — it FAILED during #518's own review.  The first
+-- cut of the fix called `defaultGroupNum`, mirroring processLetGroup/processSCC.
+-- That was wrong HERE, and this file is the shape that proves it: defaultGroupNum's
+-- exclusion filter is `monoArgUnboundIds`, which walks only the DOMAINS of the
+-- outermost arrow chain, so `b` in `lift : Num b => a -> Box b` (return position) got
+-- ZERO protection and was ground to Int — permanently monomorphising a var the caller
+-- had already fixed at Float.  MEASURED on real builds of both:
+--   pre-#518            : MkBox 0.0   (correct)
+--   #518 w/ defaultGroupNum : E-PANIC floatToString: not a Float   ← S0 traded for S0
+--   #518 w/ defaultBodyLocalNum : MkBox 0.0   (correct — what ships)
+-- The three arms below are each caller-determined through a DIFFERENT channel, which
+-- is the point: an impl method's vars are not only fixed by arguments.
+--   1. lift  — a METHOD-LEVEL constraint var (`Num b =>`) in RETURN position,
+--              supplied by the method's own dict at the call site.  This is the arm
+--              that regressed; it is invisible to any arg-position-only filter.
+--   2. mk    — an IMPL-LEVEL `requires Num b` var, supplied by the impl's dict.
+--   3. add2  — the ordinary arg-reachable var, at BOTH Int and Float.
+-- Ground truth is the caller's annotation in every case (Box Float / Acc Float), not
+-- whatever the binary prints.
+data Box b = MkBox b deriving (Display)
+
+data Acc b = MkAcc b deriving (Display)
+
+interface Lift a where
+  lift : Num b => a -> Box b
+
+impl Lift Int where
+  lift _ = MkBox 0
+
+interface Mk a where
+  mk : Unit -> a
+
+impl Mk (Acc b) requires Num b where
+  mk _ = MkAcc 0
+
+interface Add2 a where
+  add2 : a -> a -> a
+
+impl Add2 Int where
+  add2 x y = x + y + 0
+
+impl Add2 Float where
+  add2 x y = x + y + 0.0
+
+q : Box Float
+q = lift 3
+
+z : Acc Float
+z = mk ()
+
+main =
+  let _ = println q
+  let _ = println z
+  let _ = println (add2 1 2)
+  println (add2 1.5 2.5)
