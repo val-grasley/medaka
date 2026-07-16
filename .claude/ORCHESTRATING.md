@@ -828,7 +828,9 @@ an emitter-graph file does NOT invalidate the seed (emitted IR is identical); an
   isolation classifier, and **the denial is stateful** — it carries forward and blocks every later
   `make` the agent attempts, *including a clean cold-bootstrap wholly inside its own worktree*. An
   Opus agent lost a full session to this on 2026-07-16 and could not build at all; its read-only
-  diagnosis survived only because reads were unaffected. `AGENTS.md` recommends the `cp` in the
+  diagnosis survived only because reads were unaffected. ⚠️ **It is not deterministic** — a second
+  subagent in that same session did the identical `cp` and was never blocked, so you cannot predict
+  it or test for it; you can only avoid it. `AGENTS.md` recommends the `cp` in the
   build section, so agents find it on their own — **pre-empt it explicitly in the prompt** ("do NOT
   cp an emitter from any other tree; plain `make -C <your-worktree> medaka` cold-bootstraps and is
   correct"). Cost of not borrowing: ~4 s. Cost of borrowing: the agent.
