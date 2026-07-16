@@ -1,0 +1,7 @@
+-- Multi-clause + signature sample for the medaka_symbols outline gate (#300 p3).
+-- `dirGo` is a 2-clause function with a signature: three decls, ONE symbol.
+dirGo : Int -> Int
+dirGo 0 = 0
+dirGo n = n + dirGo (n - 1)
+
+main = println (dirGo 5)

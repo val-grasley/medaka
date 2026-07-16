@@ -344,9 +344,12 @@ occToHighlight arr nlen off = match posOfOffset arr off
 -- ── textDocument/documentSymbol ─────────────────────────────────────────────
 -- parseWithPositions → zip decls with their DeclPos (1-based line..end_line) →
 -- one DocumentSymbol per decl: { name, kind, range, selectionRange, children }.
--- Range/selectionRange are decl-level: (line-1, 0)..(end_line-1, 0).  The
--- compiler AST is location-stripped of columns, so symbol ranges are line-
--- granular (the column-precise spans are the ELoc slice).  SymbolKind codes are
+-- Consecutive same-name decls (a signature + its clauses, or a multi-clause
+-- function) COLLAPSE to a single outline symbol spanning them (#300 part 3), so a
+-- 2-clause `dirGo` is one entry, not three.  Range/selectionRange are decl-level:
+-- (line-1, 0)..(end_line-1, 0).  The compiler AST is location-stripped of columns
+-- (#331), so symbol ranges are line-granular (character always 0; the
+-- column-precise spans are the ELoc slice).  SymbolKind codes are
 -- the LSP spec integers (Struct=23, Method=6, Field=8, Enum=10, EnumMember=22,
 -- Interface=11, Class=5, Function=12, Variable=13, TypeParameter=26, Event=24).
 -- Mirrors symbol_of_decl's kind mapping + child nesting.
@@ -397,39 +400,39 @@ implMethodName (ImplMethod n _ _) = n
 letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
--- One DocumentSymbol JSON for a decl + its DeclPos, or None for decls that
--- don't surface in the outline (DUse).
-symbolOfDecl : Decl -> DeclPos -> Option Json
-symbolOfDecl d dp =
-  let range = jRange (declPosLine dp - 1) 0 (declPosEndLine dp - 1) 0
-  match innerDecl d
-    DTypeSig _ name _ => Some (jSymbol name 13 range [])
-    DExtern _ name _ => Some (jSymbol name 12 range [])
-    DFunDef _ name _ _ => Some (jSymbol name 12 range [])
+-- The outline (name, kind, children) for a decl, given its precomputed
+-- decl-level `range` (used for the child symbols' spans), or None for decls that
+-- don't surface in the outline (DUse).  The decl's own range is reattached by the
+-- caller (symbolParts), which also spans it across collapsed clauses.
+symbolPartsOfDecl : Decl -> Json -> Option (String, Int, List Json)
+symbolPartsOfDecl d range = match innerDecl d
+    DTypeSig _ name _ => Some (name, 13, [])
+    DExtern _ name _ => Some (name, 12, [])
+    DFunDef _ name _ _ => Some (name, 12, [])
     DLetGroup _ binds => match binds
       [] => None
       (LetBind n0 _)::_ =>
         let kids = map ((LetBind n _) => jChild n 12 range) binds
-        Some (jSymbol n0 12 range kids)
+        Some (n0, 12, kids)
     DData _ name _ variants _ =>
       -- records (the `data X = { … }` short form, nameOmitted) expose their
       -- fields as child symbols (kind 8); ordinary variants show their ctor name.
       let kids = flatMap (variantSymChildren range) variants
-      Some (jSymbol name 10 range kids)
+      Some (name, 10, kids)
     DInterface { name = n, methods = ms, ... } =>
       let kids = map ((IfaceMethod mn _ _) => jChild mn 6 range) ms
-      Some (jSymbol n 11 range kids)
+      Some (n, 11, kids)
     DImpl { iface = ifc, methods = ms, ... } =>
       let label = implLabel ifc
       let kids = map ((ImplMethod mn _ _) => jChild mn 6 range) ms
-      Some (jSymbol label 5 range kids)
-    DTypeAlias _ name _ _ => Some (jSymbol name 26 range [])
-    DNewtype _ name _ _ _ _ => Some (jSymbol name 23 range [])
+      Some (label, 5, kids)
+    DTypeAlias _ name _ _ => Some (name, 26, [])
+    DNewtype _ name _ _ _ _ => Some (name, 23, [])
     DUse _ _ _ => None
-    DProp _ name _ _ => Some (jSymbol name 12 range [])
-    DTest _ name _ => Some (jSymbol name 12 range [])
-    DBench _ name _ => Some (jSymbol name 12 range [])
-    DEffect _ name _ => Some (jSymbol name 24 range [])
+    DProp _ name _ _ => Some (name, 12, [])
+    DTest _ name _ => Some (name, 12, [])
+    DBench _ name _ => Some (name, 12, [])
+    DEffect _ name _ => Some (name, 24, [])
     DAttrib _ _ => None  -- unreachable post innerDecl
 -- Variable
 -- Function
@@ -453,20 +456,47 @@ symbolOfDecl d dp =
 implLabel : String -> String
 implLabel iface = stringConcat ["impl ", iface]
 
--- Zip decls with positions (1:1; defensive truncation to the shorter list) and
--- collect the symbols.  Exported for `medaka_symbols` (#255) — parse-only, no
--- typecheck, so it's a pure function of `src` and safe for the stateless MCP
--- disk-read harness (mirrors `typeAtPoint`'s export shape).
+-- Parse → parts → collapse same-name clauses → render.  Exported for
+-- `medaka_symbols` (#255) — parse-only, no typecheck, so it's a pure function of
+-- `src` and safe for the stateless MCP disk-read harness (mirrors `typeAtPoint`'s
+-- export shape).
 export documentSymbols : String -> List Json
 documentSymbols src = match parseWithPositionsOpt src
   None => []
-  Some (decls, positions) => symbolsZip decls (positionsDecls positions)
+  Some (decls, positions) => map renderSymbol (collapseSymbols (symbolParts decls (positionsDecls positions)))
 
-symbolsZip : List Decl -> List DeclPos -> List Json
-symbolsZip (d::ds) (p::ps) = match symbolOfDecl d p
-  None => symbolsZip ds ps
-  Some s => s :: symbolsZip ds ps
-symbolsZip _ _ = []
+-- Zip decls with positions (1:1; defensive truncation to the shorter list) into
+-- (name, kind, startLine0, endLine0, children) rows, dropping non-outline decls.
+symbolParts : List Decl -> List DeclPos -> List (String, Int, Int, Int, List Json)
+symbolParts (d::ds) (p::ps) =
+  let sl = declPosLine p - 1
+  let el = declPosEndLine p - 1
+  match symbolPartsOfDecl d (jRange sl 0 el 0)
+    None => symbolParts ds ps
+    Some (name, kind, kids) => (name, kind, sl, el, kids) :: symbolParts ds ps
+symbolParts _ _ = []
+
+-- Collapse consecutive rows that share the EXACT same name — a signature plus its
+-- clauses, or a multi-clause function — into ONE outline symbol (#300 part 3):
+-- the shared name, the LAST row's kind (so a `sig`(Variable)+`def`(Function) pair
+-- reads as the Function, not the sig), the range spanning first-start..last-end,
+-- and the concatenated children.  Only ADJACENT exact-name matches collapse, so
+-- distinct decls that merely share a prefix are never merged.
+collapseSymbols : List (String, Int, Int, Int, List Json) -> List (String, Int, Int, Int, List Json)
+collapseSymbols [] = []
+collapseSymbols (x::xs) = collapseGo x xs
+
+collapseGo : (String, Int, Int, Int, List Json) -> List (String, Int, Int, Int, List Json) -> List (String, Int, Int, Int, List Json)
+collapseGo cur [] = [cur]
+collapseGo (n0, k0, s0, e0, c0) ((n1, k1, s1, e1, c1)::rest) =
+  if n0 == n1 then
+    collapseGo (n0, k1, s0, e1, c0 ++ c1) rest
+  else
+    (n0, k0, s0, e0, c0) :: collapseGo (n1, k1, s1, e1, c1) rest
+
+renderSymbol : (String, Int, Int, Int, List Json) -> Json
+renderSymbol (name, kind, sl, el, kids) =
+  jSymbol name kind (jRange sl 0 el 0) kids
 
 -- ── textDocument/definition ─────────────────────────────────────────────────
 -- identifier-at-cursor → first decl that DEFINES that name → its DeclPos range
