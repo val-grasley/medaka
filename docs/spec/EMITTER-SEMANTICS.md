@@ -195,9 +195,14 @@ laws bind **all four engines** and every reflective helper (V6).
 - **N4 — Float ops are IEEE-754 binary64, exactly.** `+ - * /` on Float are
   the IEEE operations on the unboxed doubles (`fadd/fsub/fmul/fdiv`,
   round-to-nearest-even, no fast-math flags — ever). `x / 0.0` is IEEE
-  (±inf, NaN), **not** a trap. `%` on Float is C `fmod` (truncated remainder:
-  `a − b·trunc(a/b)`). No engine may contract (`fma`), reassociate, or
-  constant-fold under rules other than IEEE.
+  (±inf, NaN), **not** a trap. `%` on Float is C `fmod` — the *exact* IEEE
+  truncated remainder (result of `a − b·n`, `n = trunc(a/b)`, computed exactly),
+  **not** the one-step `a − b·trunc(a/b)`, which rounds `a/b` and loses precision
+  for large ratios (`1e300 % 7` → `1e300`/`0`, not `1`). This binds every arm:
+  inline `frem`, the `floatRem` extern (`mdk_float_rem`), native's runtime-dispatch
+  `mdk_num_mod`, and wasm's `$mdk_float_rem` (an exact power-of-two reduction) +
+  `$mdk_value_mod` — all fmod, all byte-identical (#345). No engine may contract
+  (`fma`), reassociate, or constant-fold under rules other than IEEE.
 - **N5 — Comparison is IEEE-ordered, uniformly.** `< <= > >=` on Float are the
   IEEE ordered predicates: **every one is false when either operand is NaN**;
   `==` is false and `!=` is true on NaN; `-0.0 == 0.0`. The load-bearing word
@@ -354,15 +359,15 @@ laws bind **all four engines** and every reflective helper (V6).
 | Law | Status | Evidence / issue |
 |---|---|---|
 | R1/R2 refinement | ✅ sampled | `diff_compiler_engines` + llvm/build/typed gates; known violations pinned in `test/engine_divergence.txt` |
-| R1 — Num-poly Float `%` | ✗ **CONFIRMED S0** | `mdk_num_mod` float arm is a trunc-cast, not `fmod`; run `4.89…e-301` vs build `1e+300` — **#345** |
+| R1 — Num-poly Float `%` | ✅ **FIXED (#345)** | `mdk_num_mod` float arm is now `fmod` (`medaka_rt.c`); wasm's `$mdk_value_mod` + `$mdk_float_rem` are an exact power-of-two-reduction fmod (byte-identical to libm across large/negative/small ratios); eval==native==wasm pinned by `polynum_mod_float{,_large,_neg}` |
 | R5 — unguarded `sdiv/srem` | ✅ | divisor guarded pre-instruction (`emitIntDivZeroChecked`); i64 `INT_MIN/-1` structurally unreachable under V2 (63-bit payloads) |
 | R5/N7 — `floatToInt` | ✗ **CONFIRMED (UB-derived)** | raw `fptosi`, poison on NaN/inf/range; observed `0` in both engines only by tag-wrap accident — **#346** (owner pin wanted) |
 | V1–V3, V5 rep | ✅ | ratified + spike-proven (RUNTIME-DESIGN §8); fixtures throughout |
 | V4/M2 — tag injectivity | ⚠ STATIC | ctor tags collision-free by construction (composite ordinals; reserved block guarded upstream by resolver `Duplicate constructor`); sentinel + dict-witness tags still raw djb2 with **no emit-time check** — **#348**; stale "real backend" comment — **#361** |
-| V6 — reflective surface | ⚠ enumerated here | `mdk_value_eq` ✅ (IEEE eq), `mdk_value_cmp_raw` ✗ (NaN→EQ, #305/N6), `mdk_num_*` ✗ (#345), `mdk_append` ✅, `mdk_print_num` ✅, `mdk_hash_float` LATENT (−0.0 hash≠eq; −0.0 unconstructible from source — `negate a = 0.0 - a` — trigger: `intBitsToFloat`) |
+| V6 — reflective surface | ⚠ enumerated here | `mdk_value_eq` ✅ (IEEE eq), `mdk_value_cmp_raw` ✗ (NaN→EQ, #305/N6), `mdk_num_*` ✅ (Float `%` = fmod, #345 FIXED), `mdk_append` ✅, `mdk_print_num` ✅, `mdk_hash_float` LATENT (−0.0 hash≠eq; −0.0 unconstructible from source — `negate a = 0.0 - a` — trigger: `intBitsToFloat`) |
 | DL1–DL3 dispatch | ✅ post-#203/#309 | uniform min⊑ elaboration; residuals #323/#324 (deep-nested overlap emit, wasm key sanitize) |
 | N1 wrap / N2 div-mod / N3 literals | ✅ CONFIRMED | bare `add/sub/mul` (no nsw/nuw, grep-clean), `sdiv/srem` guarded, trap codes match eval; literal tag-width guard at 2^61 handled via full-width shl |
-| N4 IEEE ops | ⚠ | inline paths ✅ (`fadd…frem`, no fast-math); the one divergent arm is #345 |
+| N4 IEEE ops | ✅ | inline paths ✅ (`fadd…frem`, no fast-math); the runtime-dispatch Float `%` arm is now fmod on every engine (#345 FIXED) |
 | N5 IEEE compare, uniformly | ⚠ | inline `fcmp o*`/`une` ✅ both backends; `nan <= nan` on global Floats CONFIRMED correct (the `RScalar` stamp covers it — a suspected divergence DISPROVED by probe); residual: the generic/HOF path, #305 |
 | N6 total-order story | ✗ undecided | owner decision — **#360**; until then bar = engine uniformity |
 | N7 conversions | ✗ | see #346; `floor/ceil/round/trunc` ✅ (C library, Float→Float) |

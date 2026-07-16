@@ -1,0 +1,9 @@
+-- #345 A0 `%` on Float through the runtime value-dispatch helper, NEGATIVE dividend.
+-- fmod keeps the sign of the dividend: (-7.5) % 2.0 == -1.5.  Pins eval == native ==
+-- wasm on the sign path (copysign in the WAT fmod).
+modd a b = a % b
+
+anchor : Float -> Float
+anchor y = y
+
+main = anchor (modd (0.0 - 7.5) 2.0)

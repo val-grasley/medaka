@@ -694,7 +694,7 @@ valueEqRuntimeLines = [
 -- `struct.new $float`; else the i31/`$boxint` int path via `$mdk_unbox_int`/`$mdk_box_int`
 -- (byte-identical to the inline int fallback, so an Int instantiation is unchanged).
 -- `div` truncates toward zero (`i64.div_s` / `f64.div`); `%` is sign-of-dividend for Int
--- (`i64.rem_s`) and `a - b*trunc(a/b)` for Float (== `$mdk_float_rem` == LLVM `frem` ==
+-- (`i64.rem_s`) and fmod for Float (== `$mdk_float_rem` == LLVM `frem` ==
 -- native's `mdk_num_mod`).  Emitted only when a poly-`Num` operand is routed here
 -- (`useValueArithRef`); `$mdk_unbox_int`/`$mdk_box_int` are always in scope (ioRuntimeLines).
 export valueArithRuntimeLines : List String
@@ -724,13 +724,14 @@ valueArithRuntimeLines = [
   "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
   "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))",
   "      (else (call $mdk_box_int (i64.div_s (call $mdk_unbox_int (local.get $a)) (call $mdk_unbox_int (local.get $b)))))))",
+  "  ;; #345 Float arm is fmod ($mdk_float_rem), NOT the old inline `a - b*trunc(a/b)`",
+  "  ;; (which lost precision for large |a/b|, e.g. 1e300 % 7 -> 1e300).  Mirrors native",
+  "  ;; mdk_num_mod's fmod and the monomorphic Float `%` path (emitFloatBinRef).",
   "  (func $mdk_value_mod (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
-  "    (local $fa f64) (local $fb f64)",
   "    (if (result (ref eq)) (ref.test (ref $float) (local.get $a))",
-  "      (then",
-  "        (local.set $fa (struct.get $float 0 (ref.cast (ref $float) (local.get $a))))",
-  "        (local.set $fb (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))",
-  "        (struct.new $float (f64.sub (local.get $fa) (f64.mul (local.get $fb) (f64.trunc (f64.div (local.get $fa) (local.get $fb)))))))",
+  "      (then (struct.new $float (call $mdk_float_rem",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $a)))",
+  "        (struct.get $float 0 (ref.cast (ref $float) (local.get $b))))))",
   "      (else (call $mdk_box_int (i64.rem_s (call $mdk_unbox_int (local.get $a)) (call $mdk_unbox_int (local.get $b)))))))",
   "  ;; -- A1 poly-`Ord`/`Eq`-on-Float, NUM-ONLY (no $str): $float f64-eq/cmp else i64 --",
   "  (func $mdk_value_eq_num (param $a (ref eq)) (param $b (ref eq)) (result (ref eq))",
@@ -1006,6 +1007,45 @@ floatStrRuntimeLines = [
 -- the Float runtime (RUNTIME-DESIGN §5).  intToFloat/floatToInt are INTRINSIC (the
 -- §3.3 box <-> raw conversion); floatToString rebuilds a $str from the host-formatted
 -- bytes.  All byte-identical to the native oracle.
+-- #345 $mdk_float_rem = fmod(a, b), byte-identical to C fmod / LLVM frem; backs BOTH
+-- the monomorphic `Float % Float` (emitFloatBinRef) AND the num-poly `%` runtime arm
+-- ($mdk_value_mod, in valueArithRuntimeLines).  Emitted separately from floatRuntimeLines
+-- and gated on `useFloatRef || useValueArithRef` (wasm_emit.mdk) so an int-only program
+-- that routes `%` through value-dispatch still gets the helper (was a parse-time
+-- `unknown func $mdk_float_rem` regression when it lived only in floatRuntimeLines).  The
+-- old one-step `a - b*trunc(a/b)` LOST PRECISION for large |a/b| (f64.div/f64.trunc round:
+-- 1e300 % 7 came back 0, not 1).  This is the exact power-of-two reduction used by libm:
+-- scale y=|b| up to the largest y*2^k <= x=|a|, then walk it down to y subtracting where
+-- it fits.  Each subtraction is Sterbenz-exact (t <= x < 2t) and each halving of t is
+-- exact, so the remainder is the exact IEEE fmod.  Guards reproduce fmod's NaN cases
+-- (b==0, a inf, a/b NaN); b==inf with finite a returns a (via x<y).  No host import.
+export floatRemRuntimeLines : List String
+floatRemRuntimeLines = [
+  "  (func $mdk_float_rem (param $a f64) (param $b f64) (result f64)",
+  "    (local $x f64) (local $y f64) (local $t f64)",
+  "    (local.set $y (f64.abs (local.get $b)))",
+  "    (if (result f64)",
+  "      (i32.or (i32.or",
+  "        (f64.ne (f64.sub (local.get $a) (local.get $a)) (f64.const 0))",
+  "        (f64.ne (local.get $b) (local.get $b)))",
+  "        (f64.eq (local.get $y) (f64.const 0)))",
+  "      (then (f64.const nan))",
+  "      (else",
+  "        (local.set $x (f64.abs (local.get $a)))",
+  "        (local.set $t (local.get $y))",
+  "        (block $up (loop $ul",
+  "          (br_if $up (f64.gt (f64.add (local.get $t) (local.get $t)) (local.get $x)))",
+  "          (local.set $t (f64.add (local.get $t) (local.get $t)))",
+  "          (br $ul)))",
+  "        (block $dn (loop $dl",
+  "          (if (f64.ge (local.get $x) (local.get $t))",
+  "            (then (local.set $x (f64.sub (local.get $x) (local.get $t)))))",
+  "          (br_if $dn (f64.eq (local.get $t) (local.get $y)))",
+  "          (local.set $t (f64.mul (local.get $t) (f64.const 0.5)))",
+  "          (br $dl)))",
+  "        (f64.copysign (local.get $x) (local.get $a)))))",
+]
+
 export floatRuntimeLines : List String
 floatRuntimeLines = [
   "  ;; -- W8b Float runtime (byte-identical to medaka_rt.c) --",
@@ -1019,9 +1059,6 @@ floatRuntimeLines = [
   "  ;; no longer overflows i32 (`float unrepresentable in integer range`) nor traps ref.i31.",
   "  (func $mdk_float_to_int (param $f (ref $float)) (result i64)",
   "    (i64.trunc_f64_s (struct.get $float 0 (local.get $f))))",
-  "  ;; floatRem a b = a - b*trunc(a/b)  (== C fmod == LLVM frem); backs `Float % Float`.",
-  "  (func $mdk_float_rem (param $a f64) (param $b f64) (result f64)",
-  "    (f64.sub (local.get $a) (f64.mul (local.get $b) (f64.trunc (f64.div (local.get $a) (local.get $b))))))",
   "  ;; #101 round : C round() — round to nearest, HALVES AWAY FROM ZERO (NOT f64.nearest,",
   "  ;; which is round-half-to-even).  Branch-based so there is NO intermediate `x+0.5`:",
   "  ;; the naive `floor(abs(x)+0.5)` double-rounds — `x+0.5` itself rounds (IEEE) before",
