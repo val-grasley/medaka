@@ -360,7 +360,19 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
   entry is now DRAINED: the HOF-routed `<=`/`>=` NaN defect (#305) is FIXED** — ws:emitter's
   #484 made Float relational ops IEEE predicates on the **type-lost path** too (both backends,
   one atomic PR), and took a latent `== NaN` bug with it. `WASM-SEMANTICS`'s **N5 row is now ✅**.
-  N6 (`compare`/`min`/`max` at NaN → totalOrder, **#360**) remains decided-and-unimplemented.
+  For N6's **current** status (`compare`/`min`/`max`/`sort` at NaN → totalOrder, **#360**) read
+  **`WASM-SEMANTICS`'s N6 row — do not restate it here.**
+
+  > ⭐ **Why this entry no longer says what N6's state IS.** It used to read *"#360 remains
+  > decided-and-unimplemented"* — an **encoded fact with no derivation and no expiry**, in a ledger
+  > headed *do NOT re-file*, i.e. sited where a stale claim does the most harm. It was one merge
+  > from rotting (#490 implements N6). **The contract is MAINTAINED and this ledger is not** —
+  > demonstrated, not assumed: #484 drained three `#305` rows from `WASM-SEMANTICS` **unprompted**,
+  > while leaving *both* workstream ledgers stale, including **its own** (#488). ⇒ **a debunkings
+  > ledger must record what was DISPROVED (a fact that cannot expire), never an issue's STATE
+  > (a fact that expires the moment someone fixes it).** The disproof above — *NaN
+  > `compare`/`min`/`max` are engine-uniform, probe-run* — is the durable half and stays; the
+  > status pointer belongs in the doc that gets drained.
 
   > **Why this line is worth reading twice.** It sat in a ledger headed *"do NOT re-file"* —
   > whose purpose is to tell you a question is **settled**. A stale entry here does not merely
