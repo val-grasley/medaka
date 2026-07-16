@@ -54,7 +54,8 @@ semantics PR is in those files.
 ## ⭐ A new gate must land GREEN — and the perf gate already has the ledger that lets it (2026-07-16)
 
 **A gate cannot land red**: `main` would block the merge queue for every workstream. So how do you land
-#359's emit stage while #381's quadratic is still live and measuring **5.3×** against a ~2.0× threshold?
+#359's emit stage while a quadratic it grades is **still live** — as #381's was, measuring **cubic**
+against a ~2.0× threshold — without turning `main` red for everyone?
 
 **Two ways, and the second is the one to reach for:**
 
@@ -198,26 +199,66 @@ test, every candidate through native build AND wasm build AND `medaka run`). The
 - Identity: `dictTag` is 30-bit djb2 with no collision check (#377); `gname` has
   enumerable injectivity punctures (#378 — land its collision check WITH or BEFORE #324's
   sanitizer, or a loud invalid-id failure becomes silent aliasing).
-- Perf: the emitter is `contains`-over-lists per node, like pre-audit native, plus two
-  wasm-only shapes — `ctorOrdinal` re-filters the whole ctor table per construction site
-  and per `br_table` slot, and `indent` re-maps subtree lines per nesting level (#381,
-  #382). NOTHING gates it: `diff_compiler_perf_scaling.sh` has no emit stage (#359), and
-  most of these scans allocate nothing, so the arm must grade TIME.
-  **⭐ #381 MEASURED 2026-07-16 (was STATIC) — it is WORSE than quadratic (~N^2.4).** Via the
-  discriminating test on the perf gate's own `gen_match` shape (grep `gen_match` in
-  `test/diff_compiler_perf_scaling.sh`: one data decl with N ctors + one N-arm match),
-  min-of-3, `GC_INITIAL_HEAP_SIZE=512M` pinned:
+- Perf: the emitter is `contains`-over-lists per node, like pre-audit native, plus two shapes
+  the audit called **wasm-only** — `ctorOrdinal` re-filters the whole ctor table per construction
+  site and per `br_table` slot, and `indent` re-maps subtree lines per nesting level (#381, #382).
+  ⚠️ **"wasm-only" was HALF WRONG** (measured, below): `ctorOrdinal`'s scan is **shared with
+  `llvm_emit`**; only the *slot × branch nesting* that turns it cubic is wasm's. Gating: the
+  **native** emit arm shipped in #396; **the wasm arm of #359 is still open**, so wasm emit remains
+  ungated — and the arm must grade **TIME**, since most of these scans allocate nothing (#396's
+  own headline: a live quadratic at TIME r2 = 3.96 while the ALLOC arm read a clean linear 2.04
+  and called it "ok" — the arm was not broken, it was *right and blind*).
+  **⭐ #381 MEASURED, then RE-measured twice — FIXED by #401 (`5d82fa48`). The measurement history is
+  the more useful artifact; read it before you measure anything here.**
 
-  | N | `wasm_emit_main` | ratio | `llvm_emit_main` | ratio |
+  Final numbers — **both backends, the perf gate's own `gen_match` shape made DCE-REACHABLE
+  (`main = println (toInt C0)`), through the `*_emit_modules_main` probes (which run `dceFilter`,
+  i.e. the REAL build path)**, min-of-3, `GC_INITIAL_HEAP_SIZE=512M` pinned, baseline-subtracted,
+  load < 1.5:
+
+  | N | llvm net | ratio | wasm net (pre-#401) | ratio |
   |---|---|---|---|---|
-  | 100 | 0.0402 s | 2.58× | 0.0145 s | 1.89× |
-  | 200 | 0.2456 s | 6.11× | 0.0164 s | 1.13× |
-  | 400 | 1.3019 s | **5.30×** | 0.0332 s | 2.02× |
+  | 200 | 0.0272 s | — | 0.1434 s | — |
+  | 400 | 0.0617 s | **2.27×** | 1.1348 s | **7.91×** |
+  | 800 | 0.1769 s | **2.87×** | 9.4797 s | **8.35×** |
 
-  Linear ≈ 2.0×/doubling, quadratic ≈ 4.0×. **llvm holds linear; wasm is ~N^2.4 and 39× slower at
-  N=400** ⇒ a genuine wasm-only gap, not a corpus artifact. **The audit's perf pass was grep-proven
-  but never measured — measuring took ~5 minutes and turned an S3 hypothesis into a verified one with
-  a repro.** Do that before spawning any perf fix: a static census names a shape, not a cost.
+  linear ≈ 2.0 · quadratic ≈ 4.0 · **cubic ≈ 8.0**. **wasm was CUBIC** (53× llvm at N=800); #401
+  took it to **1.90× (linear)** — a 53× win at N=400 — with byte-identical WAT across 200 fixtures.
+
+  **The mechanism, and the part that generalizes:**
+
+  | backend | cost | why |
+  |---|---|---|
+  | **llvm** | scan O(C) × per-construction-site O(N) = **O(N×C)** → quadratic | `llvm_emit`'s own `ctorOrdinal` has **the same whole-table scan** |
+  | **wasm** | same scan × per-**(slot, branch)** nesting O(N×B) = **O(N×B×C)** → cubic | wasm nests slots × branches; llvm does not |
+
+  ⇒ **the scan is SHARED; only the extra nesting factor was wasm's.** #381's original "no llvm twin"
+  framing was WRONG — llvm has a *quadratic* twin (ws:emitter measured native `match:emit` at
+  **3.71/3.73** over N=1000→4000, #396). #401's memo pattern is a plausible lead for #349–#352 —
+  and it was **taken from `llvm_emit`'s `ctorMapRef`/`installCtorMap` in the first place.**
+
+  ### 🔬 Three measurement traps, each of which produced a confidently WRONG published number
+
+  1. **The audit filed it STATIC** (grep-proven, never run). Measuring took ~5 minutes and turned an
+     S3 hypothesis into a verified issue. **A grep-proven census names a SHAPE, not a COST.**
+  2. **`gen_match` has NO `main`, so the probe PANICS** — and `2>&1 >/dev/null` swallows it, so you
+     time work-done-before-a-panic. Worse: reuse that repro for a WAT byte-diff and you get
+     **empty-vs-empty = a false "identical"** (#401 hit 38 silently-empty captures). ⚠️ **The
+     "discriminating test" above compared llvm vs wasm on the UNROOTED fixture — i.e. two panics —
+     and the published "llvm is linear (2.02×)" came from that.** It pointed the right way for the
+     wrong reason. **Root the fixture; assert exit 0 and non-empty output.**
+  3. **A probe that skips `dceFilter` may time emission a real build never performs.** `wasm_emit_main`
+     runs **no DCE**; `wasm_emit_modules_main` does. But **"does it survive DCE?" is a per-FIXTURE
+     question, not a per-probe one**: `xref` puts the cost in N *unreferenced* decls (DCE prunes all
+     N ⇒ dead measurement), while `gen_match` concentrates it in ONE function `main` roots (DCE
+     *must* keep it — proven: the WAT contains `func $dm400__toInt`, 4.29 MB, 79 `br_table`s).
+     Best practice, from ws:emitter (#396): run `dceFilter` **inside** the profiler, and ship a
+     **dead-vs-rooted falsifiability control** (they measured **28×**) — without one, a fixture
+     change is unfalsifiable.
+
+  **And: a scaling ratio is NOT a constant.** Our llvm reading climbed 2.27 → 2.87 over N=200→800;
+  ws:emitter's read 3.71 at N=1000→4000. Same curve, different N. **Quoting a ratio without its N
+  band is an under-specified claim** — both workstreams did it on the same day.
 
 ### ⭐ The debunkings are findings too — do NOT re-file these
 
