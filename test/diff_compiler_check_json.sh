@@ -33,6 +33,7 @@ NATIVE="$ROOT/medaka"
 FIXDIR="$ROOT/test/check_json_fixtures"
 
 [ -x "$NATIVE" ] || { echo "SKIP: ./medaka not built — run: make medaka"; exit 2; }
+. "$ROOT/test/lib_stale_warning.sh"
 [ -d "$FIXDIR" ] || { echo "FAIL: missing $FIXDIR"; exit 1; }
 
 export MEDAKA_ROOT="$ROOT"
@@ -53,13 +54,17 @@ for mdk in "$FIXDIR"/*.mdk; do
   rm -f "$tmpout"
   ref_out="$(cat "$golden")"
 
-  if [ "$native_out" = "$ref_out" ]; then
-    pass=$((pass+1)); printf 'ok   %s\n' "$name"
-  else
-    fail=$((fail+1)); printf 'FAIL %s\n' "$name"
-    printf '  native: %s\n' "$native_out"
-    printf '  golden: %s\n' "$ref_out"
-  fi
+  cls="$(mdk_classify_diff "$native_out" "$ref_out")"
+  case "$cls" in
+    MATCH) pass=$((pass+1)); printf 'ok   %s\n' "$name" ;;
+    STALE_ONLY) fail=$((fail+1)); mdk_stale_fail_line "$name" ;;
+    *)
+      fail=$((fail+1)); printf 'FAIL %s\n' "$name"
+      [ "$cls" = "STALE_PLUS_DIFF" ] && mdk_stale_note
+      printf '  native: %s\n' "$native_out"
+      printf '  golden: %s\n' "$ref_out"
+      ;;
+  esac
 done
 
 # ── multi-module project fixtures (#159 regression lock) ────────────────────
@@ -100,13 +105,17 @@ if [ -d "$PROJDIR" ]; then
       fail=$((fail+1)); printf 'FAIL %s (missing golden %s)\n' "$name" "$golden"; continue
     fi
     ref_out="$(cat "$golden")"
-    if [ "$native_out" = "$ref_out" ]; then
-      pass=$((pass+1)); printf 'ok   %s\n' "$name"
-    else
-      fail=$((fail+1)); printf 'FAIL %s\n' "$name"
-      printf '  native: %s\n' "$native_out"
-      printf '  golden: %s\n' "$ref_out"
-    fi
+    cls="$(mdk_classify_diff "$native_out" "$ref_out")"
+    case "$cls" in
+      MATCH) pass=$((pass+1)); printf 'ok   %s\n' "$name" ;;
+      STALE_ONLY) fail=$((fail+1)); mdk_stale_fail_line "$name" ;;
+      *)
+        fail=$((fail+1)); printf 'FAIL %s\n' "$name"
+        [ "$cls" = "STALE_PLUS_DIFF" ] && mdk_stale_note
+        printf '  native: %s\n' "$native_out"
+        printf '  golden: %s\n' "$ref_out"
+        ;;
+    esac
   done
 fi
 
