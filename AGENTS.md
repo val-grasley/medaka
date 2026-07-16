@@ -337,6 +337,20 @@ move when wording changes.
 When **writing** a diagnostic, follow `compiler/ERROR-QUALITY.md` (the rubric) and add the
 code to `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
 
+**To see the TYPED, DICT-PASSED Core IR — the routes and `$dict` params themselves — run
+`compiler/entries/core_ir_typed_modules_dump_main.mdk`.** This is the probe for *any* dispatch,
+dict-routing, or `requires` bug, and it is the one that answers "which impl did it actually pick,
+and what dicts did it actually pass?" It mirrors `llvm_emit_modules_main.mdk` exactly
+(`driveModules → runEmitWith → mangle → elaborateModules → dceFilter → lowerProgramEmit`) but
+prints `cprogramToSexp` instead of emitting LLVM. An agent chasing a run-path dict bug on
+2026-07-16 called it *"the single highest-value tool here — it turned three days of plausible
+speculation into a 10-minute proof"*, and it is what disproved a wrong root cause I had briefed.
+**Reach for it BEFORE reasoning about routes from the source.**
+⚠️ **Do NOT reach for `core_ir_dump_main.mdk` instead — the obvious name is a TRAP.** It is
+**prelude-free and typecheck-free**, so it never shows a `$dict` param or a `CDict`/`CMethod`
+route: it will show you a clean tree and "confirm" there is no bug. (Its typed sibling's own
+header says exactly this — it just wasn't reachable from here.)
+
 **To see the emitted LLVM IR — `medaka build --keep-ir <file>` (or `MEDAKA_KEEP_IR=1`)**, which
 copies the IR to a predictable path and prints it (`effectiveKeepIr`,
 `compiler/driver/build_cmd.mdk:312`). Reach for this the moment a bug is "check/run are green but
@@ -391,13 +405,21 @@ narrative lives at the link.
   every consumer — `grep -rl '<fixture_dir>' test/` — then run **all** of them. Known
   multi-consumer dirs: `test/eval_modules_fixtures/*/` → `diff_compiler_eval_modules.sh`
   **and** `diff_compiler_core_ir_modules.sh` (P0-9 shipped "green" having run only the first);
-  `test/wasm/fixtures/` → **four** consumers (`diff_wasm.sh`, `diff_compiler_engines.sh`,
-  `tmc_census.sh`, and the keys of `test/engine_divergence.txt`).
+  `test/wasm/fixtures/` → **four** consumers (`test/wasm/diff_wasm.sh` — ⚠️ note the `wasm/`
+  subdir; unlike every other gate here it does NOT sit directly under `test/`, and guessing so
+  costs you two failed invocations; `diff_compiler_engines.sh`; `tmc_census.sh`; and the keys of
+  `test/engine_divergence.txt`).
 - ⚠️ **The compiler's own sources are IN the snapshot corpus, so a source change MOVES ITS
   OWN GOLDEN. Bless it in the SAME commit.** Push the source without the golden and `main`
   goes red, and the hook then forces the *next* agent to bless a file they never touched —
   the exact "rubber-stamp someone else's regression" hazard blessing exists to prevent. Bless
   by NAMING the path; `--bless` refuses to rubber-stamp a whole corpus.
+  ⚠️ **Bless via the GATE, not the CLI:** `sh test/diff_compiler_snapshot_<suite>.sh --bless <path>`
+  (e.g. `…_frontend.sh`, `…_eval.sh`, `…_types.sh`). **`medaka snapshot --bless <compiler source>`
+  is a dead end** — it looks for the `.md` next to the source, fails with *"no snapshot … `--bless`
+  never creates one — run `medaka snapshot --new` first"*, **and exits 0** while reporting
+  `1 failed`. Two agents lost time to this on 2026-07-16 because this bullet said *what* to do
+  and never *which command*.
 - **The compiler MAY import `stdlib/`** — deliberately, per module (policy changed
   2026-06-29; the old blanket ban is retired). **Weigh it per module, don't import
   reflexively.** Measured:
