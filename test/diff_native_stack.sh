@@ -28,8 +28,18 @@ FIXDIR="$ROOT/test/stack_fixtures"
 FIXDIR_TYPED="$ROOT/test/stack_fixtures_typed"
 CC="${CC:-clang}"
 
-[ -x "$EMITBIN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EMITBIN)"; exit 2; }
-[ -x "$EMITBIN_TYPED" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EMITBIN_TYPED)"; exit 2; }
+# Collect ALL missing oracles before failing — naming only the first costs a
+# round-trip per oracle in a fresh worktree (#398).
+_missing=""
+[ -x "$EMITBIN" ] || _missing="$_missing $EMITBIN"
+[ -x "$EMITBIN_TYPED" ] || _missing="$_missing $EMITBIN_TYPED"
+if [ -n "$_missing" ]; then
+  echo "build oracles first — missing:"
+  for _m in $_missing; do
+    echo "  FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$_m")  (missing $_m)"
+  done
+  exit 2
+fi
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping"; exit 2; }
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then

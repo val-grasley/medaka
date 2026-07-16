@@ -68,9 +68,19 @@ CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 SHDIR="$ROOT/compiler"
 STDLIB="$ROOT/stdlib"
-[ -x "$CHECK_ALL" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $CHECK_ALL)"; exit 2; }
-[ -x "$EVAL_MODS" ]  || { echo "build oracles first: sh test/build_oracles.sh (missing $EVAL_MODS)"; exit 2; }
-[ -x "$EVAL_TYPED_MODS" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EVAL_TYPED_MODS)"; exit 2; }
+# Collect ALL missing oracles before failing — naming only the first costs a
+# round-trip per oracle in a fresh worktree (#398).
+_missing=""
+[ -x "$CHECK_ALL" ] || _missing="$_missing $CHECK_ALL"
+[ -x "$EVAL_MODS" ] || _missing="$_missing $EVAL_MODS"
+[ -x "$EVAL_TYPED_MODS" ] || _missing="$_missing $EVAL_TYPED_MODS"
+if [ -n "$_missing" ]; then
+  echo "build oracles first — missing:"
+  for _m in $_missing; do
+    echo "  FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$_m")  (missing $_m)"
+  done
+  exit 2
+fi
 for f in "$ENTRY" "$LEXPROBE" "$PARSEPROBE" "$TCPROBE"; do
   [ -f "$f" ] || { echo "missing $f"; exit 2; }
 done

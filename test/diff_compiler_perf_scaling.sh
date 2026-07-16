@@ -105,14 +105,19 @@ PROFILE_MODULES="$ROOT/test/bin/profile_modules_main"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
-[ -x "$PROFILE" ] || {
-  echo "build oracles first: sh test/build_oracles.sh --build-one profile_main (missing $PROFILE)"
+# Collect ALL missing oracles before failing — naming only the first costs a
+# round-trip per oracle in a fresh worktree (#398 — this gate is the issue's own
+# example: it needs BOTH profile_main and profile_modules_main).
+_missing=""
+[ -x "$PROFILE" ] || _missing="$_missing $PROFILE"
+[ -x "$PROFILE_MODULES" ] || _missing="$_missing $PROFILE_MODULES"
+if [ -n "$_missing" ]; then
+  echo "build oracles first — missing:"
+  for _m in $_missing; do
+    echo "  FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$_m")  (missing $_m)"
+  done
   exit 2
-}
-[ -x "$PROFILE_MODULES" ] || {
-  echo "build oracles first: sh test/build_oracles.sh --build-one profile_modules_main (missing $PROFILE_MODULES)"
-  exit 2
-}
+fi
 
 # FAIL threshold, per doubling.
 #   linear 2.0 | n log n ~2.1 | n^1.5 = 2.83 | QUADRATIC 4.0
