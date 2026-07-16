@@ -514,20 +514,21 @@ export takeWhileEnd : (a -> <e> Bool) -> List a -> <e> List a
 takeWhileEnd p xs = reverse (takeWhile p (reverse xs))
 
 {- | Split on every occurrence of the separator *sublist*, dropping the
-   separators.  The list analogue of `string.split`; an empty separator
-   yields `[xs]`.
+   separators.  The list analogue of `string.split` — same needle-first
+   argument order, and an empty separator likewise yields `[xs]`.
+   (`splitAt` is the unrelated positional one, which takes an `Int`.)
 
-   > splitOn [0] [1, 0, 2, 0, 3]
+   > split [0] [1, 0, 2, 0, 3]
    [[1], [2], [3]]
-   > splitOn [0, 0] [1, 0, 0, 2]
+   > split [0, 0] [1, 0, 0, 2]
    [[1], [2]]
-   > splitOn [9] [1, 2]
+   > split [9] [1, 2]
    [[1, 2]]
-   > splitOn [0] [0, 1]
+   > split [0] [0, 1]
    [[], [1]] -}
-export splitOn : Eq a => List a -> List a -> List (List a)
-splitOn [] xs = [xs]
-splitOn sep xs = go xs
+export split : Eq a => List a -> List a -> List (List a)
+split [] xs = [xs]
+split sep xs = go xs
   where
     sepLen = length sep
     go ys = match findSub 0 ys

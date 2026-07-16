@@ -1,5 +1,5 @@
 # META
-source_lines=952
+source_lines=953
 stages=DESUGAR,MARK
 # SOURCE
 -- list.mdk — operations on List a
@@ -518,20 +518,21 @@ export takeWhileEnd : (a -> <e> Bool) -> List a -> <e> List a
 takeWhileEnd p xs = reverse (takeWhile p (reverse xs))
 
 {- | Split on every occurrence of the separator *sublist*, dropping the
-   separators.  The list analogue of `string.split`; an empty separator
-   yields `[xs]`.
+   separators.  The list analogue of `string.split` — same needle-first
+   argument order, and an empty separator likewise yields `[xs]`.
+   (`splitAt` is the unrelated positional one, which takes an `Int`.)
 
-   > splitOn [0] [1, 0, 2, 0, 3]
+   > split [0] [1, 0, 2, 0, 3]
    [[1], [2], [3]]
-   > splitOn [0, 0] [1, 0, 0, 2]
+   > split [0, 0] [1, 0, 0, 2]
    [[1], [2]]
-   > splitOn [9] [1, 2]
+   > split [9] [1, 2]
    [[1, 2]]
-   > splitOn [0] [0, 1]
+   > split [0] [0, 1]
    [[], [1]] -}
-export splitOn : Eq a => List a -> List a -> List (List a)
-splitOn [] xs = [xs]
-splitOn sep xs = go xs
+export split : Eq a => List a -> List a -> List (List a)
+split [] xs = [xs]
+split sep xs = go xs
   where
     sepLen = length sep
     go ys = match findSub 0 ys
@@ -1065,9 +1066,9 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "dropWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "dropWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
 (DTypeSig true "takeWhileEnd" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "takeWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "takeWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
-(DTypeSig true "splitOn" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
-(DFunDef false "splitOn" ((PList) (PVar "xs")) (EListLit (EVar "xs")))
-(DFunDef false "splitOn" ((PVar "sep") (PVar "xs")) (ELetGroup ((lgb "sepLen" (clause () (EApp (EVar "length") (EVar "sep")))) (lgb "go" (clause ((PVar "ys")) (EMatch (EApp (EApp (EVar "findSub") (ELit (LInt 0))) (EVar "ys")) (arm (PCon "None") () (EListLit (EVar "ys"))) (arm (PCon "Some" (PVar "i")) () (EBinOp "::" (EApp (EApp (EVar "take") (EVar "i")) (EVar "ys")) (EApp (EVar "go") (EApp (EApp (EVar "drop") (EBinOp "+" (EVar "i") (EVar "sepLen"))) (EVar "ys")))))))) (lgb "findSub" (clause ((PVar "i") (PVar "ys")) (EIf (EApp (EApp (EVar "startsWith") (EVar "sep")) (EVar "ys")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findSubTail") (EVar "i")) (EVar "ys")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))) (lgb "findSubTail" (clause (PWild (PList)) (EVar "None")) (clause ((PVar "i") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "findSub") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))) (EApp (EVar "go") (EVar "xs"))))
+(DTypeSig true "split" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "split" ((PList) (PVar "xs")) (EListLit (EVar "xs")))
+(DFunDef false "split" ((PVar "sep") (PVar "xs")) (ELetGroup ((lgb "sepLen" (clause () (EApp (EVar "length") (EVar "sep")))) (lgb "go" (clause ((PVar "ys")) (EMatch (EApp (EApp (EVar "findSub") (ELit (LInt 0))) (EVar "ys")) (arm (PCon "None") () (EListLit (EVar "ys"))) (arm (PCon "Some" (PVar "i")) () (EBinOp "::" (EApp (EApp (EVar "take") (EVar "i")) (EVar "ys")) (EApp (EVar "go") (EApp (EApp (EVar "drop") (EBinOp "+" (EVar "i") (EVar "sepLen"))) (EVar "ys")))))))) (lgb "findSub" (clause ((PVar "i") (PVar "ys")) (EIf (EApp (EApp (EVar "startsWith") (EVar "sep")) (EVar "ys")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findSubTail") (EVar "i")) (EVar "ys")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))) (lgb "findSubTail" (clause (PWild (PList)) (EVar "None")) (clause ((PVar "i") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "findSub") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))) (EApp (EVar "go") (EVar "xs"))))
 (DTypeSig true "startsWith" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
 (DFunDef false "startsWith" ((PList) PWild) (EVar "True"))
 (DFunDef false "startsWith" (PWild (PList)) (EVar "False"))
@@ -1305,9 +1306,9 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DFunDef false "dropWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "dropWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
 (DTypeSig true "takeWhileEnd" (TyFun (TyFun (TyVar "a") (TyEffect () (Some "e") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyEffect () (Some "e") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "takeWhileEnd" ((PVar "p") (PVar "xs")) (EApp (EVar "reverse") (EApp (EApp (EVar "takeWhile") (EVar "p")) (EApp (EVar "reverse") (EVar "xs")))))
-(DTypeSig true "splitOn" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
-(DFunDef false "splitOn" ((PList) (PVar "xs")) (EListLit (EVar "xs")))
-(DFunDef false "splitOn" ((PVar "sep") (PVar "xs")) (ELetGroup ((lgb "sepLen" (clause () (EApp (EMethodRef "length") (EVar "sep")))) (lgb "go" (clause ((PVar "ys")) (EMatch (EApp (EApp (EVar "findSub") (ELit (LInt 0))) (EVar "ys")) (arm (PCon "None") () (EListLit (EVar "ys"))) (arm (PCon "Some" (PVar "i")) () (EBinOp "::" (EApp (EApp (EVar "take") (EVar "i")) (EVar "ys")) (EApp (EVar "go") (EApp (EApp (EVar "drop") (EBinOp "+" (EVar "i") (EVar "sepLen"))) (EVar "ys")))))))) (lgb "findSub" (clause ((PVar "i") (PVar "ys")) (EIf (EApp (EApp (EDictApp "startsWith") (EVar "sep")) (EVar "ys")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findSubTail") (EVar "i")) (EVar "ys")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))) (lgb "findSubTail" (clause (PWild (PList)) (EVar "None")) (clause ((PVar "i") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "findSub") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))) (EApp (EVar "go") (EVar "xs"))))
+(DTypeSig true "split" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "split" ((PList) (PVar "xs")) (EListLit (EVar "xs")))
+(DFunDef false "split" ((PVar "sep") (PVar "xs")) (ELetGroup ((lgb "sepLen" (clause () (EApp (EMethodRef "length") (EVar "sep")))) (lgb "go" (clause ((PVar "ys")) (EMatch (EApp (EApp (EVar "findSub") (ELit (LInt 0))) (EVar "ys")) (arm (PCon "None") () (EListLit (EVar "ys"))) (arm (PCon "Some" (PVar "i")) () (EBinOp "::" (EApp (EApp (EVar "take") (EVar "i")) (EVar "ys")) (EApp (EVar "go") (EApp (EApp (EVar "drop") (EBinOp "+" (EVar "i") (EVar "sepLen"))) (EVar "ys")))))))) (lgb "findSub" (clause ((PVar "i") (PVar "ys")) (EIf (EApp (EApp (EDictApp "startsWith") (EVar "sep")) (EVar "ys")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findSubTail") (EVar "i")) (EVar "ys")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))) (lgb "findSubTail" (clause (PWild (PList)) (EVar "None")) (clause ((PVar "i") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "findSub") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))) (EApp (EVar "go") (EVar "xs"))))
 (DTypeSig true "startsWith" (TyConstrained ((cstr "Eq" (TyVar "a"))) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))))
 (DFunDef false "startsWith" ((PList) PWild) (EVar "True"))
 (DFunDef false "startsWith" (PWild (PList)) (EVar "False"))
