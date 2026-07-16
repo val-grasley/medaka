@@ -1,0 +1,6 @@
+-- N1: the NON-trapping half of the `/` story, and the only scalar-mode divide whose
+-- result overflows: intMinBound / -1 = +2^62, one past intMaxBound, so it wraps back to
+-- intMinBound.  -2^62 is NOT INT64_MIN, so this never trapped even before the wrap
+-- landed — it pins the renormalization of the scalar `/` op itself, NOT the R5 trap
+-- closure (see arith_int63_div_intmin for that).
+main = (0 - 4611686018427387903 - 1) / (0 - 1)
