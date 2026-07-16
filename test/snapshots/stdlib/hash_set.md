@@ -1,5 +1,5 @@
 # META
-source_lines=203
+source_lines=209
 stages=DESUGAR,MARK
 # SOURCE
 {- hash_set.mdk — a mutable hash set (Module 6).
@@ -32,8 +32,14 @@ public export data HashSet a = HashSet (Ref (Array (List a))) (Ref Int)
 initialCapacity : Int
 initialCapacity = 8
 
+{- Bucket index of an element at a given capacity (cap > 0). The `Hashable`
+   contract requires only eq-agreement, NOT a non-negative hash, so a
+   contract-compliant user impl may hand us any `Int` — and `%` on a negative
+   dividend is negative, which would index the bucket array out of bounds (issue
+   #416: an OOB `arrayGetUnsafe`). Clearing the sign bit maps every `Int`,
+   `intMinBound` included, into `[0, intMaxBound]` before the `%`. -}
 slotOf : Hashable a => a -> Int -> Int
-slotOf x cap = hash x % cap
+slotOf x cap = bitAnd (hash x) intMaxBound % cap
 
 -- ── Construction ────────────────────────────────────────────────────────
 
@@ -211,7 +217,7 @@ export impl Debug (HashSet a) requires Debug a where
 (DTypeSig false "initialCapacity" (TyCon "Int"))
 (DFunDef false "initialCapacity" () (ELit (LInt 8)))
 (DTypeSig false "slotOf" (TyConstrained ((cstr "Hashable" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyCon "Int") (TyCon "Int")))))
-(DFunDef false "slotOf" ((PVar "x") (PVar "cap")) (EBinOp "%" (EApp (EVar "hash") (EVar "x")) (EVar "cap")))
+(DFunDef false "slotOf" ((PVar "x") (PVar "cap")) (EBinOp "%" (EApp (EApp (EVar "bitAnd") (EApp (EVar "hash") (EVar "x"))) (EVar "intMaxBound")) (EVar "cap")))
 (DTypeSig true "new" (TyFun (TyCon "Unit") (TyApp (TyCon "HashSet") (TyVar "a"))))
 (DFunDef false "new" (PWild) (EApp (EApp (EVar "HashSet") (EApp (EVar "Ref") (EApp (EApp (EVar "arrayMake") (EVar "initialCapacity")) (EListLit)))) (EApp (EVar "Ref") (ELit (LInt 0)))))
 (DTypeSig true "size" (TyFun (TyApp (TyCon "HashSet") (TyVar "a")) (TyCon "Int")))
@@ -270,7 +276,7 @@ export impl Debug (HashSet a) requires Debug a where
 (DTypeSig false "initialCapacity" (TyCon "Int"))
 (DFunDef false "initialCapacity" () (ELit (LInt 8)))
 (DTypeSig false "slotOf" (TyConstrained ((cstr "Hashable" (TyVar "a"))) (TyFun (TyVar "a") (TyFun (TyCon "Int") (TyCon "Int")))))
-(DFunDef false "slotOf" ((PVar "x") (PVar "cap")) (EBinOp "%" (EApp (EMethodRef "hash") (EVar "x")) (EVar "cap")))
+(DFunDef false "slotOf" ((PVar "x") (PVar "cap")) (EBinOp "%" (EApp (EApp (EVar "bitAnd") (EApp (EMethodRef "hash") (EVar "x"))) (EVar "intMaxBound")) (EVar "cap")))
 (DTypeSig true "new" (TyFun (TyCon "Unit") (TyApp (TyCon "HashSet") (TyVar "a"))))
 (DFunDef false "new" (PWild) (EApp (EApp (EVar "HashSet") (EApp (EVar "Ref") (EApp (EApp (EVar "arrayMake") (EVar "initialCapacity")) (EListLit)))) (EApp (EVar "Ref") (ELit (LInt 0)))))
 (DTypeSig true "size" (TyFun (TyApp (TyCon "HashSet") (TyVar "a")) (TyCon "Int")))
