@@ -88,3 +88,10 @@ test/lib_scratch               shell library, not a script: sourced by run_gates
                                preflight to point TMPDIR off the RAM-backed /tmp tmpfs (and to warn
                                when /tmp fills). Defines functions + sets a var; running it does
                                nothing observable, so there is nothing for a CI shard to assert.
+test/lib_stale_warning         shell library, not a script (#482): sourced by the five gates that
+                               capture the CLI's combined output (check_json, check_policy,
+                               eval_json, internal_extern, snapshot_eval_errors) so a captured
+                               stale-binary warning is reported as ITS OWN CAUSE rather than as an
+                               opaque `differing sections: CRASH`. Defines functions only; running
+                               it does nothing observable. Its behavior IS asserted — by those five
+                               gates, which are each in a shard.

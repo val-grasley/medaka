@@ -130,7 +130,27 @@ golden native agrees with, and no gate ever ran eval on these fixtures. The froz
 golden was laundering the bug. This is the circularity of §1, caught on the first run
 of the new gate.
 
-### 3.2 `wasm:codegen-bug` — 5 fixtures. The WasmGC backend is wrong.
+### 3.2 `wasm:codegen-bug` — DISSOLVED (#383). Was 5 fixtures below; now 0 active rows.
+
+⚠️ **The table below is HISTORICAL, not current** (#383 caught this stale 2026-07-16:
+the section header used to read "5 fixtures. The WasmGC backend is wrong" — present
+tense — long after the rows it counted were gone). **`test/engine_divergence.txt` is
+the ledger the gate actually reads; this table is not.** To check the CURRENT count
+yourself rather than trust a number here: `grep -vE '^\s*#' test/engine_divergence.txt
+| grep -c 'wasm:codegen-bug'`.
+
+Per `test/engine_divergence.txt`'s own header comment (search it for the five fixture
+names below), all five of `fn_float_chain`/`debug_charlit`/`debug_strlit`/
+`fn_bool_return`/`arr_set_unit` dissolved from the ACTIVE ledger on 2026-07-14 — filed
+there as artifacts of the gate's own wasm arm (a prelude-free wasm probe that the
+shipping `medaka build --target wasm` path never hit), not genuine backend bugs. ⚠️
+That is the `.txt`'s claim, carried here rather than independently re-verified against
+a build (this doc-drain pass is text-only, no compiler) — and the SAME file warns two
+paragraphs later that an "artifact, not a bug" correction needs the identical proof a
+filing does, because an earlier version of exactly this kind of correction (for
+`num_int_max`/`num_int_min`/`where_sibling_ref`, see §3.3) turned out to be wrong. If
+you need to know whether these five are real bugs or gate artifacts, that still needs a
+build-and-probe, not another read of this table.
 
 > **`rng_int_big` FIXED 2026-07-15 (#179).** A later `wasm:codegen-bug` row (added by
 > #98) — `randomInt 0 1000000000000000` drew 457532755261734, which the old lowering
@@ -168,9 +188,10 @@ All five are from `test/llvm_fixtures/` — a corpus the wasm backend had never 
 | `llvm/fn_bool_return` | True | True | **1** | The wasm scalar auto-print renders a `Bool` main as `1`. Formatting, not a value bug. |
 | `llvm/arr_set_unit` | *(empty)* | *(empty)* | **0** | The wasm scalar auto-print renders a `Unit` main as `0`; the other two correctly print nothing. |
 
-The first three are genuine codegen bugs; the last two are auto-print formatting. All
-five exist **only** because the two backends' corpora were disjoint — which is precisely
-the thesis this gate tests.
+*(As originally diagnosed: the first three read as genuine codegen bugs, the last two as
+auto-print formatting — see the ⚠️ note above §3.2's table before treating that as
+settled.)* All five existed **only** because the two backends' corpora were disjoint —
+which is precisely the thesis this gate tests.
 
 ---
 

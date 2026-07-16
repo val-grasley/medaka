@@ -40,7 +40,7 @@ HOST="$ROOT/test/bin/check_main"
 [ -f "$FIX" ]    || { echo "missing fixture $FIX"; exit 2; }
 [ -f "$GOLD" ]   || { echo "missing golden $GOLD"; exit 2; }
 [ -x "$NATIVE" ] || { echo "build native first: make medaka (missing $NATIVE)"; exit 2; }
-[ -x "$HOST" ]   || { echo "build oracles first: FORCE=1 sh test/build_oracles.sh (missing $HOST)"; exit 2; }
+[ -x "$HOST" ]   || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$HOST") (missing $HOST)"; exit 2; }
 
 strip_unit() { sed '$ s/0$//; $ s/()$//'; }
 has_parse_err() { grep -qiE 'parse error|type error|unbound|unknown' ; }

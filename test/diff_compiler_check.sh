@@ -56,7 +56,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK="$ROOT/test/bin/check_main"
 RT="$ROOT/stdlib/runtime.mdk"; CORE="$ROOT/stdlib/core.mdk"
-[ -x "$CHECK" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $CHECK)"; exit 2; }
+[ -x "$CHECK" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$CHECK") (missing $CHECK)"; exit 2; }
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }

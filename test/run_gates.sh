@@ -206,6 +206,7 @@ if [ -z "${NO_STALE_CHECK:-}" ] && [ -z "${CI:-}" ] && [ -d "$ROOT/test/bin" ]; 
   done
 
   stale=""
+  stale_all=""          # every stale name, untruncated (see the banner below, #470)
   n_stale=0
   for o in $needed; do
     b="$ROOT/test/bin/$o"
@@ -216,6 +217,10 @@ if [ -z "${NO_STALE_CHECK:-}" ] && [ -z "${CI:-}" ] && [ -d "$ROOT/test/bin" ]; 
       n_stale=$((n_stale + 1))
       [ "$n_stale" -le 6 ] && stale="$stale  $o
 "
+      # Every stale name, untruncated — this banner KNOWS exactly which probes are
+      # stale, so it can print the exact narrow rebuild command instead of the blunt
+      # whole-suite one (#470).
+      stale_all="$stale_all $o"
     fi
   done
 
@@ -231,8 +236,28 @@ if [ -z "${NO_STALE_CHECK:-}" ] && [ -z "${CI:-}" ] && [ -d "$ROOT/test/bin" ]; 
     echo "reports an ordinary-looking FAIL that is INDISTINGUISHABLE from a real"
     echo "regression. Agents have re-diagnosed their own already-fixed bug from one."
     echo
-    echo "  Rebuild:  FORCE=1 sh test/build_oracles.sh                  # all"
-    echo "            FORCE=1 sh test/build_oracles.sh --for '<gate>'   # just these"
+    # ── Print the NARROW command, not the blunt one (#470) ──────────────────
+    #
+    # This banner used to lead with the unqualified `FORCE=1 sh test/build_oracles.sh`
+    # — the whole-suite form that builds all 54 probes through an `xargs -P` pool that
+    # OUTLIVES an agent's turn and gets respawned by the harness. AGENTS.md and
+    # ORCHESTRATING.md both ban that command by name; this banner recommended it anyway,
+    # at the exact moment an agent is blocked and looking for the next thing to type.
+    # The banner won, because it is right there in the terminal and the ban is only in
+    # prose. It has ALWAYS known which probes are stale ($stale_all) — it just printed
+    # the blunt instrument instead of the narrow one it could already derive.
+    echo "Rebuild ONLY what is stale — one probe per command:"
+    for o in $stale_all; do
+      echo "    FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $o"
+    done
+    echo
+    echo "Or, for the gate set you asked for:"
+    echo "    FORCE=1 sh test/build_oracles.sh --for '<gate>'"
+    echo
+    echo "⚠️  NOT 'FORCE=1 sh test/build_oracles.sh' with no --for/--build-one: that"
+    echo "    rebuilds ALL 54 probes via an xargs -P pool that outlives an agent's turn"
+    echo "    and gets respawned by the harness. It has killed several agent sessions"
+    echo "    and held this shared box at load 40 for hours."
     echo
     echo "(Override with NO_STALE_CHECK=1 only if you know exactly why.)"
     echo "════════════════════════════════════════════════════════════════════"

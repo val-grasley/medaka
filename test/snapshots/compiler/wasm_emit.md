@@ -1,5 +1,5 @@
 # META
-source_lines=8410
+source_lines=8449
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -73,13 +73,20 @@ stages=DESUGAR,MARK
 --     / String→$mdk_print_strln; a Unit main (putStrLn …) auto-prints nothing.
 --   * A program using strings forces ref-mode (a String is a boxed (ref eq) value).
 --
--- ── W6b RESIDUAL GAPS (deferred) ─────────────────────────────────────────────
---   * charToStr (needs a codepoint→$str runtime), stringConcat (`List String` → W7
---     list support), `++` String concat, floatToString (Float → W6b), the remaining
---     string externs (stringSlice/stringIndexOf/stringCompare/toUpper/…), ePutStr/
---     ePutStrLn (stderr byte-write import).  RNG + remaining externs → W8.  Refutable
---     pattern guards (`p <- e`) in a match arm remain a gap (both paths).  A CLetGroup
---     is not yet lowered.
+-- ── W6b RESIDUAL GAPS AS OF THIS SLICE (#383: verify against CURRENT source, not
+--    this snapshot — every one of these except the pattern-guard row has since
+--    closed; grep the extern name to see its real implementation) ─────────────
+--   * charToStr (needs a codepoint→$str runtime) — CLOSED, `isStrExternW`.
+--     stringConcat (`List String` → W7 list support) — CLOSED, `isStrExternW` +
+--     `strConcatRuntimeLines`.  `++` String concat — CLOSED (`op == "++"`).
+--     floatToString (Float → W6b) — CLOSED, W8b (below).  The remaining string
+--     externs (stringSlice/stringIndexOf/stringCompare/toUpper/…) — CLOSED,
+--     `isStrExternW`.  ePutStr/ePutStrLn (stderr byte-write import) — CLOSED
+--     (`useEPutRef`).  RNG + remaining externs → W8, CLOSED there.
+--   * Refutable pattern guards (`p <- e`) in a match arm — STILL a gap (both
+--     tail and non-tail arms `gapL`, ~line 6494/7310/7318; ledgered live as
+--     `llvm/guard_refut_ctor` in test/engine_divergence.txt).
+--   * A CLetGroup — CLOSED, W9 (`emitLetGroupRef`, ~line 6736).
 --
 -- ── W7 SCOPE (slice 7 — collections) ─────────────────────────────────────────
 -- List / Tuple / Array / Record / Ref, ranges, index/slice (§3.3 heap aggregates +
@@ -111,7 +118,8 @@ stages=DESUGAR,MARK
 -- ── W8b SCOPE (slice W8b — Float + the last externs; MVP-completing) ──────────
 -- Float is now a boxed (struct $float (f64)) (ref eq).  CLOSED this slice:
 --   * Float LITERALS — `f64.const <floatToString-text>` + `struct.new $float` (the same
---     %.12g rendering the LLVM oracle bakes into its const, so the parsed double is
+--     rendering the LLVM oracle bakes into its const — shortest-round-trip since #57,
+--     NOT `%.12g`, see wasm_preamble.mdk's W8b Float section — so the parsed double is
 --     byte-identical across clang and wasm-tools).  pi/e likewise.
 --   * Float ARITHMETIC / COMPARISON — recovered STRUCTURALLY (Core IR is type-erased)
 --     via `cexprIsFloat`: a Float lit / pi/e / Float-returning extern / Float binop /
@@ -120,7 +128,8 @@ stages=DESUGAR,MARK
 --   * Float EXTERNS — intToFloat/floatToInt/hashFloat/randomFloat are pure WAT (the
 --     boxed-Float conversions; hashFloat = reinterpret+mix64; randomFloat = SplitMix64
 --     → f64 in [-1,1), the medaka_rt.c offset).  floatToString is a HOST IMPORT (the
---     %.12g formatter; the JS host reproduces it byte-for-byte via toExponential(11) —
+--     shortest-round-trip formatter, #57; the JS host reproduces it byte-for-byte via
+--     `toExponential()` reformatted through the same exponent threshold —
 --     the ONE host-dependent formatter, a clean parallel to the deferred IO/WASI seam).
 --   * stringIndexOf / stringCompare — pure WAT building the Option Int / Ordering result
 --     directly (byte search → Some/None; memcmp+length → Lt/Eq/Gt).
@@ -128,14 +137,23 @@ stages=DESUGAR,MARK
 -- This CLOSED the previously-gapped real-prelude `impl Num/Debug/Display/Hash Float`
 -- validation (those impls are retained whole by DCE in every real-prelude program; the
 -- modules gate went 0/9-gap → 9/9-ok).
--- REMAINING DEFERRED after W8b (the precise residual):
---   * stringToFloat — a faithful port reimplements strtod (decimal/exp/hex parse +
---     Option); STOP-and-deferred per plan, still a trap stub (reached only via json/
---     string `toFloat`, which W8b fixtures avoid).
---   * The IO/WASI surface — file/exec/stdin/args/env (readFile/runCommand/getLine/
---     args/getEnv).  These need a host/WASI seam, not pure WAT.
---   * self-host-on-WasmGC (running the COMPILER on a WasmGC engine).
--- That is the whole remaining-MVP set; compute + print programs are complete.
+-- REMAINING DEFERRED after W8b, AS OF THIS SLICE (#383: all three below are now
+-- CLOSED — see WASMGC-DESIGN.md's "IMPLEMENTATION STATUS" note for the authoritative
+-- current summary; this comment is the historical W8b-era snapshot, kept for the
+-- narrative, not a live status):
+--   * stringToFloat — CLOSED (layer-6): a real host import (`mdk_str_to_float`, the
+--     host's strtod), not a trap stub — `isDeferredFloatExternW _ = False` unconditionally
+--     now; see ~line 1005 / 2143 / 2216.
+--   * The IO/WASI surface (readFile/args/getEnv/fileExists/exit) — CLOSED (W12): real
+--     host imports (`ioHostImportLines`/`ioHostRuntimeLines`), ~line 1029/1443.
+--     ⚠️ NOT everything file-shaped is closed, though: `runCommand` (explicitly named in
+--     this bullet's original scope) and the write/dir side (writeFile/listDir/makeDir/
+--     removeFile/removeDir/statFile) remain real gaps — see their `WASM-GAP` rows in
+--     test/CAPABILITY-EXCEPTIONS.txt, which is the ledger the capability-matrix gate
+--     actually checks. Don't infer "IO is done" from this comment; check that file.
+--   * self-host-on-WasmGC — CLOSED (layers 12/16): `wasm_emit_modules_main` compiles
+--     Medaka programs to working WasmGC modules end-to-end; the in-browser playground
+--     (`playground/dist/playground.wasm`) is live. Detail: `WASM-SELFHOST-ROADMAP.md`.
 --
 
 -- ── VALUE-REP DECISION (resolve per the slice guardrail) ─────────────────────
@@ -428,9 +446,12 @@ funcRefsRef = Ref []
 -- (intToString/charToStr/stringConcat/…) — any of which forces the §3.3 `$str`
 -- aggregate + the byte-write runtime into the module (and ref-mode, since a String
 -- is a boxed (ref eq) value).  `strSegsRef` accumulates the passive data segments
--- for string literals (one `(data $strseg_N "…")` per distinct literal, init'd via
--- `array.new_data`, the §11-preferred non-const-array scheme).  Both reset per
--- program in `emitProgram`.
+-- for string literals (one `(data $strseg_N "…")` per literal OCCURRENCE — #383:
+-- `freshStrSeg` allocates a fresh segment id on every call with no dedup by content,
+-- so the SAME literal appearing twice in source gets two segments; "per distinct
+-- literal" was aspirational, not what `freshStrSeg`/`emitLitRef (LString s)` (~line
+-- 4201) actually do — init'd via `array.new_data`, the §11-preferred non-const-array
+-- scheme).  Both reset per program in `emitProgram`.
 useStrRef : Ref Bool
 useStrRef = Ref False
 
@@ -1215,7 +1236,7 @@ isArrayExternW name = contains name [
 isDeferredFloatExternW : String -> Bool
 isDeferredFloatExternW _ = False
 
--- W9: a DEFERRED Float extern (boxing + %.12g dtoa is W8b) lowers to a `unreachable`
+-- W9: a DEFERRED Float extern (boxing + the dtoa formatter is W8b) lowers to a `unreachable`
 -- TRAP STUB rather than aborting the whole build.  The real prelude's `impl Debug/
 -- Display/Hash/Num Float` reference these, and DCE retains every impl WHOLE, so the
 -- refs are unconditionally reachable in EVERY real-prelude program even when no Float
@@ -2139,7 +2160,8 @@ emitRefProgram prog groups =
   -- stderr byte-write import; it is emitted ONCE, LATE (see `trapImport` below), because
   -- useTrapImport is set during body emit.
   let imports = ioByteImportLines
-    -- W8b: floatToString is a host import (the %.12g formatter lives JS-side).
+    -- W8b: floatToString is a host import (the shortest-round-trip formatter, #57,
+    -- lives JS-side).
     ++ (if useFloatRef.value then floatFmtImportLines else [])
     -- #101: the libm transcendentals / pow / atan2 / hypot are JS Math.* host imports.
     ++ (if useMathRef.value then mathHostImportLines else [])
@@ -2251,7 +2273,8 @@ emitRefProgram prog groups =
             ++ dataSegs ++ initLines ++ [")"])
 
 -- the passive data segments for string literals — one `(data $strseg_N "…")` per
--- distinct literal, emitted in segment-index order.  `array.new_data` reads from
+-- literal OCCURRENCE (#383: no content-dedup, see the `useStrRef` section above for
+-- the correction), emitted in segment-index order.  `array.new_data` reads from
 -- these (the §11-preferred non-const-array init scheme; no active memory needed).
 emitDataSegs : Unit -> List String
 emitDataSegs _ =
@@ -2620,7 +2643,7 @@ refMainKind prog (CLit (LInt _)) = WInt
 refMainKind prog (CLit (LBool _)) = WBool
 refMainKind prog (CLit (LString _)) = WStr
 refMainKind prog (CLit (LChar _)) = WChar
--- W8b: a Float literal main auto-prints via %.12g (floatToString).
+-- W8b: a Float literal main auto-prints via floatToString (shortest-round-trip since #57).
 refMainKind prog (CLit (LFloat _)) = WFloat
 -- the Bool constructors as values (a dispatched main `… else False`); also lets a
 -- CIf whose arms are dispatch calls recover Bool-ness from a literal-Bool branch.
@@ -2750,8 +2773,9 @@ refPrintFor WChar = [
   "    call $mdk_char_to_str",
   "    call $mdk_print_strln",
 ]
--- W8b: a Float main → unbox the $float → %.12g format ($mdk_float_to_str builds a $str)
--- → print + '\n' (matches the oracle's mdk_print_float, the same %.12g + .0 rule).
+-- W8b: a Float main → unbox the $float → format ($mdk_float_to_str builds a $str)
+-- → print + '\n' (matches the oracle's mdk_print_float — shortest-round-trip since #57,
+-- + the .0 rule — NOT %.12g; see wasm_preamble.mdk's W8b Float section).
 refPrintFor WFloat = [
   "    ref.cast (ref $float)",
   "    struct.get $float 0",
@@ -4164,8 +4188,9 @@ emitLitRef (LInt n) =
 emitLitRef (LBool b) = [if b then "i32.const 1" else "i32.const 0", "ref.i31"]
 emitLitRef LUnit = ["i32.const 0", "ref.i31"]
 -- W8b: a Float literal in ref-mode boxes the double into a `(struct $float (f64))`.
--- The f64.const text is `floatToString f` — the SAME `%.12g` rendering the LLVM oracle
--- bakes into its IR const, so clang and wasm-tools parse the identical double (verified
+-- The f64.const text is `floatToString f` — the SAME rendering (shortest-round-trip
+-- since #57, NOT `%.12g`) that the LLVM oracle bakes into its IR const, so clang and
+-- wasm-tools parse the identical double (verified
 -- byte-identical via i64.reinterpret_f64).  `$float` is always in the rec group.  Emitted
 -- as TWO FLAT instructions (not the folded `struct.new $float (f64.const …)`) so it
 -- composes with the surrounding flat instruction stream (a folded form mid-stream breaks
@@ -4487,13 +4512,26 @@ emitBinRef prog env d op l r tag =
     let _ = setRef useStrLeafRef True
     emitValueCmpRef prog env d op l r
   else if isCmpOp op && isPolyNumBinop l r then
+    -- #371: valueArithRuntimeLines is spliced in WHOLE whenever useValueArithRef is
+    -- set (wasm_emit.mdk's `valueArithRt` binding) — and it now UNCONDITIONALLY
+    -- defines $mdk_value_div/$mdk_value_mod with a baked-in coded divisor-zero
+    -- guard (wasm_preamble.mdk) referencing the $mdk_write_err_byte host import,
+    -- even for a program that only ever uses poly-`Num` `==`/`<`/etc (this branch).
+    -- So useTrapImport must be forced here too, not just at the arith branch below
+    -- — else a poly-cmp-only program parses with "unknown func: $mdk_write_err_byte"
+    -- (the import undeclared) because the unused div/mod bodies still reference it.
     let _ = setRef useValueArithRef True
+    let _ = setRef useTrapImport True
     emitValueCmpNumRef prog env d op l r
   -- A1 (poly-`Num`-on-Float): arithmetic whose operand is a polymorphic `Num` param
   -- routes through the runtime value-tag-dispatched $mdk_value_add/… helper (A0) instead
   -- of the trapping inline int primitive.  The static Int/Float fast paths are unchanged.
+  -- #371: same useTrapImport note as the isCmpOp branch above — $mdk_value_div/
+  -- $mdk_value_mod's guard is baked into valueArithRuntimeLines UNCONDITIONALLY, so
+  -- ANY poly-`Num` arith op (not just `/`/`%`) must force the host import.
   else if isArithOp op && isPolyNumBinop l r then
     let _ = setRef useValueArithRef True
+    let _ = setRef useTrapImport True
     emitRefExpr prog env d l ++ emitRefExpr prog env d r ++ ["call $mdk_value_" ++ valueArithName op]
   else
     -- layer-17 §2.1: Int arithmetic/comparison computes in i64 over the box/unbox
@@ -5053,7 +5091,8 @@ emitRefBoxSet prog env d _ = gapL "wasm Ref: setRef takes exactly two arguments"
 -- untag the i31 value to i32 (the runtime sign-extends to i64, matching the native
 -- signed `tagged>>1`); hashBool passes the 0/1 i31.  All hash results fit i31
 -- (masked to 2^30-1, non-negative).  randomFloat / hashFloat are DEFERRED (W8b —
--- they need Float boxing + the %.12g float formatter; see the gap arms).
+-- they need Float boxing + the float formatter (shortest-round-trip since #57, NOT
+-- %.12g — see wasm_preamble.mdk's W8b Float section); see the gap arms).
 emitLeafExternRef : Prog -> List String -> Int -> String -> List CExpr -> List String
 -- #179: randomInt lo hi — the draw (and lo/hi) can exceed ±2^30, so BOTH args unbox
 -- through the i31/$boxint seam ($mdk_unbox_int → i64) and the i64 result reboxes via
@@ -9486,7 +9525,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "emitBinRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "++")) (PVar "l") (PVar "r") PWild) (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (ELit (LString "call $mdk_append")))))
 (DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "::")) (PVar "l") (PVar "r") PWild) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "i32.const 0"))) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (ELit (LString "struct.new $C_Cons")))))
-(DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r") (PVar "tag")) (EIf (EBinOp "&&" (EApp (EVar "isArithOrCmp") (EVar "op")) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString "Float"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "l"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "r")))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitFloatBinRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EFieldAccess (EVar "useStrRef") "value")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueCmpRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrSearchRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrLeafRef")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpNumRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isArithOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoExpr (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueArithName") (EVar "op"))))))) (EBlock (DoLet false false (PVar "li") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoLet false false (PVar "ri") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (EBinOp "++" (ELit (LString "$__divr")) (EApp (EVar "intToString") (EVar "d"))))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))) (EIf (EApp (EVar "isCmpOp") (EVar "op")) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))))))))))))
+(DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r") (PVar "tag")) (EIf (EBinOp "&&" (EApp (EVar "isArithOrCmp") (EVar "op")) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString "Float"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "l"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "r")))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitFloatBinRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EFieldAccess (EVar "useStrRef") "value")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueCmpRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrSearchRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrLeafRef")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useTrapImport")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpNumRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isArithOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useTrapImport")) (EVar "True"))) (DoExpr (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueArithName") (EVar "op"))))))) (EBlock (DoLet false false (PVar "li") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoLet false false (PVar "ri") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (EBinOp "++" (ELit (LString "$__divr")) (EApp (EVar "intToString") (EVar "d"))))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))) (EIf (EApp (EVar "isCmpOp") (EVar "op")) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))))))))))))
 (DTypeSig false "isPolyNumBinop" (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyCon "Bool"))))
 (DFunDef false "isPolyNumBinop" ((PVar "l") (PVar "r")) (EBinOp "||" (EApp (EVar "isPolyNumOperand") (EVar "l")) (EApp (EVar "isPolyNumOperand") (EVar "r"))))
 (DTypeSig false "isPolyNumOperand" (TyFun (TyCon "CExpr") (TyCon "Bool")))
@@ -11594,7 +11633,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "emitBinRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "++")) (PVar "l") (PVar "r") PWild) (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (ELit (LString "call $mdk_append")))))
 (DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PLit (LString "::")) (PVar "l") (PVar "r") PWild) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EListLit (ELit (LString "i32.const 0"))) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l"))) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (ELit (LString "struct.new $C_Cons")))))
-(DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r") (PVar "tag")) (EIf (EBinOp "&&" (EApp (EVar "isArithOrCmp") (EVar "op")) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString "Float"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "l"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "r")))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitFloatBinRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EFieldAccess (EVar "useStrRef") "value")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueCmpRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrSearchRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrLeafRef")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpNumRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isArithOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoExpr (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueArithName") (EVar "op"))))))) (EBlock (DoLet false false (PVar "li") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoLet false false (PVar "ri") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (EBinOp "++" (ELit (LString "$__divr")) (EApp (EVar "intToString") (EVar "d"))))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))) (EIf (EApp (EVar "isCmpOp") (EVar "op")) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))))))))))))
+(DFunDef false "emitBinRef" ((PVar "prog") (PVar "env") (PVar "d") (PVar "op") (PVar "l") (PVar "r") (PVar "tag")) (EIf (EBinOp "&&" (EApp (EVar "isArithOrCmp") (EVar "op")) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "tag") (ELit (LString "Float"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "l"))) (EApp (EApp (EApp (EVar "cexprIsFloat") (EVar "prog")) (EVar "env")) (EVar "r")))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitFloatBinRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EFieldAccess (EVar "useStrRef") "value")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueCmpRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrSearchRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useStrLeafRef")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isCmpOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useTrapImport")) (EVar "True"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "emitValueCmpNumRef") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "op")) (EVar "l")) (EVar "r")))) (EIf (EBinOp "&&" (EApp (EVar "isArithOp") (EVar "op")) (EApp (EApp (EVar "isPolyNumBinop") (EVar "l")) (EVar "r"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useValueArithRef")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useTrapImport")) (EVar "True"))) (DoExpr (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r"))) (EListLit (EBinOp "++" (ELit (LString "call $mdk_value_")) (EApp (EVar "valueArithName") (EVar "op"))))))) (EBlock (DoLet false false (PVar "li") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "l")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoLet false false (PVar "ri") (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "emitRefExpr") (EVar "prog")) (EVar "env")) (EVar "d")) (EVar "r")) (EListLit (ELit (LString "call $mdk_unbox_int"))))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EApp (EApp (EVar "emitDivZeroGuard") (EVar "op")) (EBinOp "++" (ELit (LString "$__divr")) (EApp (EVar "intToString") (EVar "d"))))) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))) (EIf (EApp (EVar "isCmpOp") (EVar "op")) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "ref.i31")))) (EBinOp "++" (EBinOp "++" (EVar "li") (EVar "ri")) (EListLit (EApp (EVar "wasmBinOp64") (EVar "op")) (ELit (LString "call $mdk_box_int")))))))))))))
 (DTypeSig false "isPolyNumBinop" (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyCon "Bool"))))
 (DFunDef false "isPolyNumBinop" ((PVar "l") (PVar "r")) (EBinOp "||" (EApp (EVar "isPolyNumOperand") (EVar "l")) (EApp (EVar "isPolyNumOperand") (EVar "r"))))
 (DTypeSig false "isPolyNumOperand" (TyFun (TyCon "CExpr") (TyCon "Bool")))

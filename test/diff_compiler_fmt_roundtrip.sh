@@ -36,8 +36,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PARSE="$ROOT/test/bin/parse_main"
 FMT="$ROOT/test/bin/fmt_main"
 
-[ -x "$PARSE" ] || { echo "build oracles first: sh test/build_oracles.sh --build-one parse_main (missing $PARSE)"; exit 2; }
-[ -x "$FMT" ] || { echo "build oracles first: sh test/build_oracles.sh --build-one fmt_main (missing $FMT)"; exit 2; }
+# Collect ALL missing oracles before failing — naming only the first costs a
+# round-trip per oracle in a fresh worktree (#398).
+_missing=""
+[ -x "$PARSE" ] || _missing="$_missing $PARSE"
+[ -x "$FMT" ] || _missing="$_missing $FMT"
+if [ -n "$_missing" ]; then
+  echo "build oracles first — missing:"
+  for _m in $_missing; do
+    echo "  FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$_m")  (missing $_m)"
+  done
+  exit 2
+fi
 
 # NOTE on the sibling gates' "Unit auto-print" convention (test/diff_compiler_fmt.sh,
 # and the retired printer gate — now the # PRINTER snapshot section — both piped

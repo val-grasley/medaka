@@ -1,5 +1,5 @@
 # META
-source_lines=10096
+source_lines=10105
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -6342,10 +6342,19 @@ ctorTagShift = 4294967296
 -- here keeps construction and the match-head test consistent by construction.
 -- The C side hardcodes the SAME constants (MDK_TAG_* in runtime/medaka_rt.c); keep
 -- the two in sync.  Ordinals follow core.mdk: Option = Some|None, Result = Ok|Err,
--- Ordering = Lt|Eq|Gt; List (synthetic) = Cons|Nil.  KNOWN SPIKE LIMITATION: a user
--- type that reuses one of these constructor names aliases the reserved tag (still
--- internally consistent, since alloc+match both reserve); the real backend resolves
--- such sites statically and never relies on a global tag.
+-- Ordering = Lt|Eq|Gt; List (synthetic) = Cons|Nil.  #361: the comment that used to
+-- stand here called a user type reusing one of these names a "KNOWN SPIKE LIMITATION"
+-- that "the real backend resolves statically" — as if this emitter were the spike and
+-- some other, more careful backend existed downstream. THIS is the real (and only)
+-- backend; there is no other one to defer to. The actual guard is upstream, in the
+-- RESOLVER: `data Foo = Ok Int | Bad` is rejected before it ever reaches this file
+-- (`dupErr "constructor"`, resolve.mdk:1422, message "Duplicate constructor: Ok" —
+-- probed). So a user ctor can never actually alias `Cons`/`Some`/`None`/`Ok`/`Err`/
+-- `Lt`/`Eq`/`Gt` by the time `reservedTag` runs; this function's fixed-tag table is
+-- safe because that invariant is enforced elsewhere, not because collisions here are
+-- merely "consistent." If that resolver check is ever removed, THIS is the place a
+-- silent tag collision would resurface — worth an emit-time assertion, not just a
+-- comment (EMITTER-SEMANTICS M2).
 reservedTypeBase : Int
 reservedTypeBase = 65536
 

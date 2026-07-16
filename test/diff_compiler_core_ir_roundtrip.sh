@@ -26,7 +26,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RT="$ROOT/test/bin/core_ir_roundtrip_main"
 FIXDIR="$ROOT/test/eval_fixtures"
 
-[ -x "$RT" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RT)"; exit 2; }
+[ -x "$RT" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RT") (missing $RT)"; exit 2; }
 strip_unit() { sed '${/^()$/d;}'; }  # drop native runtime's trailing Unit auto-print
 
 pass=0; fail=0

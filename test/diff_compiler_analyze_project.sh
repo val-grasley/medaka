@@ -37,7 +37,7 @@ SELF="$ROOT/test/bin/diagnostics_project_main"
 RT="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/analyze_project_fixtures"
-[ -x "$SELF" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $SELF)"; exit 2; }
+[ -x "$SELF" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$SELF") (missing $SELF)"; exit 2; }
 
 pass=0; fail=0
 

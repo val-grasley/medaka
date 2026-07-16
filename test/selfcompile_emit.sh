@@ -57,8 +57,18 @@ SELFHOST="$ROOT/compiler"
 FIXDIR="$ROOT/test/llvm_fixtures_modules"
 CC="${CC:-clang}"
 
-[ -x "$BOOTEMIT" ]   || { echo "build oracles first: sh test/build_oracles.sh (missing $BOOTEMIT)"; exit 2; }
-[ -x "$EMITORACLE" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EMITORACLE)"; exit 2; }
+# Collect ALL missing oracles before failing — naming only the first costs a
+# round-trip per oracle in a fresh worktree (#398).
+_missing=""
+[ -x "$BOOTEMIT" ] || _missing="$_missing $BOOTEMIT"
+[ -x "$EMITORACLE" ] || _missing="$_missing $EMITORACLE"
+if [ -n "$_missing" ]; then
+  echo "build oracles first — missing:"
+  for _m in $_missing; do
+    echo "  FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$_m")  (missing $_m)"
+  done
+  exit 2
+fi
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 
 # libgc (bdw-gc) detection — VERBATIM from the diff_compiler_llvm*.sh gates.

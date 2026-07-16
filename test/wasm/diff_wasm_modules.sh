@@ -82,6 +82,35 @@ RETCALL-ASSERT ok   $name: recursive self-call is return_call, 0 plain call"
         msg="$(printf '%s\nRETCALL-ASSERT FAIL %s: plain-call=%s return_call=%s (expected 0 / >=1)' "$msg" "$name" "$plain" "$rc")"; st=1
       fi
     fi
+    # #371 coded-trap assertion: the poly-`Num` int div/mod guard must emit the SAME
+    # [E-DIV-ZERO]/[E-MOD-ZERO] stderr line native does. The stdout-only compare
+    # above ("before" == "before") is IDENTICAL whether the guard fires or wasm dies
+    # with a bare engine trap, so it alone cannot prove this — see the fixtures'
+    # own header comments. Re-run the oracle to capture ITS stderr too (discarded
+    # above by `2>/dev/null`, since every other fixture's oracle stderr is noise)
+    # and require BOTH engines to carry the exact coded line.
+    if [ "$st" = 0 ] && [ "$name" = "w371_polynum_div_zero.mdk" ]; then
+      oerr="$("$obin" 2>&1 >/dev/null)"
+      werr="$(cat "$WORKDIR/$name.run.err" 2>/dev/null)"
+      if printf '%s' "$oerr" | grep -qF 'runtime error [E-DIV-ZERO]: division by zero' \
+         && printf '%s' "$werr" | grep -qF 'runtime error [E-DIV-ZERO]: division by zero'; then
+        msg="$msg
+DIVZERO-ASSERT ok   $name: both engines emit the coded E-DIV-ZERO stderr line"
+      else
+        msg="$(printf '%s\nDIVZERO-ASSERT FAIL %s\n  native stderr: %s\n  wasm   stderr: %s' "$msg" "$name" "$oerr" "$werr")"; st=1
+      fi
+    fi
+    if [ "$st" = 0 ] && [ "$name" = "w371_polynum_mod_zero.mdk" ]; then
+      oerr="$("$obin" 2>&1 >/dev/null)"
+      werr="$(cat "$WORKDIR/$name.run.err" 2>/dev/null)"
+      if printf '%s' "$oerr" | grep -qF 'runtime error [E-MOD-ZERO]: modulo by zero' \
+         && printf '%s' "$werr" | grep -qF 'runtime error [E-MOD-ZERO]: modulo by zero'; then
+        msg="$msg
+MODZERO-ASSERT ok   $name: both engines emit the coded E-MOD-ZERO stderr line"
+      else
+        msg="$(printf '%s\nMODZERO-ASSERT FAIL %s\n  native stderr: %s\n  wasm   stderr: %s' "$msg" "$name" "$oerr" "$werr")"; st=1
+      fi
+    fi
   fi
   echo "$st" > "$RESULTDIR/$name.status"
   printf '%s\n' "$msg"

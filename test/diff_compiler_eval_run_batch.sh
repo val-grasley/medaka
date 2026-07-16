@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BATCH="$ROOT/test/bin/eval_run_batch"
 CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"
 FIXDIR="$ROOT/test/diff_fixtures"
-[ -x "$BATCH" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $BATCH)"; exit 2; }
+[ -x "$BATCH" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$BATCH") (missing $BATCH)"; exit 2; }
 strip_unit() { sed '${/^()$/d;}'; }
 
 targets=""

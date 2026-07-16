@@ -22,6 +22,7 @@ BIN="$ROOT/medaka"
 DIR="$ROOT/test/error_quality_fixtures/eval"
 
 [ -x "$BIN" ] || { echo "build first: make medaka (missing $BIN)"; exit 2; }
+. "$ROOT/test/lib_stale_warning.sh"
 
 strip_paths() { sed "s|$ROOT/|ROOT/|g"; }
 
@@ -43,11 +44,22 @@ for f in "$DIR"/*.mdk; do
     printf '%s\n' "$actual" > "$golden"
     printf 'captured %s\n' "$name"
   else
-    if [ -f "$golden" ] && [ "$(cat "$golden")" = "$actual" ]; then
-      pass=$((pass + 1)); printf 'ok   %s\n' "$name"
-    else
-      fail=$((fail + 1)); printf 'FAIL %s\n' "$name"
+    if [ ! -f "$golden" ]; then
+      fail=$((fail + 1)); printf 'FAIL %s (missing golden %s)\n' "$name" "$golden"
+      continue
     fi
+    golden_out="$(cat "$golden")"
+    cls="$(mdk_classify_diff "$actual" "$golden_out")"
+    case "$cls" in
+      MATCH) pass=$((pass + 1)); printf 'ok   %s\n' "$name" ;;
+      STALE_ONLY) fail=$((fail + 1)); mdk_stale_fail_line "$name" ;;
+      *)
+        fail=$((fail + 1)); printf 'FAIL %s\n' "$name"
+        [ "$cls" = "STALE_PLUS_DIFF" ] && mdk_stale_note
+        printf '  actual: %s\n' "$actual"
+        printf '  golden: %s\n' "$golden_out"
+        ;;
+    esac
   fi
 done
 

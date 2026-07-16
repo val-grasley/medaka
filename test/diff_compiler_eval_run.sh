@@ -24,7 +24,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/eval_run_main"
 CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"
 FIXDIR="$ROOT/test/diff_fixtures"
-[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 strip_unit() { sed '${/^()$/d;}'; }
 pass=0; fail=0
 for g in "$FIXDIR"/*.golden; do

@@ -19,7 +19,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TYPED="$ROOT/test/bin/core_ir_typed_main"
 RT="$ROOT/stdlib/runtime.mdk"; CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/eval_typed_fixtures"
-[ -x "$TYPED" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $TYPED)"; exit 2; }
+[ -x "$TYPED" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$TYPED") (missing $TYPED)"; exit 2; }
 strip_unit() { sed '${/^()$/d;}'; }  # drop native runtime's trailing Unit auto-print
 pass=0; fail=0
 for f in "$FIXDIR"/*.mdk; do

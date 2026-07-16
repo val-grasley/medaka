@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/test/bin/new_main"
 GOLD="$ROOT/test/new_golden/myapp"
 
-[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$RUN") (missing $RUN)"; exit 2; }
 [ -d "$GOLD" ] || { echo "no golden tree $GOLD — run sh test/capture_goldens.sh new"; exit 2; }
 
 pass=0; fail=0

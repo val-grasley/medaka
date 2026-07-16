@@ -44,7 +44,7 @@ CORE="stdlib/core.mdk"
 ENTRY="compiler/driver/medaka_cli.mdk"
 
 [ -x "$SELF" ] || {
-  echo "build the oracle first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one diagnostics_project_main (missing $SELF)"
+  echo "build the oracle first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$SELF") (missing $SELF)"
   exit 2
 }
 

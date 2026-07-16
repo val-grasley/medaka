@@ -34,8 +34,18 @@ RT="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/typecheck_error_fixtures"
 
-[ -x "$TC_MAIN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $TC_MAIN)"; exit 2; }
-[ -x "$CHECK"   ] || { echo "build oracles first: sh test/build_oracles.sh (missing $CHECK)"; exit 2; }
+# Collect ALL missing oracles before failing — naming only the first costs a
+# round-trip per oracle in a fresh worktree (#398).
+_missing=""
+[ -x "$TC_MAIN" ] || _missing="$_missing $TC_MAIN"
+[ -x "$CHECK" ] || _missing="$_missing $CHECK"
+if [ -n "$_missing" ]; then
+  echo "build oracles first — missing:"
+  for _m in $_missing; do
+    echo "  FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$_m")  (missing $_m)"
+  done
+  exit 2
+fi
 
 # Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
 strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }

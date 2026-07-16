@@ -1,0 +1,10 @@
+-- #371: the poly-`Num` int `%` arm ($mdk_value_mod, wasm_preamble.mdk) must produce
+-- the SAME coded [E-MOD-ZERO] stderr line native does, not a raw engine trap
+-- ("remainder by zero"). Peer of w371_polynum_div_zero.mdk — see its header for the
+-- poly-vs-concrete routing note. diff_wasm_modules.sh asserts the exact stderr bytes
+-- for this fixture by name (MODZERO-ASSERT).
+modP a b = a % b
+
+main =
+  println "before"
+  println (modP 7 0)

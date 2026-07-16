@@ -1,0 +1,14 @@
+-- #371: the poly-`Num` int `/` arm ($mdk_value_div, wasm_preamble.mdk) must produce
+-- the SAME coded [E-DIV-ZERO] stderr line native does, not a raw engine trap
+-- ("divide by zero"). `divP`'s params are a generic `Num a` (isPolyNumBinop routes
+-- them through the runtime value-tag-dispatched helper, wasm_emit.mdk), so this
+-- exercises the poly path, not the concrete-Int static fallback (see
+-- polynum_divmod_int.mdk for that control). diff_wasm_modules.sh asserts the exact
+-- stderr bytes for this fixture by name (DIVZERO-ASSERT) — the stdout-only compare
+-- every other fixture gets ("before" == "before") cannot tell a coded trap from a
+-- bare engine trap, so it alone would prove nothing.
+divP a b = a / b
+
+main =
+  println "before"
+  println (divP 1 0)
