@@ -1,0 +1,10 @@
+issue: 166
+what: a variable-head parenthesized cons pattern as a function arg (`f (a::as)`) fails
+what: to parse — the parser reads it as a definition head and asks for `:` or `=`.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 0:2-0:3 expected : or = in definition
+control: check-json control.mdk
+why-control: a parenthesized CONSTRUCTOR pattern as a fn arg parses fine. That isolates the
+why-control: bug to the VARIABLE-HEAD cons pattern specifically, per the issue title —
+why-control: not to parenthesized patterns as arguments in general.

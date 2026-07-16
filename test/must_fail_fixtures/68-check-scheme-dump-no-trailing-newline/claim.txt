@@ -1,0 +1,10 @@
+issue: 68
+what: `medaka check` emits its scheme dump with NO trailing newline, so a shell prompt or
+what: a following line runs straight into it ("main : Unitexit=0").
+cmd: check main.mdk
+exit: 0
+stdout-bytes: main : Unit
+control: check-json main.mdk
+why-control: `check --json` on the SAME file exits 0, is diagnostic-free, and DOES end in a
+why-control: newline. That proves the program is fine and localises the defect to the human
+why-control: scheme dump's formatting — not to check, and not to this fixture.
