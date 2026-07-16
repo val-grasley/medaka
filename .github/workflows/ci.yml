@@ -879,6 +879,27 @@ jobs:
       - name: Docs must not cite fabricated symbols
         run: sh test/check_agent_doc_symbols.sh
 
+      # Also unguarded, same reason — and the same disease one layer down. The two gates
+      # above check what the DOCS say; this checks what the TOOLS say. ~54 gate scripts
+      # printed `sh test/build_oracles.sh` as their remediation advice — the command
+      # AGENTS.md documents as spawning an `xargs -P` pool that "outlives the agent's turn
+      # and gets RESPAWNED by the harness — it has killed several agents" — at exactly the
+      # moment a reader is most likely to obey, right after a gate failed. A safety rule
+      # that lives only in a doc loses to a message printed by the thing you just ran.
+      #
+      # ⭐ Why a GATE and not one more sweep: #478 fixed 52 scripts and MISSED two — one of
+      # them diff_compiler_engines.sh, the 3-engine differential on the CI critical path —
+      # because #478 scoped itself with a grep keyed on a fixed English phrase, and those
+      # two worded the same hazard differently. The fix was 52/52 complete against a set
+      # that was itself wrong. A SWEEP'S SCOPE IS AN ENCODED FACT TOO, and a wording-keyed
+      # grep confirms itself. This keys on BEHAVIOR (does a message print the untargeted
+      # command?) and derives its file set from `git ls-files`, so a new script is covered
+      # the moment it is added, with nothing to remember. It found 2 further live instances
+      # (capture_goldens.sh, tmc_census.sh) that #527's own hand-grep had missed.
+      # Pure text analysis, no compiler.
+      - name: No script may prescribe the bare build_oracles.sh
+        run: sh test/check_no_banned_oracle_cmd.sh
+
       # Also unguarded, and for the same reason. docs/README.md is GENERATED from the
       # docs' `**Status:**` banners — the whole point being that a hand-maintained index
       # rots (AGENTS.md's own doc-index table sat mislabelling a doc as "IN PROGRESS"

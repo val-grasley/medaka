@@ -307,7 +307,7 @@ command -v clang >/dev/null 2>&1 || { echo "no C compiler (clang) on PATH — sk
 # with a message that deliberately does NOT match LEGIT_SKIP_RE, so run_gates.sh
 # reclassifies it as FAIL* (phantom skip: oracle/binary not built).
 [ -x "$MEDAKA" ]  || { echo "the native compiler was never built (missing $MEDAKA) — run: make medaka"; exit 2; }
-[ -x "$EVALBIN" ] || { echo "the eval oracle was never built (missing $EVALBIN) — run: sh test/build_oracles.sh"; exit 2; }
+[ -x "$EVALBIN" ] || { echo "the eval oracle was never built (missing $EVALBIN) — run: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$EVALBIN")"; exit 2; }
 
 # The wasm arm DEGRADES rather than skipping: with no wasm-tools / Node 24 we still
 # run T1 (eval == native), the tier that removes the golden circularity.  Skipping

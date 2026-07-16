@@ -579,7 +579,7 @@ if want repl; then
       cp "$out" "$golden"; wrote=$((wrote+1))
     fi
   else
-    mism=$((mism+1)); echo "SKIP repl golden — missing $REPL_BIN (run sh test/build_oracles.sh) or $REPL_IN"
+    mism=$((mism+1)); echo "SKIP repl golden — missing $REPL_BIN (run FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$REPL_BIN")) or $REPL_IN"
   fi
 fi
 

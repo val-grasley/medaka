@@ -96,8 +96,8 @@ BATCH="${4:-12}"
 NATIVE="${5:-0}"
 NATIVE_COUNT="${6:-40}"
 
-[ -x "$GEN" ] || { echo "missing $GEN — the fuzz generator (native compiler entry) must be built: sh test/build_oracles.sh"; exit 2; }
-[ -x "$ORACLE" ] || { echo "missing $ORACLE — run: sh test/build_oracles.sh"; exit 2; }
+[ -x "$GEN" ] || { echo "missing $GEN — the fuzz generator (native compiler entry) must be built: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$GEN")"; exit 2; }
+[ -x "$ORACLE" ] || { echo "missing $ORACLE — run: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one $(basename "$ORACLE")"; exit 2; }
 if [ "$NATIVE" = "1" ]; then
   [ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "missing $MEDAKA / $EMITTER — run: make medaka"; exit 2; }
 fi
