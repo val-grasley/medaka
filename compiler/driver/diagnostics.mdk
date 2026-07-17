@@ -168,14 +168,23 @@ codeKind code
   | otherwise = "error"
 
 -- Stable code for a parse/lex diagnostic, recovered at the ParseError→Diag
--- boundary from the message (a lexer TLexError surfaces as a ParseError; the four
--- lexer messages map to `L-*`, the two special parse cases to `P-UNEXPECTED-EOF`/
--- `P-BAD-NEQ`, everything else to the umbrella `P-PARSE`).
+-- boundary from the message (a lexer TLexError surfaces as a ParseError; lexer
+-- messages map to `L-*`, specifically recognized parse errors to their own `P-*`,
+-- and everything else to the umbrella `P-PARSE`).
+--
+-- The guard clauses below ARE the list — do not restate their number here. This
+-- comment used to count them ("the four lexer messages", "the two special parse
+-- cases"); both counts had silently rotted, in the one file whose whole job is
+-- mapping messages to codes. A count encodes a fact with no derivation and no
+-- expiry (.claude/ORCHESTRATING.md, "DERIVE, don't encode"), so it goes stale the
+-- next time anyone adds a clause and nothing notices — which is exactly how it
+-- rotted, unremarked, twice. Read the clauses; they cannot lie.
 export parseErrCode : String -> String
 parseErrCode msg
   | startsWith "unterminated string" msg = "L-UNTERMINATED-STRING"
   | startsWith "unterminated block" msg = "L-UNTERMINATED-COMMENT"
   | startsWith "invalid escape" msg = "L-BAD-ESCAPE"
+  | startsWith "unicode escape" msg = "L-BAD-UNICODE-ESCAPE"
   | startsWith "unexpected '\\'" msg = "L-HS-LAMBDA"
   | startsWith "Medaka has no '$'" msg = "L-HS-DOLLAR"
   | startsWith "unexpected character" msg = "L-BAD-CHAR"

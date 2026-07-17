@@ -147,7 +147,12 @@ tokenizeWithLines : String -> (List Token, List Int)
 tokenizeWithOffsetPairs : String -> (List Token, List (Int, Int))
 tokenizeWithOffsets : String -> (List Token, List Int)
 uHexEnd : Array Char -> Int -> Int -> Int
+uniEscChar : Array Char -> Int -> Int -> Option Char
+uniEscCode : Array Char -> Int -> Int -> Option Int
 uniEscEnd : Array Char -> Int -> Int -> Int
-uniEscStr : Array Char -> Int -> Int -> String
+uniEscErr : Array Char -> Int -> Int -> String
+uniEscText : Array Char -> Int -> Int -> String
+uniHexSigLen : Array Char -> Int -> Int -> Int
+uniIsSurrogate : Int -> Bool
 wouldIndent : Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
 wouldIndentPairs : Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)

@@ -754,7 +754,9 @@ scanStrEsc src len p startQ depth id acc e
   | isBackslash e = scanStr src len (p + 2) startQ depth id (acc ++ "\\")
   | e == 'r' = scanStr src len (p + 2) startQ depth id (acc ++ "\r")
   | e == '0' = scanStr src len (p + 2) startQ depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
-  | isUnicodeEsc src len p e = scanStr src len (uniEscEnd src len p) startQ depth id (acc ++ uniEscStr src len p)
+  | isUnicodeEsc src len p e = match uniEscChar src len p
+    None => lexErrorTok p (uniEscErr src len p)
+    Some c => scanStr src len (uniEscEnd src len p) startQ depth id (acc ++ charToStr c)
   | otherwise = lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
@@ -778,7 +780,10 @@ scanInterpEsc src len p depth acc e
   | isBackslash e = scanInterpCont src len (p + 2) depth (acc ++ "\\")
   | e == 'r' = scanInterpCont src len (p + 2) depth (acc ++ "\r")
   | e == '0' = scanInterpCont src len (p + 2) depth (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
-  | isUnicodeEsc src len p e = scanInterpCont src len (uniEscEnd src len p) depth (acc ++ uniEscStr src len p)
+  | isUnicodeEsc src len p e = match uniEscChar src len p
+    None => lexErrorTok p (uniEscErr src len p)
+    Some c =>
+      scanInterpCont src len (uniEscEnd src len p) depth (acc ++ charToStr c)
   | otherwise = scanInterpCont src len (p + 2) depth (acc ++ charToStr e)
 
 -- ── Triple-quoted strings (`""" … """`) ─────────────────────────────────
@@ -834,7 +839,9 @@ scanTripleEsc src len p startQ depth id leadingNl acc e
   | e == 'r' =
     scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ "\r")
   | e == '0' = scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
-  | isUnicodeEsc src len p e = scanTriple src len (uniEscEnd src len p) startQ depth id leadingNl (acc ++ uniEscStr src len p)
+  | isUnicodeEsc src len p e = match uniEscChar src len p
+    None => lexErrorTok p (uniEscErr src len p)
+    Some c => scanTriple src len (uniEscEnd src len p) startQ depth id leadingNl (acc ++ charToStr c)
   | otherwise =
     scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ charToStr e)
 
@@ -864,7 +871,9 @@ scanInterpTripleEsc src len p depth acc e
   | isBackslash e = scanInterpTripleCont src len (p + 2) depth (acc ++ "\\")
   | e == 'r' = scanInterpTripleCont src len (p + 2) depth (acc ++ "\r")
   | e == '0' = scanInterpTripleCont src len (p + 2) depth (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
-  | isUnicodeEsc src len p e = scanInterpTripleCont src len (uniEscEnd src len p) depth (acc ++ uniEscStr src len p)
+  | isUnicodeEsc src len p e = match uniEscChar src len p
+    None => lexErrorTok p (uniEscErr src len p)
+    Some c => scanInterpTripleCont src len (uniEscEnd src len p) depth (acc ++ charToStr c)
   | otherwise = scanInterpTripleCont src len (p + 2) depth (acc ++ charToStr e)
 
 -- Strip the common leading indentation from a multiline string that opens with
@@ -975,12 +984,79 @@ charClose src len p
   | isApos (at src p) = p
   | otherwise = charClose src len (p + 1)
 
+-- ── `\u{HEX}` codepoint guard (#567) ─────────────────────────────────────────
+-- `charFromCode` (`runtime/medaka_rt.c`) ALREADY bounds [0, 0x10FFFF], already
+-- excludes the UTF-16 surrogate block, and already returns `None`. The #567 defect
+-- was never a missing check — it was DISCARDING that `None` with `fromOption ' '`,
+-- which turned a correct rejection into a SPACE (exit 0, no diagnostic).
+--
+-- Honouring the `None` is necessary but NOT sufficient. `parseRadix` accumulates in
+-- the compiler's own WRAPPING 63-bit `Int`, so a long escape can wrap back INSIDE
+-- the valid range and reach `charFromCode` looking legitimate:
+-- `\u{8000000000000041}` = 2^63+65 wraps to 65 and printed `A`. So the digit COUNT
+-- is checked FIRST: >6 significant hex digits is >= 0x1000000 > 0x10FFFF and is
+-- rejected without parsing at all, and <=6 significant digits is <= 0xFFFFFF < 2^62,
+-- so the `parseRadix` that survives is exact and CANNOT wrap. Range and wrap are two
+-- bounds, not one; either alone leaves the other live.
+--
+-- `sigRadixDigits`/`radixMagOverflows` (#556) are deliberately NOT reused: they strip
+-- `_` separators, which `uHexEnd` does not accept inside `\u{…}` anyway, and
+-- `radixMagOverflows` models "one leading digit followed by zeros", a shape that
+-- cannot express the 0x10FFFF bound.
+
+-- Significant hex digits of [p, endp) — the LEADING ZERO RUN dropped. `\u{0000041}`
+-- is seven digits but only two significant, and is a perfectly good `A`: counting raw
+-- digits here would reject it.
+uniHexSigLen : Array Char -> Int -> Int -> Int
+uniHexSigLen src p endp
+  | p >= endp = 0
+  | at src p == '0' = uniHexSigLen src (p + 1) endp
+  | otherwise = endp - p
+
+-- The escape's codepoint, or `None` when it has too many digits to be one. `Some cp`
+-- guarantees `cp` was parsed EXACTLY (no wrap); it does NOT mean `cp` is a valid
+-- scalar value — that call belongs to `charFromCode`.
+uniEscCode : Array Char -> Int -> Int -> Option Int
+uniEscCode src len p =
+  let s = p + 3
+  let he = uHexEnd src len s
+  if uniHexSigLen src s he > 6 then None else Some (parseRadix src s he 16 0)
+
+-- The escape exactly as written (`\u{110000}`), so the diagnostic can quote the
+-- user's own text instead of a re-rendered number.
+uniEscText : Array Char -> Int -> Int -> String
+uniEscText src len p = substr src p (uHexEnd src len (p + 3) + 1)
+
+-- The decoded Char, or `None` for any `\u{…}` escape the lexer must reject.
+uniEscChar : Array Char -> Int -> Int -> Option Char
+uniEscChar src len p = match uniEscCode src len p
+  None => None
+  Some cp => charFromCode cp
+
+-- The UTF-16 surrogate block: 0xD800-0xDFFF, the halves of a surrogate PAIR, which
+-- encode nothing on their own and are the one hole in `charFromCode`'s range. Written
+-- in decimal only because `fmt` normalizes an integer literal's radix to decimal —
+-- 55296 = 0xD800 and 57343 = 0xDFFF, the bounds the diagnostic below names in hex.
+uniIsSurrogate : Int -> Bool
+uniIsSurrogate cp = cp >= 55296 && cp <= 57343
+
+-- WHY `uniEscChar` said `None`. `parseErrCode` keys L-BAD-UNICODE-ESCAPE on the
+-- "unicode escape" prefix, so both arms share it verbatim: one user-facing defect
+-- should not need two diagnostic codes (same reasoning as `radixTok`'s message).
+-- The `_` arm covers BOTH an in-range-Int-but-not-a-codepoint value and the `None`
+-- (too many digits to parse exactly) case: to the user both are "too big".
+uniEscErr : Array Char -> Int -> Int -> String
+uniEscErr src len p = match uniEscCode src len p
+  Some cp if uniIsSurrogate cp => "unicode escape '\{uniEscText src len p}' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own"
+  _ => "unicode escape '\{uniEscText src len p}' is out of range. A codepoint must be at most 10FFFF"
+
 -- `\u{HEX}'` : the hex codepoint, then `}` then closing `'`.
 readCharUnicode : Array Char -> Int -> Int -> Int -> Int -> List RawTok
-readCharUnicode src len p depth id =
-  let he = uHexEnd src len (p + 3)
-  let cp = parseRadix src (p + 3) he 16 0
-  RTok (TChar (charToStr (fromOption ' ' (charFromCode cp)))) p (he + 2) :: scan src len (he + 2) depth id
+readCharUnicode src len p depth id = match uniEscChar src len p
+  None => lexErrorTok p (uniEscErr src len p)
+  Some c =>
+    let he = uHexEnd src len (p + 3)
+    RTok (TChar (charToStr c)) p (he + 2) :: scan src len (he + 2) depth id
 
 uHexEnd : Array Char -> Int -> Int -> Int
 uHexEnd src len p
@@ -996,12 +1072,6 @@ uHexEnd src len p
 -- decoding: the char after the backslash is `u` and is followed by `{`.
 isUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
 isUnicodeEsc src len p e = e == 'u' && p + 2 < len && at src (p + 2) == '{'
-
-uniEscStr : Array Char -> Int -> Int -> String
-uniEscStr src len p =
-  charToStr (fromOption
-    ' '
-    (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
 
 uniEscEnd : Array Char -> Int -> Int -> Int
 uniEscEnd src len p = uHexEnd src len (p + 3) + 1
