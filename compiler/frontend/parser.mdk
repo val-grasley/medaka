@@ -1663,7 +1663,12 @@ patListFor _ = do
 -- ── Types ───────────────────────────────────────────────────────────────
 -- a full type is a function/effect type, optionally prefixed by a constraint
 -- list: `C a => ty`.  The constraint LHS is itself parsed as a ty_fun and
--- reinterpreted (TyApp(TyCon I, a) → one constraint; TyTuple → many).
+-- reinterpreted by `extractConstraints` below: a `TyApp` spine bottoming at a
+-- `TyCon` head → `Constraint I args` at ANY arity; `TyTuple` → many.
+-- ⚠️ It reads the WHOLE spine on purpose.  Matching only one level
+-- (`TyApp (TyCon I) a`) silently dropped every >=2-arg constraint — `Ix a i` is
+-- `TyApp (TyApp (TyCon Ix) a) i`, whose outer TyApp holds a TyApp, not a TyCon,
+-- so it fell through to `_ = []` and the constraint vanished at exit 0 (#604).
 parseTy : Parser Ty
 parseTy = do
   lhs <- parseTyFun
@@ -1676,10 +1681,29 @@ constraintTail lhs = do
   pure (TyConstrained (extractConstraints lhs) rhs)
 
 extractConstraints : Ty -> List Constraint
-extractConstraints (TyApp (TyCon iface _) arg) = [Constraint iface [arg]]
+extractConstraints (TyApp f a) = match tyAppSpine (TyApp f a)
+  Some (iface, args) => [Constraint iface args]
+  None => []
 extractConstraints (TyCon iface _) = [Constraint iface []]
 extractConstraints (TyTuple cs) = concatMapC cs
 extractConstraints _ = []
+
+-- `Ix a i` parses as a left-nested TyApp spine (TyApp (TyApp (TyCon Ix) a) i),
+-- so a constraint head must be FLATTENED, not matched one-arg-deep: matching only
+-- `TyApp (TyCon iface _) arg` silently DROPPED every constraint of arity >= 2 (it
+-- fell through to the `_ = []` arm), leaving `TyConstrained [] ty` — a signature
+-- whose constraints do not exist, which typecheck then never enforced and the
+-- printer rendered as `() => ty`, source that does not parse (#604).  Recurse the
+-- whole spine rather than adding a 2-arg arm: that is the same trap one width over.
+tyAppSpine : Ty -> Option (String, List Ty)
+tyAppSpine t = tyAppSpineAcc t []
+
+-- descends the spine outermost-first, prepending each argument, so the accumulator
+-- arrives in source order at the TyCon head (`Ix a i` -> ("Ix", [a, i])).
+tyAppSpineAcc : Ty -> List Ty -> Option (String, List Ty)
+tyAppSpineAcc (TyCon iface _) acc = Some (iface, acc)
+tyAppSpineAcc (TyApp f a) acc = tyAppSpineAcc f (a::acc)
+tyAppSpineAcc _ _ = None
 
 concatMapC : List Ty -> List Constraint
 concatMapC [] = []

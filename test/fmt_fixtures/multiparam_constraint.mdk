@@ -1,0 +1,28 @@
+-- Multi-typaram interface constraints must survive a fmt round-trip (#604).
+-- `Ix a i` parses as a left-nested TyApp spine; a constraint extractor that
+-- matches only one level deep drops the whole list, and fmt then writes
+-- `() => …` — source that does not parse. One-typaram forms always worked,
+-- which is why this class survived: the common case is fine.
+interface Sz a where
+  size : a -> Int
+
+interface Ix a i where
+  index : a -> i -> Int
+
+interface Tri a b c where
+  tri : a -> b -> c -> Int
+
+oneParam : Sz a => a -> Int
+oneParam x = size x
+
+twoParam : Ix a i => a -> i -> Int
+twoParam c k = index c k
+
+threeParam : Tri a b c => a -> b -> c -> Int
+threeParam x y z = tri x y z
+
+tupledMulti : (Sz a, Ix a i) => a -> i -> Int
+tupledMulti c k = size c + index c k
+
+compoundArg : Ix (List a) i => List a -> i -> Int
+compoundArg c k = index c k

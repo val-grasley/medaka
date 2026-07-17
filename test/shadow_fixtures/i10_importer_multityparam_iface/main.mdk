@@ -1,0 +1,46 @@
+-- SHADOW-SEMANTICS cell I10 (matrix row 30): IMPORTER shadow of a method on a
+-- MULTI-TYPARAM interface (`interface Ix a i`).  i1's shape, one axis over: `get`
+-- is imported from prov and shadows the LOCAL interface method `Ix.get`.
+--
+-- Per S2's IMPORTER arm (Fork 1, unchanged by the 2026-07-14 inversion): a live
+-- impl at the receiver's head DISPATCHES, else the standalone.  So the Box
+-- receiver dispatches to `impl Ix Box Int` (3 + 1 = 4) and the Int receiver, which
+-- has no impl of Ix, falls back to the imported standalone (3 * 1 = 3).
+-- Expected: check accepts; run/build print 4 then 3.
+--
+-- ⭐ WHY THIS FIXTURE EXISTS -- AND WHAT IT DISPROVED.  #54 gated the DEFINER
+-- entry points on `ifaceMethodName` but deliberately left the IMPORTER ones on
+-- `singleTyparamIfaceMethod`, so at multi-typaram width all three importer entry
+-- points DECLINE and the occurrence falls through to ordinary dispatch -- which has
+-- no "else -> standalone" arm of its own.  Reading that, #54's author recorded row 30
+-- as a "probable live divergence from S2", explicitly UNVERIFIED, and refused to
+-- fixture it because the parser was dropping >=2-arg constraints at the time (#604)
+-- and would have made any probe lie.
+--
+-- #604 landed; the probe no longer lies; the prediction was WRONG.  This cell is
+-- CONFORMANT -- 4 then 3, on check, run and build, and 4/400/3 at N-way width, so the
+-- per-receiver dispatch is real and the standalone fallback genuinely happens.  The
+-- importer entry points declining does NOT strand the occurrence: ordinary dispatch
+-- reaches the impl for a live-impl head, and for a no-impl head the env's binding of
+-- the bare name IS the imported standalone, so the fallback S2 requires falls out.
+--
+-- The lesson is the one #54 wrote for row 29 and then did not apply to row 30: a
+-- MECHANISM derived from reading is a hypothesis, not a finding.  Row 29 was left
+-- unpredicted and its outcome (ACCEPT) surprised nobody; row 30 was predicted and the
+-- prediction was wrong.  This file is the probe that should have been run first.
+--
+-- This cell does NOT depend on #604 (no `=>` appears in it; #604 changed only
+-- `extractConstraints`, reachable solely from a `=>` LHS), unlike its d21 sibling.
+import prov.{get}
+
+interface Ix a i where
+  get : a -> i -> Int
+
+data Box = Box Int
+
+impl Ix Box Int where
+  get (Box n) i = n + i
+
+main =
+  println (get (Box 3) 1)
+  println (get 3 1)

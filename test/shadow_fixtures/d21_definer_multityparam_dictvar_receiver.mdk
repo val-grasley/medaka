@@ -1,54 +1,48 @@
 -- SHADOW-SEMANTICS cell D21 (matrix row 29): the S5 CARVE-OUT at MULTI-TYPARAM
 -- width.  `useIface : Ix a i => a -> i -> Int` calls `get` on its own dict-bound
--- `=>` constraint variable, inside a module that shadows `get`.  S5's carve-out
--- says such a receiver DISPATCHES -- writing `Ix a i =>` is an explicit, written-
--- down request to resolve through the interface.
+-- `=>` constraint variable, inside a module that shadows `get`.  S5's carve-out says
+-- such a receiver DISPATCHES -- writing `Ix a i =>` is an explicit, written-down
+-- request to resolve through the interface.  It does.
+-- Expected: check accepts; run/build print 4 then 3.
 --
--- ⚠️ IT DOES NOT, at multi-typaram width -- AND THE CAUSE IS IN THE PARSER, NOT IN
--- THE SHADOW MACHINERY.  See issue #604.  `Ty`'s `TyApp Ty Ty` (frontend/ast.mdk:31)
--- is BINARY, so `Ix a i` parses as `TyApp (TyApp (TyCon "Ix") (TyVar "a")) (TyVar "i")`.
--- `extractConstraints` (frontend/parser.mdk:1678-1682) matches only the ONE-argument
--- shape `TyApp (TyCon iface _) arg`, so the outer `TyApp` -- whose first field is
--- itself a `TyApp` -- falls through to `_ = []`.  EVERY >=2-ARGUMENT CONSTRAINT IS
--- SILENTLY DISCARDED, yielding `TyConstrained []`.
+--   println (useIface (Box 3) 1)  -- S5 carve-out: dispatches to impl Ix Box Int
+--                                 -- `get (Box n) i = n + i` -> 3 + 1 = 4
+--   println (get 3 1)             -- no `=>` in sight, grounded Int receiver:
+--                                 -- S2, the standalone, `n * i` -> 3 * 1 = 3
 --
--- So S5's antecedent ("a dict-bound `=>` constraint variable") is FALSE by the time
--- typecheck runs: there is no constraint left to be bound by.  `definerReceiverIsDictVar`
--- handles a multi-argument constraint correctly -- IT NEVER RECEIVES ONE.  The
--- occurrence falls to S2 and `useIface` monomorphises to the standalone's domain
--- (`Int -> Int -> Int`), making the `Box` call a located reject.  An S5 GAP, NOT an S7
--- violation: check/run/build agree exactly, and are conformant TO THE PROGRAM THEY WERE
--- GIVEN -- which is not the one written below.
--- Expected: check/run/build all REJECT (`Int vs Box`) at the `useIface (Box 3) 1` call.
+-- 🚨 THE VALUE 4,3 IS NUMERICALLY IDENTICAL TO d11's OLD *BUG* OUTPUT.  It is not the
+-- same thing, and it will look like a regression to someone.  d11's 4 came from an
+-- UNQUALIFIED `get (Box 3) 1` that the impl universe STOLE -- the pre-inversion S2 this
+-- whole arc abolished.  d21's 4 is dispatch the author EXPLICITLY REQUESTED by writing
+-- `Ix a i =>`.  Same number, opposite verdict.  DO NOT "FIX" THIS BACK.
 --
--- ⭐ WHY THIS CELL EXISTS.  It is the receiver-PROVENANCE axis (grounded / literal /
--- DICT-BOUND) crossed with the typaram-arity axis -- the crossing d11 alone could not
--- reach, and the corpus was blind to it.  On `eedd1482` (pre-#54) this exact file was
--- **SILENT WRONGNESS of the P0-20 kind**, strictly worse than d11's loud panic:
+-- ✅ WAS A KNOWN-BAD GAP ROW; CLOSED 2026-07-17 BY #604 -- WITH NO CHANGE TO THE SHADOW
+-- MACHINERY.  #54 added this fixture pinned REJECT/REJECT/REJECT and wrote that it must
+-- be RE-PROBED, not assumed, the day #604 landed.  #604 landed; re-probed; it ACCEPTs,
+-- and 4/400/3 at N-way width proves the per-receiver dict dispatch is real rather than a
+-- monomorphisation accident.  The ledger row went RED on the next run -- the third time
+-- that mechanism has caught a fix landing (d10/S-1, d11/S-3, now d21).
 --
---   check  -> exit 0, and reported `useIface : a -> b -> Int` -- the `Ix a i =>`
---             constraint SILENTLY DROPPED from the scheme it printed
+-- The cause was never here.  `Ty`'s `TyApp Ty Ty` (frontend/ast.mdk) is BINARY, so
+-- `Ix a i` nests as `TyApp (TyApp (TyCon "Ix") a) i`; `extractConstraints` in
+-- frontend/parser.mdk matched only the ONE-argument `TyApp (TyCon iface _) arg`, so no
+-- arm matched and EVERY >=2-ARGUMENT CONSTRAINT WAS SILENTLY DISCARDED at parse
+-- (`TyConstrained []`).  S5's antecedent ("a dict-bound `=>` constraint variable") was
+-- false because there was no constraint at all.  `definerReceiverIsDictVar` handles
+-- multi-argument constraints correctly -- it never received one.  #604 taught
+-- `extractConstraints` to walk the whole spine and the carve-out started working on its
+-- own.  ⚠️ An earlier version of this header blamed `definerReceiverIsDictVar`; that was
+-- wrong, asserted from reading rather than probed, and it would have sent the next agent
+-- to the wrong file.
+--
+-- Pre-#54 this file was SILENT WRONGNESS, strictly worse than d11's loud panic:
+--   check  -> exit 0, reporting `useIface : a -> b -> Int` (constraint dropped)
 --   run    -> E-PANIC `unknown op '*'`
---   build  -> exit 0, and the shipped binary printed `69867028434928` then `3`,
---             at exit 0: a RAW HEAP POINTER rendered as an Int
+--   build  -> exit 0, binary printed `69867028434928` then `3` -- a RAW HEAP POINTER
+-- #54 traded that for a located reject; #604 turned the reject into the right answer.
 --
--- #54 closed that by bringing multi-typaram interfaces into the definer machinery;
--- the reject below is the S2 default it now (correctly, consistently) lands on.  The
--- residual is only that S5's carve-out cannot re-open it, and that residual is #604's
--- to close, not this machinery's.  A cell that trades a garbage-pointer miscompile for
--- a located reject is a fix; this row pins the trade so the remaining half cannot rot,
--- and goes RED the day #604 lands -- ⚠️ which is the signal to RE-PROBE this cell, NOT
--- to assume it becomes 3 then 6.  Both of `check`'s pre-#54 symptoms above are #604:
--- the dropped constraint in the scheme, and the `() =>` the formatter wrote (an EMPTY
--- constraint LIST printed -- `TyConstrained []` -- not a missing constraint).  They
--- were filed as two unrelated bugs; they are one.
--- 🚨 DO NOT RUN `medaka fmt --write` ON THIS FILE.  It DESTROYS the `Ix a i =>`
--- constraint below, rewriting it to `() =>`, which is not even parseable
--- (`expected type atom`).  That is NOT a formatter bug: the parser handed fmt a
--- `TyConstrained []` (see above), and `() =>` is what an EMPTY constraint list prints
--- as -- the formatter is faithfully rendering the tree it was given.  Same root cause,
--- issue #604.  The pre-commit hook excludes `test/` from `fmt --check`, which is the
--- only reason this file can be committed at all.
+-- NOTE: this fixture REQUIRES #604 (it is the only cell here whose behaviour depends on
+-- a `=>` constraint surviving the parser).  Its importer twin i10 does not.
 interface Ix a i where
   get : a -> i -> Int
 

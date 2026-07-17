@@ -473,6 +473,8 @@ tupleCtorTailFor : Int -> Token -> Parser Ty
 tupleCtorTyName : Int -> String
 tupleCtorTyOfArity : Int -> Parser Ty
 tuplePatOrSingle : List Pat -> Pat
+tyAppSpine : Ty -> Option (String, List Ty)
+tyAppSpineAcc : Ty -> List Ty -> Option (String, List Ty)
 tyApplyAll : Ty -> List Ty -> Ty
 tyArrowSkipLayout : Token -> Parser Bool
 tyArrowTail : Ty -> Parser Ty

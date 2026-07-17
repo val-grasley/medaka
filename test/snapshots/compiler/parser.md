@@ -1,5 +1,5 @@
 # META
-source_lines=4109
+source_lines=4133
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -1667,7 +1667,12 @@ patListFor _ = do
 -- ── Types ───────────────────────────────────────────────────────────────
 -- a full type is a function/effect type, optionally prefixed by a constraint
 -- list: `C a => ty`.  The constraint LHS is itself parsed as a ty_fun and
--- reinterpreted (TyApp(TyCon I, a) → one constraint; TyTuple → many).
+-- reinterpreted by `extractConstraints` below: a `TyApp` spine bottoming at a
+-- `TyCon` head → `Constraint I args` at ANY arity; `TyTuple` → many.
+-- ⚠️ It reads the WHOLE spine on purpose.  Matching only one level
+-- (`TyApp (TyCon I) a`) silently dropped every >=2-arg constraint — `Ix a i` is
+-- `TyApp (TyApp (TyCon Ix) a) i`, whose outer TyApp holds a TyApp, not a TyCon,
+-- so it fell through to `_ = []` and the constraint vanished at exit 0 (#604).
 parseTy : Parser Ty
 parseTy = do
   lhs <- parseTyFun
@@ -1680,10 +1685,29 @@ constraintTail lhs = do
   pure (TyConstrained (extractConstraints lhs) rhs)
 
 extractConstraints : Ty -> List Constraint
-extractConstraints (TyApp (TyCon iface _) arg) = [Constraint iface [arg]]
+extractConstraints (TyApp f a) = match tyAppSpine (TyApp f a)
+  Some (iface, args) => [Constraint iface args]
+  None => []
 extractConstraints (TyCon iface _) = [Constraint iface []]
 extractConstraints (TyTuple cs) = concatMapC cs
 extractConstraints _ = []
+
+-- `Ix a i` parses as a left-nested TyApp spine (TyApp (TyApp (TyCon Ix) a) i),
+-- so a constraint head must be FLATTENED, not matched one-arg-deep: matching only
+-- `TyApp (TyCon iface _) arg` silently DROPPED every constraint of arity >= 2 (it
+-- fell through to the `_ = []` arm), leaving `TyConstrained [] ty` — a signature
+-- whose constraints do not exist, which typecheck then never enforced and the
+-- printer rendered as `() => ty`, source that does not parse (#604).  Recurse the
+-- whole spine rather than adding a 2-arg arm: that is the same trap one width over.
+tyAppSpine : Ty -> Option (String, List Ty)
+tyAppSpine t = tyAppSpineAcc t []
+
+-- descends the spine outermost-first, prepending each argument, so the accumulator
+-- arrives in source order at the TyCon head (`Ix a i` -> ("Ix", [a, i])).
+tyAppSpineAcc : Ty -> List Ty -> Option (String, List Ty)
+tyAppSpineAcc (TyCon iface _) acc = Some (iface, acc)
+tyAppSpineAcc (TyApp f a) acc = tyAppSpineAcc f (a::acc)
+tyAppSpineAcc _ _ = None
 
 concatMapC : List Ty -> List Constraint
 concatMapC [] = []
@@ -4696,10 +4720,16 @@ parseResultWith src tokList offList =
 (DTypeSig false "constraintTail" (TyFun (TyCon "Ty") (TyApp (TyCon "Parser") (TyCon "Ty"))))
 (DFunDef false "constraintTail" ((PVar "lhs")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TFatArrow"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseTy")) (ELam ((PVar "rhs")) (EApp (EVar "pure") (EApp (EApp (EVar "TyConstrained") (EApp (EVar "extractConstraints") (EVar "lhs"))) (EVar "rhs"))))))))
 (DTypeSig false "extractConstraints" (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyCon "Constraint"))))
-(DFunDef false "extractConstraints" ((PCon "TyApp" (PCon "TyCon" (PVar "iface") PWild) (PVar "arg"))) (EListLit (EApp (EApp (EVar "Constraint") (EVar "iface")) (EListLit (EVar "arg")))))
+(DFunDef false "extractConstraints" ((PCon "TyApp" (PVar "f") (PVar "a"))) (EMatch (EApp (EVar "tyAppSpine") (EApp (EApp (EVar "TyApp") (EVar "f")) (EVar "a"))) (arm (PCon "Some" (PTuple (PVar "iface") (PVar "args"))) () (EListLit (EApp (EApp (EVar "Constraint") (EVar "iface")) (EVar "args")))) (arm (PCon "None") () (EListLit))))
 (DFunDef false "extractConstraints" ((PCon "TyCon" (PVar "iface") PWild)) (EListLit (EApp (EApp (EVar "Constraint") (EVar "iface")) (EListLit))))
 (DFunDef false "extractConstraints" ((PCon "TyTuple" (PVar "cs"))) (EApp (EVar "concatMapC") (EVar "cs")))
 (DFunDef false "extractConstraints" (PWild) (EListLit))
+(DTypeSig false "tyAppSpine" (TyFun (TyCon "Ty") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty"))))))
+(DFunDef false "tyAppSpine" ((PVar "t")) (EApp (EApp (EVar "tyAppSpineAcc") (EVar "t")) (EListLit)))
+(DTypeSig false "tyAppSpineAcc" (TyFun (TyCon "Ty") (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")))))))
+(DFunDef false "tyAppSpineAcc" ((PCon "TyCon" (PVar "iface") PWild) (PVar "acc")) (EApp (EVar "Some") (ETuple (EVar "iface") (EVar "acc"))))
+(DFunDef false "tyAppSpineAcc" ((PCon "TyApp" (PVar "f") (PVar "a")) (PVar "acc")) (EApp (EApp (EVar "tyAppSpineAcc") (EVar "f")) (EBinOp "::" (EVar "a") (EVar "acc"))))
+(DFunDef false "tyAppSpineAcc" (PWild PWild) (EVar "None"))
 (DTypeSig false "concatMapC" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Constraint"))))
 (DFunDef false "concatMapC" ((PList)) (EListLit))
 (DFunDef false "concatMapC" ((PCons (PVar "t") (PVar "rest"))) (EBinOp "++" (EApp (EVar "extractConstraints") (EVar "t")) (EApp (EVar "concatMapC") (EVar "rest"))))
@@ -6012,10 +6042,16 @@ parseResultWith src tokList offList =
 (DTypeSig false "constraintTail" (TyFun (TyCon "Ty") (TyApp (TyCon "Parser") (TyCon "Ty"))))
 (DFunDef false "constraintTail" ((PVar "lhs")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TFatArrow"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseTy")) (ELam ((PVar "rhs")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "TyConstrained") (EApp (EVar "extractConstraints") (EVar "lhs"))) (EVar "rhs"))))))))
 (DTypeSig false "extractConstraints" (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyCon "Constraint"))))
-(DFunDef false "extractConstraints" ((PCon "TyApp" (PCon "TyCon" (PVar "iface") PWild) (PVar "arg"))) (EListLit (EApp (EApp (EVar "Constraint") (EVar "iface")) (EListLit (EVar "arg")))))
+(DFunDef false "extractConstraints" ((PCon "TyApp" (PVar "f") (PVar "a"))) (EMatch (EApp (EVar "tyAppSpine") (EApp (EApp (EVar "TyApp") (EVar "f")) (EVar "a"))) (arm (PCon "Some" (PTuple (PVar "iface") (PVar "args"))) () (EListLit (EApp (EApp (EVar "Constraint") (EVar "iface")) (EVar "args")))) (arm (PCon "None") () (EListLit))))
 (DFunDef false "extractConstraints" ((PCon "TyCon" (PVar "iface") PWild)) (EListLit (EApp (EApp (EVar "Constraint") (EVar "iface")) (EListLit))))
 (DFunDef false "extractConstraints" ((PCon "TyTuple" (PVar "cs"))) (EApp (EVar "concatMapC") (EVar "cs")))
 (DFunDef false "extractConstraints" (PWild) (EListLit))
+(DTypeSig false "tyAppSpine" (TyFun (TyCon "Ty") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty"))))))
+(DFunDef false "tyAppSpine" ((PVar "t")) (EApp (EApp (EVar "tyAppSpineAcc") (EVar "t")) (EListLit)))
+(DTypeSig false "tyAppSpineAcc" (TyFun (TyCon "Ty") (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Ty")))))))
+(DFunDef false "tyAppSpineAcc" ((PCon "TyCon" (PVar "iface") PWild) (PVar "acc")) (EApp (EVar "Some") (ETuple (EVar "iface") (EVar "acc"))))
+(DFunDef false "tyAppSpineAcc" ((PCon "TyApp" (PVar "f") (PVar "a")) (PVar "acc")) (EApp (EApp (EVar "tyAppSpineAcc") (EVar "f")) (EBinOp "::" (EVar "a") (EVar "acc"))))
+(DFunDef false "tyAppSpineAcc" (PWild PWild) (EVar "None"))
 (DTypeSig false "concatMapC" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "List") (TyCon "Constraint"))))
 (DFunDef false "concatMapC" ((PList)) (EListLit))
 (DFunDef false "concatMapC" ((PCons (PVar "t") (PVar "rest"))) (EBinOp "++" (EApp (EVar "extractConstraints") (EVar "t")) (EApp (EVar "concatMapC") (EVar "rest"))))
