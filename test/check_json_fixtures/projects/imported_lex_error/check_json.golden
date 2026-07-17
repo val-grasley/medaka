@@ -1,0 +1,1 @@
+{"files":[{"file":"<proj>/lib.mdk","diagnostics":[{"code":"L-UNTERMINATED-STRING","kind":"lex","message":"unterminated string literal","range":{"end":{"character":1,"line":7},"start":{"character":0,"line":7}},"severity":1,"source":"medaka"}]}]}

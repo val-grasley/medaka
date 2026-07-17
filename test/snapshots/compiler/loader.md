@@ -1,5 +1,5 @@
 # META
-source_lines=841
+source_lines=843
 stages=DESUGAR,MARK
 # SOURCE
 -- Port of lib/loader.ml: parse a root .mdk file's transitive imports and return
@@ -308,9 +308,11 @@ directImports ((DUse _ path _)::rest) =
 directImports (_::rest) = directImports rest
 
 -- ── F3 Chunk B: entry-scan for the R-MODULE-LOAD `{0,0}` diagnostic ────────
--- `readModuleProg`/`readModuleProgF` return a raw `Err "unknown module: X"`
--- string with no location (the loader's graph walk has no per-diagnostic Loc
--- channel — see the module doc-comment).  Rather than thread `Option Loc`
+-- `readModuleProgF` returns a raw `Err (LoadMsg "unknown module: X")` with no
+-- location (the loader's graph walk has no per-diagnostic Loc channel for the
+-- LoadMsg arm — a PARSE failure does carry one, see `LoadParseFailed`, but an
+-- unknown module has no source of its own to point at).  Rather than thread
+-- `Option Loc`
 -- through every loader signature, the CLI/diagnostics call site re-scans the
 -- ENTRY file's own (already-parsed, already-located) decls for the `DUse`
 -- whose `importModId` is the failed module id and borrows its span.  Correct
@@ -319,7 +321,7 @@ directImports (_::rest) = directImports rest
 -- before this change.
 
 -- Extract the failed module id from a loader `Err` message of the exact shape
--- `readModuleProg`/`readModuleProgF` produce ("unknown module: <id>"); `None`
+-- `readModuleProgF` produces ("unknown module: <id>"); `None`
 -- for any other loader error text (cycle / unreadable file) so callers only
 -- special-case the one message shape they can actually re-locate.
 export unknownModuleIdOf : String -> Option String
@@ -396,7 +398,7 @@ joinComma (x::xs) = stringConcat [x, ", ", joinComma xs]
 -- root the module was found under — a declared dep's root if the import was
 -- dep-prefixed, else the entry root (or stdlib root) it matched in `roots`.  The
 -- caller threads `owningRoot` so the module's OWN intra-package imports rebase to
--- it (see visitMod).
+-- it (see visitModF).
 findModuleFile : List (String, String) -> List String -> String -> <IO> Option (String, String)
 findModuleFile deps roots modId = match resolveDepFile deps modId
   Some pathRoot => Some pathRoot
@@ -488,7 +490,7 @@ parsedModule parseFn owningRoot path src = match parseFn src
 -- one resolving under the entry / stdlib root (or unresolved) keeps its modId
 -- unchanged.  Two spellings of one file → one resolved path → one owningRoot →
 -- one canonical id, so both `DUse`s rewrite to the SAME string and dedup at
--- visitMod.  Single-root loads (no `[dependencies]`) are a NO-OP: no owningRoot is
+-- visitModF.  Single-root loads (no `[dependencies]`) are a NO-OP: no owningRoot is
 -- a dep root, so every canonical id equals the original and no DUse is touched.
 -- (Same-spelling identity needs no realpath: the same dep root string threads as
 -- `owningRoot` to both spellings.  The remaining two-NAMES corner — one physical

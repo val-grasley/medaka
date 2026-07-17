@@ -1,0 +1,3 @@
+import lib.{bad}
+
+main = println bad

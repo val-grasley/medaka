@@ -1,0 +1,1 @@
+{"files":[{"file":"<proj>/lib.mdk","diagnostics":[{"code":"P-PARSE","kind":"parse","message":"expected atom","range":{"end":{"character":7,"line":6},"start":{"character":6,"line":6}},"severity":1,"source":"medaka"}]}]}

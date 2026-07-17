@@ -1,0 +1,7 @@
+-- #100: a PARSE error in an imported module.  `medaka check --json main.mdk`
+-- (the command in the issue's title) used to emit a raw
+-- `runtime error [E-PANIC]: parse error` string INSTEAD OF JSON, with no file
+-- and no location.  The golden locks the diagnostic to THIS file with a real
+-- `P-*` code and a real range -- byte-identical to checking lib.mdk directly.
+export bad : Int
+bad = = 5

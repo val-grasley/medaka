@@ -1,0 +1,7 @@
+-- #100, the LEX half: an unterminated string in an imported module.  This is a
+-- SEPARATE panic site from the parse half (`parse`'s firstLexError pre-scan, not
+-- `resultDecls`), and it reported a DIFFERENT wrong string: `check --json` said
+-- `unterminated string literal` where plain `check` said `parse error`.  The
+-- golden locks the `L-*` code, so the two halves cannot regress independently.
+export bad : String
+bad = "unterminated
