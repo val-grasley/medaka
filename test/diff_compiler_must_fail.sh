@@ -213,6 +213,53 @@ for n in $(cut -f1 "$TMP/issues" | uniq -d); do
   echo
 done
 
+# ── The NOT-PINNABLE ledger's TREE-SIDE drain (#569). ──────────────────────────
+#
+# test/MUST-FAIL-NOT-PINNABLE.txt lists issues a human judged out of shape for THIS
+# harness. It is self-draining in BOTH directions, and each half is checked where it CAN
+# be — half a ratchet is a skip-list, and a skip-list cannot notice when it stops earning
+# its place:
+#
+#   * HERE (tree-only, no network): an entry that HAS A FIXTURE after all. The corpus
+#     contradicts the exemption — someone found a way to pin it, and the line is now a lie.
+#   * test/must_fail_census.sh (nightly, has the API): an entry whose issue is CLOSED —
+#     the exemption has no subject left.
+#
+# This half lives in the gate because it needs nothing but the tree, so it catches the
+# contradiction on the very PR that creates it.
+_ledger="$ROOT/test/MUST-FAIL-NOT-PINNABLE.txt"
+if [ -f "$_ledger" ]; then
+  while IFS= read -r _line; do
+    case "$_line" in ''|\#*) continue ;; esac
+    _n="${_line%% *}"
+    case "$_n" in ''|*[!0-9]*)
+      dup_fail=1
+      echo "MALFORMED: MUST-FAIL-NOT-PINNABLE.txt line does not start with an issue number:"
+      echo "       $_line"
+      echo
+      continue ;;
+    esac
+    _reason="$(printf '%s' "${_line#"$_n"}" | tr -d '[:space:]')"
+    if [ -z "$_reason" ]; then
+      dup_fail=1
+      echo "MALFORMED: MUST-FAIL-NOT-PINNABLE.txt entry #$_n has NO REASON."
+      echo "  A reason is mandatory — name the SHAPE the harness cannot express. An entry"
+      echo "  without one is a skip-list line, which is exactly what that ledger exists"
+      echo "  not to be."
+      echo
+    fi
+    if awk -F'\t' -v n="$_n" '$1==n{f=1} END{exit !f}' "$TMP/issues" 2>/dev/null; then
+      dup_fail=1
+      echo "MALFORMED: #$_n is listed in MUST-FAIL-NOT-PINNABLE.txt but IT HAS A FIXTURE:"
+      awk -F'\t' -v n="$_n" '$1==n{print "       test/must_fail_fixtures/" $2 "/"}' "$TMP/issues"
+      echo "  The exemption is contradicted by the corpus — somebody pinned it after all."
+      echo "  DELETE the line. An exemption that outlives its reason silently swallows a"
+      echo "  real future finding."
+      echo
+    fi
+  done < "$_ledger"
+fi
+
 # A directory whose name disagrees with its own claim's `issue:` points the reader at the
 # wrong issue — the drain message says "close #A" while the path says #B.
 for d in "$FIXDIR"/*/; do

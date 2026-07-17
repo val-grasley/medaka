@@ -595,9 +595,36 @@ Two things worth knowing before extending it:
   fixture is adding one directory. (Contrast the shadow gate, which needs a coverage
   self-audit precisely *because* it encodes a set it could derive.)
 
-**Not built:** the other half of the ratchet — *"the issue is CLOSED but the fixture still
-reproduces"*. It needs `gh` + network, so it cannot live in a gate; it belongs in
-`nightly.yml`. A half version would be worse than none.
+**The other half — BUILT, 2026-07-17, #569:** `test/must_fail_census.sh`, nightly. It drains the
+directions a gate structurally cannot see because they need the GitHub API:
+
+- **an issue is CLOSED but its fixture still REPRODUCES** ⇒ *the tracker is lying.* This is the
+  valuable half, and the framing matters: **the fixture just ran against the binary — it is a
+  measurement; the issue's state is a human assertion.** When they disagree, the assertion is
+  usually what's wrong. It found **#508 closed-but-live on its first live run** — closed by a stray
+  `fixed #508` in the *prose* of the very PR that added the suite (#583).
+- a **stale NOT-PINNABLE exemption** (its issue is closed);
+- **pinning candidates**, as a *delta* — reported, never failed.
+
+It **reports and never acts** — no auto-reopen/close/delete: it cannot distinguish "closed in
+error" from "the fixture drifted onto a different bug", and acting would encode a conclusion it has
+no evidence for.
+
+⚠️ **Why nightly and not `soundness`: a REQUIRED CHECK MUST BE CAUSED BY THE DIFF IT GATES.**
+`soundness` hosts the must-fail *gate* because a diff can fix a bug; it must never host the
+*census*, because no diff can close an issue.
+
+⚠️ **The delta drains by TIME, which is forgetting, not resolving** — an issue appears in one window
+and is never revisited. That is an accepted cost (the alternative, the whole backlog nightly, is
+~88 rows that get skimmed once and muted — and then the mechanism built to drain ledgers is the
+biggest un-drained ledger here), and the script says so on **every run** rather than only here.
+`--all` sweeps the backlog on demand. **No ratio, no percentage, ever**: a "37% covered" line would
+invent a 100% target and drive exactly the false pins `control:` exists to prevent.
+
+`test/MUST-FAIL-NOT-PINNABLE.txt` is the exemption ledger — a **file, not a label**, because a
+label has no reason field and needs no review, which makes it a skip-list. Self-draining in both
+directions, each half checked where it can be: the **gate** fails when an entry has a fixture after
+all; the **census** reports when an entry's issue is closed.
 
 ### 4.7 `--promote` for the inline tiers (steal OCaml)
 
