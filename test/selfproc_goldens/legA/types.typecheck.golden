@@ -22,8 +22,6 @@ aliasMethodRenamesOfPath : List String -> UsePath -> List (String, String)
 aliasSchemeEntry : String -> String -> (String, Scheme) -> (String, Scheme)
 aliasSchemes : String -> String -> List (String, Scheme) -> List (String, Scheme)
 alignedMethodConstraintIds : String -> List (Int, Mono) -> Option (List Int)
-allCallOblOne : String -> List Mono -> Option Loc -> List (String, List String, Ty, Mono, Option Loc)
-allCallObls : List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
 allConcreteHeads : List Mono -> Bool
 allCoreFns : List String -> Bool
 allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
@@ -452,6 +450,8 @@ foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List 
 foldModules : Bool -> Bool -> (String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), a)) -> (Bool -> String -> a -> b -> b) -> b -> List (String, Scheme) -> List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> b
 foldrFun : List Mono -> Mono -> Mono
 foreachUnit : (a -> Unit) -> List a -> Unit
+forwardedVecOblOne : List Int -> String -> List Mono -> List (String, List Int)
+forwardedVecObls : List Int -> List (String, List Mono, Option Loc) -> List (String, List Int)
 freeEffvars : Mono -> List Int
 freeGenVars : Int -> Mono -> List Int
 freshCrossRun : TcEnv -> CrossRun
@@ -994,7 +994,7 @@ registerOneMethodDict : String -> Int -> Int -> List (Int, Mono) -> Unit
 registerPredGiven : String -> List Mono -> String -> Unit
 registerRecordInfoKeyed : String -> String -> List String -> List Field -> Unit
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> Unit
-registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 registerVariants : TcEnv -> String -> List String -> List Variant -> TcEnv
 registersElementDict : String -> List String -> Bool
 rejectCyclicAliases : Unit -> Unit

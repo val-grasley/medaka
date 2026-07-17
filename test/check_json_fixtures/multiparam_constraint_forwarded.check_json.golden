@@ -1,1 +1,1 @@
-{"files":[{"file":"<fixture>","diagnostics":[{"code":"T-NO-IMPL","kind":"type","message":"No impl of Ix for String Bool","range":{"end":{"character":22,"line":32},"start":{"character":16,"line":32}},"severity":1,"source":"medaka"}]}]}
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"T-NO-IMPL","kind":"type","message":"No impl of Ix for String Bool","range":{"end":{"character":22,"line":36},"start":{"character":16,"line":36}},"severity":1,"source":"medaka"}]}]}

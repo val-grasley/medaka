@@ -12729,30 +12729,35 @@ numDictObls ((_, monos, ifaces)::rest) = flatMap (p => if fst p == "Num" then [(
 -- surfacing the constraint on the caller's own delta where group Num-defaulting can
 -- ground the shared ambiguous var.  Without this the forwarded var never grounds on
 -- the check path and a downstream Eq/Ord obligation on it is falsely ambiguous.
--- A synthetic entry structurally carries ONE dispatch mono (the shape
--- schemeObligationOne re-reads), so a JOINT multi-param predicate cannot be expressed
--- here.  Forwarding one per ARGUMENT does not merely lose precision, it FABRICATES
--- predicates: each 1-ary shard lands on a bound tyvar, boundTyvarIds succeeds, and
--- `Ix a i` gets registered as `Ix a` AND `Ix i` ALONGSIDE the real joint entry — three
--- obligations with three different checkCallObligationsU keys, so ONE violation is
--- reported THREE times and `helper` displays as `(Ix a, Ix a b, Ix b) =>`.
--- So a predicate with >1 dispatch mono is NOT forwarded through this channel.  Nothing
--- is lost for a SIGNED binding (declaredSchemeOblsFor supplies the joint predicate from
--- the declared context), and for an UNSIGNED one a forwarded multi-param constraint was
--- not enforced before #607 either — the never-over-reject direction, never worse than
--- the previous behaviour.  This channel exists for Num-defaulting / ambiguous-var
--- forwarding (#23 two-hop), which is 1-ary by nature.  The arity-1 path is unchanged.
-allCallObls : List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
-allCallObls [] = []
-allCallObls ((iface, monos, loc)::rest) = allCallOblOne iface monos loc
-  ++ allCallObls rest
+-- #23 two-hop forward, VECTOR-PRESERVING.  A constraint forwarded from a constrained
+-- callee lives on the pendingCallObligations delta, never in addedObls, so a caller of
+-- this group must re-instantiate it from schemeObligationsRef.
+--
+-- This used to detour through a SYNTHETIC addedObls entry (iface, ["a"], TyVar "a",
+-- mono, loc) that schemeObligationOne re-read via dispatchMonosOf.  That entry
+-- structurally carries ONE Mono, so a joint predicate could not pass through it: it was
+-- flat-mapped per ARGUMENT, and because each 1-ary shard lands on a bound tyvar,
+-- boundTyvarIds SUCCEEDED and FABRICATED `Ix a` + `Ix i` alongside the real `Ix a i`
+-- (one violation reported three times; `(Ix a, Ix a b, Ix b) =>` displayed).
+--
+-- The detour was pure overhead: dispatchMonosOf ["a"] (TyVar "a") m is an IDENTITY —
+-- walkDispatch hits `contains "a" ["a"]` giving [("a", normalize m)], and collectByParam
+-- reads it straight back out as [normalize m].  A pendingCallObligations entry ALREADY
+-- carries its joint `List Mono`, so map it to bound tyvar ids DIRECTLY and the vector
+-- survives at every arity.  Identical at arity 1 (boundTyvarIds normalizes too), and it
+-- closes the UNSIGNED forwarding hole, which the declared-context path cannot reach
+-- (lookupSigTvMap is None for an unsigned binding).
+forwardedVecObls : List Int -> List (String, List Mono, Option Loc) -> List (String, List Int)
+forwardedVecObls _ [] = []
+forwardedVecObls boundIds ((iface, monos, _)::rest) = forwardedVecOblOne boundIds iface monos
+  ++ forwardedVecObls boundIds rest
 
-allCallOblOne : String -> List Mono -> Option Loc -> List (String, List String, Ty, Mono, Option Loc)
-allCallOblOne iface monos loc
+forwardedVecOblOne : List Int -> String -> List Mono -> List (String, List Int)
+forwardedVecOblOne boundIds iface monos
   | iface == "" = []
-  | otherwise = match monos
-    [mono] => [(iface, ["a"], TyVar "a", mono, loc)]
-    _ => []
+  | otherwise = match boundTyvarIds boundIds monos
+    Some ids => [(iface, ids)]
+    None => []
 
 allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
 allDictObls [] = []
@@ -12847,11 +12852,15 @@ processSCC env sigs grouped members =
   -- #23 two-hop forward: also record constraints FORWARDED from a constrained
   -- callee (living on the call/dict deltas, never in addedObls) into
   -- schemeObligationsRef, so a caller of this group re-instantiates them and its
-  -- own group can ground the shared ambiguous var.  See allCallObls/allDictObls.
-  let forwardedObls =
-        allCallObls (takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value)
-        ++ allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-  let _ = registerSchemeObligations sigTvMaps (addedObls ++ forwardedObls) schemes
+  -- own group can ground the shared ambiguous var.
+  -- The CALL delta is passed RAW (it already carries each predicate's joint `List
+  -- Mono`); registerSchemeObligations maps it with forwardedVecObls so a multi-param
+  -- predicate survives whole.  Only the DICT delta still goes through the synthetic
+  -- 1-Mono addedObls shape — its entries are registerMember's per-TYVAR dict slots,
+  -- which are 1-ary by construction (see allDictObls).
+  let callOblsDelta = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
+  let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
+  let _ = registerSchemeObligations sigTvMaps callOblsDelta (addedObls ++ forwardedObls) schemes
   -- SIGNATURE CONSTRAINT SOUNDNESS: a signed member whose body induces an
   -- interface constraint on one of its own quantified vars that its declared `=>`
   -- context (superclass-closed) does NOT cover severs the constraint for callers
@@ -13253,15 +13262,15 @@ maybeInferConstraint sigs m sch
 -- Applicative`.  Both predicates are true and neither over-rejects; collapsing the
 -- display along the super chain is cosmetic and belongs with the vector-valued
 -- superclass work (punch-list item 4).
-registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
-registerSchemeObligations _ _ [] = ()
-registerSchemeObligations sigTvMaps addedObls ((m, sch)::rest) =
-  let obs = dedupVecObls (schemeObligationsOf (schemeIds sch) addedObls ++ declaredSchemeOblsFor sigTvMaps m (schemeIds sch))
+registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+registerSchemeObligations _ _ _ [] = ()
+registerSchemeObligations sigTvMaps callObls addedObls ((m, sch)::rest) =
+  let obs = dedupVecObls (schemeObligationsOf (schemeIds sch) addedObls ++ forwardedVecObls (schemeIds sch) callObls ++ declaredSchemeOblsFor sigTvMaps m (schemeIds sch))
   let _ = if isEmptyL obs then
     ()
   else
     setRef perRun.value.schemeObligationsRef ((m, obs)::perRun.value.schemeObligationsRef.value)
-  registerSchemeObligations sigTvMaps addedObls rest
+  registerSchemeObligations sigTvMaps callObls addedObls rest
 
 -- the DECLARED `=>` predicates of signed member [m], each as its argument vector of
 -- scheme-quantified tyvar ids.  A predicate is kept only if EVERY argument is a plain
