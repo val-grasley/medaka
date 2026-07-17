@@ -2198,8 +2198,46 @@ runReplCmd _ =
 -- Mirrors bin/main.ml's `lsp` arm (Lsp_server.run) + lsp_main.mdk: read
 -- MEDAKA_ROOT/stdlib/{runtime,core}.mdk, then run the JSON-RPC-over-stdio
 -- loop (initialize handshake + publishDiagnostics on didOpen/didChange).
+--
+-- Usage text for `medaka lsp --help` / `-h` — mirrors mcpUsage's one-line
+-- description plus the stdio-blocking reminder, adapted for the Language
+-- Server Protocol. A plain String (not a function) so it can be printed to
+-- either stdout (help) or stderr (error), matching newUsageLine's shape
+-- (#582) rather than mcpUsage's stdout-only one (#299).
+lspUsageLine : String
+lspUsageLine = stringConcat
+  [
+    "medaka lsp — Run the Language Server Protocol server over stdio\n",
+    "\n",
+    "Usage:\n",
+    "  medaka lsp     Start the server; it reads JSON-RPC requests from stdin\n",
+    "                 and writes responses to stdout until stdin closes (EOF).\n",
+    "                 This is the normal, correct behavior for an LSP stdio\n",
+    "                 server — it is not supposed to be interactive.\n",
+  ]
+
+-- #321: argv used to be discarded (`runLspCmd _ = ...`), so `--help`/`-h`/any
+-- bogus arg silently fell into the JSON-RPC read loop — which blocks on stdin
+-- forever if stdin is an open terminal. Blocking on stdin with NO args is
+-- correct (that's the actual protocol); only an explicit/unknown arg needs
+-- handling before the server starts. Structurally mirrors runMcpCmd (#299,
+-- same file) since lsp — like mcp — takes no positional arguments in normal
+-- use; the "unknown option" wording mirrors runNewCmd (#582).
 runLspCmd : List String -> <IO> Unit
-runLspCmd _ =
+runLspCmd [] = runLspServerFromEnv ()
+runLspCmd ("--help"::_) =
+  let _ = putStrLn lspUsageLine
+  exit 0
+runLspCmd ("-h"::_) =
+  let _ = putStrLn lspUsageLine
+  exit 0
+runLspCmd (bad::_) =
+  let _ = ePutStrLn ("medaka lsp: unknown option '" ++ bad ++ "'")
+  let _ = ePutStrLn lspUsageLine
+  exit 1
+
+runLspServerFromEnv : Unit -> <IO> Unit
+runLspServerFromEnv _ =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
