@@ -1,5 +1,5 @@
 # META
-source_lines=8634
+source_lines=8646
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -3498,6 +3498,18 @@ methodValArity prog name (RLocal sym dicts) =
 methodValArity prog name _ = methodValArityByName prog name
 
 -- the name-derived (non-shadow) method arity — the pre-#410 behaviour, unchanged.
+--
+-- #324 safety invariant (do NOT "fix" the `tag` below to be findByTagW-matchable):
+-- the `methodImpls` fallback is reached ONLY when `methodArityOf name == 0`, and that
+-- table holds `listLen (methodArgTys sig)` for EVERY interface (user + prelude,
+-- installed by installMethodIface) — so reaching here means the method's true VALUE
+-- arity IS 0.  `methodImpls`'s first pair carries the SYMBOL tag, which for an
+-- overlapping (C7) impl is a SANITIZED key (`Def__Box_a__`) matching neither raw `t`
+-- nor raw `k` in `implClauseFor` → `implGroupArity [] = 0` — the correct answer here.
+-- The un-sanitized (prelude-free/untyped) path has no C7 collisions, so its tags stay
+-- raw-matchable and yield the real requires-free clause arity.  Routing the RAW route
+-- key instead would return an overlapping `requires`-impl's dict-inflated clause arity
+-- (e.g. `def`'s `Box a` clause `[$dict]` → 1) — WRONG for a nullary method value.
 methodValArityByName : Prog -> String -> Int
 methodValArityByName prog name =
   let viaTable = methodArityOf name
@@ -6216,7 +6228,7 @@ emitWasmTrmcFn prog name arity clauses ctorSet =
 
 -- the shared destination-passing-loop emitter for BOTH the top-level path (SelfByVar) and
 -- the Phase-2 B-dispatch impl path (SelfByMethod).  `funcSym` is the rendered func symbol
--- (no leading `$`; `gname name` for a top-level fn, `implFnSym tag method` for an impl);
+-- (no leading `$`; `gname name` for a top-level fn, `implFnSym prog key method` for an impl);
 -- `self` is the SelfRef the TMC analysis + leaf-emit thread (CVar vs CMethod recognition);
 -- `lblRoot` is the clause-block label root (unique per emitted define).
 emitWasmTrmcCore : Prog -> String -> SelfRef -> String -> Int -> List CClause -> List (String, Int) -> List String
