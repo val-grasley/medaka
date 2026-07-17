@@ -337,14 +337,23 @@ toolArgError msg = toolTextResult msg True
 -- the {"files":[...]} JSON in a text content block.  isError=true iff any
 -- diagnostic is a hard error.  Inline `source` is checked WITHOUT touching disk
 -- (checkJsonSingle), its diagnostics carrying the stable synthetic filename
--- "<source>".  `file` goes through checkJsonFile (full import resolution).
+-- "<source>".  `file` is readFile'd FIRST (#333 — mirrors medaka_symbols/
+-- medaka_type_at/medaka_definition) so a nonexistent/unreadable path returns a
+-- clean "cannot read file" toolArgError instead of falling into checkJsonFile's
+-- import loader, which otherwise misreports it as an unknown-module R-MODULE-LOAD
+-- diagnostic (checkJsonFile reads the path itself via readFileSafe, which swallows
+-- the error as "" — this guard only validates readability; the content it reads is
+-- discarded and checkJsonFile re-reads `path` for the real run, full import
+-- resolution).
 runCheckTool : String -> String -> String -> Json -> <IO> Json
 runCheckTool runtimeSrc coreSrc stdlibDir args = match (fieldStr "file" args, fieldStr "source" args)
   (Some _, Some _) => toolArgError "medaka_check: provide exactly one of 'file' or 'source', not both"
   (None, None) => toolArgError "medaka_check: missing argument — provide exactly one of 'file' or 'source'"
-  (Some path, None) =>
-    let (json, hasErr) = checkJsonFile False runtimeSrc coreSrc path stdlibDir
-    toolTextResult json hasErr
+  (Some path, None) => match readFile path
+    Err e => toolArgError (stringConcat ["medaka_check: cannot read file '", path, "': ", e])
+    Ok _ =>
+      let (json, hasErr) = checkJsonFile False runtimeSrc coreSrc path stdlibDir
+      toolTextResult json hasErr
   (None, Some src) =>
     let (json, hasErr) = checkJsonSingle False runtimeSrc coreSrc syntheticSourceName src
     toolTextResult json hasErr
