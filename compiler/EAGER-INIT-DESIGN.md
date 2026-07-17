@@ -1,6 +1,6 @@
 # EAGER-INIT-DESIGN — closing the shared eager-global init-order hole (#553, S0)
 
-**Status:** design only, nothing implemented. Read-only pass, 2026-07-17.
+**Status:** PARTIAL — **Stage A SHIPPED** (this PR): `eagerVars` is structurally complete, closing divergences #2 (slice bounds) and #3 (guards) on BOTH backends, byte-identical IR, fixpoint C3a/C3b YES. **Stage B (the reachability closure) is NOT implemented** — #1, #4 and #5 remain open; punch-list in §Stage B. The deviation from the decided lazy-nullary invariant is recorded and drains via #561. Design pass 2026-07-17; Stage A landed 2026-07-17.
 **Binary probed:** `./medaka` + `./medaka_emitter` in this worktree (at `2bacfd08`).
 **Spec law:** `docs/spec/WASM-SEMANTICS.md` **WP10** (✗ CONFIRMED BROKEN) + its §4 row.
 
