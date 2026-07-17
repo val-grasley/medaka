@@ -205,6 +205,46 @@ When CI goes red, **act, don't just report**:
 4. **Record known-red ONLY with a ledger entry that detects an accidental fix.** Never a bare skip: a
    skip-list cannot notice when the bug is fixed, so it rots (this is how `test/ported/` died).
 
+### ⏰ Arm a 20-minute heartbeat — insurance against a monitor that silently stopped firing
+
+Every watcher above can die quietly. A `Monitor` that stops emitting, a completion notification that
+never fires, a queue-bounce that reads as "still queued" — **a watcher returning nothing looks
+identical to "still green,"** and a stuck orchestrator burns hours doing nothing while believing it
+is waiting on progress. The heartbeat is the backstop: **arm a recurring job (`CronCreate`, ~every 20
+minutes) whose whole purpose is to re-derive live state from scratch and catch the case where you are
+blocked with nothing actually running.** It is not a substitute for the per-PR monitors — it is the
+thing that notices when *they* failed.
+
+The fire-and-check list, every tick:
+
+1. **Your PRs.** `gh pr list --state open --author @me` (⚠️ this is *authorship*, not *ownership* —
+   track the PR numbers you actually opened, since the identity is shared across sessions). For each:
+   plain `gh pr checks <n> || true` (**never** `--json` — no such flag here; guard on EMPTY output, not
+   exit code). Green + reviews in ⇒ enqueue. Red ⇒ diagnose from `gh run view <id> --log-failed`.
+   ⚠️ **A queue-bounced PR is back to OPEN with a failed `merge_group` run and looks exactly like "still
+   queued" — check for it explicitly** (`gh run list --event merge_group`).
+2. **In-flight subagents.** Any still running? A long-silent one: inspect its worktree **read-only**
+   (`git -C <wt> log --oneline -3`, `status --short`) — never build or `cp` in another tree.
+3. **Orphans.** `ps -eo pid,etimes,args | grep -E 'build_oracles|xargs -P'` — a bare `build_oracles.sh`
+   pool outlives its agent's turn and gets *respawned* by the harness; it has killed sessions. A live
+   agent's own `run_gates`/`engines` fan-out is NOT an orphan. If genuinely orphaned: `TaskStop` the
+   agent FIRST, then reap only its PIDs — **never a box-wide `pkill`.**
+4. **Am I stuck?** Waiting on something already finished, or blocked with no live agent and no open PR
+   ⇒ pick up the next backlog task.
+
+⚠️ **DERIVE state every tick; never carry it across ticks** (the "DERIVE, don't encode" lesson
+below, applied to yourself). `git fetch` before trusting any diff — `origin/main` moves under you. And
+**do not infer a second live session from a single merge event**: on 2026-07-17 an orchestrator
+inferred a phantom session from one merge, carried it for five hours, wrote it into six agent prompts
+as a `compiler/backend/*` no-go zone, and deprioritized a real S1 over it — there was no other session.
+If session-liveness matters, re-derive it (`git worktree list` + `ps … | grep 'claude -w'`), and count
+the *authoritative listing*, not a transient `wc -l`.
+
+⚠️ **Put Val's pronouns and any durable user facts in the cron prompt correctly** — a recurring prompt
+re-fires whatever it contains every tick, so a misgendering or a stale assumption baked into it
+reproduces on a timer and leaks into every subagent it spawns. Fix the *cron prompt*, not just the
+next message.
+
 ### Branching off an UNVERIFIED base — a judgment call, not a rule
 
 CI is minutes and agents are cheap, so waiting for green before every spawn serializes what you just
