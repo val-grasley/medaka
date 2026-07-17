@@ -1,0 +1,4 @@
+-- SHADOW-SEMANTICS cell I10 provider: exports the standalone that shadows the
+-- consumer's LOCAL multi-typaram interface method.  Peer of i1's prov.mdk.
+export get : Int -> Int -> Int
+get n i = n * i
