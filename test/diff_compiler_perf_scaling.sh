@@ -790,10 +790,26 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 # #115 (match 6.0s->0.11s, listlit 5.3s->0.06s). PROMOTED OUT 2026-07-16; the modules block
 # now SKIPS the typecheck TIME below the floor (unledgered rule-4 behavior) and hard-gates it
 # as SUPERLINEAR if it ever climbs back over.
-#   xref:emit — FOUND BY THIS GATE the moment it could see the backend at all
-#     (2026-07-16, issue #359), and it is the SAME thesis as match:typecheck above,
-#     one pipeline half later: the LLVM emitter is QUADRATIC in the number of
-#     top-level declarations, and ALLOCATION IS BLIND TO IT.
+#   xref:emit — ✅ PROMOTED OUT 2026-07-17 (PR #554). The gate FOUND this quadratic
+#     the moment it could see the backend (2026-07-16, issue #359) and has now
+#     watched it DIE: r2=1.98 (< 2.60) — the emit stage scales LINEARLY. The row is
+#     deleted from KNOWN_SLOW_TIME; the stage is hard-gated like any other, so if it
+#     ever climbs back this gate fails on it rather than excusing it.
+#
+#     THE CAUSE, for the record — it is the thesis below, confirmed: the emitter was
+#     QUADRATIC IN THE NUMBER OF TOP-LEVEL DECLARATIONS because the threaded `sigs`
+#     table (size = |fns|, i.e. it GROWS with the program) was `lookupAssoc`-scanned
+#     LINEARLY once per param-use site — O(decls x decls). #554 indexed it into an
+#     `OrdMap`; emitted IR is byte-identical, so only the scan changed.
+#
+#     ⚠️ AND IT IS THE PROOF OF THIS GATE'S OWN TIME ARM: allocation read a clean,
+#     flat, LINEAR 2.03x throughout and was BLIND to the whole bug — a pure scan
+#     allocates nothing. Had this gate graded allocation only (as it did before
+#     issue #359 added the TIME arm), this quadratic would still be here today, and
+#     the emitter would still take TEN SECONDS to emit 16000 functions.
+#
+#     The historical measurement that caught it is kept below, deliberately: it is
+#     what a real find looks like, and it is the calibration for the next one.
 #
 #         xref, emit stage            TIME              ALLOC (whole-run net)
 #           N=4000                    0.643s            1528.8 MB
@@ -904,7 +920,7 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 #     not subtracted), and it is a WEAKER bound than `emit`'s: wasm's constant is ~10x
 #     llvm's, so it dilutes harder.
 #
-KNOWN_SLOW_TIME="xref:emit xref:wasm-emit"
+KNOWN_SLOW_TIME="xref:wasm-emit"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # ⚠️ THIS ROW IS MEASURED AT TWO DIFFERENT BANDS depending on PERF_DEEP, and the entry
