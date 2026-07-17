@@ -1,0 +1,20 @@
+-- #607 (S0 silent wrongness): a MULTI-PARAM `=>` constraint was dropped rather
+-- than enforced, because the obligation representation was structurally 1-ary
+-- (schemeObligationOne kept `[d]` and discarded every wider dispatch vector).
+-- `Ix a i` degraded into two unanswerable facts about `a` and `i` separately, so
+-- nothing was checked: `check` exited 0, `build` exited 0, and the built binary
+-- printed raw pointer arithmetic (`"hi"` + tagged `True` ≈ 47290051837953).
+-- `run` panicked with `unknown op '+'` — check/build vs run disagreement.
+-- .expected = REJECT: no `impl Ix String Bool` exists, so the constraint at the
+-- call site is unsatisfiable and all three must reject BY DIAGNOSTIC
+-- (`No impl of Ix for String Bool`), never by panic (BUG #40 / RANPANIC).
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+twoParamViolation : Ix a i => a -> i -> Int
+twoParamViolation a i = ix a i
+
+main = println (twoParamViolation "hi" True)

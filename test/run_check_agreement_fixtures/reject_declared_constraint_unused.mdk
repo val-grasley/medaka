@@ -1,0 +1,18 @@
+-- #610 (S2, drained by the #607 fix): enforcement used to be re-derived from the
+-- body's METHOD OCCURRENCES, never from the DECLARED context. A signature whose
+-- body never dispatches on its constraint var lost the constraint entirely: the
+-- scheme printed `sz2 : a -> Int` and a violating caller passed `check` at exit 0.
+-- Obligations are now sourced from the declared `=>` context too
+-- (declaredSchemeOblsFor), which is what DICT-SEMANTICS §4 `gen`/`var` specifies.
+-- This case is ARITY-INDEPENDENT — one param, no multi-param anything.
+-- .expected = REJECT: no `impl Sz String` exists.
+interface Sz a where
+  sz : a -> Int
+
+impl Sz Int where
+  sz n = n
+
+sz2 : Sz a => a -> Int
+sz2 x = 9
+
+main = println (sz2 "hi")

@@ -1,0 +1,21 @@
+-- #607, two-hop FORWARDED shape (PR #617 craft review): a `=>`-signed function
+-- delegating to another on the same type vars, so the joint obligation is
+-- FORWARDED onto helper's own vars rather than induced directly by its body.
+-- Companion to check_json_fixtures/multiparam_constraint_forwarded.mdk, which
+-- pins the diagnostic COUNT (this gate compares exit codes only, and 3 spurious
+-- diagnostics vs 1 correct one are both REJECT — it cannot see that bug).
+-- .expected = REJECT: no `impl Ix String Bool` exists, and all three of
+-- check/run/build must reject BY DIAGNOSTIC, never by panic (BUG #40).
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+twoParamOk : Ix a i => a -> i -> Int
+twoParamOk a i = ix a i
+
+helper : Ix a i => a -> i -> Int
+helper x y = twoParamOk x y
+
+main = println (helper "hi" True)

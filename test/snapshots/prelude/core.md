@@ -1670,8 +1670,8 @@ map3 : (Applicative e, Mappable e) => (a -> b -> c -> d) -> e a -> e b -> e c ->
 flatMap : Thenable b => (a -> b c) -> b a -> b c
 identity : a -> a
 flat : Thenable a => a (a b) -> a b
-when : Applicative a => Bool -> a Unit -> a Unit
-unless : Applicative a => Bool -> a Unit -> a Unit
+when : (Applicative a, Thenable a) => Bool -> a Unit -> a Unit
+unless : (Applicative a, Thenable a) => Bool -> a Unit -> a Unit
 foldThen : (Applicative c, Thenable c) => (a -> b -> c a) -> a -> List b -> c a
 repeatThen : (Applicative a, Mappable a, Thenable a) => Int -> a b -> a (List b)
 filterThen : (Applicative b, Thenable b) => (a -> b Bool) -> List a -> b (List a)
@@ -1686,8 +1686,8 @@ sum : (Foldable a, Num b) => a b -> b
 product : (Foldable a, Num b) => a b -> b
 elem : (Eq a, Foldable b) => a -> b a -> Bool
 notElem : (Eq a, Foldable b) => a -> b a -> Bool
-maximum : Foldable a => a b -> Option b
-minimum : Foldable a => a b -> Option b
+maximum : (Foldable a, Ord b) => a b -> Option b
+minimum : (Foldable a, Ord b) => a b -> Option b
 and : Bool -> Bool -> Bool
 or : Bool -> Bool -> Bool
 xor : Bool -> Bool -> Bool

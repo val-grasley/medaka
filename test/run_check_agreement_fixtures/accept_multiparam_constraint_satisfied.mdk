@@ -1,0 +1,27 @@
+-- #607 positive control: the SATISFIABLE multi-param case must still be accepted
+-- and still compute the right value. Pins the never-over-reject direction of the
+-- joint-obligation change — a fix that rejected everything would pass the two
+-- REJECT fixtures beside this one and fail here.
+-- `unusedDecl` additionally pins #610's shape at a SATISFIED call: a declared but
+-- never-dispatched constraint is now enforced, and `Sz Int` holds, so it passes.
+interface Sz a where
+  sz : a -> Int
+
+impl Sz Int where
+  sz n = n
+
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+twoParamOk : Ix a i => a -> i -> Int
+twoParamOk a i = ix a i
+
+unusedDecl : Sz a => a -> Int
+unusedDecl x = 9
+
+main =
+  let _ = println (twoParamOk 1 2)
+  println (unusedDecl 5)

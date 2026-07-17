@@ -1,0 +1,17 @@
+-- #607 reached from ORDINARY user code, via stdlib's own multi-param interfaces.
+-- `Index c k v` (stdlib/core.mdk) is the `xs[k]` operator, so an unsigned indexing
+-- helper is an everyday shape, not an exotic one. stdlib ships three multi-param
+-- interfaces — FromEntries c e, Index c k v, IndexMut c k v — with real impls in
+-- map.mdk and mut_array.mdk, so this class was never dormant.
+--
+-- On main this was a `check`/`run` DIVERGENCE with no diagnostic to act on:
+-- `check` exited 0 reporting `get2 : a -> b -> c` (constraint absent), then `run`
+-- exited 1 with only "type error ... Run `medaka check` for details" — and check
+-- reported nothing. A dead end. (Not silent like the Ix shape, since run/build do
+-- exit 1 — same root cause, milder manifestation.)
+-- .expected = REJECT: all three must now reject BY DIAGNOSTIC and agree.
+import array.*
+
+get2 c k = c[k]
+
+main = println (get2 "hi" True)

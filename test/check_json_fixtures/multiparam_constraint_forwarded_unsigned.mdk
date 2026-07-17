@@ -1,0 +1,23 @@
+-- #607, UNSIGNED two-hop forward. The signed sibling (reject_multiparam_
+-- constraint_forwarded) is backstopped by the DECLARED context; an unsigned
+-- forwarder is not — lookupSigTvMap returns None, and addedObls only sees DIRECT
+-- method dispatch, not a forwarded scheme obligation. So this shape had no source
+-- of a joint obligation at all: check exit 0, build exit 0, and the built binary
+-- printed raw pointer arithmetic (47346442844161-class garbage) at exit 0 — the
+-- exact silent-wrongness class #607 was filed for. Present on main too, so this
+-- fixture pins a hole the PR closes rather than one it introduced.
+-- Obligations now forward VECTOR-PRESERVING straight off the pendingCallObligations
+-- delta (forwardedVecObls), which needs no signature.
+-- .expected = REJECT: no `impl Ix String Bool` exists.
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+twoParamOk : Ix a i => a -> i -> Int
+twoParamOk a i = ix a i
+
+helper x y = twoParamOk x y
+
+main = println (helper "hi" True)

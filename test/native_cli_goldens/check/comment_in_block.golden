@@ -83,10 +83,10 @@ mapFirst : (a -> b) -> c a d -> c b d
 mapSecond : (a -> b) -> c d a -> c d b
 max : a -> a -> a
 maxBound : a
-maximum : Foldable a => a b -> Option b
+maximum : (Foldable a, Ord b) => a b -> Option b
 min : a -> a -> a
 minBound : a
-minimum : Foldable a => a b -> Option b
+minimum : (Foldable a, Ord b) => a b -> Option b
 mul : a -> a -> a
 negate : a -> a
 neq : Eq a => a -> a -> Bool
@@ -118,6 +118,6 @@ toResult : a -> Option b -> Result a b
 to_rep : a -> Rep
 traverse : (a -> b c) -> d a -> b (d c)
 uncurry : (a -> b -> c) -> (a, b) -> c
-unless : Applicative a => Bool -> a Unit -> a Unit
-when : Applicative a => Bool -> a Unit -> a Unit
+unless : (Applicative a, Thenable a) => Bool -> a Unit -> a Unit
+when : (Applicative a, Thenable a) => Bool -> a Unit -> a Unit
 xor : Bool -> Bool -> Bool

@@ -1734,7 +1734,11 @@ recordLocalBind name v =
 -- its length was O(N) per group — O(N²) over a large file.  Mutated ONLY by
 -- `resetState` and `pushCallObl`.
 
-pushCallObl : (String, Mono, Option Loc) -> Unit
+-- One obligation per PREDICATE: (iface, argument VECTOR, loc).  A 1-param
+-- interface pushes a singleton vector; `Ix a i` pushes [a, i] JOINTLY, so the
+-- checker can ask "is there an impl of Ix for THIS pair" rather than two
+-- unanswerable questions about `a` and `i` separately (#607).
+pushCallObl : (String, List Mono, Option Loc) -> Unit
 pushCallObl obl =
   let _ = setRef perRun.value.pendingCallObligations (obl::perRun.value.pendingCallObligations.value)
   setRef
@@ -2472,9 +2476,9 @@ data PerRun =
       currentImportDefinersRef : Ref (List (String, String)),
       pendingDictApps : Ref (List (Ref (List Route), List Mono, List String)),
       pendingDictAppsN : Ref Int,
-      pendingCallObligations : Ref (List (String, Mono, Option Loc)),
+      pendingCallObligations : Ref (List (String, List Mono, Option Loc)),
       pendingCallObligationsN : Ref Int,
-      schemeObligationsRef : Ref (List (String, List (String, Int))),
+      schemeObligationsRef : Ref (List (String, List (String, List Int))),
       methodConstraintsRef : Ref (List (String, List Int)),
       methodConstraintPositionsRef : Ref (List (String, List Int)),
       pendingMethodDicts : Ref (List (Ref (List Route), List Mono)),
@@ -2955,7 +2959,7 @@ ppScheme (Forall _ _ t) = ppMono t
 -- deduped for a stable display order.  Empty list ⇒ plain ppScheme (no `=>`).
 -- Single-vs-multiple form mirrors ppConstrDoc in tools/doc.mdk (`Num a =>` /
 -- `(Num a, Ord b) =>`).
-export ppSchemeCon : List (String, Int) -> Scheme -> String
+export ppSchemeCon : List (String, List Int) -> Scheme -> String
 ppSchemeCon [] s = ppScheme s
 ppSchemeCon cons (Forall _ _ t) =
   let ctx = Ref []
@@ -2967,10 +2971,13 @@ ppSchemeCon cons (Forall _ _ t) =
     _ => "(" ++ joinWith ", " rendered ++ ")"
   "\{ctxStr} => \{body}"
 
-renderConstraintCtx : Ref (List (Int, String)) -> Ref Int -> List (String, Int) -> List String
+-- a predicate renders with its WHOLE argument vector — `Ix a i =>`, not the
+-- `(Ix a, Ix i) =>` two-1-ary-facts rendering the shattered representation produced
+-- before #607.
+renderConstraintCtx : Ref (List (Int, String)) -> Ref Int -> List (String, List Int) -> List String
 renderConstraintCtx _ _ [] = []
-renderConstraintCtx ctx cnt ((iface, id)::rest) =
-  let s = "\{iface} \{nameOf ctx cnt id}"
+renderConstraintCtx ctx cnt ((iface, ids)::rest) =
+  let s = joinWith " " (iface :: map (id => nameOf ctx cnt id) ids)
   s :: renderConstraintCtx ctx cnt rest
 
 -- Render a binding's scheme WITH its inferred/declared constraint context, looked
@@ -3979,7 +3986,13 @@ recordCallObligations _ [] = ()
 recordCallObligations (iface::ifs) (mono::ms)
   | iface == "" = recordCallObligations ifs ms
   | otherwise =
-    let _ = pushCallObl (iface, mono, currentLoc.value)
+    -- 1-ary by construction: these slots are funConstraintsRef's SHATTERED
+    -- per-tyvar dict slots (`Ix a i` => two slots), so each carries one mono.
+    -- Widening this to a joint vector is the dict-slot=predicate change (#607
+    -- punch-list item 3), which moves emitted arity and is deliberately NOT
+    -- done here.  The joint obligation for such a predicate is supplied by the
+    -- declared-context path (declaredSchemeOblsFor); this path stays as-is.
+    let _ = pushCallObl (iface, [mono], currentLoc.value)
     recordCallObligations ifs ms
 
 -- String-keyed assoc lookup over funConstraintIfacesRef (returns the iface name list).
@@ -5022,19 +5035,28 @@ instantiateVarTracked x s = match lookupAssocS2 x perRun.value.schemeObligations
     let _ = recordSchemeCallObligations obs (snd inst)
     fst inst
 
--- map each (iface, scheme-var-id) through the instantiation subst to this call's mono,
--- pushing onto pendingCallObligations.  An id absent from the subst (shouldn't happen
--- for a quantified var) is skipped.
-recordSchemeCallObligations : List (String, Int) -> List (Int, Mono) -> Unit
+-- map each (iface, scheme-var-id VECTOR) through the instantiation subst to this
+-- call's monos, pushing ONE joint obligation per predicate onto
+-- pendingCallObligations.  If ANY id is absent from the subst (shouldn't happen for a
+-- quantified var) the whole predicate is skipped — a partial vector would be a
+-- different predicate (#607).
+recordSchemeCallObligations : List (String, List Int) -> List (Int, Mono) -> Unit
 recordSchemeCallObligations [] _ = ()
-recordSchemeCallObligations ((iface, id)::rest) subst = match lookupAssocI id subst
-  Some mono =>
-    let _ = pushCallObl (iface, mono, currentLoc.value)
+recordSchemeCallObligations ((iface, ids)::rest) subst = match substMonos ids subst
+  Some monos =>
+    let _ = pushCallObl (iface, monos, currentLoc.value)
     recordSchemeCallObligations rest subst
   None => recordSchemeCallObligations rest subst
 
+-- the monos [ids] map to under [subst], in order; None if any id is unmapped.
+substMonos : List Int -> List (Int, Mono) -> Option (List Mono)
+substMonos [] _ = Some []
+substMonos (id::rest) subst = match lookupAssocI id subst
+  Some mono => map (mono :: _) (substMonos rest subst)
+  None => None
+
 -- String-keyed lookup over schemeObligationsRef.
-lookupAssocS2 : String -> List (String, List (String, Int)) -> Option (List (String, Int))
+lookupAssocS2 : String -> List (String, List (String, List Int)) -> Option (List (String, List Int))
 lookupAssocS2 _ [] = None
 lookupAssocS2 k ((k2, v)::rest)
   | k == k2 = Some v
@@ -6165,26 +6187,28 @@ sigConstraintsOf (TyConstrained cs t) = cs ++ sigConstraintsOf t
 sigConstraintsOf (TyEffect _ _ t) = sigConstraintsOf t
 sigConstraintsOf _ = []
 
--- one obligation per (iface, constraint tyvar) in the signature, at that tyvar's mono in
--- THIS call's instantiation.  A constraint over something other than a plain tyvar, or a
--- tyvar absent from either map, records nothing (never over-rejects).
+-- one obligation per `=>` PREDICATE in the signature, carrying its whole argument
+-- vector at THIS call's instantiation (`Ix a i` => ONE ("Ix", [ma, mi]) entry, not
+-- two 1-ary entries that ask an unanswerable question about each var alone).  If ANY
+-- argument fails to resolve (not a plain tyvar, or absent from either map) the whole
+-- predicate records nothing — a partial vector is a DIFFERENT, wrong predicate, so
+-- dropping it is the never-over-reject direction (#607).
 recordSigConstraintObls : List Constraint -> List (String, Mono) -> List (Int, Mono) -> Unit
 recordSigConstraintObls [] _ _ = ()
 recordSigConstraintObls ((Constraint iface args)::rest) tvs subst =
-  let _ = recordSigConstraintArgs iface args tvs subst
+  let _ = match recordSigConstraintArgs args tvs subst
+    Some monos => pushCallObl (iface, monos, currentLoc.value)
+    None => ()
   recordSigConstraintObls rest tvs subst
 
-recordSigConstraintArgs : String -> List Ty -> List (String, Mono) -> List (Int, Mono) -> Unit
-recordSigConstraintArgs _ [] _ _ = ()
-recordSigConstraintArgs iface (a::rest) tvs subst =
-  let _ = match constraintArgVarName a
-    Some v => match lookupAssoc v tvs
-      Some tv => match lookupAssocI (monoTyvarId tv) subst
-        Some m => pushCallObl (iface, m, currentLoc.value)
-        None => ()
-      None => ()
-    None => ()
-  recordSigConstraintArgs iface rest tvs subst
+-- the constraint arguments' monos at THIS call's instantiation, in declaration order;
+-- None if any argument does not resolve (see recordSigConstraintObls).  Two hops:
+-- argument -> the signature's tyvar mono (constraintArgMonos), then that tyvar's id ->
+-- this instantiation's mono (substMonos).  Both are all-or-nothing, so this is too.
+recordSigConstraintArgs : List Ty -> List (String, Mono) -> List (Int, Mono) -> Option (List Mono)
+recordSigConstraintArgs args tvs subst = match constraintArgMonos args tvs
+  Some tvMonos => substMonos (map monoTyvarId tvMonos) subst
+  None => None
 
 -- the tyvar NAME a constraint argument mentions (`Num a` → "a"); None for a non-tyvar
 -- argument (a concrete head), which carries no per-call obligation here.
@@ -7338,7 +7362,7 @@ registerDispatchMonos : String -> List Mono -> Option Loc -> Int -> List Int -> 
 registerDispatchMonos _ [] _ _ _ _ = ()
 registerDispatchMonos iface (dm::rest) loc groupLevel memberIds anchoredIds =
   let ambig = filterList (p => snd p <= groupLevel && not (containsI (fst p) memberIds) && not (containsI (fst p) anchoredIds)) (monoUnboundVarLevels dm)
-  let _ = if isEmptyL ambig then () else pushCallObl (iface, dm, loc)
+  let _ = if isEmptyL ambig then () else pushCallObl (iface, [dm], loc)
   registerDispatchMonos iface rest loc groupLevel memberIds anchoredIds
 
 -- the (id, level) of every UNBOUND tyvar in [t] (sibling of monoUnboundIds, but
@@ -11492,35 +11516,45 @@ checkImplObligationsU univ ((iface, typarams, mty, occ, loc)::rest) =
 -- out caller — `id x = x; y = id 5`) is DEFERRED.  Exactly the accept/reject decision
 -- of checkOneImplObligation's tail, and the mirror of lib/typecheck.ml's
 -- check_constraint_obligations (which checks fun_constraints instantiated at the call).
-checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> Unit
+checkCallObligations : List Decl -> List (String, List Mono, Option Loc) -> Unit
 checkCallObligations prog obligations =
   checkCallObligationsU (buildImplUniverse prog) [] obligations
 
--- [seen] dedups by (iface, concrete-head-tycon): the SAME unsatisfiable obligation can
--- be recorded by more than one path (a use marked both EVar and, on the emit path,
--- EDictAt) or by repeated call sites, but the oracle raises ONE error per missing impl.
+-- [seen] dedups by (iface, EVERY argument's concrete-head-tycon): the SAME
+-- unsatisfiable obligation can be recorded by more than one path (a use marked both
+-- EVar and, on the emit path, EDictAt) or by repeated call sites, but the oracle
+-- raises ONE error per missing impl.  The key spans the WHOLE argument vector — a
+-- head-of-arg-0-only key conflated `Ix Int Bool` with `Ix Int Char` and reported
+-- only the first (#607).
 -- ORDER of errors follows the OBLIGATION list (unchanged), never the impl universe.
-checkCallObligationsU : ImplUniverse -> List String -> List (String, Mono, Option Loc) -> Unit
+checkCallObligationsU : ImplUniverse -> List String -> List (String, List Mono, Option Loc) -> Unit
 checkCallObligationsU _ _ [] = ()
-checkCallObligationsU univ seen ((iface, occ, loc)::rest) =
-  let key = "\{iface}|\{fromOption "" (headTyconMono occ)}"
+checkCallObligationsU univ seen ((iface, occs, loc)::rest) =
+  let key = joinWith "," (iface :: map (o => fromOption "" (headTyconMono o)) occs)
   if contains key seen then checkCallObligationsU univ seen rest
   else
-    let _ = checkOneCallObligation univ iface occ loc
+    let _ = checkOneCallObligation univ iface occs loc
     checkCallObligationsU univ (key::seen) rest
 
-checkOneCallObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
-checkOneCallObligation univ iface occ loc =
-  let args = [normalize occ]
-  if iface == "Num" && anyListM numUnimplementableHead args then
+-- [occs] is the predicate's whole argument vector.  At arity 1 the match test stays
+-- implMatchesReceiverU (byte-identical to the pre-#607 behaviour: for a 1-param
+-- interface the receiver IS the vector).  At arity >= 2 it is implMatchesU, which
+-- matches the FULL head vector — the difference between "is there an impl of Ix whose
+-- receiver is String" (yes-ish, vacuously) and "is there an impl of Ix for
+-- (String, Bool)" (no).
+checkOneCallObligation : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkOneCallObligation univ iface occs loc =
+  let args = map normalize occs
+  if isEmptyL args then ()
+  else if iface == "Num" && anyListM numUnimplementableHead args then
     pushNoImplError iface loc args
   -- A function-typed constraint obligation is fully ground yet has no impl — report
   -- `No impl of <iface> for <a -> b>` (not the emit path's misleading "Ambiguous").
-  else if anyListM monoIsFunction args && not (implMatchesReceiverU univ iface (normalize occ)) then
+  else if anyListM monoIsFunction args && not (implMatchesArgsU univ iface args) then
     pushNoImplError iface loc args
   else if not (allConcreteHeads args) then
-    checkUndeterminedObligation univ iface occ loc
-  else if implMatchesReceiverU univ iface (normalize occ) then
+    checkUndeterminedObligations univ iface args loc
+  else if implMatchesArgsU univ iface args then
     -- Recurse into a matched CONDITIONAL instance's `requires` (`impl Display (a, b)
     -- requires Display a, Display b`) so an unsatisfied element constraint surfaces
     -- (`main = (Red, 5)` → `No impl of Display for Color`) instead of the head-only
@@ -11528,6 +11562,20 @@ checkOneCallObligation univ iface occ loc =
     checkNestedReqs univ iface args loc
   else
     pushNoImplError iface loc args
+
+-- match test for a call obligation's argument vector: receiver-only at arity 1 (the
+-- historical, deliberately lenient 1-param shape), full head-vector at arity >= 2.
+implMatchesArgsU : ImplUniverse -> String -> List Mono -> Bool
+implMatchesArgsU univ iface [a] = implMatchesReceiverU univ iface a
+implMatchesArgsU univ iface args = implMatchesU univ iface args
+
+-- an undetermined-var check per argument of the predicate (at arity 1 this is exactly
+-- the old single call).
+checkUndeterminedObligations : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkUndeterminedObligations _ _ [] _ = ()
+checkUndeterminedObligations univ iface (a::rest) loc =
+  let _ = checkUndeterminedObligation univ iface a loc
+  checkUndeterminedObligations univ iface rest loc
 
 -- WS-1c: a constrained call whose constraint var stays UNDETERMINED (pinned by
 -- neither arg nor result, `roundtrip 14` where `roundtrip : Sub a => Int -> Int`).
@@ -12658,11 +12706,13 @@ processSCCs env sigs grouped (scc::rest) =
 -- route resolves RNone → a NULL dict word → build-time SIGTRAP (run is correct).
 -- Only field 0 (iface) and field 3 (the live operand mono) are read downstream;
 -- the rest mirror inferNumLitBare's placeholder shape.
-numCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
+-- Num is 1-param, so its obligation vector is a singleton; a wider predicate can
+-- never be "Num" and is filtered out anyway.
+numCallObls : List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
 numCallObls [] = []
-numCallObls ((iface, mono, loc)::rest)
-  | iface == "Num" = ("Num", ["a"], TyVar "a", mono, loc) :: numCallObls rest
-  | otherwise = numCallObls rest
+numCallObls ((iface, monos, loc)::rest) = match (iface, monos)
+  ("Num", [mono]) => ("Num", ["a"], TyVar "a", mono, loc) :: numCallObls rest
+  _ => numCallObls rest
 
 numDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
 numDictObls [] = []
@@ -12679,11 +12729,35 @@ numDictObls ((_, monos, ifaces)::rest) = flatMap (p => if fst p == "Num" then [(
 -- surfacing the constraint on the caller's own delta where group Num-defaulting can
 -- ground the shared ambiguous var.  Without this the forwarded var never grounds on
 -- the check path and a downstream Eq/Ord obligation on it is falsely ambiguous.
-allCallObls : List (String, Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
-allCallObls [] = []
-allCallObls ((iface, mono, loc)::rest)
-  | iface == "" = allCallObls rest
-  | otherwise = (iface, ["a"], TyVar "a", mono, loc) :: allCallObls rest
+-- #23 two-hop forward, VECTOR-PRESERVING.  A constraint forwarded from a constrained
+-- callee lives on the pendingCallObligations delta, never in addedObls, so a caller of
+-- this group must re-instantiate it from schemeObligationsRef.
+--
+-- This used to detour through a SYNTHETIC addedObls entry (iface, ["a"], TyVar "a",
+-- mono, loc) that schemeObligationOne re-read via dispatchMonosOf.  That entry
+-- structurally carries ONE Mono, so a joint predicate could not pass through it: it was
+-- flat-mapped per ARGUMENT, and because each 1-ary shard lands on a bound tyvar,
+-- boundTyvarIds SUCCEEDED and FABRICATED `Ix a` + `Ix i` alongside the real `Ix a i`
+-- (one violation reported three times; `(Ix a, Ix a b, Ix b) =>` displayed).
+--
+-- The detour was pure overhead: dispatchMonosOf ["a"] (TyVar "a") m is an IDENTITY —
+-- walkDispatch hits `contains "a" ["a"]` giving [("a", normalize m)], and collectByParam
+-- reads it straight back out as [normalize m].  A pendingCallObligations entry ALREADY
+-- carries its joint `List Mono`, so map it to bound tyvar ids DIRECTLY and the vector
+-- survives at every arity.  Identical at arity 1 (boundTyvarIds normalizes too), and it
+-- closes the UNSIGNED forwarding hole, which the declared-context path cannot reach
+-- (lookupSigTvMap is None for an unsigned binding).
+forwardedVecObls : List Int -> List (String, List Mono, Option Loc) -> List (String, List Int)
+forwardedVecObls _ [] = []
+forwardedVecObls boundIds ((iface, monos, _)::rest) = forwardedVecOblOne boundIds iface monos
+  ++ forwardedVecObls boundIds rest
+
+forwardedVecOblOne : List Int -> String -> List Mono -> List (String, List Int)
+forwardedVecOblOne boundIds iface monos
+  | iface == "" = []
+  | otherwise = match boundTyvarIds boundIds monos
+    Some ids => [(iface, ids)]
+    None => []
 
 allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
 allDictObls [] = []
@@ -12778,11 +12852,15 @@ processSCC env sigs grouped members =
   -- #23 two-hop forward: also record constraints FORWARDED from a constrained
   -- callee (living on the call/dict deltas, never in addedObls) into
   -- schemeObligationsRef, so a caller of this group re-instantiates them and its
-  -- own group can ground the shared ambiguous var.  See allCallObls/allDictObls.
-  let forwardedObls =
-        allCallObls (takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value)
-        ++ allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-  let _ = registerSchemeObligations (addedObls ++ forwardedObls) schemes
+  -- own group can ground the shared ambiguous var.
+  -- The CALL delta is passed RAW (it already carries each predicate's joint `List
+  -- Mono`); registerSchemeObligations maps it with forwardedVecObls so a multi-param
+  -- predicate survives whole.  Only the DICT delta still goes through the synthetic
+  -- 1-Mono addedObls shape — its entries are registerMember's per-TYVAR dict slots,
+  -- which are 1-ary by construction (see allDictObls).
+  let callOblsDelta = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
+  let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
+  let _ = registerSchemeObligations sigTvMaps callOblsDelta (addedObls ++ forwardedObls) schemes
   -- SIGNATURE CONSTRAINT SOUNDNESS: a signed member whose body induces an
   -- interface constraint on one of its own quantified vars that its declared `=>`
   -- context (superclass-closed) does NOT cover severs the constraint for callers
@@ -13163,51 +13241,156 @@ maybeInferConstraint sigs m sch
 -- but recording the inferred obligation list here too is harmless (a satisfiable
 -- concrete instantiation passes; an unsatisfiable one SHOULD error).  Runs on every
 -- path (NOT gated on dictEligibleSetRef), so the plain check path catches the hole.
-registerSchemeObligations : List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
-registerSchemeObligations _ [] = ()
-registerSchemeObligations addedObls ((m, sch)::rest) =
-  let obs = schemeObligationsOf (schemeIds sch) addedObls
+-- SOURCING (#607 item 2, #610): a binding's obligations are the UNION of
+--   (a) the predicates its BODY induces on its own quantified vars (addedObls), and
+--   (b) the predicates its signature DECLARES (declaredSchemeOblsFor).
+-- (b) is the source DICT-SEMANTICS §4 `gen`/`var` actually specifies — the context a
+-- binding abstracts is its declared/principal one, and every use discharges each
+-- residual predicate of the instantiated scheme.  Sourcing from (a) alone meant a
+-- declared constraint whose body never dispatches on it was silently dropped from the
+-- scheme AND from every caller's obligations (#610).  (a) is retained because an
+-- UNSIGNED binding has no declared context to read — its inferred constraints are
+-- promoted, not checked (see checkSigConstraintOne).
+-- UNION, not declared-only, deliberately: for a SIGNED binding §4 arguably makes the
+-- declared context the whole context (checkSigConstraintCoverage already rejects a
+-- signed binding whose inferred constraints the declared context does not cover), so
+-- (a) could be dropped there.  It is kept because that argument is only as strong as
+-- the coverage check is complete, and a union can only ever enforce MORE than the
+-- pre-#607 behaviour, never less.  Cost: the union can display a superclass-redundant
+-- predicate — `when : Thenable m => …` (declared) whose body's `pure` also infers
+-- Applicative now renders `(Applicative a, Thenable a) =>`, though `Thenable requires
+-- Applicative`.  Both predicates are true and neither over-rejects; collapsing the
+-- display along the super chain is cosmetic and belongs with the vector-valued
+-- superclass work (punch-list item 4).
+registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+registerSchemeObligations _ _ _ [] = ()
+registerSchemeObligations sigTvMaps callObls addedObls ((m, sch)::rest) =
+  let obs = dedupVecObls (schemeObligationsOf (schemeIds sch) addedObls ++ forwardedVecObls (schemeIds sch) callObls ++ declaredSchemeOblsFor sigTvMaps m (schemeIds sch))
   let _ = if isEmptyL obs then
     ()
   else
     setRef perRun.value.schemeObligationsRef ((m, obs)::perRun.value.schemeObligationsRef.value)
-  registerSchemeObligations addedObls rest
+  registerSchemeObligations sigTvMaps callObls addedObls rest
 
--- the (iface, var-id) pairs of the obligations whose discriminating mono is one of
--- this scheme's quantified ids (single-param interfaces only — the obligation's first
--- dispatch arg is the constraint var).  Deduped on (iface, id).
-schemeObligationsOf : List Int -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Int)
+-- the DECLARED `=>` predicates of signed member [m], each as its argument vector of
+-- scheme-quantified tyvar ids.  A predicate is kept only if EVERY argument is a plain
+-- tyvar that instantiated to one of this scheme's quantified vars: a concrete-grounded
+-- argument (`Sz Int =>`) carries no per-use obligation here, and a partial vector would
+-- be a different predicate.  An unsigned member contributes nothing.
+declaredSchemeOblsFor : List (String, Ty, List (String, Mono)) -> String -> List Int -> List (String, List Int)
+declaredSchemeOblsFor sigTvMaps m boundIds = match lookupSigTvMap m sigTvMaps
+  None => []
+  Some (ty, tvMap) =>
+    flatMap (declaredOblOne boundIds tvMap) (sigConstraintsOf ty)
+
+declaredOblOne : List Int -> List (String, Mono) -> Constraint -> List (String, List Int)
+declaredOblOne boundIds tvMap (Constraint iface args) = match constraintArgMonos args tvMap
+  None => []
+  Some monos => match boundTyvarIds boundIds monos
+    Some ids => [(iface, ids)]
+    None => []
+
+-- the monos a predicate's arguments resolve to under a tyvar-name -> mono map, in
+-- declaration order; None if ANY argument is not a plain tyvar or is absent from the
+-- map (a partial vector is a DIFFERENT predicate, so the whole thing is dropped).
+-- Shared by the declared-context sourcing and recordSigConstraintArgs.
+constraintArgMonos : List Ty -> List (String, Mono) -> Option (List Mono)
+constraintArgMonos [] _ = Some []
+constraintArgMonos (a::rest) tvMap = match constraintArgMono a tvMap
+  None => None
+  Some mono => map (mono :: _) (constraintArgMonos rest tvMap)
+
+-- the mono ONE predicate argument resolves to: None unless it is a plain tyvar
+-- present in [tvMap] (a concrete-grounded argument like `Sz Int =>` carries no
+-- per-use obligation here).
+constraintArgMono : Ty -> List (String, Mono) -> Option Mono
+constraintArgMono a tvMap = match constraintArgVarName a
+  None => None
+  Some v => lookupAssoc v tvMap
+
+lookupSigTvMap : String -> List (String, Ty, List (String, Mono)) -> Option (Ty, List (String, Mono))
+lookupSigTvMap _ [] = None
+lookupSigTvMap m ((n, ty, tvMap)::rest)
+  | m == n = Some (ty, tvMap)
+  | otherwise = lookupSigTvMap m rest
+
+dedupVecObls : List (String, List Int) -> List (String, List Int)
+dedupVecObls xs = dedupVecOblsGo xs []
+
+dedupVecOblsGo : List (String, List Int) -> List (String, List Int) -> List (String, List Int)
+dedupVecOblsGo [] _ = []
+dedupVecOblsGo (p::rest) seen
+  | containsVecObl p seen = dedupVecOblsGo rest seen
+  | otherwise = p :: dedupVecOblsGo rest (p::seen)
+
+containsVecObl : (String, List Int) -> List (String, List Int) -> Bool
+containsVecObl _ [] = False
+containsVecObl (i, ids) ((i2, ids2)::rest) = i == i2 && eqIntList ids ids2
+  || containsVecObl (i, ids) rest
+
+eqIntList : List Int -> List Int -> Bool
+eqIntList [] [] = True
+eqIntList (a::xs) (b::ys) = a == b && eqIntList xs ys
+eqIntList _ _ = False
+
+-- the (iface, var-id VECTOR) entries of the obligations whose discriminating monos are
+-- all quantified ids of this scheme.  Deduped on (iface, ids).
+schemeObligationsOf : List Int -> List (String, List String, Ty, Mono, Option Loc) -> List (String, List Int)
 schemeObligationsOf _ [] = []
 schemeObligationsOf boundIds ((iface, typarams, mty, occ, _)::rest) = schemeObligationOne boundIds iface typarams mty occ
   ++ schemeObligationsOf boundIds rest
 
--- a single obligation contributes (iface, id) iff its (single) dispatch mono is a
--- bound tyvar of the scheme.  Multi-param / non-var-headed dispatch is skipped (left
--- to the existing concrete-obligation checker); this targets the `Num a => a -> a`
--- single-param shape the hole exercises.
-schemeObligationOne : List Int -> String -> List String -> Ty -> Mono -> List (String, Int)
+-- a single obligation contributes ONE joint (iface, ids) entry iff EVERY one of its
+-- dispatch monos is a bound tyvar of the scheme.  Before #607 the multi-mono case fell
+-- into a `_ => []` wildcard and the obligation was DISCARDED — which is why an
+-- unsatisfiable `Ix a i =>` reached neither the displayed scheme nor any caller's
+-- obligation list, and `check` accepted it at exit 0 while the built binary did raw
+-- pointer arithmetic.  A non-var-headed dispatch mono is still skipped (left to the
+-- concrete-obligation checker), and an EMPTY dispatch list still contributes nothing.
+schemeObligationOne : List Int -> String -> List String -> Ty -> Mono -> List (String, List Int)
 schemeObligationOne boundIds iface typarams mty occ = match dispatchMonosOf typarams mty occ
-  [d] => match normalize d
-    TVar cell =>
-      if containsI (tyvarId cell) boundIds then
-        [(iface, tyvarId cell)]
-      else
-        []
-    _ => []
-  _ => []
+  [] => []
+  ds => match boundTyvarIds boundIds ds
+    Some ids => [(iface, ids)]
+    None => []
+
+-- the tyvar ids of [monos], in order, iff EVERY mono is a TVar bound by this scheme;
+-- None otherwise (a partial vector is a different predicate — never over-reject).
+boundTyvarIds : List Int -> List Mono -> Option (List Int)
+boundTyvarIds _ [] = Some []
+boundTyvarIds boundIds (d::rest) = match normalize d
+  TVar cell if containsI (tyvarId cell) boundIds =>
+    map (tyvarId cell :: _) (boundTyvarIds boundIds rest)
+  _ => None
 
 schemeIds : Scheme -> List Int
 schemeIds (Forall ids _ _) = ids
+
+-- shatter vector obligations into (iface, id) pairs — the currency of the
+-- coverage subset test.  See checkSigConstraintCoverage's header.
+pairsOfVecObls : List (String, List Int) -> List (String, Int)
+pairsOfVecObls [] = []
+pairsOfVecObls ((iface, ids)::rest) = map (id => (iface, id)) ids
+  ++ pairsOfVecObls rest
 
 -- ── signature-constraint soundness check ─────────────────────────────────────
 -- For each SIGNED member, the interface constraints its body INFERS on the
 -- member's own quantified vars must be covered by the DECLARED `=>` context,
 -- closed under the interface `requires` (superclass) graph.  An uncovered
 -- inferred constraint ⇒ def-site type_error (the constraint analogue of
--- checkEffectEscape).  Single-param `C a` shape only (skips multi-param); the
--- inferred obligations are the UNION of the flat-path (schemeObligationsOf over
--- addedObls) and the marked-path (inferredConstraintIds + ifaceForInferredId)
--- sources — a return-position-method constraint lands only in the latter.
+-- checkEffectEscape).  The inferred obligations are the UNION of the flat-path
+-- (schemeObligationsOf over addedObls) and the marked-path (inferredConstraintIds +
+-- ifaceForInferredId) sources — a return-position-method constraint lands only in the
+-- latter.
+-- #607: this test runs in (iface, var-id) PAIR currency on BOTH sides — a multi-param
+-- predicate is shattered per argument before the subset test (pairsOfVecObls /
+-- declaredPairsFor).  Shattering both sides is sound for a COVERAGE (subset) question
+-- — declared `Ix a i` covers inferred `Ix a` and `Ix i` — and it makes the reject
+-- direction live at n>=2, where it previously skipped multi-param entirely.  It can
+-- still UNDER-reject an exotic cross-pairing (declared `Ix a b, Ix c d` vs inferred
+-- `Ix a d`), which is the never-over-reject direction; keying the subset test on whole
+-- vectors needs the superclass closure to become vector-valued too (superSlotsOf —
+-- #607 punch-list item 4), which is deliberately not done here.
 checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 checkSigConstraintCoverage _ _ _ _ [] = ()
 checkSigConstraintCoverage regs sigs sigTvMaps addedObls ((m, sch)::rest) =
@@ -13219,7 +13402,7 @@ checkSigConstraintOne regs sigs sigTvMaps addedObls m sch = match omLookup m dri
   None => ()   -- unsigned member: its inferred constraints are promoted, not checked
   Some _ =>
     let declared = censusSuperClose driverState.value.superDeclsRef.value (declaredPairsFor m regs)
-    let inferredA = schemeObligationsOf (schemeIds sch) addedObls
+    let inferredA = pairsOfVecObls (schemeObligationsOf (schemeIds sch) addedObls)
     let inferredB = inferredIfacePairs m (schemeIds sch)
     let inferred = dedupPairs (inferredA ++ inferredB)
     reportUncovered m sigTvMaps declared inferred
@@ -13360,7 +13543,7 @@ ifaceForInferredId m id =
     Some s => s
     None => ifaceFromDictApps id perRun.value.pendingDictApps.value
 
-lookupSchemeIface : String -> Int -> List (String, List (String, Int)) -> Option String
+lookupSchemeIface : String -> Int -> List (String, List (String, List Int)) -> Option String
 lookupSchemeIface _ _ [] = None
 lookupSchemeIface m id ((m2, obs)::rest)
   | m == m2 = match lookupIfaceById id obs
@@ -13368,10 +13551,15 @@ lookupSchemeIface m id ((m2, obs)::rest)
     None => lookupSchemeIface m id rest
   | otherwise = lookupSchemeIface m id rest
 
-lookupIfaceById : Int -> List (String, Int) -> Option String
+-- the iface of the first recorded predicate whose ARGUMENT VECTOR mentions [id].
+-- (#607: an obligation's ids became a vector; at arity 1 this is the old `id == oid`.)
+-- This per-id recovery is inherently 1-ary — it answers "which interface constrains
+-- this var", which for a multi-param predicate has no single right answer; it feeds
+-- the dict-slot/route tables, whose per-tyvar shattering is punch-list item 3.
+lookupIfaceById : Int -> List (String, List Int) -> Option String
 lookupIfaceById _ [] = None
-lookupIfaceById id ((iface, oid)::rest)
-  | id == oid = Some iface
+lookupIfaceById id ((iface, oids)::rest)
+  | containsI id oids = Some iface
   | otherwise = lookupIfaceById id rest
 
 -- Scan pendingDictApps for [id] at a slot (bare-TVar mono) whose iface is non-empty.

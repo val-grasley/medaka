@@ -1,0 +1,22 @@
+-- #607: pins the DIAGNOSTIC (not just the exit code) for an unsatisfiable
+-- multi-param constraint. Two properties, neither of which held before the fix:
+--   1. The message names the WHOLE argument vector — `No impl of Ix for Int Bool`
+--      — rather than a 1-ary question about one var.
+--   2. BOTH violations are reported. checkCallObligationsU deduped on
+--      "iface|headTycon(arg0)", so `Ix Int Bool` and `Ix Int Char` shared the key
+--      "Ix|Int" and the second was silently swallowed. The key now spans the whole
+--      vector.
+-- Pre-fix this file produced ZERO diagnostics at exit 0 (the obligation was
+-- discarded outright by schemeObligationOne's `_ => []` arm).
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+use : Ix a i => a -> i -> Int
+use a i = ix a i
+
+main =
+  let _ = println (use 1 True)
+  println (use 1 'c')
