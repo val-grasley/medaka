@@ -141,6 +141,29 @@ discarded stdout on panic**, so a `println` probe returned nothing whether the p
   engines agree; S5's dict-var carve-out is not *reached* at multi-typaram width). **Its cause
   is `parser.mdk`, not the shadow machinery — see the next bullet, which is about how I got
   that wrong.**
+- **⭐⭐ THE ROW I REFUSED TO PREDICT CAME OUT RIGHT; THE ROW I PREDICTED CAME OUT WRONG.**
+  Same PR (#54), same day, same author, two ledger rows:
+  - **Row 29 (`d21`)** — I wrote *"re-probe when #604 lands; ⚠️ NOT assume it becomes
+    ACCEPT."* #604 landed, I re-probed: **ACCEPT `4,3`**, N-way `4/400/3`. Correct, and the
+    refusal to predict cost nothing.
+  - **Row 30 (`i10`)** — I *did* predict: *"all three importer entry points decline ⇒ falls
+    to ordinary dispatch, which has no else-standalone arm ⇒ **probable live divergence from
+    S2**."* Probed: **CONFORMANT, `4,3`.** Ordinary dispatch reaches the impl for a live-impl
+    head, and for a no-impl head **the env's binding of the bare name already IS the imported
+    standalone** — S2's fallback falls out without anyone implementing it. My trace was of the
+    code I had been staring at; it did not include the env.
+  - **The hedge ("probable") did not save it.** A hedged prediction still lands in a spec as a
+    row, and the next agent reads the row, not the hedge. **Both rows cost one probe. Only one
+    of them cost a wrong claim in a spec.** When you cannot probe yet, write *"UNVERIFIED —
+    run it"*, and stop there.
+- **⚠️ A gate row's MODE is part of the claim, and `NONE` is a claim about nothing.** I pinned
+  `d21` REJECT/REJECT/REJECT with mode `NONE` (verdicts only) because at the time all three
+  rejected and there was no value to pin. **When #604 flipped the cell to ACCEPT, that row
+  would have gone green reporting `ACCEPT ACCEPT ACCEPT` without ever looking at what it
+  printed** — on the one gate in this repo whose entire premise is that S7 makes agreement
+  worthless as evidence. It only surfaced because the *verdict* flipped too. **If a row can
+  ever accept, pin its VALUE.** (Both rows are `ALL_EXACT` now; I proved it bites by pinning a
+  wrong value and watching the gate go RED.)
 - **🚨 I ASSERTED A MECHANISM FROM READING THE CODE AND IT WAS PROVABLY FALSE — in the same PR
   whose headline finding is "a name that lies sends the next agent to the wrong file."** I filed
   row 29's cause as *"`definerReceiverIsDictVar` does not recognise a multi-typaram constraint
