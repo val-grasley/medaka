@@ -87,6 +87,7 @@
 SYM	Monitor	.claude/ORCHESTRATING.md describes the Claude Code Monitor TOOL (streams background-process events) — an agent-harness concept, not a Medaka compiler symbol
 SYM	TaskList	.claude/ORCHESTRATING.md describes chaining sub-agent tasks via TaskList (blockedBy dependencies) — an agent-harness/orchestration concept, not Medaka source
 SYM	TaskStop	.claude/ORCHESTRATING.md's oracle-pool-respawn remedy names the TaskStop tool (stops a runaway background agent) — an agent-harness concept, not Medaka source
+SYM	CronCreate	.claude/ORCHESTRATING.md's 20-minute-heartbeat section names the CronCreate tool (arms a recurring orchestrator self-check) — an agent-harness concept, not Medaka source
 SYM	UserPromptSubmit	AGENTS.md names the Claude Code hook event UserPromptSubmit (`.claude/hooks/skill-triage.py`'s trigger) — a Claude Code harness concept, not Medaka source
 
 # ── SYM: real external symbol, but external to this repo ───────────────────
