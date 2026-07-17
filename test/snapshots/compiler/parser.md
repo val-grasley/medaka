@@ -1,5 +1,5 @@
 # META
-source_lines=4102
+source_lines=4109
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -398,10 +398,15 @@ parseCompose =
 lamTail : Expr -> Parser Expr
 lamTail e = located (lamTailRaw e)
 
+-- The body reads via `parseRhsExpr`, not a bare `parseExpr`: `=>` is a layout
+-- herald (LAYOUT-SEMANTICS.md §7.1) — it is absent from the lexer's
+-- `canEndExpr`, so `g x =>⏎  body` opens a bare-INDENT block, and a bare
+-- `parseExpr` has no TIndent case to read it.  Same production the decl body
+-- (`parseBody`) and a let/where RHS (`parseRhsExpr`) already use.
 lamTailRaw : Expr -> Parser Expr
 lamTailRaw e = do
   expectTok TFatArrow
-  body <- parseExpr
+  body <- parseRhsExpr
   pure (ELam (exprToParams e) body)
 
 -- convert a lambda LHS expression to a parameter-pattern list (mirrors the
@@ -2997,9 +3002,11 @@ parseDo = do
   pure (EDo stmts)
 
 -- statements, NEWLINE-separated, until the block's DEDENT
--- A statement-let / where RHS expression: a bare-INDENT block (the RHS sits on
--- its own indented line, e.g. `let n =\n    length pairs`), or an ordinary
--- expression.  Mirrors parser.mly's `expr_no_block` including the
+-- A statement-let / where RHS, or a lambda body (`lamTailRaw`): a bare-INDENT
+-- block (the RHS sits on its own indented line, e.g. `let n =\n    length pairs`
+-- or `g x =>\n  g + x`), or an ordinary expression.  Every herald that opens
+-- such a block is one `canEndExpr` omits — see LAYOUT-SEMANTICS.md §7.1.
+-- Mirrors parser.mly's `expr_no_block` including the
 -- `INDENT nonempty_list(stmt) DEDENT` production, which lets a let binding's RHS
 -- be an indented block.  Without this the lexer's (correct, oracle-identical)
 -- `LET n EQUAL INDENT … DEDENT` stream had no parser rule and failed to parse.
@@ -4227,7 +4234,7 @@ parseResultWith src tokList offList =
 (DTypeSig false "lamTail" (TyFun (TyCon "Expr") (TyApp (TyCon "Parser") (TyCon "Expr"))))
 (DFunDef false "lamTail" ((PVar "e")) (EApp (EVar "located") (EApp (EVar "lamTailRaw") (EVar "e"))))
 (DTypeSig false "lamTailRaw" (TyFun (TyCon "Expr") (TyApp (TyCon "Parser") (TyCon "Expr"))))
-(DFunDef false "lamTailRaw" ((PVar "e")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TFatArrow"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseExpr")) (ELam ((PVar "body")) (EApp (EVar "pure") (EApp (EApp (EVar "ELam") (EApp (EVar "exprToParams") (EVar "e"))) (EVar "body"))))))))
+(DFunDef false "lamTailRaw" ((PVar "e")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TFatArrow"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseRhsExpr")) (ELam ((PVar "body")) (EApp (EVar "pure") (EApp (EApp (EVar "ELam") (EApp (EVar "exprToParams") (EVar "e"))) (EVar "body"))))))))
 (DTypeSig false "exprToParams" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "Pat"))))
 (DFunDef false "exprToParams" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "exprToParams") (EVar "e")))
 (DFunDef false "exprToParams" ((PCon "EApp" (PVar "f") (PVar "x"))) (EApp (EVar "appToParams") (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))))
@@ -5543,7 +5550,7 @@ parseResultWith src tokList offList =
 (DTypeSig false "lamTail" (TyFun (TyCon "Expr") (TyApp (TyCon "Parser") (TyCon "Expr"))))
 (DFunDef false "lamTail" ((PVar "e")) (EApp (EVar "located") (EApp (EVar "lamTailRaw") (EVar "e"))))
 (DTypeSig false "lamTailRaw" (TyFun (TyCon "Expr") (TyApp (TyCon "Parser") (TyCon "Expr"))))
-(DFunDef false "lamTailRaw" ((PVar "e")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TFatArrow"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseExpr")) (ELam ((PVar "body")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "ELam") (EApp (EVar "exprToParams") (EVar "e"))) (EVar "body"))))))))
+(DFunDef false "lamTailRaw" ((PVar "e")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TFatArrow"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseRhsExpr")) (ELam ((PVar "body")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "ELam") (EApp (EVar "exprToParams") (EVar "e"))) (EVar "body"))))))))
 (DTypeSig false "exprToParams" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "Pat"))))
 (DFunDef false "exprToParams" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "exprToParams") (EVar "e")))
 (DFunDef false "exprToParams" ((PCon "EApp" (PVar "f") (PVar "x"))) (EApp (EVar "appToParams") (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))))

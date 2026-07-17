@@ -1,0 +1,35 @@
+-- `=>` is a layout herald (docs/spec/LAYOUT-SEMANTICS.md §7.1): it is absent
+-- from the lexer's `canEndExpr`, so a lambda whose body sits on the NEXT line
+-- opens a bare-INDENT block.  Regression pin for #226 — this whole file was a
+-- hard parse error (`unexpected `=>``) until `lamTailRaw` read its body via
+-- `parseRhsExpr`.  The bracketed form was never broken (brackets suspend
+-- layout, §6) and is kept here so a fix that regressed it would show up.
+f = g x =>
+  g + x
+
+-- a block body with more than one statement
+double = x =>
+  let y = x * 2
+  y
+
+-- a block body that itself heralds another block
+nested = a =>
+  b =>
+    a + b
+
+-- a block body containing a further herald (`match`)
+classify = n =>
+  match n
+    0 => "zero"
+    _ => "other"
+
+-- lambda in ARGUMENT position, body on the next line (brackets suspend layout)
+bracketed = map (x =>
+  x + 1) [1, 2, 3]
+
+main =
+  println (f 1 2)
+  println (double 21)
+  println (nested 20 22)
+  println (classify 0)
+  println bracketed
