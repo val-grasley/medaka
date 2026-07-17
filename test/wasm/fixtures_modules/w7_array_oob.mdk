@@ -1,6 +1,9 @@
 -- W7/W9: an out-of-bounds Array index.  Since #16b the bound check lives in the
 -- prelude's `impl Index (Array a) Int a`, which raises the coded `indexError`
 -- (E-INDEX-OOB) — so this needs the real prelude (MODULES corpus).  Both the native
--- oracle and the WasmGC module abort with EMPTY stdout (native: stderr + nonzero
--- exit; WasmGC: a trap).  The gate compares stdout, so empty == empty.
+-- oracle and the WasmGC module abort with EMPTY stdout, the SAME coded
+-- `runtime error [E-INDEX-OOB]: index out of bounds` stderr line, and exit 1 — since
+-- #531 diff_wasm_modules.sh compares stderr and exit code too (not just stdout), so
+-- this is a genuine assertion that both engines trap identically, not just a
+-- stdout-blind "empty == empty".
 main = [|5, 6, 7|].[9]
