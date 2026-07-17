@@ -6,7 +6,19 @@
 # so dispatch flows through the real prelude and DCE prunes it to what each program
 # reaches.  For each fixture (a single .mdk OR a multi-file program dir with entry.mdk),
 # oracle = the native-compiled `medaka build`; emitter = the modules entry → WAT →
-# wasm-tools → Node 24 → byte-diff stdout.
+# wasm-tools → Node 24 → byte-diff stdout AND stderr AND exit code.
+#
+# #531: this gate used to compare stdout ONLY, discarding the oracle's stderr
+# outright (`2>/dev/null`) and capturing wasm's stderr to a file that was never
+# compared — and never looked at either engine's exit code. Any divergence living
+# in stderr or the exit code (which is most of the interesting native/wasm trap
+# surface — a coded panic vs a bare engine trap, a wrong exit status) passed
+# silently: both engines print the same (possibly empty) stdout, and empty ==
+# empty reads as a pass. #371 (wasm poly `/`/`%` briefly emitting a raw engine
+# trap instead of the coded `[E-DIV-ZERO]`/`[E-MOD-ZERO]` line) is exactly this
+# shape and had to be pinned with bespoke per-fixture stderr-grepping asserts
+# because the generic compare could not see it. It now can: every fixture's
+# native/wasm run is compared on all three channels, generically.
 #
 # REAL-PRELUDE GAP HANDLING (W9 incremental landing — see the slice writeup):
 # the DCE'd real prelude retains every impl WHOLE, including POINT-FREE impls
@@ -50,9 +62,26 @@ if [ "${1:-}" = "--one" ]; then
   elif ! wasm-tools validate --features=all "$wasm" 2>"$WORKDIR/$name.val.err"; then
     msg="$(printf 'GAP  %s (validate: real-prelude point-free impl arity — %s)' "$name" "$(head -1 "$WORKDIR/$name.val.err")")"; st=2
   else
-    ref="$("$obin" 2>/dev/null)"; got="$("$NODE" "$RUNJS" "$wasm" 2>"$WORKDIR/$name.run.err")"
-    if [ "$ref" = "$got" ]; then msg="ok   $name -> $ref"
-    else msg="$(printf 'FAIL %s\n  oracle: %s\n  wasm  : %s\n  (%s)' "$name" "$ref" "$got" "$(cat "$WORKDIR/$name.run.err")")"; st=1; fi
+    # #531: compare ALL THREE channels — stdout, stderr, and exit code — for BOTH
+    # engines, generically, not just stdout. A trap-shaped divergence (coded panic
+    # vs bare engine trap, or a differing exit status) shows up on stderr/exit even
+    # when stdout is identical (often empty on both sides), so stdout alone cannot
+    # see it. Native's stderr used to be discarded outright (`2>/dev/null`).
+    ref="$("$obin" 2>"$WORKDIR/$name.oracle.err")"; orc=$?
+    got="$("$NODE" "$RUNJS" "$wasm" 2>"$WORKDIR/$name.run.err")"; wrc=$?
+    oerr="$(cat "$WORKDIR/$name.oracle.err" 2>/dev/null)"
+    werr="$(cat "$WORKDIR/$name.run.err" 2>/dev/null)"
+    if [ "$ref" = "$got" ] && [ "$oerr" = "$werr" ] && [ "$orc" = "$wrc" ]; then
+      msg="ok   $name -> $ref"
+    else
+      diverges=""
+      [ "$ref" = "$got" ] || diverges="${diverges}stdout "
+      [ "$oerr" = "$werr" ] || diverges="${diverges}stderr "
+      [ "$orc" = "$wrc" ] || diverges="${diverges}exit "
+      msg="$(printf 'FAIL %s (diverges: %s)\n  oracle: stdout=%s stderr=%s exit=%s\n  wasm  : stdout=%s stderr=%s exit=%s' \
+        "$name" "$diverges" "$ref" "$oerr" "$orc" "$got" "$werr" "$wrc")"
+      st=1
+    fi
     # layer-8 IR-shape assertion for the dispatched List map fixture (must lower to
     # a dest-passing loop with 0 recursive self-calls — a dropped impl-TMC overflows V8).
     if [ "$st" = 0 ] && [ "$name" = "w_dispatch_map_stack.mdk" ]; then
@@ -80,35 +109,6 @@ TMC-ASSERT ok   $name: \$mdk_impl_List_map is a dest-passing loop, 0 recursive c
 RETCALL-ASSERT ok   $name: recursive self-call is return_call, 0 plain call"
       else
         msg="$(printf '%s\nRETCALL-ASSERT FAIL %s: plain-call=%s return_call=%s (expected 0 / >=1)' "$msg" "$name" "$plain" "$rc")"; st=1
-      fi
-    fi
-    # #371 coded-trap assertion: the poly-`Num` int div/mod guard must emit the SAME
-    # [E-DIV-ZERO]/[E-MOD-ZERO] stderr line native does. The stdout-only compare
-    # above ("before" == "before") is IDENTICAL whether the guard fires or wasm dies
-    # with a bare engine trap, so it alone cannot prove this — see the fixtures'
-    # own header comments. Re-run the oracle to capture ITS stderr too (discarded
-    # above by `2>/dev/null`, since every other fixture's oracle stderr is noise)
-    # and require BOTH engines to carry the exact coded line.
-    if [ "$st" = 0 ] && [ "$name" = "w371_polynum_div_zero.mdk" ]; then
-      oerr="$("$obin" 2>&1 >/dev/null)"
-      werr="$(cat "$WORKDIR/$name.run.err" 2>/dev/null)"
-      if printf '%s' "$oerr" | grep -qF 'runtime error [E-DIV-ZERO]: division by zero' \
-         && printf '%s' "$werr" | grep -qF 'runtime error [E-DIV-ZERO]: division by zero'; then
-        msg="$msg
-DIVZERO-ASSERT ok   $name: both engines emit the coded E-DIV-ZERO stderr line"
-      else
-        msg="$(printf '%s\nDIVZERO-ASSERT FAIL %s\n  native stderr: %s\n  wasm   stderr: %s' "$msg" "$name" "$oerr" "$werr")"; st=1
-      fi
-    fi
-    if [ "$st" = 0 ] && [ "$name" = "w371_polynum_mod_zero.mdk" ]; then
-      oerr="$("$obin" 2>&1 >/dev/null)"
-      werr="$(cat "$WORKDIR/$name.run.err" 2>/dev/null)"
-      if printf '%s' "$oerr" | grep -qF 'runtime error [E-MOD-ZERO]: modulo by zero' \
-         && printf '%s' "$werr" | grep -qF 'runtime error [E-MOD-ZERO]: modulo by zero'; then
-        msg="$msg
-MODZERO-ASSERT ok   $name: both engines emit the coded E-MOD-ZERO stderr line"
-      else
-        msg="$(printf '%s\nMODZERO-ASSERT FAIL %s\n  native stderr: %s\n  wasm   stderr: %s' "$msg" "$name" "$oerr" "$werr")"; st=1
       fi
     fi
   fi
@@ -175,7 +175,18 @@ for s in "$RESULTS"/*.status; do
   esac
 done
 
-printf '\n%d ok, %d gap (known real-prelude MVP gap), %d failing\n' "$pass" "$gap" "$fail"
+checked=$((pass+fail+gap))
+printf '\n%d ok, %d gap (known real-prelude MVP gap), %d failing (%d checked)\n' "$pass" "$gap" "$fail" "$checked"
+# checked == 0 means the worklist/result plumbing produced NOTHING to compare (e.g.
+# an empty fixture dir, or every --one worker dying before writing a .status) — that
+# must NOT read as a pass. [ "$fail" -eq 0 ] alone is true on 0/0/0, which is the
+# exact "reported success having compared nothing" disease this gate exists to avoid
+# in the stdout/stderr/exit dimension; do not let it reappear in the fixture-count
+# dimension too.
+if [ "$checked" -eq 0 ]; then
+  echo "FAIL  0 fixtures checked — worklist or --one workers produced no results (this is NOT a pass)"
+  exit 1
+fi
 # Green when nothing DIVERGES (a known-gap SKIP is not a failure); fails on a real
 # byte-diff or an unexpected build/parse error.
 [ "$fail" -eq 0 ]
