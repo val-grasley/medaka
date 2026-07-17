@@ -1,5 +1,5 @@
 # META
-source_lines=15438
+source_lines=15450
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -3995,7 +3995,7 @@ recordCallObligations (iface::ifs) (mono::ms)
     -- Widening this to a joint vector is the dict-slot=predicate change (#607
     -- punch-list item 3), which moves emitted arity and is deliberately NOT
     -- done here.  The joint obligation for such a predicate is supplied by the
-    -- declared-context path (declaredSchemeObls); this path stays as-is.
+    -- declared-context path (declaredSchemeOblsFor); this path stays as-is.
     let _ = pushCallObl (iface, [mono], currentLoc.value)
     recordCallObligations ifs ms
 
@@ -12733,18 +12733,30 @@ numDictObls ((_, monos, ifaces)::rest) = flatMap (p => if fst p == "Num" then [(
 -- surfacing the constraint on the caller's own delta where group Num-defaulting can
 -- ground the shared ambiguous var.  Without this the forwarded var never grounds on
 -- the check path and a downstream Eq/Ord obligation on it is falsely ambiguous.
--- The forwarded-obligation synthetic entries carry ONE dispatch mono each (the shape
--- schemeObligationOne re-reads), so a multi-param predicate contributes one entry per
--- argument here.  That is only the Num-defaulting / ambiguous-var forwarding channel —
--- the JOINT predicate for such a binding is supplied by declaredSchemeOblsFor — so the
--- shattering is harmless: an entry whose monos don't ALL land on bound tyvars is
--- dropped by boundTyvarIds rather than mis-registered.
+-- A synthetic entry structurally carries ONE dispatch mono (the shape
+-- schemeObligationOne re-reads), so a JOINT multi-param predicate cannot be expressed
+-- here.  Forwarding one per ARGUMENT does not merely lose precision, it FABRICATES
+-- predicates: each 1-ary shard lands on a bound tyvar, boundTyvarIds succeeds, and
+-- `Ix a i` gets registered as `Ix a` AND `Ix i` ALONGSIDE the real joint entry — three
+-- obligations with three different checkCallObligationsU keys, so ONE violation is
+-- reported THREE times and `helper` displays as `(Ix a, Ix a b, Ix b) =>`.
+-- So a predicate with >1 dispatch mono is NOT forwarded through this channel.  Nothing
+-- is lost for a SIGNED binding (declaredSchemeOblsFor supplies the joint predicate from
+-- the declared context), and for an UNSIGNED one a forwarded multi-param constraint was
+-- not enforced before #607 either — the never-over-reject direction, never worse than
+-- the previous behaviour.  This channel exists for Num-defaulting / ambiguous-var
+-- forwarding (#23 two-hop), which is 1-ary by nature.  The arity-1 path is unchanged.
 allCallObls : List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
 allCallObls [] = []
-allCallObls ((iface, monos, loc)::rest)
-  | iface == "" = allCallObls rest
-  | otherwise = map (mono => (iface, ["a"], TyVar "a", mono, loc)) monos
-    ++ allCallObls rest
+allCallObls ((iface, monos, loc)::rest) = allCallOblOne iface monos loc
+  ++ allCallObls rest
+
+allCallOblOne : String -> List Mono -> Option Loc -> List (String, List String, Ty, Mono, Option Loc)
+allCallOblOne iface monos loc
+  | iface == "" = []
+  | otherwise = match monos
+    [mono] => [(iface, ["a"], TyVar "a", mono, loc)]
+    _ => []
 
 allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
 allDictObls [] = []
@@ -18493,7 +18505,9 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "numDictObls" ((PCons (PTuple PWild (PVar "monos") (PVar "ifaces")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (ELam ((PVar "p")) (EIf (EBinOp "==" (EApp (EVar "fst") (EVar "p")) (ELit (LString "Num"))) (EListLit (ETuple (ELit (LString "Num")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EApp (EVar "snd") (EVar "p")) (EFieldAccess (EVar "currentLoc") "value"))) (EListLit)))) (EApp (EApp (EVar "zipL") (EVar "ifaces")) (EVar "monos"))) (EApp (EVar "numDictObls") (EVar "rest"))))
 (DTypeSig false "allCallObls" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyCon "Loc")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "allCallObls" ((PList)) (EListLit))
-(DFunDef false "allCallObls" ((PCons (PTuple (PVar "iface") (PVar "monos") (PVar "loc")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "iface") (ELit (LString ""))) (EApp (EVar "allCallObls") (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "++" (EApp (EApp (EVar "map") (ELam ((PVar "mono")) (ETuple (EVar "iface") (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "mono") (EVar "loc")))) (EVar "monos")) (EApp (EVar "allCallObls") (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "allCallObls" ((PCons (PTuple (PVar "iface") (PVar "monos") (PVar "loc")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EVar "allCallOblOne") (EVar "iface")) (EVar "monos")) (EVar "loc")) (EApp (EVar "allCallObls") (EVar "rest"))))
+(DTypeSig false "allCallOblOne" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DFunDef false "allCallOblOne" ((PVar "iface") (PVar "monos") (PVar "loc")) (EIf (EBinOp "==" (EVar "iface") (ELit (LString ""))) (EListLit) (EIf (EVar "otherwise") (EMatch (EVar "monos") (arm (PList (PVar "mono")) () (EListLit (ETuple (EVar "iface") (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "mono") (EVar "loc")))) (arm PWild () (EListLit))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "allDictObls" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "allDictObls" ((PList)) (EListLit))
 (DFunDef false "allDictObls" ((PCons (PTuple PWild (PVar "monos") (PVar "ifaces")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (ELam ((PVar "p")) (EIf (EBinOp "==" (EApp (EVar "fst") (EVar "p")) (ELit (LString ""))) (EListLit) (EListLit (ETuple (EApp (EVar "fst") (EVar "p")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EApp (EVar "snd") (EVar "p")) (EFieldAccess (EVar "currentLoc") "value")))))) (EApp (EApp (EVar "zipL") (EVar "ifaces")) (EVar "monos"))) (EApp (EVar "allDictObls") (EVar "rest"))))
@@ -22081,7 +22095,9 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "numDictObls" ((PCons (PTuple PWild (PVar "monos") (PVar "ifaces")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "p")) (EIf (EBinOp "==" (EApp (EVar "fst") (EVar "p")) (ELit (LString "Num"))) (EListLit (ETuple (ELit (LString "Num")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EApp (EVar "snd") (EVar "p")) (EFieldAccess (EVar "currentLoc") "value"))) (EListLit)))) (EApp (EApp (EVar "zipL") (EVar "ifaces")) (EVar "monos"))) (EApp (EVar "numDictObls") (EVar "rest"))))
 (DTypeSig false "allCallObls" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "Option") (TyCon "Loc")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "allCallObls" ((PList)) (EListLit))
-(DFunDef false "allCallObls" ((PCons (PTuple (PVar "iface") (PVar "monos") (PVar "loc")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "iface") (ELit (LString ""))) (EApp (EVar "allCallObls") (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "++" (EApp (EApp (EMethodRef "map") (ELam ((PVar "mono")) (ETuple (EVar "iface") (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "mono") (EVar "loc")))) (EVar "monos")) (EApp (EVar "allCallObls") (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "allCallObls" ((PCons (PTuple (PVar "iface") (PVar "monos") (PVar "loc")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EVar "allCallOblOne") (EVar "iface")) (EVar "monos")) (EVar "loc")) (EApp (EVar "allCallObls") (EVar "rest"))))
+(DTypeSig false "allCallOblOne" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DFunDef false "allCallOblOne" ((PVar "iface") (PVar "monos") (PVar "loc")) (EIf (EBinOp "==" (EVar "iface") (ELit (LString ""))) (EListLit) (EIf (EVar "otherwise") (EMatch (EVar "monos") (arm (PList (PVar "mono")) () (EListLit (ETuple (EVar "iface") (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EVar "mono") (EVar "loc")))) (arm PWild () (EListLit))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "allDictObls" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyApp (TyCon "List") (TyCon "Mono")) (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc"))))))
 (DFunDef false "allDictObls" ((PList)) (EListLit))
 (DFunDef false "allDictObls" ((PCons (PTuple PWild (PVar "monos") (PVar "ifaces")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (ELam ((PVar "p")) (EIf (EBinOp "==" (EApp (EVar "fst") (EVar "p")) (ELit (LString ""))) (EListLit) (EListLit (ETuple (EApp (EVar "fst") (EVar "p")) (EListLit (ELit (LString "a"))) (EApp (EVar "TyVar") (ELit (LString "a"))) (EApp (EVar "snd") (EVar "p")) (EFieldAccess (EVar "currentLoc") "value")))))) (EApp (EApp (EVar "zipL") (EVar "ifaces")) (EVar "monos"))) (EApp (EVar "allDictObls") (EVar "rest"))))

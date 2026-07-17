@@ -1,0 +1,33 @@
+-- #607, two-hop FORWARDED shape (PR #617 craft review). A `=>`-signed function
+-- delegating to another on the same type vars — the "#23 two-hop forward" shape
+-- `forwardedObls`/`allCallObls` exists for.
+--
+-- This pins the DIAGNOSTIC COUNT, which is the whole point: an exit-code gate
+-- cannot see this bug (3 diagnostics and 1 diagnostic are both REJECT). The
+-- correct output is exactly ONE `No impl of Ix for String Bool`.
+--
+-- allCallObls used to flat-map a joint obligation vector into one synthetic 1-ary
+-- entry PER ARGUMENT, hardcoding ["a"]/TyVar "a". Each shard landed on a bound
+-- tyvar, so boundTyvarIds SUCCEEDED and `Ix a i` was registered as `Ix a` AND
+-- `Ix i` alongside the real joint entry. dedupVecObls compares whole lists, so
+-- [a], [i] and [a,i] are three distinct entries and none collapse; they then take
+-- three different checkCallObligationsU keys ("Ix,String" / "Ix,Bool" /
+-- "Ix,String,Bool"), so the vector-wide dedup cannot merge them either.
+-- Result: ONE violation reported THREE times, breaking the invariant
+-- checkCallObligationsU's own comment states — "the oracle raises ONE error per
+-- missing impl" — and `helper` displayed as `(Ix a, Ix a b, Ix b) =>` at exit 0
+-- in the SATISFIED case. A predicate with >1 dispatch mono is no longer forwarded
+-- through that channel; the joint predicate comes from declaredSchemeOblsFor.
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+twoParamOk : Ix a i => a -> i -> Int
+twoParamOk a i = ix a i
+
+helper : Ix a i => a -> i -> Int
+helper x y = twoParamOk x y
+
+main = println (helper "hi" True)

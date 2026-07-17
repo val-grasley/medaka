@@ -22,6 +22,7 @@ aliasMethodRenamesOfPath : List String -> UsePath -> List (String, String)
 aliasSchemeEntry : String -> String -> (String, Scheme) -> (String, Scheme)
 aliasSchemes : String -> String -> List (String, Scheme) -> List (String, Scheme)
 alignedMethodConstraintIds : String -> List (Int, Mono) -> Option (List Int)
+allCallOblOne : String -> List Mono -> Option Loc -> List (String, List String, Ty, Mono, Option Loc)
 allCallObls : List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc)
 allConcreteHeads : List Mono -> Bool
 allCoreFns : List String -> Bool
