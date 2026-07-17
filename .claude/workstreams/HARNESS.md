@@ -33,3 +33,31 @@ path in the prompt.
 - **STAGE COMMITS BY PATH. NEVER `git add -A`.**
 - Never run `refresh_seed.sh` / `make medaka` / `git add -A` in a tree you have not *just*
   confirmed clean (`git status --short`).
+
+---
+
+## H-2 · Shared `.git` means shared REFS, and a ref is not a fixed point
+
+Every worktree on this box is `git worktree add` off the **same** `.git` (`git rev-parse
+--git-common-dir` proves it). That means `origin/main`/`main` are **not local to your
+worktree** — they advance the instant ANY sibling agent runs `git fetch`, mid-task, with no
+signal to you (#519).
+
+**Two failures this causes, both silent:**
+1. `git diff --stat origin/main...<branch>` (or `main...<branch>`) lies about YOUR surface. A
+   sibling's fetch advances the ref underneath a running diff, so a genuine 6-file change can
+   report 78 files touched.
+2. A "prove the bug still reproduces" recipe that does `git checkout origin/main -- <file>`,
+   rebuilds, and checks the fixture still fails — then restores — now reverts to an *advanced*
+   `origin/main`, not the tree the agent actually started from. It silently rebuilds and tests
+   a DIFFERENT tree than the one under investigation, defeating the check without ever
+   erroring.
+
+**Remedy: pin the branch point once, at STEP 0, and never name a moving ref again.**
+```sh
+BASE=$(git rev-parse HEAD)        # at STEP 0, before any work
+git diff --stat $BASE...HEAD      # your REAL surface
+git checkout $BASE -- <file>      # a revert that means what it says
+```
+`git stash push -- <file>` is NOT a substitute — it silently no-ops with "No local changes to
+save" once the change is already committed.
