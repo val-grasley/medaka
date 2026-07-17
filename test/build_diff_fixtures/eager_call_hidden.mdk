@@ -1,0 +1,18 @@
+-- #553 Stage B build-path regression lock. `cell = mkVal ()` reads the `base`
+-- global only INSIDE mkVal's body; the eager-global init-order sort must follow the
+-- call to `mkVal` (via backend/emit_support.mdk's eager-reachability closure) to see
+-- that `cell` depends on `base` and emit `base` first. Pre-Stage-B the sort's edges
+-- came from a DIRECT free-var scan that did not follow calls, so `cell` initialized
+-- before `base` and the built binary printed 0 (a SILENT wrong answer, exit 0 — the
+-- S0). The golden is 42; this fixture prints 0 if Stage B is reverted.
+mkVal : Int -> Int
+mkVal _ = base
+
+cell : Int
+cell = mkVal 0
+
+base : Int
+base = 42
+
+main : <IO> Unit
+main = putStrLn (intToString cell)

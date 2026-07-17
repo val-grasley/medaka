@@ -1,5 +1,5 @@
 # META
-source_lines=240
+source_lines=364
 stages=DESUGAR,MARK
 # SOURCE
 -- BACKEND-NEUTRAL EMIT SUPPORT — helpers shared verbatim by BOTH the LLVM
@@ -20,15 +20,36 @@ import ir.core_ir.{
   CArm(..),
   CGuard(..),
 }
-import frontend.ast.{Lit(..)}
-import backend.trmc_analysis.{patVars, bindNames}
-import support.util.{contains, lookupAssoc, startsWith, fallthroughName}
+import frontend.ast.{Lit(..), Pat}
+import backend.trmc_analysis.{patVars, bindNames, bindName}
+import support.util.{
+  contains,
+  lookupAssoc,
+  startsWith,
+  fallthroughName,
+  dedup,
+  filterList,
+}
+import support.ordmap.{
+  OrdMap,
+  omEmpty,
+  omInsert,
+  omLookup,
+  omHasKey,
+  omFromNames,
+}
+import support.scc.{tarjanSCCs}
 
 -- ── eager free-var / strictness analysis ─────────────────────────────────────
--- free CVar names evaluated EAGERLY in `body`: like freeVars, but a `CLam` body is
--- NOT descended (its references are deferred to call time).  Bound names (`b`)
--- accumulate so a let/match-bound local is not mistaken for a global.  Used by the
--- value-binding init-order topo sort in both emitters.
+-- names referenced EAGERLY in `body`: like freeVars, but a `CLam` body is NOT
+-- descended (its references are deferred to call time).  Bound names (`b`)
+-- accumulate so a let/match-bound local is not mistaken for a global.  Yields the
+-- callee of an eager call regardless of head form — a `CVar` (unconstrained
+-- function or a value global) OR a `CDict name …` (a saturated call to a
+-- constrained top-level function: `+`/`<=`/… thread the callee's dicts through a
+-- `CDict` head).  A `CMethod` head is interface DISPATCH — deliberately NOT
+-- followed (see `eagerReachMap`; resolving it to impl bodies is #553/#561).  Used
+-- by the value-init-order topo sort (via `eagerReachMap`) in both emitters.
 export eagerVars : List String -> CExpr -> List String
 eagerVars _ (CLam _ _) = []
 eagerVars b (CVar x _) = if contains x b then [] else [x]
@@ -70,6 +91,9 @@ eagerVars b (CListSlice a lo hi _) = eagerVars b a
 eagerVars b (CSlice a lo hi _) = eagerVars b a
   ++ eagerVars b lo
   ++ eagerVars b hi
+-- a `CDict` head is a saturated call to the named top-level function — an eager
+-- callee edge (the routes it carries hold no CExpr, so nothing to descend).
+eagerVars b (CDict name _) = if contains name b then [] else [name]
 eagerVars _ _ = []
 
 eagerVarsList : List String -> List CExpr -> List String
@@ -113,6 +137,106 @@ eagerVarsBinds _ [] = []
 eagerVarsBinds b ((CBind _ [CClause [] rhs])::rest) = eagerVars b rhs
   ++ eagerVarsBinds b rest
 eagerVarsBinds b (_::rest) = eagerVarsBinds b rest
+
+-- ── eager-reachability closure (Stage B of #553) ─────────────────────────────
+-- The init-order topo sort needs, for each value global, the OTHER value globals
+-- it reads EAGERLY (at init time).  `eagerVars` alone gives only the ones a
+-- binding names DIRECTLY: `a = f ()` yields the callee `f`, never the globals
+-- `f`'s body reads.  So a value read HIDDEN behind a call is invisible to the
+-- sort, which emits `a` before its dependency and captures a still-zero cell —
+-- native prints a silent wrong value, wasm traps at instantiate (#553).
+--
+-- `eagerReachMap` closes that hole by following the eager call graph transitively.
+-- A call's callee is named directly in the IR — `CVar` for an unconstrained
+-- function, `CDict name …` for a saturated call to a CONSTRAINED top-level
+-- function (any use of `+`/`<=`/… routes its dicts through a `CDict` head).  Both
+-- are captured by `eagerVars` and followed here.  Only lambda bodies are NOT
+-- descended, so a reference reachable ONLY through a closure — the parser
+-- combinator ladder's mutual `do`-block refs — is correctly NOT an init-order edge
+-- and forges no false cycle.  Interface-method DISPATCH (`CMethod`) is NOT resolved
+-- to its impl bodies here: that residual (acceptance repro #4, `mk True`) and the
+-- genuine value cycle (repro #5, `x = x + 1`) are the bounded deviation #561 drains.
+--
+-- Cost: build a callee adjacency (one pass), CONDENSE strongly-connected components
+-- with `tarjanSCCs` (mutual recursion ⇒ one node, so the least fixpoint is total
+-- WITHOUT a visited-list — which is also what makes it byte-deterministic for C3b),
+-- then fold the SCC DAG once, in the reverse-topological order Tarjan emits (callees
+-- before callers).  Each reach set is restricted to value-global names, so it is
+-- bounded by the value-global count, never the far larger function count.
+
+-- names a binding references EAGERLY across ALL its clauses (params bound so a
+-- parameter never masquerades as a global; lambda bodies not descended), INCLUDING
+-- the direct callee of every eager call (`CVar`/`CDict` head — see `eagerVars`).
+bindEagerCallees : CBind -> List String
+bindEagerCallees (CBind _ clauses) = dedup (clauseEagerVars clauses)
+
+clauseEagerVars : List CClause -> List String
+clauseEagerVars [] = []
+clauseEagerVars ((CClause params body)::rest) = eagerVars (paramBound params) body
+  ++ clauseEagerVars rest
+
+paramBound : List Pat -> List String
+paramBound [] = []
+paramBound (p::rest) = patVars p ++ paramBound rest
+
+-- names of the nullary single-clause bindings — the value globals whose init
+-- order the sort decides; reach sets are restricted to these.
+valGlobalNames : List CBind -> List String
+valGlobalNames [] = []
+valGlobalNames ((CBind name [CClause [] _])::rest) = name :: valGlobalNames rest
+valGlobalNames (_::rest) = valGlobalNames rest
+
+-- eager call-graph adjacency, restricted to real top-level bind names so an edge
+-- to a constructor / not-emitted name never becomes a graph node.  Membership is
+-- tested against an OrdMap SET (`nameSet`), never a `List` — a `List` here would be
+-- O(V) per edge = O(V*E), the exact quadratic #553 warns against.
+eagerCalleesMap : OrdMap Unit -> List CBind -> OrdMap (List String)
+eagerCalleesMap _ [] = omEmpty
+eagerCalleesMap nameSet (b::rest) = omInsert
+  (bindName b)
+  (filterList (n => omHasKey n nameSet) (bindEagerCallees b))
+  (eagerCalleesMap nameSet rest)
+
+-- reach(name) = the value globals a binding eagerly reaches through calls,
+-- transitively.  Least fixpoint over the eager call graph, condensed by
+-- `tarjanSCCs` and folded in the order Tarjan emits (callees before callers), so
+-- every cross-SCC callee's reach is already computed when a caller SCC is folded.
+-- Members of one SCC share the SCC's reach set — the condensation, not a
+-- visited-list, is what makes the fixpoint well-defined (and deterministic).
+export eagerReachMap : List CBind -> OrdMap (List String)
+eagerReachMap binds =
+  let allNames = bindNames binds
+  let nameSet = omFromNames allNames omEmpty
+  let valSet = omFromNames (valGlobalNames binds) omEmpty
+  let adj = eagerCalleesMap nameSet binds
+  foldReachSCCs valSet adj (tarjanSCCs allNames adj) omEmpty
+
+-- reach(scc) = (its members' direct value-global callees) ∪ (⋃ reach(callee)).
+-- Successor SCCs are already folded and their reach is ⊆ valSet by induction, so
+-- the union stays ⊆ valSet — bounding every set to the value-global count.
+foldReachSCCs : OrdMap Unit -> OrdMap (List String) -> List (List String) -> OrdMap (List String) -> OrdMap (List String)
+foldReachSCCs _ _ [] acc = acc
+foldReachSCCs valSet adj (scc::rest) acc =
+  let direct = dedup (unionLookup scc adj)
+  let reached = dedup (filterList (n => omHasKey n valSet) direct ++ unionLookup direct acc)
+  foldReachSCCs valSet adj rest (insertReach scc reached acc)
+
+-- concat (default []) of the OrdMap lookups over a list of keys.
+unionLookup : List String -> OrdMap (List String) -> List String
+unionLookup [] _ = []
+unionLookup (n::rest) m = fromOption [] (omLookup n m) ++ unionLookup rest m
+
+insertReach : List String -> List String -> OrdMap (List String) -> OrdMap (List String)
+insertReach [] _ acc = acc
+insertReach (n::rest) reached acc =
+  insertReach rest reached (omInsert n reached acc)
+
+-- the value globals a value binding depends on EAGERLY, transitively through
+-- calls — the COMPLETE init-order edge set the topo sort consumes on both
+-- backends (replaces the old direct-only `eagerVars [] body`).
+export bindEagerReach : OrdMap (List String) -> CBind -> List String
+bindEagerReach rm (CBind name [CClause [] _]) = fromOption [] (omLookup name rm)
+bindEagerReach _ _ = []
 
 -- ── interface-method dispatch metadata (installed once per compile) ──────────
 -- method → (interface, declared-full-arity), from the program's `DInterface`
@@ -244,9 +368,11 @@ rngBound (LChar c) = charCode (arrayGetUnsafe 0 (stringToChars c))
 rngBound _ = 0
 # DESUGAR
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CStmt" true) (mem "CArm" true) (mem "CGuard" true))))
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true))))
-(DUse false (UseGroup ("backend" "trmc_analysis") ((mem "patVars" false) (mem "bindNames" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "fallthroughName" false))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Pat" false))))
+(DUse false (UseGroup ("backend" "trmc_analysis") ((mem "patVars" false) (mem "bindNames" false) (mem "bindName" false))))
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "fallthroughName" false) (mem "dedup" false) (mem "filterList" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omHasKey" false) (mem "omFromNames" false))))
+(DUse false (UseGroup ("support" "scc") ((mem "tarjanSCCs" false))))
 (DTypeSig true "eagerVars" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "eagerVars" (PWild (PCon "CLam" PWild PWild)) (EListLit))
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CVar" (PVar "x") PWild)) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "b")) (EListLit) (EListLit (EVar "x"))))
@@ -275,6 +401,7 @@ rngBound _ = 0
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CListIndex" (PVar "a") (PVar "i"))) (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "a")) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "i"))))
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CListSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "a")) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "lo"))) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "hi"))))
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "a")) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "lo"))) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "hi"))))
+(DFunDef false "eagerVars" ((PVar "b") (PCon "CDict" (PVar "name") PWild)) (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EVar "b")) (EListLit) (EListLit (EVar "name"))))
 (DFunDef false "eagerVars" (PWild PWild) (EListLit))
 (DTypeSig false "eagerVarsList" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "eagerVarsList" (PWild (PList)) (EListLit))
@@ -299,6 +426,35 @@ rngBound _ = 0
 (DFunDef false "eagerVarsBinds" (PWild (PList)) (EListLit))
 (DFunDef false "eagerVarsBinds" ((PVar "b") (PCons (PCon "CBind" PWild (PList (PCon "CClause" (PList) (PVar "rhs")))) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "rhs")) (EApp (EApp (EVar "eagerVarsBinds") (EVar "b")) (EVar "rest"))))
 (DFunDef false "eagerVarsBinds" ((PVar "b") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "eagerVarsBinds") (EVar "b")) (EVar "rest")))
+(DTypeSig false "bindEagerCallees" (TyFun (TyCon "CBind") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "bindEagerCallees" ((PCon "CBind" PWild (PVar "clauses"))) (EApp (EVar "dedup") (EApp (EVar "clauseEagerVars") (EVar "clauses"))))
+(DTypeSig false "clauseEagerVars" (TyFun (TyApp (TyCon "List") (TyCon "CClause")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "clauseEagerVars" ((PList)) (EListLit))
+(DFunDef false "clauseEagerVars" ((PCons (PCon "CClause" (PVar "params") (PVar "body")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EApp (EVar "paramBound") (EVar "params"))) (EVar "body")) (EApp (EVar "clauseEagerVars") (EVar "rest"))))
+(DTypeSig false "paramBound" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "paramBound" ((PList)) (EListLit))
+(DFunDef false "paramBound" ((PCons (PVar "p") (PVar "rest"))) (EBinOp "++" (EApp (EVar "patVars") (EVar "p")) (EApp (EVar "paramBound") (EVar "rest"))))
+(DTypeSig false "valGlobalNames" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "valGlobalNames" ((PList)) (EListLit))
+(DFunDef false "valGlobalNames" ((PCons (PCon "CBind" (PVar "name") (PList (PCon "CClause" (PList) PWild))) (PVar "rest"))) (EBinOp "::" (EVar "name") (EApp (EVar "valGlobalNames") (EVar "rest"))))
+(DFunDef false "valGlobalNames" ((PCons PWild (PVar "rest"))) (EApp (EVar "valGlobalNames") (EVar "rest")))
+(DTypeSig false "eagerCalleesMap" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "eagerCalleesMap" (PWild (PList)) (EVar "omEmpty"))
+(DFunDef false "eagerCalleesMap" ((PVar "nameSet") (PCons (PVar "b") (PVar "rest"))) (EApp (EApp (EApp (EVar "omInsert") (EApp (EVar "bindName") (EVar "b"))) (EApp (EApp (EVar "filterList") (ELam ((PVar "n")) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "nameSet")))) (EApp (EVar "bindEagerCallees") (EVar "b")))) (EApp (EApp (EVar "eagerCalleesMap") (EVar "nameSet")) (EVar "rest"))))
+(DTypeSig true "eagerReachMap" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "eagerReachMap" ((PVar "binds")) (EBlock (DoLet false false (PVar "allNames") (EApp (EVar "bindNames") (EVar "binds"))) (DoLet false false (PVar "nameSet") (EApp (EApp (EVar "omFromNames") (EVar "allNames")) (EVar "omEmpty"))) (DoLet false false (PVar "valSet") (EApp (EApp (EVar "omFromNames") (EApp (EVar "valGlobalNames") (EVar "binds"))) (EVar "omEmpty"))) (DoLet false false (PVar "adj") (EApp (EApp (EVar "eagerCalleesMap") (EVar "nameSet")) (EVar "binds"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "foldReachSCCs") (EVar "valSet")) (EVar "adj")) (EApp (EApp (EVar "tarjanSCCs") (EVar "allNames")) (EVar "adj"))) (EVar "omEmpty")))))
+(DTypeSig false "foldReachSCCs" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DFunDef false "foldReachSCCs" (PWild PWild (PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "foldReachSCCs" ((PVar "valSet") (PVar "adj") (PCons (PVar "scc") (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "direct") (EApp (EVar "dedup") (EApp (EApp (EVar "unionLookup") (EVar "scc")) (EVar "adj")))) (DoLet false false (PVar "reached") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EVar "filterList") (ELam ((PVar "n")) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "valSet")))) (EVar "direct")) (EApp (EApp (EVar "unionLookup") (EVar "direct")) (EVar "acc"))))) (DoExpr (EApp (EApp (EApp (EApp (EVar "foldReachSCCs") (EVar "valSet")) (EVar "adj")) (EVar "rest")) (EApp (EApp (EApp (EVar "insertReach") (EVar "scc")) (EVar "reached")) (EVar "acc"))))))
+(DTypeSig false "unionLookup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "unionLookup" ((PList) PWild) (EListLit))
+(DFunDef false "unionLookup" ((PCons (PVar "n") (PVar "rest")) (PVar "m")) (EBinOp "++" (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "m"))) (EApp (EApp (EVar "unionLookup") (EVar "rest")) (EVar "m"))))
+(DTypeSig false "insertReach" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "insertReach" ((PList) PWild (PVar "acc")) (EVar "acc"))
+(DFunDef false "insertReach" ((PCons (PVar "n") (PVar "rest")) (PVar "reached") (PVar "acc")) (EApp (EApp (EApp (EVar "insertReach") (EVar "rest")) (EVar "reached")) (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (EVar "reached")) (EVar "acc"))))
+(DTypeSig true "bindEagerReach" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "CBind") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "bindEagerReach" ((PVar "rm") (PCon "CBind" (PVar "name") (PList (PCon "CClause" (PList) PWild)))) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "name")) (EVar "rm"))))
+(DFunDef false "bindEagerReach" (PWild PWild) (EListLit))
 (DTypeSig true "methodIfaceTableRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "methodIfaceTableRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyCon "String")))
@@ -335,9 +491,11 @@ rngBound _ = 0
 (DFunDef false "rngBound" (PWild) (ELit (LInt 0)))
 # MARK
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CStmt" true) (mem "CArm" true) (mem "CGuard" true))))
-(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true))))
-(DUse false (UseGroup ("backend" "trmc_analysis") ((mem "patVars" false) (mem "bindNames" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "fallthroughName" false))))
+(DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Pat" false))))
+(DUse false (UseGroup ("backend" "trmc_analysis") ((mem "patVars" false) (mem "bindNames" false) (mem "bindName" false))))
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "fallthroughName" false) (mem "dedup" false) (mem "filterList" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omLookup" false) (mem "omHasKey" false) (mem "omFromNames" false))))
+(DUse false (UseGroup ("support" "scc") ((mem "tarjanSCCs" false))))
 (DTypeSig true "eagerVars" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "eagerVars" (PWild (PCon "CLam" PWild PWild)) (EListLit))
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CVar" (PVar "x") PWild)) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "b")) (EListLit) (EListLit (EVar "x"))))
@@ -366,6 +524,7 @@ rngBound _ = 0
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CListIndex" (PVar "a") (PVar "i"))) (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "a")) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "i"))))
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CListSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "a")) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "lo"))) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "hi"))))
 (DFunDef false "eagerVars" ((PVar "b") (PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "a")) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "lo"))) (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "hi"))))
+(DFunDef false "eagerVars" ((PVar "b") (PCon "CDict" (PVar "name") PWild)) (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EVar "b")) (EListLit) (EListLit (EVar "name"))))
 (DFunDef false "eagerVars" (PWild PWild) (EListLit))
 (DTypeSig false "eagerVarsList" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "eagerVarsList" (PWild (PList)) (EListLit))
@@ -390,6 +549,35 @@ rngBound _ = 0
 (DFunDef false "eagerVarsBinds" (PWild (PList)) (EListLit))
 (DFunDef false "eagerVarsBinds" ((PVar "b") (PCons (PCon "CBind" PWild (PList (PCon "CClause" (PList) (PVar "rhs")))) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EVar "b")) (EVar "rhs")) (EApp (EApp (EVar "eagerVarsBinds") (EVar "b")) (EVar "rest"))))
 (DFunDef false "eagerVarsBinds" ((PVar "b") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "eagerVarsBinds") (EVar "b")) (EVar "rest")))
+(DTypeSig false "bindEagerCallees" (TyFun (TyCon "CBind") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "bindEagerCallees" ((PCon "CBind" PWild (PVar "clauses"))) (EApp (EVar "dedup") (EApp (EVar "clauseEagerVars") (EVar "clauses"))))
+(DTypeSig false "clauseEagerVars" (TyFun (TyApp (TyCon "List") (TyCon "CClause")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "clauseEagerVars" ((PList)) (EListLit))
+(DFunDef false "clauseEagerVars" ((PCons (PCon "CClause" (PVar "params") (PVar "body")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "eagerVars") (EApp (EVar "paramBound") (EVar "params"))) (EVar "body")) (EApp (EVar "clauseEagerVars") (EVar "rest"))))
+(DTypeSig false "paramBound" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "paramBound" ((PList)) (EListLit))
+(DFunDef false "paramBound" ((PCons (PVar "p") (PVar "rest"))) (EBinOp "++" (EApp (EVar "patVars") (EVar "p")) (EApp (EVar "paramBound") (EVar "rest"))))
+(DTypeSig false "valGlobalNames" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "valGlobalNames" ((PList)) (EListLit))
+(DFunDef false "valGlobalNames" ((PCons (PCon "CBind" (PVar "name") (PList (PCon "CClause" (PList) PWild))) (PVar "rest"))) (EBinOp "::" (EVar "name") (EApp (EVar "valGlobalNames") (EVar "rest"))))
+(DFunDef false "valGlobalNames" ((PCons PWild (PVar "rest"))) (EApp (EVar "valGlobalNames") (EVar "rest")))
+(DTypeSig false "eagerCalleesMap" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "eagerCalleesMap" (PWild (PList)) (EVar "omEmpty"))
+(DFunDef false "eagerCalleesMap" ((PVar "nameSet") (PCons (PVar "b") (PVar "rest"))) (EApp (EApp (EApp (EVar "omInsert") (EApp (EVar "bindName") (EVar "b"))) (EApp (EApp (EVar "filterList") (ELam ((PVar "n")) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "nameSet")))) (EApp (EVar "bindEagerCallees") (EVar "b")))) (EApp (EApp (EVar "eagerCalleesMap") (EVar "nameSet")) (EVar "rest"))))
+(DTypeSig true "eagerReachMap" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "eagerReachMap" ((PVar "binds")) (EBlock (DoLet false false (PVar "allNames") (EApp (EVar "bindNames") (EVar "binds"))) (DoLet false false (PVar "nameSet") (EApp (EApp (EVar "omFromNames") (EVar "allNames")) (EVar "omEmpty"))) (DoLet false false (PVar "valSet") (EApp (EApp (EVar "omFromNames") (EApp (EVar "valGlobalNames") (EVar "binds"))) (EVar "omEmpty"))) (DoLet false false (PVar "adj") (EApp (EApp (EVar "eagerCalleesMap") (EVar "nameSet")) (EVar "binds"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "foldReachSCCs") (EVar "valSet")) (EVar "adj")) (EApp (EApp (EVar "tarjanSCCs") (EVar "allNames")) (EVar "adj"))) (EVar "omEmpty")))))
+(DTypeSig false "foldReachSCCs" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DFunDef false "foldReachSCCs" (PWild PWild (PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "foldReachSCCs" ((PVar "valSet") (PVar "adj") (PCons (PVar "scc") (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "direct") (EApp (EVar "dedup") (EApp (EApp (EVar "unionLookup") (EVar "scc")) (EVar "adj")))) (DoLet false false (PVar "reached") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EVar "filterList") (ELam ((PVar "n")) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "valSet")))) (EVar "direct")) (EApp (EApp (EVar "unionLookup") (EVar "direct")) (EVar "acc"))))) (DoExpr (EApp (EApp (EApp (EApp (EVar "foldReachSCCs") (EVar "valSet")) (EVar "adj")) (EVar "rest")) (EApp (EApp (EApp (EVar "insertReach") (EVar "scc")) (EVar "reached")) (EVar "acc"))))))
+(DTypeSig false "unionLookup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "unionLookup" ((PList) PWild) (EListLit))
+(DFunDef false "unionLookup" ((PCons (PVar "n") (PVar "rest")) (PVar "m")) (EBinOp "++" (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "m"))) (EApp (EApp (EVar "unionLookup") (EVar "rest")) (EVar "m"))))
+(DTypeSig false "insertReach" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "insertReach" ((PList) PWild (PVar "acc")) (EVar "acc"))
+(DFunDef false "insertReach" ((PCons (PVar "n") (PVar "rest")) (PVar "reached") (PVar "acc")) (EApp (EApp (EApp (EVar "insertReach") (EVar "rest")) (EVar "reached")) (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (EVar "reached")) (EVar "acc"))))
+(DTypeSig true "bindEagerReach" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "CBind") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "bindEagerReach" ((PVar "rm") (PCon "CBind" (PVar "name") (PList (PCon "CClause" (PList) PWild)))) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "name")) (EVar "rm"))))
+(DFunDef false "bindEagerReach" (PWild PWild) (EListLit))
 (DTypeSig true "methodIfaceTableRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "methodIfaceTableRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyCon "String")))

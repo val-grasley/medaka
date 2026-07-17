@@ -825,9 +825,9 @@ produced **two confident, checkably false claims in `llvm_emit.mdk` itself**, bo
 to the unsafe direction, both unchallenged for months:
 
 1. *"native is unaffected — it does not eagerly init these globals"* (via #543/#553's body).
-   **False.** `orderedValBinds` (`backend/llvm_emit.mdk`) is fed by `bindFreeVars` =
-   the **same shared `eagerVars`** (`backend/emit_support.mdk`) as wasm's `topoSortValBinds`,
-   with the same blind spots. Same root, both backends.
+   **False.** `orderedValBinds` (`backend/llvm_emit.mdk`) and wasm's `topoSortValBinds` are fed
+   by the **same shared `eagerVars`** / `eagerReachMap` (`backend/emit_support.mdk`), with the
+   same blind spots. Same root, both backends.
 2. *"a surviving eager forward ref is a genuine value cycle (**none arise in practice**) and
    the cell still holds 0 — but that is **exactly the interpreter's recursive-value
    semantics**"* (`llvm_emit.mdk`, the `emitVar` global-load comment). **Both halves false.**
@@ -855,28 +855,57 @@ edge set is complete, and incomplete edges fail silently at exit 0. **That is wh
 only correct engine on every known divergence — the backends implement a different language.**
 The deviation is bounded and owned by **#561**, which DELETES the sort rather than fixing it.
 
-### Status (2026-07-17, after #553 Stage A)
+### Status (2026-07-17, after #553 Stage A + Stage B)
 
 `eagerVars` was never only call-blind — it also **dropped subterms of the node it stood on**.
-Stage A restored those; the remaining arms need reachability (#553 Stage B) or thunks (#561).
+Stage A restored those. **Stage B (`eagerReachMap`, `backend/emit_support.mdk`) adds the
+SCC-condensed eager-reachability closure**: it FOLLOWS CALLS transitively so a value global read
+hidden behind a call is now an init-order edge. The two remaining arms need thunks (#561).
 
 | # | shape | eval | native | status |
 |---|---|---|---|---|
-| 1 | `mkVal _ = base` · `cell = mkVal ()` · `base = 42` | `42` | `0` silent | **OPEN** — call-hidden; needs the Stage B closure |
+| 1 | `mkVal _ = base` · `cell = mkVal ()` · `base = 42` | `42` | was `0` silent | ✅ **FIXED (Stage B)** — the reachability closure follows the call to `mkVal` and sees the `base` edge |
 | 2 | `src = "hello"` · `part = src.[lo..3]` · `lo = 1` | `el` | was `hel` silent | ✅ **FIXED (Stage A)** — `CStringSlice` now descends `lo`/`hi` |
 | 3 | `m if m < lim` guard in a global's rhs, `lim` later | `under` | was `over` silent | ✅ **FIXED (Stage A)** — `eagerVarsGuarded` replaces the guard-discarding wildcard |
-| 4 | `cell = mk True`, impl body reads a later global | `42` | `0` silent | **OPEN** — a DISPATCH edge (`CMethod`/`CDict`), not a `CVar`; a call-graph closure alone misses it |
-| 5 | `x = x + 1` | `E-CYCLIC-VALUE` exit 1 | `1` exit 0 | **OPEN** — a sort has no answer for a cycle; laziness does (#561) |
+| 4 | `cell = mk True`, impl body reads a later global | `42` | `0` silent | **OPEN (deviation, #561)** — an interface-method `CMethod` dispatch head, which Stage B does NOT resolve to impl bodies (see below) |
+| 5 | `x = x + 1` | `E-CYCLIC-VALUE` exit 1 | `1` exit 0 | **OPEN (deviation, #561)** — a sort has no answer for a genuine cycle; laziness does |
 
-**#2, #3 and #5 involve NO CALL.** The remedy WP10 stated — *"a closure that follows calls"* —
-fixes roughly half, and is corrected there.
+**#2 and #3 involve NO CALL** (Stage A, structural). **#5 involves no call** either — a real
+value cycle, which no eager order can resolve. The remedy WP10 originally stated —
+*"a closure that follows calls"* — was incomplete on two axes, both corrected: it missed the
+structural gaps (#2/#3), and it under-described the calls (see the CDict finding below).
 
-⭐ **The decisive control:** `CListSlice` descended `lo`/`hi` all along and was **green on the
-identical program** while `CStringSlice` was wrong. Same shape, neighbouring arm. That is what
-makes this **structural completeness**, not an algorithm choice — the edge was never hidden,
-it was never scanned. Pinned by `test/llvm_fixtures_typed/eager_global_{string,list}_slice.mdk`
-and `test/llvm_fixtures/eager_global_guard.mdk`; the call-hidden arm stays ledgered under
-`emitter:shared-eager-init` in `test/engine_divergence.txt` and drains when Stage B lands.
+⭐ **Stage B finding — a call is NOT just a `CVar`.** The obvious reading of "follow calls" is
+"follow `CVar`-headed applications". That fixes #1 (`mkVal` is unconstrained ⇒ its reference is
+a `CVar`) but **silently miscompiles any CONSTRAINED direct call**: `top = ping 3` where
+`ping`/`pong` use `+`/`<=` lowers `ping 3` to a **`CDict "ping" …`-headed** application (the dict
+routing), which a `CVar`-only closure drops — native then prints `0`, exit 0. So Stage B's
+`eagerVars` follows BOTH `CVar` and `CDict` callee heads (the callee is named statically in
+either). The ONE call form it does NOT follow is a **`CMethod` interface-method dispatch head**
+(#4): resolving a method route to its impl body/bodies is a strictly larger analysis, left as
+the bounded deviation #561 drains. **A `CVar`-only Stage B would have shipped a fresh S0.**
+
+⭐ **The Stage A decisive control:** `CListSlice` descended `lo`/`hi` all along and was **green
+on the identical program** while `CStringSlice` was wrong. Same shape, neighbouring arm — that
+is what made #2 **structural completeness**, not an algorithm choice. Pinned by
+`test/llvm_fixtures_typed/eager_global_{string,list}_slice.mdk` and
+`test/llvm_fixtures/eager_global_guard.mdk`. **Stage B pins:** #1's call-hidden arm promotes to
+`eval==native==wasm` clean in `test/diff_compiler_engines.sh`, its former
+`emitter:shared-eager-init` ledger row deleted; the build-path lock is
+`test/build_diff_fixtures/eager_call_hidden.mdk` (golden `42`, prints `0` if Stage B is
+reverted). #5's residual is pinned by `test/llvm_fixtures/eager_global_self_cycle.mdk`, ledgered
+`emitter:shared-eager-init` and draining via #561.
+
+### The residual, restated precisely (the bounded deviation #561 owns)
+
+Eager value-global init ordered by a topological sort is a **bounded static approximation of the
+decided lazy-nullary semantics** (`eval/eval.mdk` — `VThunk`/`forceCell`/`blackholeCell`). After
+Stages A+B the approximation is exact for every case where the dependency is reachable through
+STRUCTURE (Stage A) or through a direct `CVar`/`CDict` CALL (Stage B). It remains a deviation in
+exactly two places, both of which only laziness closes: an interface-method **dispatch** whose
+impl body reads a later global (#4), and a **genuine value cycle** (#5), which has no correct
+eager order at all. Both are recorded here and in WP10, ledgered, and drain when #561 makes these
+bindings actually lazy.
 
 ⚠️ **No gate we have can prove the edge set complete.** A parity gate is blind here (both
 backends are equally wrong), the fixpoint is native and was green throughout (in the compiler's
@@ -885,6 +914,6 @@ bundle before any reader dereferences it), the in-language suite runs under **ev
 correct engine, and `diff_compiler_perf_scaling.sh` grades **allocation**, so a pure scan is
 invisible to it **by construction**. Only removing the approximation (#561) can close this class.
 
-**Until then:** a value global whose initializer reaches another global through a **call** or a
-**method dispatch** is unsound on both backends. Keep the read in the binding's own body (pass
-it as an argument) so `eagerVars` can see it.
+**After Stages A+B:** a value global whose initializer reaches another global through STRUCTURE
+or a direct `CVar`/`CDict` **call** is now correctly ordered on both backends. Only an interface-
+**method dispatch** (#4) or a **genuine cycle** (#5) remains unsound — until #561.

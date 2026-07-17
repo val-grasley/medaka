@@ -234,7 +234,8 @@ import backend.trmc_analysis.{
 }
 import backend.private_mangle.{hashName}
 import backend.emit_support.{
-  eagerVars,
+  eagerReachMap,
+  bindEagerReach,
   methodIfaceTableRef,
   methodArityOf,
   methodIfaceOf,
@@ -1890,7 +1891,7 @@ oneGlobalI32 n = "  (global $" ++ gname n ++ " (mut i64) (i64.const 0))"
 
 emitScalarInit : List String -> List String -> List CBind -> List String
 emitScalarInit fnNames valNames groups =
-  let valBinds = topoSortValBinds (filterList isValBind groups)
+  let valBinds = topoSortValBinds groups (filterList isValBind groups)
   let valInit = flatMap (emitScalarValInit fnNames valNames) valBinds
   let mainLines = emitScalarMain fnNames valNames groups
   let valLocals = flatMap collectBindLocals valBinds
@@ -2455,40 +2456,45 @@ emitReservedCtorStruct ty ctor =
 -- A genuine EAGER value cycle (mutual recursion through nullary globals with no
 -- intervening closure — none arise in practice) keeps source order via the back-edge
 -- guard, the pre-existing behaviour.
-topoSortValBinds : List CBind -> List CBind
+-- `allBinds` is the WHOLE program (functions included) so the eager-reachability
+-- closure can follow calls; `binds` is the nullary value bindings to be ordered.
+topoSortValBinds : List CBind -> List CBind -> List CBind
 -- Intentional cross-file duplicate of the same helper in llvm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
-topoSortValBinds binds =
+topoSortValBinds allBinds binds =
+  let rm = eagerReachMap allBinds
   let names = map bindName binds
-  let (_, ordered) = topoValGo binds names binds [] []
+  let (_, ordered) = topoValGo rm binds names binds [] []
   ordered
 
 -- DFS post-order: visit each binding's value-global EAGER deps first, appending the
--- binding after them.  `visiting` guards cycles (a back-edge is skipped).
-topoValGo : List CBind -> List String -> List CBind -> List String -> List CBind -> (List String, List CBind)
-topoValGo _ _ [] done acc = (done, acc)
+-- binding after them.  `visiting` guards cycles (a back-edge is skipped).  `rm` is
+-- the eager-reachability map (Stage B of #553): a binding's edges are the value
+-- globals it eagerly reaches THROUGH calls, not merely the ones its body names.
+topoValGo : OrdMap (List String) -> List CBind -> List String -> List CBind -> List String -> List CBind -> (List String, List CBind)
+topoValGo _ _ _ [] done acc = (done, acc)
 -- Intentional cross-file duplicate of the same helper in llvm_emit.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
 -- lint-disable-next-line rule-duplicate-body
-topoValGo all names (b::rest) done acc =
-  let (done2, acc2) = topoValVisit all names b done acc []
-  topoValGo all names rest done2 acc2
+topoValGo rm all names (b::rest) done acc =
+  let (done2, acc2) = topoValVisit rm all names b done acc []
+  topoValGo rm all names rest done2 acc2
 
-topoValVisit : List CBind -> List String -> CBind -> List String -> List CBind -> List String -> (List String, List CBind)
-topoValVisit all names b done acc visiting
+topoValVisit : OrdMap (List String) -> List CBind -> List String -> CBind -> List String -> List CBind -> List String -> (List String, List CBind)
+topoValVisit rm all names b done acc visiting
   | contains (bindName b) done = (done, acc)
   | contains (bindName b) visiting = (done, acc)
   | otherwise =
-    let deps = filterList (n => contains n names) (dedupKeep (bindEagerVars b))
-    let (done2, acc2) = topoValVisitDeps all names deps done acc (bindName b :: visiting)
+    let deps = filterList (n => contains n names) (dedupKeep (bindEagerReach rm b))
+    let (done2, acc2) = topoValVisitDeps rm all names deps done acc (bindName b :: visiting)
     (bindName b :: done2, acc2 ++ [b])
 
-topoValVisitDeps : List CBind -> List String -> List String -> List String -> List CBind -> List String -> (List String, List CBind)
-topoValVisitDeps _ _ [] done acc _ = (done, acc)
-topoValVisitDeps all names (d::rest) done acc visiting = match findBindByName d all
+topoValVisitDeps : OrdMap (List String) -> List CBind -> List String -> List String -> List String -> List CBind -> List String -> (List String, List CBind)
+topoValVisitDeps _ _ _ [] done acc _ = (done, acc)
+topoValVisitDeps rm all names (d::rest) done acc visiting = match findBindByName d all
   Some db =>
-    let (done2, acc2) = topoValVisit all names db done acc visiting
-    topoValVisitDeps all names rest done2 acc2 visiting
-  None => topoValVisitDeps all names rest done acc visiting
+    let (done2, acc2) = topoValVisit rm all names db done acc visiting
+    topoValVisitDeps rm all names rest done2 acc2 visiting
+  None => topoValVisitDeps rm all names rest done acc visiting
 
 findBindByName : String -> List CBind -> Option CBind
 findBindByName _ [] = None
@@ -2498,18 +2504,14 @@ findBindByName name (b::rest) =
   else
     findBindByName name rest
 
--- the EAGER free vars of a value binding's nullary rhs (does NOT descend lambdas).
-bindEagerVars : CBind -> List String
-bindEagerVars (CBind _ [CClause [] body]) = eagerVars [] body
-bindEagerVars _ = []
-
--- `eagerVars` (eager free-var / strictness analysis) lives in
--- `backend.emit_support`, shared verbatim with the LLVM emitter.  `bindEagerVars`
--- above threads it into this backend's value-init topo sort.
+-- `eagerVars` (eager free-var / strictness analysis) and its transitive closure
+-- `eagerReachMap`/`bindEagerReach` (Stage B of #553) live in
+-- `backend.emit_support`, shared with the LLVM emitter; `bindEagerReach` above
+-- threads the reachability map into this backend's value-init topo sort.
 
 emitRefInit : Prog -> List CBind -> List String
 emitRefInit prog groups =
-  let valBinds = topoSortValBinds (filterList isValBind groups)
+  let valBinds = topoSortValBinds groups (filterList isValBind groups)
   let valInit = flatMap (emitRefValInit prog) valBinds
   let mainLines = emitRefMain prog groups
   let valLocals = flatMap collectBindLocals valBinds

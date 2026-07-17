@@ -1,34 +1,25 @@
--- WP10 (docs/spec/WASM-SEMANTICS.md §1) — the S0 SILENT arm of #553.
+-- WP10 (docs/spec/WASM-SEMANTICS.md §1) — the once-S0 SILENT arm of #553, NOW FIXED
+-- and serving as a REGRESSION LOCK. Golden is `42` (the correct answer).
 --
--- ⚠️ THIS FIXTURE IS CURRENTLY WRONG ON PURPOSE, AND ITS GOLDEN ASSERTS THE BUG.
--- `eager_global_call_hidden.eval.golden` says `0`. The RIGHT answer is 42 (eval says
--- 42). The golden records native's ACTUAL output because that is what this corpus's
--- goldens are by construction (capture_goldens.sh's llvm_eval block mirrors
--- diff_compiler_llvm.sh's worker exactly). The divergence is ledgered in
--- test/engine_divergence.txt as `emitter:shared-eager-init` and DRAINS when #553 lands:
--- at that moment native starts printing 42, this golden stops matching, and both this
--- gate and diff_compiler_engines go red until someone re-blesses. That is the point —
--- do NOT "fix" the golden to 42 while #553 is open, and do NOT delete this fixture.
+-- ✅ FIXED by #553 Stage B (2026-07-17). This fixture pinned the bug below and PROMOTED
+-- when the fix landed: eval==native==wasm now all print 42, the `emitter:shared-eager-init`
+-- ledger row was deleted, and this golden was re-blessed 0 -> 42. It now FAILS (prints 0)
+-- if Stage B is reverted, so keep it and its `42` golden. Do NOT delete this fixture.
 --
--- THE BUG. A nullary top-level binding is an eagerly-initialized global. Both backends
--- order those with a topo sort whose edges come from the SHARED `eagerVars`
--- (compiler/backend/emit_support.mdk) — a DIRECT free-var scan of the binding's own
--- body that does NOT follow calls into a callee. So `cell = mkVal ()` yields the single
--- edge `mkVal`: a FUNCTION, not a value bind, hence no edge at all. `base` is invisible,
--- source order decides, and `cell` initializes first — reading `base`'s still-zero cell.
+-- THE BUG IT LOCKS. A nullary top-level binding is an eagerly-initialized global. Both
+-- backends order those with a topo sort. Pre-Stage-B its edges came from the SHARED
+-- `eagerVars` (compiler/backend/emit_support.mdk) — a DIRECT free-var scan that did NOT
+-- follow calls into a callee. So `cell = mkVal ()` yielded the single edge `mkVal`: a
+-- FUNCTION, not a value bind, hence no edge at all. `base` was invisible, source order
+-- decided, and `cell` initialized first — reading `base`'s still-zero cell (native 0,
+-- exit 0, a silent lie; wasm trapped at instantiate, which killed the playground, #543).
+-- Stage B's `eagerReachMap` follows the call to `mkVal` and sees the `base` edge.
 --
--- Measured on the shipping engines (2026-07-16):
---   eval   -> 42          (correct)
---   native -> 0, exit 0   (a WRONG ANSWER with no diagnostic — this is the S0)
---   wasm   -> traps "dereferencing a null pointer" at instantiate (killed the whole
---             playground; that is #543, the loud arm that got this noticed at all)
--- The severity tracks the poisoned global's TYPE: an unboxed Int reads a zero word and
--- LIES; a boxed value dereferences null and segfaults (exit 139). This fixture pins the
--- SILENT one deliberately — a fix that only silenced the crash would leave the lie live.
+-- Measured on the shipping engines after Stage B (2026-07-17): eval 42, native 42, wasm 42.
 --
 -- The peer `eager_global_call_ordered.mdk` is the CONTROL: same program, `base` moved
--- ABOVE `cell`, all three engines agree on 42. It is what proves the ONLY variable here
--- is declaration order.
+-- ABOVE `cell`, all three engines agree on 42 — which proves the ONLY variable here was
+-- declaration order. Build-path twin: test/build_diff_fixtures/eager_call_hidden.mdk.
 
 mkVal _ = base
 
