@@ -440,6 +440,9 @@ recordPatFields : Parser (List RecPatField, Bool)
 recordPatFieldsFor : Token -> Parser (List RecPatField, Bool)
 recordPatFieldsRest : RecPatField -> Token -> Parser (List RecPatField, Bool)
 recordRemovedMsg : String
+reservedIdentKeyword : Token -> Option String
+reservedKeywordMsg : String -> String
+reservedOrPatFail : Token -> Parser Pat
 resultDecls : Array Token -> PR (List Decl) -> List Decl
 resultDeclsResult : String -> Array Token -> Array Int -> Int -> PR (List Decl) -> Result ParseError (List Decl)
 rhsStartIdx : Array Token -> Int -> Int -> Int -> Int
