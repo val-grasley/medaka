@@ -1,3 +1,0 @@
-g (Some a) = a
-g None = 0
-main = println (g (Some 5))

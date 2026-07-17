@@ -169,6 +169,24 @@ codeKind code
   | startsWith "rule-" code = "lint"
   | otherwise = "error"
 
+-- The reserved-keyword-in-identifier-position diagnostic (parser.mdk's
+-- `reservedKeywordMsg`) reads ``<word>` is a reserved keyword — …`.  Its stable
+-- marker is the substring "is a reserved keyword" (the word itself varies, so a
+-- prefix match won't do); the offending keyword is the text between the first
+-- pair of backticks.  Recover it here — from the message the diagnostic already
+-- carries, no re-lex — so both the code mapping and the rename `fix` can reuse it.
+isReservedKwMsg : String -> Bool
+isReservedKwMsg msg = match stringIndexOf "is a reserved keyword" msg
+  Some _ => True
+  None => False
+
+wordBetweenBackticks : String -> Option String
+wordBetweenBackticks msg = match stringIndexOf "`" msg
+  None => None
+  Some i =>
+    let rest = stringSlice (i + 1) (stringLength msg) msg
+    map (j => stringSlice 0 j rest) (stringIndexOf "`" rest)
+
 -- Stable code for a parse/lex diagnostic, recovered at the ParseError→Diag
 -- boundary from the message (a lexer TLexError surfaces as a ParseError; lexer
 -- messages map to `L-*`, specifically recognized parse errors to their own `P-*`,
@@ -202,6 +220,7 @@ parseErrCode msg
   | startsWith "Medaka has no 'while'" msg = "P-FOR-WHILE"
   | startsWith "Medaka has no 'def'" msg = "P-DEF-KEYWORD"
   | startsWith "Medaka has no statement terminator" msg = "L-SEMICOLON"
+  | isReservedKwMsg msg = "P-RESERVED-KEYWORD"
   | otherwise = "P-PARSE"
 
 -- Build the (help, fix) pair for the two parse-error hints with a clean,
@@ -224,6 +243,16 @@ parseErrHelpFix msg (Loc f sl sc el ec)
     Some (Fix (Loc f sl sc sl (sc + 2)) "!="),
   )
   | startsWith "integer literal too large for Int (max 4611686018427387903)" msg = (Some "`Int` is 63-bit, spanning [-4611686018427387904, 4611686018427387903]; 4611686018427387904 fits only as the NEGATIVE -4611686018427387904, so write it with its `-`", None)
+  -- A reserved keyword used as a name: rename by appending `_` (any reserved word
+  -- + `_` is a legal identifier).  The diagnostic's `sc` already points at the
+  -- keyword's first char, so the fix span is `[sc, sc + len(word))` — the same
+  -- `sc + stringLength …` span the did-you-mean resolve fix uses.
+  | isReservedKwMsg msg = match wordBetweenBackticks msg
+    Some w => (
+      Some "rename it — appending `_` (e.g. `\{w}_`) makes any reserved word a valid identifier",
+      Some (Fix (Loc f sl sc sl (sc + stringLength w)) "\{w}_"),
+    )
+    None => (None, None)
   | otherwise = (None, None)
 
 -- ── rendering ──────────────────────────────────────────────────────────────

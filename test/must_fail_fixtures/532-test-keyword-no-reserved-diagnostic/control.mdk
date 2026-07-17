@@ -1,4 +1,0 @@
-main =
-  let u = "ab"
-  let tst = u ++ u
-  println tst

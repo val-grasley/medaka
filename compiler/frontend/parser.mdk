@@ -1501,6 +1501,69 @@ recordPatFieldRest name TEqual = do
   pure (RecPatField name (Some p))
 recordPatFieldRest name _ = pure (RecPatField name None)
 
+-- A reserved keyword sitting where a pattern-variable / identifier is expected is
+-- ALWAYS an error — no keyword starts a legal pattern — and the generic "expected
+-- pattern" (or a downstream layout/`: or =` complaint, once `many`/`orElse` has
+-- swallowed the recoverable failure) hides the real cause: the NAME is reserved.
+-- `reservedIdentKeyword` returns the SOURCE SPELLING of any lowercase-lexeme
+-- keyword token (the full `keywordOrIdent` table in lexer.mdk — the identifiers a
+-- user would plausibly try as a name), or None for a structural token (`=`, `(`,
+-- `,`, …) whose presence is the ordinary end-of-pattern signal that MUST stay a
+-- recoverable `failP` so `many parseParamPat` / list-cons parsing terminates.
+-- `mut`/`record`/`function`/`with` are listed for a complete enumeration of the
+-- table but never reach this arm on the loader/user-facing path (`parseResult`/
+-- `parseLocatedResult`): a pre-grammar token scan —`letMutRemovedMsg` etc.,
+-- ~parser.mdk:4108— preempts them there. The narrower internal `parse`/
+-- `parseLocated` entry (self-typecheck tool) runs no such scan, so the arm can
+-- fire for them — harmless, since none is ever a legal identifier under any
+-- channel.
+-- ⚠️ `let`/`if`/`then`/`else`/`rec` are DELIBERATELY absent (→ None → recoverable
+-- "expected pattern"): `if` legitimately follows a pattern as a match-arm GUARD
+-- (`pat if cond => body`) and `rec` legitimately follows `let` (`let rec go = …`),
+-- so `many parsePatAtom` / the let-binder path MUST stay recoverable at them (a
+-- fatal here miscompiles the compiler's own guarded arms and every `let rec`); the
+-- others are implausible as identifiers and kept generic so existing handling
+-- never regresses.
+reservedIdentKeyword : Token -> Option String
+reservedIdentKeyword TWith = Some "with"
+reservedIdentKeyword TMut = Some "mut"
+reservedIdentKeyword TIn = Some "in"
+reservedIdentKeyword TMatch = Some "match"
+reservedIdentKeyword TData = Some "data"
+reservedIdentKeyword TRecord = Some "record"
+reservedIdentKeyword TInterface = Some "interface"
+reservedIdentKeyword TDefault = Some "default"
+reservedIdentKeyword TImpl = Some "impl"
+reservedIdentKeyword TImport = Some "import"
+reservedIdentKeyword TExport = Some "export"
+reservedIdentKeyword TPublic = Some "public"
+reservedIdentKeyword TWhere = Some "where"
+reservedIdentKeyword TOf = Some "of"
+reservedIdentKeyword TDo = Some "do"
+reservedIdentKeyword TAs = Some "as"
+reservedIdentKeyword TExtern = Some "extern"
+reservedIdentKeyword TRequires = Some "requires"
+reservedIdentKeyword TDeriving = Some "deriving"
+reservedIdentKeyword TType = Some "type"
+reservedIdentKeyword TNewtype = Some "newtype"
+reservedIdentKeyword TProp = Some "prop"
+reservedIdentKeyword TTest = Some "test"
+reservedIdentKeyword TBench = Some "bench"
+reservedIdentKeyword TEffect = Some "effect"
+reservedIdentKeyword TFunction = Some "function"
+reservedIdentKeyword _ = None
+
+reservedKeywordMsg : String -> String
+reservedKeywordMsg name = "`\{name}` is a reserved keyword — it can't be used as a variable or pattern name. Rename it (e.g. `\{name}_`)."
+
+-- Committed (`fatalP`) so the message reaches the user through the enclosing
+-- `many`/`orElse` (which discard a recoverable `PErr`) — the same channel
+-- `intLitTooBigMsg` uses.  A structural token stays a recoverable `failP`.
+reservedOrPatFail : Token -> Parser Pat
+reservedOrPatFail t = match reservedIdentKeyword t
+  Some name => fatalP (reservedKeywordMsg name)
+  None => failP "expected pattern"
+
 parsePatAtom : Parser Pat
 parsePatAtom = do
   t <- peekP
@@ -1520,7 +1583,7 @@ parsePatAtom = do
       upperAtomRest c t2
     TLParen => parsePatParen
     TLBracket => parsePatList
-    _ => failP "expected pattern"
+    _ => reservedOrPatFail t
 
 -- atom-level uppercase: a record pattern `C { … }` or a bare nullary ctor `C`
 -- (an *applied* ctor `C p…` needs parens at atom level, like the OCaml grammar).
