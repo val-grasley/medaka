@@ -1,5 +1,5 @@
 # META
-source_lines=8524
+source_lines=8528
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -7173,12 +7173,16 @@ emitIndexRef prog env d a i =
 -- leaning on array.new/array.copy's own traps also keeps the two backends' ABORT
 -- CONDITION identical instead of merely coincidentally-both-fatal.
 --
--- Message parity: the trap line is static bytes (wasmTrap streams them through
--- $mdk_write_err_byte at emit time), so wasm reports the code without the `[lo..hi]`
--- numbers that native's @mdk_slice_oob prints.  That asymmetry is the SAME one
--- E-INDEX-OOB already ships (eval names the index; native/wasm do not) and is ledgered in
--- test/ENGINE-DIVERGENCE.md — stderr text is not compared by the wasm gates, which
--- diff stdout.
+-- Message parity, and its one KNOWN LIMIT: the trap line is static bytes (wasmTrap
+-- streams them through $mdk_write_err_byte at emit time, no $str value and no data
+-- segment), so wasm reports the CODE but not the `[lo..hi]` numbers that eval and
+-- native's @mdk_slice_oob both print.  Printing them would need a decimal i64 formatter
+-- on the trap path, which does not exist here.  This is the same shape the tree already
+-- ships for E-INDEX-OOB (eval names the offending index; native's mdk_oob and wasm both
+-- say a bare "index out of bounds") — NOT ledgered as an engine divergence, because
+-- nothing compares stderr text across engines: diff_wasm*.sh diff stdout, and
+-- diff_compiler_engines.sh classifies any interpreter `runtime error [E-` as n/a.  The
+-- ABORT CONDITION — which is what soundness turns on — is identical on all three.
 emitSliceRef : Prog -> List String -> Int -> CExpr -> CExpr -> CExpr -> Bool -> List String
 emitSliceRef prog env d a lo hi incl =
   let sfx = intToString d
