@@ -1,5 +1,5 @@
 # META
-source_lines=15078
+source_lines=15134
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -1339,7 +1339,7 @@ routeLocalSym _ = ""
 --   • interface-method NAME → (iface name, iface typarams, declared method Ty).  Method
 --     names are globally unique (coherence), so last-write-wins omInsert accumulates to the
 --     same map the per-module `fullUniverse` rebuild produced.  EVERY reader is a by-method-
---     NAME omLookup (singleParamIfaceMethod / ifaceParamMonos / shadowVarHeadMethodScheme /
+--     NAME omLookup (singleTyparamIfaceMethod / ifaceParamMonos / shadowVarHeadMethodScheme /
 --     inferAppExpr / …), never an iteration or an emptiness test, so an extra prior-module
 --     entry that this module never names is never queried — byte-identical output.--   • the SET of interface names with ≥1 method registered.  Read only by ifaceRegistered's
 --     omHasKey existence check (core's Num/Eq/Ord are seeded on both paths, so identical).
@@ -5318,18 +5318,47 @@ shadowStandaloneHead env (EVar name)
 shadowStandaloneHead _ _ = None
 
 -- a name that is BOTH a registered importer shadow (standaloneValuesRef), has a
--- stashed standalone scheme, and names a SINGLE-param interface method.
+-- stashed standalone scheme, and names a single-TYPARAM interface's method.
+--
+-- ⚠️ IMPORTER side ⇒ singleTyparamIfaceMethod, NOT ifaceMethodName (#54).  Fork 1 keeps
+-- the per-receiver rule here, and that rule keys the impl query on the receiver's head
+-- tycon standing at the interface's ONE typaram.  A multi-typaram interface has no such
+-- correspondence to key on -- `FromEntries c e`'s `fromEntries : List e -> c` does not
+-- even take its first typaram as an argument -- so the importer arms stay scoped to the
+-- single-typaram case.  The DEFINER arms do not: under the S2 inversion they never query
+-- the impl universe at all, so they are typaram-agnostic (ifaceMethodName).
 isShadowStandalone : String -> Bool
 isShadowStandalone name = contains name driverState.value.standaloneValuesRef.value
   && isSome (lookupAssoc name perRun.value.shadowStandaloneSchemesRef.value)
-  && singleParamIfaceMethod name
+  && singleTyparamIfaceMethod name
 
 -- True iff [name]'s interface (in methodIfaceParamsRef) takes exactly ONE type
--- parameter (the receiver-directed single-arg case the oracle scopes the fallback to).
-singleParamIfaceMethod : String -> Bool
-singleParamIfaceMethod name = match omLookup name perRun.value.methodIfaceParamsRef.value
+-- parameter -- the receiver-directed case the per-receiver IMPORTER rule (Fork 1) is
+-- scoped to.
+--
+-- ⚠️ RENAMED from `singleParamIfaceMethod` (#54).  The old name said "single-PARAM
+-- method" while the body counts interface TYPE PARAMS; it stated the opposite of what it
+-- does and sent one agent down a wrong hypothesis (issue #54; SHADOW-SEMANTICS.md S8).
+-- A two-PARAM method of a one-typaram interface (`comb : a -> a -> Int`, cell d7) passes
+-- this predicate, and always did.
+singleTyparamIfaceMethod : String -> Bool
+singleTyparamIfaceMethod name = match omLookup name perRun.value.methodIfaceParamsRef.value
   Some (_, typarams, _) => listLen typarams == 1
   None => False
+
+-- True iff [name] is a method of SOME visible interface, whatever its typaram arity --
+-- the DEFINER-side gate (#54, closing S-3 / SHADOW-SEMANTICS.md row 26).
+--
+-- Under the S2 inversion a definer shadow denotes its module's own standalone
+-- unconditionally: the impl universe is never consulted, so there is no receiver-to-
+-- typaram correspondence to require, and gating the definer entry points on the typaram
+-- COUNT only excused `interface Ix a i` from the machinery.  That excusal was the S-3
+-- bug: d11 typed+emitted per-receiver (the OLD, pre-inversion semantics) while eval, which
+-- has no route stamp to follow, resolved the bare name lexically to the standalone and
+-- E-PANICked `unknown op '*'` on a `Box` -- an S7 path-agreement violation.
+ifaceMethodName : String -> Bool
+ifaceMethodName name =
+  isSome (omLookup name perRun.value.methodIfaceParamsRef.value)
 
 -- Bug C: type `toList m` for a no-impl receiver against the imported STANDALONE
 -- scheme (giving the concrete result element type, e.g. `List (String, Int)`) and
@@ -5469,10 +5498,30 @@ recordImporterShadowDicts env mname (r::rest) tx =
 -- this branch is inert there and the ordinary definerShadowNames branch governs.
 definerShadowArgHead : Expr -> Option (String, Ref Route, Ref (List Route))
 definerShadowArgHead (ELoc _ f) = definerShadowArgHead f
+-- ⚠️ #54: the two disjuncts carry DIFFERENT gates, because they serve different shadow
+-- KINDS — this predicate is a Fork-1 boundary, not an arity test.  `isDefinerShadow` is
+-- typaram-agnostic; `importerShadowOnEmitPath` is scoped to single-typaram interfaces (see
+-- its header).  Spelling the definer disjunct as `isDefinerShadow` — rather than inlining
+-- its conjuncts here — is deliberate: that function is ALSO what resolveRLocalSite routes
+-- on, and "the typing entry point and the route stamper must apply the same gate" is the
+-- P0-20 invariant.  Sharing the symbol makes them impossible to drift.
 definerShadowArgHead (EMethodAt name tagRef implRef _)
-  | singleParamIfaceMethod name && (contains name perRun.value.definerShadowNamesRef.value || routeLocalSym tagRef.value != "") = Some (name, tagRef, implRef)
+  | isDefinerShadow name || importerShadowOnEmitPath name tagRef =
+    Some (name, tagRef, implRef)
   | otherwise = None
 definerShadowArgHead _ = None
+
+-- #54: the SECOND disjunct of definerShadowArgHead — the IMPORTER-on-emit signal, kept
+-- separate because it carries a DIFFERENT gate from the definer one.  The mark pass seeds
+-- an importer shadow's route with the provider's mangled standalone symbol, so a non-empty
+-- route symbol says "this is a shadow" cross-module, where definerShadowNamesRef (keyed on
+-- module-local funDefs) cannot.  It stays scoped to singleTyparamIfaceMethod because what
+-- it feeds is Fork 1's per-receiver rule; the definer disjunct (isDefinerShadow) does not,
+-- because the S2 inversion never queries the impl universe.  On the un-mangled run/check
+-- path the route is RNone (sym ""), so this is inert there.
+importerShadowOnEmitPath : String -> Ref Route -> Bool
+importerShadowOnEmitPath name tagRef = singleTyparamIfaceMethod name
+  && routeLocalSym tagRef.value != ""
 
 -- P0-18: type `size (Box 3)` exactly as the ordinary path (against the standalone
 -- scheme the env rebound `size` to, preserving program types), but record the
@@ -5591,12 +5640,16 @@ inferDefinerShadowApp env name tagRef implRef f x =
 -- emit path recovers a mangled local funDef through the mangle map (buildDefinerShadows) —
 -- and never holds an imported standalone, so it is the reliable definer/importer test.
 --
--- The singleParamIfaceMethod conjunct mirrors definerShadowVarHead / definerShadowArgHead
--- verbatim, so every entry point agrees on which occurrences the machinery owns.  A
--- multi-TYPARAM interface (`interface Ix a i`) is deliberately still OUT of scope — that is
--- the pre-existing S-3 / row-26 bug (SHADOW-SEMANTICS.md §2), untouched by this change.
+-- The ifaceMethodName conjunct mirrors definerShadowVarHead / definerShadowArgHead's
+-- definer disjunct verbatim, so every entry point agrees on which occurrences the
+-- machinery owns.  ✅ S-3 / row 26 CLOSED (#54): a multi-TYPARAM interface
+-- (`interface Ix a i`) is now IN scope.  The gate used to be singleParamIfaceMethod (a
+-- typaram COUNT test), which excused `Ix a i` from every typing entry point and left its
+-- occurrences to ordinary dispatch — check/build kept the pre-inversion per-receiver
+-- answer while eval resolved the bare name lexically and E-PANICked (SHADOW-SEMANTICS.md
+-- S8; the S7 violation d11 pinned).
 isDefinerShadow : String -> Bool
-isDefinerShadow name = singleParamIfaceMethod name
+isDefinerShadow name = ifaceMethodName name
   && contains name perRun.value.definerShadowNamesRef.value
 
 -- S2 (THE INVERSION, 2026-07-14; SHADOW-INVERSION-DESIGN.md): True iff the shadow [name]
@@ -5796,12 +5849,15 @@ standaloneShadowDomain name = match lookupAssoc name perRun.value.definerShadowS
 -- which now flags its head (inferShadowAppHead) exactly as the definer path always did.
 -- So per-receiver importer dispatch (i4's `isEmpty [1, 2]` → `Foldable.isEmpty`) is
 -- unchanged — rows 15-20/22 do not move.
+--
+-- #54: the definer arm is gated on ifaceMethodName (typaram-agnostic) and the importer arm
+-- on singleTyparamIfaceMethod (Fork 1's per-receiver scope) — the guards are now per-arm,
+-- where they used to share one leading singleParamIfaceMethod test.
 maybeStandaloneValueMono : String -> Option Mono
 maybeStandaloneValueMono name
   | toggles.value.shadowHeadCtxRef.value = None
-  | not (singleParamIfaceMethod name) = None
-  | contains name perRun.value.definerShadowNamesRef.value =
-    standaloneShadowScheme name
+  | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = standaloneShadowScheme name
+  | not (singleTyparamIfaceMethod name) = None
   | otherwise = importerStandaloneValueScheme name
 
 -- #411: is [name] an occurrence whose TYPE maybeStandaloneValueMono pins to the
@@ -5823,9 +5879,8 @@ maybeStandaloneValueMono name
 standaloneValuePinned : String -> Bool
 standaloneValuePinned name
   | toggles.value.shadowHeadCtxRef.value = False
-  | not (singleParamIfaceMethod name) = False
-  | contains name perRun.value.definerShadowNamesRef.value =
-    isSome (standaloneShadowScheme name)
+  | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = isSome (standaloneShadowScheme name)
+  | not (singleTyparamIfaceMethod name) = False
   | otherwise = isSome (importerStandaloneValueScheme name)
 
 -- #411: the IMPORTED standalone's full scheme, freshly instantiated (`Int -> Int`), for a
@@ -5850,12 +5905,13 @@ standaloneShadowScheme name = map
 -- P0-19: peel an application head to a definer-shadow interface-method occurrence on
 -- the UN-MARKED path (the `check` pipeline runs no marker, so the head is a bare
 -- `EVar`, not the `EMethodAt` that definerShadowArgHead matches on run/build).  Same
--- guard as definerShadowArgHead: a single-param interface method whose name is a
--- module-local standalone (definerShadowNamesRef).
+-- guard as definerShadowArgHead's DEFINER disjunct: an interface method (of an interface
+-- of ANY typaram arity, #54) whose name is a module-local standalone
+-- (definerShadowNamesRef).
 definerShadowVarHead : Expr -> Option String
 definerShadowVarHead (ELoc _ f) = definerShadowVarHead f
 definerShadowVarHead (EVar name)
-  | singleParamIfaceMethod name && contains name perRun.value.definerShadowNamesRef.value = Some name
+  | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = Some name
   | otherwise = None
 definerShadowVarHead _ = None
 
@@ -8201,12 +8257,12 @@ resolveRLocalSite prog implTable keyTable name tagRef am sym monos ifaces = matc
   -- am is the ACTUAL argument type (inferDefinerShadowApp records it), not the standalone's
   -- declared domain, so the importer arm's impl query is still meaningful.
   --
-  -- ⚠️ isDefinerShadow — NOT a bare definerShadowNamesRef membership test.  That ref is
-  -- populated for a multi-TYPARAM interface's method too, but EVERY typing entry point is
-  -- gated on singleParamIfaceMethod and so leaves such an occurrence to ordinary dispatch
-  -- (the open S-3 / row-26 bug).  Forcing RLocal here without the same gate would route a
-  -- site whose TYPE came from the dispatch path — route and type disagreeing is exactly the
-  -- P0-20 bug class.  Keep the two gates identical.
+  -- ⚠️ isDefinerShadow — NOT a bare definerShadowNamesRef membership test.  It carries the
+  -- SAME gate every typing entry point applies (ifaceMethodName, #54; it was the typaram-
+  -- COUNT test singleParamIfaceMethod until S-3 / row 26 was closed).  Routing here on a
+  -- gate the typing entry points do not share would route a site whose TYPE came from the
+  -- dispatch path — route and type disagreeing is exactly the P0-20 bug class.  Keep the
+  -- two gates identical.
   Some tag => stampRLocalOrFallback
     (not (isDefinerShadow name) && implExistsForHead keyTable name tag)
     tagRef sym
@@ -16322,9 +16378,11 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "shadowStandaloneHead" ((PVar "env") (PCon "EVar" (PVar "name"))) (EIf (EApp (EVar "isShadowStandalone") (EVar "name")) (EApp (EVar "Some") (ETuple (EVar "name") (EListLit))) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "shadowStandaloneHead" (PWild PWild) (EVar "None"))
 (DTypeSig false "isShadowStandalone" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isShadowStandalone" ((PVar "name")) (EBinOp "&&" (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value")) (EApp (EVar "isSome") (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value")))) (EApp (EVar "singleParamIfaceMethod") (EVar "name"))))
-(DTypeSig false "singleParamIfaceMethod" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "singleParamIfaceMethod" ((PVar "name")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "typarams") PWild)) () (EBinOp "==" (EApp (EVar "listLen") (EVar "typarams")) (ELit (LInt 1)))) (arm (PCon "None") () (EVar "False"))))
+(DFunDef false "isShadowStandalone" ((PVar "name")) (EBinOp "&&" (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value")) (EApp (EVar "isSome") (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value")))) (EApp (EVar "singleTyparamIfaceMethod") (EVar "name"))))
+(DTypeSig false "singleTyparamIfaceMethod" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "singleTyparamIfaceMethod" ((PVar "name")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "typarams") PWild)) () (EBinOp "==" (EApp (EVar "listLen") (EVar "typarams")) (ELit (LInt 1)))) (arm (PCon "None") () (EVar "False"))))
+(DTypeSig false "ifaceMethodName" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "ifaceMethodName" ((PVar "name")) (EApp (EVar "isSome") (EApp (EApp (EVar "omLookup") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value"))))
 (DTypeSig false "inferShadowApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Ref") (TyCon "Route"))) (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono")))))))
 (DFunDef false "inferShadowApp" ((PVar "env") (PVar "mname") (PVar "tagRefs") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "tx") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "importerShadowDomain") (EVar "mname"))) (EVar "tx")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "mname")) (EVar "tx"))) (EVar "dloc"))) (DoExpr (EMatch (EApp (EVar "headTyconMono") (EVar "tx")) (arm (PCon "Some" (PVar "head")) () (EIf (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowKeyTableRef") "value")) (EVar "mname")) (EVar "head")) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EVar "inferShadowAppHead") (EVar "env")) (EVar "f"))) (EVar "tx")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mname")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value")) (arm (PCon "Some" (PVar "sscheme")) () (EBlock (DoLet false false (PVar "smono") (EApp (EVar "instantiate") (EVar "sscheme"))) (DoLet false false (PVar "r") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "eff") (EApp (EVar "openRow") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "smono")) (EApp (EApp (EApp (EVar "TFun") (EVar "tx")) (EVar "eff")) (EVar "r")))) (DoLet false false PWild (EApp (EApp (EVar "performEffect") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "curEffect")) (EVar "eff"))) (DoLet false false PWild (EApp (EVar "stampRoutes") (EVar "tagRefs"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordImporterShadowDicts") (EVar "env")) (EVar "mname")) (EVar "tagRefs")) (EVar "tx"))) (DoExpr (EVar "r")))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EVar "inferShadowAppHead") (EVar "env")) (EVar "f"))) (EVar "tx")))))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EVar "inferShadowAppHead") (EVar "env")) (EVar "f"))) (EVar "tx")))))))
 (DTypeSig false "inferShadowAppHead" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Expr") (TyCon "Mono"))))
@@ -16336,12 +16394,14 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "recordImporterShadowDicts" ((PVar "env") (PVar "mname") (PCons (PVar "r") (PVar "rest")) (PVar "tx")) (EBlock (DoLet false false (PVar "dicts") (EApp (EApp (EApp (EApp (EVar "shadowStandaloneDictsWith") (EApp (EApp (EVar "lookupAssoc") (EVar "mname")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value"))) (EVar "mname")) (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "r") "value"))) (EVar "tx"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EVar "PendingEntry") (EVar "mname")) (EVar "r")) (EVar "tx")) (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "SKRLocal") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "r") "value"))) (EVar "True")) (EApp (EVar "fst") (EVar "dicts"))) (EApp (EVar "snd") (EVar "dicts")))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites") "value")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "recordImporterShadowDicts") (EVar "env")) (EVar "mname")) (EVar "rest")) (EVar "tx")))))
 (DTypeSig false "definerShadowArgHead" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyCon "Route")) (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route")))))))
 (DFunDef false "definerShadowArgHead" ((PCon "ELoc" PWild (PVar "f"))) (EApp (EVar "definerShadowArgHead") (EVar "f")))
-(DFunDef false "definerShadowArgHead" ((PCon "EMethodAt" (PVar "name") (PVar "tagRef") (PVar "implRef") PWild)) (EIf (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EBinOp "!=" (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value")) (ELit (LString ""))))) (EApp (EVar "Some") (ETuple (EVar "name") (EVar "tagRef") (EVar "implRef"))) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "definerShadowArgHead" ((PCon "EMethodAt" (PVar "name") (PVar "tagRef") (PVar "implRef") PWild)) (EIf (EBinOp "||" (EApp (EVar "isDefinerShadow") (EVar "name")) (EApp (EApp (EVar "importerShadowOnEmitPath") (EVar "name")) (EVar "tagRef"))) (EApp (EVar "Some") (ETuple (EVar "name") (EVar "tagRef") (EVar "implRef"))) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "definerShadowArgHead" (PWild) (EVar "None"))
+(DTypeSig false "importerShadowOnEmitPath" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyCon "Bool"))))
+(DFunDef false "importerShadowOnEmitPath" ((PVar "name") (PVar "tagRef")) (EBinOp "&&" (EApp (EVar "singleTyparamIfaceMethod") (EVar "name")) (EBinOp "!=" (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value")) (ELit (LString "")))))
 (DTypeSig false "inferDefinerShadowApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))))
 (DFunDef false "inferDefinerShadowApp" ((PVar "env") (PVar "name") (PVar "tagRef") (PVar "implRef") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "sym") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EApp (EApp (EVar "shadowDomainFor") (EVar "env")) (EVar "name")) (EVar "sym"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoLet false false (PVar "dispatches") (EApp (EApp (EVar "definerReceiverDispatches") (EVar "name")) (EVar "xt"))) (DoLet false false (PVar "savedRLocal") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressRLocalRecord") "value")) (DoLet false false (PVar "savedArgStamp") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressArgStamp") "value")) (DoLet false false (PVar "savedShadowHead") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value")) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressRLocalRecord")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressArgStamp")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef")) (EVar "True"))) (DoLet false false (PVar "ft") (EIf (EVar "dispatches") (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f")) (EApp (EApp (EApp (EVar "definerShadowHeadType") (EVar "env")) (EVar "sym")) (EVar "f")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef")) (EVar "savedShadowHead"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressRLocalRecord")) (EVar "savedRLocal"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressArgStamp")) (EVar "savedArgStamp"))) (DoLet false false (PVar "dicts") (EIf (EBinOp "||" (EVar "dispatches") (EVar "isDictVar")) (ETuple (EListLit) (EListLit)) (EApp (EApp (EApp (EApp (EVar "shadowStandaloneDicts") (EVar "env")) (EVar "name")) (EVar "sym")) (EVar "xt")))) (DoLet false false PWild (EIf (EVar "isDictVar") (ELit LUnit) (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EVar "PendingEntry") (EVar "name")) (EVar "tagRef")) (EVar "xt")) (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "SKRLocal") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (EApp (EVar "not") (EVar "dispatches"))) (EApp (EVar "fst") (EVar "dicts"))) (EApp (EVar "snd") (EVar "dicts")))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites") "value"))))) (DoLet false false PWild (EMatch (EApp (EVar "argDispatchOf") (EVar "name")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingArgStamps")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EVar "PendingEntry") (EVar "name")) (EVar "tagRef")) (EVar "xt")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn") "value")) (EApp (EVar "SKArg") (EVar "implRef"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingArgStamps") "value")))) (arm (PCon "None") () (ELit LUnit)))) (DoLet false false PWild (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "enforceStandaloneDomain") (EVar "env")) (EVar "name")) (EVar "xt")) (EVar "dloc")) (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EVar "ft")) (EVar "xt")))))
 (DTypeSig false "isDefinerShadow" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isDefinerShadow" ((PVar "name")) (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))))
+(DFunDef false "isDefinerShadow" ((PVar "name")) (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))))
 (DTypeSig false "definerReceiverDispatches" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Bool"))))
 (DFunDef false "definerReceiverDispatches" ((PVar "name") (PVar "xt")) (EIf (EApp (EVar "isDefinerShadow") (EVar "name")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (EIf (EVar "otherwise") (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head"))) (arm (PCon "None") () (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "definerReceiverIsDictVar" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Bool"))))
@@ -16372,16 +16432,16 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "standaloneShadowDomain" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
 (DFunDef false "standaloneShadowDomain" ((PVar "name")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowSigsRef") "value")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "ty")) () (EMatch (EApp (EVar "normalize") (EApp (EVar "instantiate") (EApp (EVar "sigToScheme") (EVar "ty")))) (arm (PCon "TFun" (PVar "a") PWild PWild) () (EApp (EVar "Some") (EVar "a"))) (arm PWild () (EVar "None"))))))
 (DTypeSig false "maybeStandaloneValueMono" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
-(DFunDef false "maybeStandaloneValueMono" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "None") (EIf (EApp (EVar "not") (EApp (EVar "singleParamIfaceMethod") (EVar "name"))) (EVar "None") (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EVar "standaloneShadowScheme") (EVar "name")) (EIf (EVar "otherwise") (EApp (EVar "importerStandaloneValueScheme") (EVar "name")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
+(DFunDef false "maybeStandaloneValueMono" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "None") (EIf (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "standaloneShadowScheme") (EVar "name")) (EIf (EApp (EVar "not") (EApp (EVar "singleTyparamIfaceMethod") (EVar "name"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EVar "importerStandaloneValueScheme") (EVar "name")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "standaloneValuePinned" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "standaloneValuePinned" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "False") (EIf (EApp (EVar "not") (EApp (EVar "singleParamIfaceMethod") (EVar "name"))) (EVar "False") (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EVar "isSome") (EApp (EVar "standaloneShadowScheme") (EVar "name"))) (EIf (EVar "otherwise") (EApp (EVar "isSome") (EApp (EVar "importerStandaloneValueScheme") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
+(DFunDef false "standaloneValuePinned" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "False") (EIf (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "isSome") (EApp (EVar "standaloneShadowScheme") (EVar "name"))) (EIf (EApp (EVar "not") (EApp (EVar "singleTyparamIfaceMethod") (EVar "name"))) (EVar "False") (EIf (EVar "otherwise") (EApp (EVar "isSome") (EApp (EVar "importerStandaloneValueScheme") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "importerStandaloneValueScheme" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
 (DFunDef false "importerStandaloneValueScheme" ((PVar "name")) (EApp (EApp (EVar "map") (EVar "instantiate")) (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value"))))
 (DTypeSig false "standaloneShadowScheme" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
 (DFunDef false "standaloneShadowScheme" ((PVar "name")) (EApp (EApp (EVar "map") (ELam ((PVar "ty")) (EApp (EVar "instantiate") (EApp (EVar "sigToScheme") (EVar "ty"))))) (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowSigsRef") "value"))))
 (DTypeSig false "definerShadowVarHead" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "definerShadowVarHead" ((PCon "ELoc" PWild (PVar "f"))) (EApp (EVar "definerShadowVarHead") (EVar "f")))
-(DFunDef false "definerShadowVarHead" ((PCon "EVar" (PVar "name"))) (EIf (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "Some") (EVar "name")) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "definerShadowVarHead" ((PCon "EVar" (PVar "name"))) (EIf (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "Some") (EVar "name")) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "definerShadowVarHead" (PWild) (EVar "None"))
 (DTypeSig false "inferDefinerShadowVarApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
 (DFunDef false "inferDefinerShadowVarApp" ((PVar "env") (PVar "name") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "standaloneShadowDomain") (EVar "name"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoExpr (EIf (EVar "isDictVar") (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc"))))))
@@ -19861,9 +19921,11 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "shadowStandaloneHead" ((PVar "env") (PCon "EVar" (PVar "name"))) (EIf (EApp (EVar "isShadowStandalone") (EVar "name")) (EApp (EVar "Some") (ETuple (EVar "name") (EListLit))) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "shadowStandaloneHead" (PWild PWild) (EVar "None"))
 (DTypeSig false "isShadowStandalone" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isShadowStandalone" ((PVar "name")) (EBinOp "&&" (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value")) (EApp (EVar "isSome") (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value")))) (EApp (EVar "singleParamIfaceMethod") (EVar "name"))))
-(DTypeSig false "singleParamIfaceMethod" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "singleParamIfaceMethod" ((PVar "name")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "typarams") PWild)) () (EBinOp "==" (EApp (EVar "listLen") (EVar "typarams")) (ELit (LInt 1)))) (arm (PCon "None") () (EVar "False"))))
+(DFunDef false "isShadowStandalone" ((PVar "name")) (EBinOp "&&" (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value")) (EApp (EVar "isSome") (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value")))) (EApp (EVar "singleTyparamIfaceMethod") (EVar "name"))))
+(DTypeSig false "singleTyparamIfaceMethod" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "singleTyparamIfaceMethod" ((PVar "name")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "Some" (PTuple PWild (PVar "typarams") PWild)) () (EBinOp "==" (EApp (EVar "listLen") (EVar "typarams")) (ELit (LInt 1)))) (arm (PCon "None") () (EVar "False"))))
+(DTypeSig false "ifaceMethodName" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "ifaceMethodName" ((PVar "name")) (EApp (EVar "isSome") (EApp (EApp (EVar "omLookup") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value"))))
 (DTypeSig false "inferShadowApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Ref") (TyCon "Route"))) (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono")))))))
 (DFunDef false "inferShadowApp" ((PVar "env") (PVar "mname") (PVar "tagRefs") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "tx") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "importerShadowDomain") (EVar "mname"))) (EVar "tx")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "mname")) (EVar "tx"))) (EVar "dloc"))) (DoExpr (EMatch (EApp (EVar "headTyconMono") (EVar "tx")) (arm (PCon "Some" (PVar "head")) () (EIf (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowKeyTableRef") "value")) (EVar "mname")) (EVar "head")) (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EVar "inferShadowAppHead") (EVar "env")) (EVar "f"))) (EVar "tx")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mname")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value")) (arm (PCon "Some" (PVar "sscheme")) () (EBlock (DoLet false false (PVar "smono") (EApp (EVar "instantiate") (EVar "sscheme"))) (DoLet false false (PVar "r") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "eff") (EApp (EVar "openRow") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "smono")) (EApp (EApp (EApp (EVar "TFun") (EVar "tx")) (EVar "eff")) (EVar "r")))) (DoLet false false PWild (EApp (EApp (EVar "performEffect") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "curEffect")) (EVar "eff"))) (DoLet false false PWild (EApp (EVar "stampRoutes") (EVar "tagRefs"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordImporterShadowDicts") (EVar "env")) (EVar "mname")) (EVar "tagRefs")) (EVar "tx"))) (DoExpr (EVar "r")))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EVar "inferShadowAppHead") (EVar "env")) (EVar "f"))) (EVar "tx")))))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EVar "inferShadowAppHead") (EVar "env")) (EVar "f"))) (EVar "tx")))))))
 (DTypeSig false "inferShadowAppHead" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Expr") (TyCon "Mono"))))
@@ -19875,12 +19937,14 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "recordImporterShadowDicts" ((PVar "env") (PVar "mname") (PCons (PVar "r") (PVar "rest")) (PVar "tx")) (EBlock (DoLet false false (PVar "dicts") (EApp (EApp (EApp (EApp (EVar "shadowStandaloneDictsWith") (EApp (EApp (EVar "lookupAssoc") (EVar "mname")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value"))) (EVar "mname")) (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "r") "value"))) (EVar "tx"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EVar "PendingEntry") (EVar "mname")) (EVar "r")) (EVar "tx")) (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "SKRLocal") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "r") "value"))) (EVar "True")) (EApp (EVar "fst") (EVar "dicts"))) (EApp (EVar "snd") (EVar "dicts")))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites") "value")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "recordImporterShadowDicts") (EVar "env")) (EVar "mname")) (EVar "rest")) (EVar "tx")))))
 (DTypeSig false "definerShadowArgHead" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "Ref") (TyCon "Route")) (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route")))))))
 (DFunDef false "definerShadowArgHead" ((PCon "ELoc" PWild (PVar "f"))) (EApp (EVar "definerShadowArgHead") (EVar "f")))
-(DFunDef false "definerShadowArgHead" ((PCon "EMethodAt" (PVar "name") (PVar "tagRef") (PVar "implRef") PWild)) (EIf (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EBinOp "!=" (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value")) (ELit (LString ""))))) (EApp (EVar "Some") (ETuple (EVar "name") (EVar "tagRef") (EVar "implRef"))) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "definerShadowArgHead" ((PCon "EMethodAt" (PVar "name") (PVar "tagRef") (PVar "implRef") PWild)) (EIf (EBinOp "||" (EApp (EVar "isDefinerShadow") (EVar "name")) (EApp (EApp (EVar "importerShadowOnEmitPath") (EVar "name")) (EVar "tagRef"))) (EApp (EVar "Some") (ETuple (EVar "name") (EVar "tagRef") (EVar "implRef"))) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "definerShadowArgHead" (PWild) (EVar "None"))
+(DTypeSig false "importerShadowOnEmitPath" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyCon "Bool"))))
+(DFunDef false "importerShadowOnEmitPath" ((PVar "name") (PVar "tagRef")) (EBinOp "&&" (EApp (EVar "singleTyparamIfaceMethod") (EVar "name")) (EBinOp "!=" (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value")) (ELit (LString "")))))
 (DTypeSig false "inferDefinerShadowApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))))
 (DFunDef false "inferDefinerShadowApp" ((PVar "env") (PVar "name") (PVar "tagRef") (PVar "implRef") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "sym") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EApp (EApp (EVar "shadowDomainFor") (EVar "env")) (EVar "name")) (EVar "sym"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoLet false false (PVar "dispatches") (EApp (EApp (EVar "definerReceiverDispatches") (EVar "name")) (EVar "xt"))) (DoLet false false (PVar "savedRLocal") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressRLocalRecord") "value")) (DoLet false false (PVar "savedArgStamp") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressArgStamp") "value")) (DoLet false false (PVar "savedShadowHead") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value")) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressRLocalRecord")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressArgStamp")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef")) (EVar "True"))) (DoLet false false (PVar "ft") (EIf (EVar "dispatches") (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f")) (EApp (EApp (EApp (EVar "definerShadowHeadType") (EVar "env")) (EVar "sym")) (EVar "f")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef")) (EVar "savedShadowHead"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressRLocalRecord")) (EVar "savedRLocal"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "toggles") "value") "suppressArgStamp")) (EVar "savedArgStamp"))) (DoLet false false (PVar "dicts") (EIf (EBinOp "||" (EVar "dispatches") (EVar "isDictVar")) (ETuple (EListLit) (EListLit)) (EApp (EApp (EApp (EApp (EVar "shadowStandaloneDicts") (EVar "env")) (EVar "name")) (EVar "sym")) (EVar "xt")))) (DoLet false false PWild (EIf (EVar "isDictVar") (ELit LUnit) (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EVar "PendingEntry") (EVar "name")) (EVar "tagRef")) (EVar "xt")) (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "SKRLocal") (EApp (EVar "routeLocalSym") (EFieldAccess (EVar "tagRef") "value"))) (EApp (EVar "not") (EVar "dispatches"))) (EApp (EVar "fst") (EVar "dicts"))) (EApp (EVar "snd") (EVar "dicts")))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingRLocalSites") "value"))))) (DoLet false false PWild (EMatch (EApp (EVar "argDispatchOf") (EVar "name")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingArgStamps")) (EBinOp "::" (EApp (EApp (EApp (EApp (EApp (EVar "PendingEntry") (EVar "name")) (EVar "tagRef")) (EVar "xt")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn") "value")) (EApp (EVar "SKArg") (EVar "implRef"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingArgStamps") "value")))) (arm (PCon "None") () (ELit LUnit)))) (DoLet false false PWild (EIf (EBinOp "==" (EVar "sym") (ELit (LString ""))) (EApp (EApp (EApp (EApp (EVar "enforceStandaloneDomain") (EVar "env")) (EVar "name")) (EVar "xt")) (EVar "dloc")) (ELit LUnit))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EVar "ft")) (EVar "xt")))))
 (DTypeSig false "isDefinerShadow" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "isDefinerShadow" ((PVar "name")) (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))))
+(DFunDef false "isDefinerShadow" ((PVar "name")) (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))))
 (DTypeSig false "definerReceiverDispatches" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Bool"))))
 (DFunDef false "definerReceiverDispatches" ((PVar "name") (PVar "xt")) (EIf (EApp (EVar "isDefinerShadow") (EVar "name")) (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")) (EIf (EVar "otherwise") (EMatch (EApp (EVar "headTyconMono") (EVar "xt")) (arm (PCon "Some" (PVar "head")) () (EApp (EApp (EApp (EVar "implExistsForHead") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowKeyTableRef") "value")) (EVar "name")) (EVar "head"))) (arm (PCon "None") () (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "definerReceiverIsDictVar" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Bool"))))
@@ -19911,16 +19975,16 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "standaloneShadowDomain" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
 (DFunDef false "standaloneShadowDomain" ((PVar "name")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowSigsRef") "value")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "ty")) () (EMatch (EApp (EVar "normalize") (EApp (EVar "instantiate") (EApp (EVar "sigToScheme") (EVar "ty")))) (arm (PCon "TFun" (PVar "a") PWild PWild) () (EApp (EVar "Some") (EVar "a"))) (arm PWild () (EVar "None"))))))
 (DTypeSig false "maybeStandaloneValueMono" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
-(DFunDef false "maybeStandaloneValueMono" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "None") (EIf (EApp (EVar "not") (EApp (EVar "singleParamIfaceMethod") (EVar "name"))) (EVar "None") (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EVar "standaloneShadowScheme") (EVar "name")) (EIf (EVar "otherwise") (EApp (EVar "importerStandaloneValueScheme") (EVar "name")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
+(DFunDef false "maybeStandaloneValueMono" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "None") (EIf (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "standaloneShadowScheme") (EVar "name")) (EIf (EApp (EVar "not") (EApp (EVar "singleTyparamIfaceMethod") (EVar "name"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EVar "importerStandaloneValueScheme") (EVar "name")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "standaloneValuePinned" (TyFun (TyCon "String") (TyCon "Bool")))
-(DFunDef false "standaloneValuePinned" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "False") (EIf (EApp (EVar "not") (EApp (EVar "singleParamIfaceMethod") (EVar "name"))) (EVar "False") (EIf (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EVar "isSome") (EApp (EVar "standaloneShadowScheme") (EVar "name"))) (EIf (EVar "otherwise") (EApp (EVar "isSome") (EApp (EVar "importerStandaloneValueScheme") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
+(DFunDef false "standaloneValuePinned" ((PVar "name")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "toggles") "value") "shadowHeadCtxRef") "value") (EVar "False") (EIf (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "isSome") (EApp (EVar "standaloneShadowScheme") (EVar "name"))) (EIf (EApp (EVar "not") (EApp (EVar "singleTyparamIfaceMethod") (EVar "name"))) (EVar "False") (EIf (EVar "otherwise") (EApp (EVar "isSome") (EApp (EVar "importerStandaloneValueScheme") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "importerStandaloneValueScheme" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
 (DFunDef false "importerStandaloneValueScheme" ((PVar "name")) (EApp (EApp (EMethodRef "map") (EVar "instantiate")) (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "shadowStandaloneSchemesRef") "value"))))
 (DTypeSig false "standaloneShadowScheme" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "Mono"))))
 (DFunDef false "standaloneShadowScheme" ((PVar "name")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "ty")) (EApp (EVar "instantiate") (EApp (EVar "sigToScheme") (EVar "ty"))))) (EApp (EApp (EVar "lookupAssoc") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowSigsRef") "value"))))
 (DTypeSig false "definerShadowVarHead" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "definerShadowVarHead" ((PCon "ELoc" PWild (PVar "f"))) (EApp (EVar "definerShadowVarHead") (EVar "f")))
-(DFunDef false "definerShadowVarHead" ((PCon "EVar" (PVar "name"))) (EIf (EBinOp "&&" (EApp (EVar "singleParamIfaceMethod") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "Some") (EVar "name")) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "definerShadowVarHead" ((PCon "EVar" (PVar "name"))) (EIf (EBinOp "&&" (EApp (EVar "ifaceMethodName") (EVar "name")) (EApp (EApp (EVar "contains") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value"))) (EApp (EVar "Some") (EVar "name")) (EIf (EVar "otherwise") (EVar "None") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "definerShadowVarHead" (PWild) (EVar "None"))
 (DTypeSig false "inferDefinerShadowVarApp" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
 (DFunDef false "inferDefinerShadowVarApp" ((PVar "env") (PVar "name") (PVar "f") (PVar "x")) (EBlock (DoLet false false (PVar "dloc") (EFieldAccess (EVar "currentLoc") "value")) (DoLet false false (PVar "xt") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "x"))) (DoLet false false (PVar "isDictVar") (EApp (EApp (EVar "definerReceiverIsDictVar") (EVar "name")) (EVar "xt"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "groundShadowReceiver") (EApp (EVar "standaloneShadowDomain") (EVar "name"))) (EVar "xt")) (EVar "isDictVar")) (EVar "dloc"))) (DoExpr (EIf (EVar "isDictVar") (EApp (EApp (EApp (EApp (EVar "inferApp") (EApp (EVar "envAlphaLets") (EVar "env"))) (EApp (EApp (EVar "EApp") (EVar "f")) (EVar "x"))) (EApp (EApp (EApp (EVar "shadowVarHeadMethodScheme") (EVar "env")) (EVar "name")) (EVar "f"))) (EVar "xt")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferDefinerStandaloneVarApp") (EVar "env")) (EVar "name")) (EVar "f")) (EVar "x")) (EVar "xt")) (EVar "dloc"))))))

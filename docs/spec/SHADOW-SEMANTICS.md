@@ -4,8 +4,15 @@
 (`test/diff_compiler_shadow_semantics.sh`): it runs every fixture in
 `test/shadow_fixtures/` through `check` + `run` + `build`, asserting each cell's
 verdict AND (per **S7**) that `run` and the built binary print the same pinned
-value. Every cell is conformant except **S-3** (row 26, multi-typaram interface),
-which is pinned as a KNOWN-BAD ledger row so it fails the day it is fixed. Until
+value. **No cell diverges any more** — S-3 (row 26, multi-typaram interface), the
+last **BUG**, was closed on 2026-07-17 (#54), and its KNOWN-BAD ledger row did
+exactly what a ledger row is for: it went RED the day the bug was fixed. One **GAP**
+remains (row 29 / `d21`: S5's dict-bound-receiver carve-out is unreachable at
+multi-typaram width — **the cause is in the parser, [#604](https://github.com/MedakaLang/medaka/issues/604),
+not in the shadow machinery**), plus one **UNVERIFIED** row (row 30, multi-typaram
+*importer* shadows — nobody has run it). ⚠️ **`0 BUG` in the tally below means only
+"no two engines disagree" — that is an observability property, not a health claim; see
+the note under the matrix, and S7's own warning.** Until
 this gate existed the corpus below **ran nowhere**, and the matrix's own Status
 column had silently gone stale in the OK direction (see the note under §2).
 **Scope:** a bare name `N` that is BOTH a top-level standalone function AND an
@@ -162,6 +169,60 @@ Given an occurrence of bare name `N`:
   (`definerReceiverIsDictVar`; gated: `accept_constrained_receiver_shadow` → `14`,
   and `definer_shadow_nway`, which dispatches N-way through exactly this channel.)
 
+  ⚠️ **GAP (row 29 / `d21`): the carve-out is unreachable when the interface has more
+  than one typaram — and the cause is in the PARSER, not in this machinery
+  ([#604](https://github.com/MedakaLang/medaka/issues/604)).** `Ty`'s `TyApp Ty Ty`
+  (`compiler/frontend/ast.mdk:31`) is **binary/curried**, so `Ix a i` parses as
+  `TyApp (TyApp (TyCon "Ix") (TyVar "a")) (TyVar "i")`. `extractConstraints`
+  (`compiler/frontend/parser.mdk:1678-1682`) matches only
+  `TyApp (TyCon iface _) arg` — a **one**-argument constraint — so the outer `TyApp`,
+  whose first field is itself a `TyApp`, falls through to `_ = []`. **Every ≥2-argument
+  constraint is silently discarded, yielding `TyConstrained [] rhs`.**
+
+  So S5's antecedent — "a receiver that is a **dict-bound `=>` constraint variable**" —
+  is **false by the time typecheck runs: there is no constraint left to be bound by.**
+  `definerReceiverIsDictVar` and `constraintTyVars` handle a multi-argument constraint
+  correctly; **they never receive one.** The occurrence therefore falls to S2 and
+  `useIface` monomorphises to the standalone's domain, making a `Box` call a located
+  reject. **The engines are conformant to the program they were given — the program they
+  were given is not the one on disk.**
+
+  Two independent proofs, both on the shipping binary, **with no shadow anywhere in the
+  file** (so this is upstream of everything this document specifies):
+
+  ```
+  $ cat q1.mdk                          $ cat q2.mdk
+  interface Sz a where                  interface Ix a i where
+    size : a -> Int                       get : a -> i -> Int
+  useIface : Sz a => a -> Int           useIface : Ix a i => a -> i -> Int
+  useIface x = size x                   useIface x i = get x i
+
+  $ medaka check --types q1.mdk         $ medaka check --types q2.mdk
+  useIface : Sz a => a -> Int             useIface : a -> b -> Int
+           ^^^^^^^ kept                            ^^ constraint GONE
+  ```
+  ```
+  $ cat m2.mdk
+  f : NoSuchIface a b => a -> b -> Int      # interface does NOT exist
+  f x y = 1
+  $ medaka check m2.mdk ; echo $?
+  f : a -> b -> Int
+  0                                          # ← accepted. exit 0.
+
+  $ medaka check m1.mdk ; echo $?            # the 1-arg control
+  <unknown location>: Unknown interface: NoSuchIface
+  1
+  ```
+  A constraint naming an interface **that does not exist** passes at exit 0 when it has
+  two arguments, and is correctly diagnosed when it has one. A 3-argument constraint
+  (`Ix3 a b c =>`, the `Index c k v` shape) drops identically, so the rule is **≥2
+  arguments**, not "exactly 2".
+
+  Honouring S5 here is blocked on #604; the gate's `d21` row goes RED the day it lands.
+  ⚠️ **Whether S5's carve-out then works, or merely surfaces a real design question about
+  multi-argument constraint → dict-slot mapping, is UNKNOWN and must be re-probed — not
+  assumed in either direction.**
+
 - **S6 (module-independence).** **[CHANGED]** For a **definer** shadow the impl
   query is *deleted*, so S6 is **trivially satisfied**: where the interface and impl
   live cannot change the outcome, because the outcome no longer depends on them. An
@@ -183,14 +244,37 @@ Given an occurrence of bare name `N`:
   > (`run_check_agreement`'s `.out` pin; the shadow gate's `value` column), **never**
   > on cross-path agreement alone.
 
-- **S8 (arity).** The per-receiver machinery in typecheck is gated to
-  single-**typaram** interfaces (`singleParamIfaceMethod`), but the *specified*
-  outcome for a multi-**param** *method* shadow is the same S2 rule keyed on the
-  first parameter — and under the inversion that means the standalone wins there too
-  (row 8 / `d7` now rejects its live-impl receiver). ⚠️ A multi-**TYPARAM**
-  *interface* (`interface Ix a i`) still bypasses the machinery entirely and keeps
-  the OLD semantics — that is the open **S-3** bug (row 26), and under the inversion
-  it is now an **inconsistency**, not merely a gap.
+- **S8 (arity and typaram arity).** **[S-3 CLOSED 2026-07-17, #54]** Neither a
+  method's *parameter* count nor its interface's *type-parameter* count changes the
+  rule: a shadow of a multi-**param** method (`comb : a -> a -> Int`, row 8 / `d7`) and
+  a shadow of a method on a multi-**TYPARAM** interface (`interface Ix a i`, row 26 /
+  `d11`) both follow S2 keyed on the first parameter, so under the inversion the
+  standalone wins in both and a live-impl receiver is a located reject.
+
+  ⚠️ **The gating predicate is a Fork-1 boundary, NOT an arity restriction.** The
+  **definer** entry points are gated on `ifaceMethodName` — is this a method of *some*
+  visible interface — and nothing more, because the inversion never consults the impl
+  universe, so there is no receiver-to-typaram correspondence for them to require. The
+  **importer** entry points keep `singleTyparamIfaceMethod` (renamed from the
+  misleading `singleParamIfaceMethod`, which counted TYPE PARAMS while its name said
+  method params — the name that sent an agent down a wrong hypothesis and is called out
+  in #54). Fork 1's per-receiver rule genuinely does key the impl query on the receiver
+  head standing at the interface's ONE typaram, and a multi-typaram interface offers no
+  such correspondence to key on — `FromEntries c e`'s `fromEntries : List e -> c` does
+  not even take its first typaram as an argument.
+
+  ⚠️ **That is an implementation boundary, NOT a rule of the language — and #54 did not
+  make it one.** S2's importer arm is itself unqualified by typaram arity and carries an
+  explicit fallback (*"else → the standalone (`RLocal`), with the same domain
+  obligation"*), so the **specified** outcome for a multi-typaram *importer* shadow is
+  the standalone. That is not what `singleTyparamIfaceMethod` declining produces: all
+  three importer entry points decline and the occurrence falls through to **ordinary
+  dispatch**, which has no "else → standalone" arm at all. So this is a **probable live
+  divergence from S2** — recorded as **row 30, UNVERIFIED: nobody has run it.** An
+  earlier draft of this clause called such shadows "out of scope, deliberately"; that was
+  a claim about the *language* with nothing in S2 to support it, and it is **retracted**.
+  A boundary in the code explains why the code is shaped as it is; it does not license
+  this document to stop specifying.
 
 ### S9 — a CONSTRAINED standalone (added 2026-07-13; closes S-1)
 
@@ -300,7 +384,7 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 5 | definer · live-impl recv · 1-file · applied | S2 | **REJECT** `Int vs Box` @ `size (Box 3)`; `size 3` → 4 | `d2_definer_liveimpl.mdk` | reject | reject | reject | **OK** (**FLIPPED 2026-07-14** — was `3,4` (dispatch). The inversion: the module's own `size : Int -> Int` takes the call, so `Box` mistypes) |
 | 6 | definer · N-way (2 impls + no-impl) · 1-file · applied | S3 | **REJECT** ×2 (`Box`, `Bar`); `size 3` → 4 | `d3_definer_nway.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,30,4`. S3 is now VACUOUS for a definer shadow: no receiver selects an impl. The impls still dispatch N-way through a `=>` dict — see `definer_shadow_nway`) |
 | 7 | definer · live impl at PARAMETRIC head (`impl … (P a)`) · applied | S2 | **REJECT** `Int vs P Bool` @ the `P a` receiver; 4 | `d6_definer_parametric_receiver.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `9,4`. A parametric impl head is no more privileged than a concrete one) |
-| 8 | definer · TWO-param method shadow · applied | S8 | **REJECT** `Int vs Box` @ `comb (Box 1) (Box 2)`; `comb 2 3` → 6 | `d7_definer_multiparam_method.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,6` via ordinary arg-dispatch. Multi-*param methods* now follow S2 like everything else; multi-*TYPARAM interfaces* still do NOT — row 26 / S-3) |
+| 8 | definer · TWO-param method shadow · applied | S8 | **REJECT** `Int vs Box` @ `comb (Box 1) (Box 2)`; `comb 2 3` → 6 | `d7_definer_multiparam_method.mdk` | reject | reject | reject | **OK** (**FLIPPED** — was `3,6` via ordinary arg-dispatch. Multi-*param methods* now follow S2 like everything else — and since #54 so do multi-*TYPARAM interfaces*: row 26 / `d11` is this row at multi-typaram width) |
 | 9 | definer · value position · no-impl elements · **method/standalone arity EQUAL** | S4 | standalone → [2, 3, 4] | `d4_definer_value_pos.mdk` | [2,3,4] | [2,3,4] | accept | **OK** — ⚠️ arity-EQUAL, so this row is **blind to S1-RESIDUAL-A (#410)**; rows 9a/9b/9c are the arity-DIFFERING cells |
 | 9a | definer · value position · **method arity 2 / standalone arity 1** · annotated result | S4 | standalone → [2, 3, 4] | `d17_definer_value_pos_arity_differ.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — was `build` exit 0 printing PAP heap pointers as Ints, an S0 silent wrongness; see §6 S1-RESIDUAL-A (A)) |
 | 9b | definer · value position · arity-differing · **ZERO impls** of the iface | S2+S4 | standalone → [2, 3, 4] | `d19_definer_value_pos_arity_differ_zeroimpls.mdk` | [2,3,4] | [2,3,4] | accept | **OK** (**FIXED 2026-07-16 #410** — proves the impl universe is irrelevant: shadow-hood + arity mismatch + value position suffice) |
@@ -324,15 +408,51 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 23b | return-position method shadow · IMPORTER | S4 | value-position rule → standalone → 4 | `i9_importer_return_pos/` | 4 | 4 | accept | **OK** (probed while fixing #411; already conformant) |
 | 24 | operator-named shadow (`==` etc.) | — | n/a — operator occurrences resolve through the desugared method-call path, not bare-`EVar` funDef intersection | — | — | — | — | UNREACHABLE |
 | 25 | definer · **CONSTRAINED** standalone (`size : Num a => a -> a`) · no-impl recv | S9 | RLocal **carrying the standalone's dicts** → 4 | `d10_definer_constrained.mdk` | 4 | 4 | accept | **OK** (fixed 2026-07-13, S-1 / clause S9; was `check` green + `run` E-PANIC + `build` printing a raw heap pointer) |
-| 26 | definer · method of a **multi-TYPARAM interface** (`interface Ix a i`) · applied | S8 (does not cover it) | dispatch 4; standalone 3 | `d11_definer_multityparam_iface.mdk` | **E-PANIC `unknown op '*'`** | 4,3 | accepts | **BUG** (**S-3**; `run` diverges from check+build — an S7 violation. Every entry point gates on `singleParamIfaceMethod`, which counts interface TYPE PARAMS, not method params, so this shadow bypasses the machinery entirely. `check`/`build` happen to be per-receiver CORRECT. Pinned KNOWN-BAD by the gate.) |
+| 26 | definer · method of a **multi-TYPARAM interface** (`interface Ix a i`) · applied | S2/S8 | **REJECT** `Int vs Box` @ `get (Box 3) 1`; `get 3 1` → 3 | `d11_definer_multityparam_iface.mdk` | reject | reject | reject | **OK** (**S-3 FIXED 2026-07-17, #54** — was the corpus's last BUG row: `run` E-PANICked `unknown op '*'` while check+build agreed on the OLD per-receiver answer `4,3`, an S7 violation. Every definer entry point gated on `singleParamIfaceMethod`, which counts interface TYPE PARAMS, not method params, so `Ix a i` bypassed the machinery entirely. Fixed by splitting that predicate **by shadow kind**: `ifaceMethodName` (typaram-agnostic) gates the definer arms — under the inversion they never query the impl universe, so typaram arity is irrelevant to them — while `singleTyparamIfaceMethod` (the rename) keeps gating the Fork-1 importer arms, whose per-receiver rule *does* key on the receiver standing at the interface's one typaram. Row 26 is now simply row 8 / `d7` at multi-typaram width) |
 | 27 | definer · **UNGROUNDED (numeric-literal) receiver** whose grounded head HAS a live prelude impl | S2+S5 | standalone → 3, 30 | `d12_definer_ungrounded_literal.mdk` | 3,30 | 3,30 | accept | **OK** (the P0-20 cell, now INVERTED: `eq 1 2` = 3, was `False`. `groundShadowReceiver` grounds the literal to the standalone's domain BEFORE the S2 question, so check/run/build ask it about the same head) |
 | 28 | **importer** · **UNGROUNDED (numeric-literal) receiver** · prelude iface + the Fork-1 control | S2+S5 | standalone → True, False; **method** → False, True | `i5_importer_ungrounded_literal/` | T,F,F,T | T,F,F,T | accept | **OK** (fixed 2026-07-14, **S1-RESIDUAL-B** — was `Type mismatch: Int literal vs Int Int` on ALL THREE paths, PRE-EXISTING, and invisible to the corpus because i1/i3/i4 all use GROUNDED receivers. The last two lines are the Fork-1 control: an importer shadow still dispatches on a live-impl head) |
 
-**Tally: 21 OK · 1 BUG (row 26 / S-3) · 3 UNTESTED-NO-FIXTURE · 1 UNREACHABLE ·
-2 baselines.** Rows 10/12/13/14 were BUG until P0-19; row 25 was BUG until S-1;
-**row 28 was BUG until 2026-07-14 (S1-RESIDUAL-B) — and it was PRE-EXISTING, not
-introduced by the inversion.** Row 26 is the only open cell, and it is a **loud**
-divergence (`run` panics), not a silent wrong answer.
+| 29 | definer · **dict-bound `=>` receiver** (S5's carve-out) on a **multi-TYPARAM interface** | S5 (carve-out) | **dispatch** → 3, 6 | `d21_definer_multityparam_dictvar_receiver.mdk` | reject `Int vs Box` | reject | reject | **GAP — CAUSE IS IN THE PARSER, NOT THE SHADOW MACHINERY ([#604](https://github.com/MedakaLang/medaka/issues/604))**. `extractConstraints` (`compiler/frontend/parser.mdk:1678-1682`) matches only the ONE-argument shape `TyApp (TyCon iface _) arg`; `TyApp` is binary (`ast.mdk:31`), so `Ix a i` nests and falls to `_ = []`. **Every ≥2-arg constraint is silently discarded** → `TyConstrained []`. S5's antecedent is false because there is no constraint left to bind: `definerReceiverIsDictVar` handles multi-arg constraints fine, it never receives one. The occurrence falls to S2 and `useIface` monomorphises. ⚠️ **Not an S7 violation** — the three engines agree exactly, and they are conformant *to the program they were given*. Proof (no shadow in the file): `f : NoSuchIface a b => a -> b -> Int` — a **nonexistent** interface — checks at **exit 0**, while the 1-arg control errors `Unknown interface`. Found by crossing d11's axis with receiver PROVENANCE while fixing #54; pre-#54 this cell was **SILENT WRONGNESS** — `check` exit 0, `run` E-PANIC, `build` exit 0 shipping a binary that printed the raw heap pointer `69867028434928`. #54 traded that for a located reject |
+
+| 30 | **importer** · shadow of a method on a **multi-TYPARAM interface** | S2 (importer arm) | live impl at the receiver head → dispatch; **else → the standalone (`RLocal`)** | *(none — no fixture)* | ? | ? | ? | **UNVERIFIED — NOBODY HAS RUN THIS.** S2's importer arm is unqualified by typaram arity, but all three importer entry points are gated on `singleTyparamIfaceMethod`, so at multi-typaram width they decline and the occurrence falls to **ordinary dispatch — which has no "else → standalone" arm.** That is a *probable* divergence from S2's second half, but it is **derived from reading, not from running**, and this table does not accept derived verdicts (see the ⭐ note below row 26). #54 deliberately did NOT move this: its fix is definer-only, so whatever this cell does today, it did before. ⚠️ Predicting the outcome is exactly the error #54's own S-3 rewrite indicts. **Run it, then fill the row in.** Blocked in practice by [#604](https://github.com/MedakaLang/medaka/issues/604) for any cell whose fixture needs a `=>` constraint |
+
+**Tally: 22 OK · 0 BUG · 1 GAP (row 29, S5 at multi-typaram width) ·
+1 UNVERIFIED (row 30) · 3 UNTESTED-NO-FIXTURE · 1 UNREACHABLE · 2 baselines.**
+
+> ### ⚠️ **`0 BUG` DOES NOT MEAN "NO VIOLATIONS". READ THE GAP AND UNVERIFIED COLUMNS.**
+>
+> **BUG** here means *the engines disagree with each other* — and that is an
+> **observability** property, not a severity one. It is the thing a differential gate can
+> see, which is why the column exists; it is **not** the thing that hurts users.
+> **S7's own note above says why: `run`/`check`/`build` are *guaranteed* to agree, so a
+> shadow violation they all share is invisible BY CONSTRUCTION** — the `eq [1] [2]`
+> erasure that this entire inversion exists to fix was agreed on by all three engines, and
+> P0-20 once "fixed" a cell by making all three agree on the *wrong* answer.
+>
+> **Under a naive reading of the BUG column, both of those would have counted as `0 BUG`.**
+> So: a **GAP** (a clause the binary does not reach, row 29) and an **UNVERIFIED** row
+> (row 30) are *not* lesser findings that happened not to qualify. Row 29's cell was
+> shipping a **raw heap pointer at exit 0** three days ago. Three engines agreeing is the
+> *precondition* for the worst bug this document knows about, not evidence of health.
+>
+> **The tally is a map of what is CHECKED, not a claim about what is CORRECT.** If you
+> want the second thing, read the rows.
+Rows 10/12/13/14 were BUG until P0-19; row 25 was BUG until S-1; **row 28 was BUG
+until 2026-07-14 (S1-RESIDUAL-B) — and it was PRE-EXISTING, not introduced by the
+inversion.** Row 26 was the last open **BUG** and closed 2026-07-17 (#54) — which is also when
+row 29 was *added*, as that fix's residual: it is a **GAP** (a clause the binary does
+not reach), not a BUG (a divergence between the engines), and it is strictly better
+than what it replaced.
+
+> ⭐ **Row 29 is why "fix the cell" is not the same as "close the axis."** #54 was
+> filed as, and was, a loud S7 violation on row 26. Driving that fix to its edges —
+> crossing row 26's axis (typaram arity) with the axis **this document's own warning
+> above names** (receiver provenance) — turned up row 29: the *same* bypass, one axis
+> over, was **silently shipping a raw heap pointer at exit 0**. Strictly worse than
+> the panic that got the issue filed, and invisible to every gate, because by S7 all
+> three engines have to agree before a differential gate can see anything. **Twice
+> now the silent bug has been hiding on the provenance axis** (rows 27–28 were the
+> first time). Cross it *before* you call a shadow fix done.
 
 > ⭐ **Rows 27–28 exist because the corpus was blind to an entire AXIS.** Every
 > importer fixture used a **grounded** receiver, so the gate graded **18/0 while
@@ -352,10 +472,15 @@ divergence (`run` panics), not a silent wrong answer.
 > ACCEPT — its reject existed *only* because the method was stealing the call and
 > returning a `String` where the annotation said `Int`.)
 >
-> **Rows 15–20 (importer shadows) and row 26 did NOT move, and must not.** They are
-> the Fork-1 boundary and the S-3 ledger row respectively. If either moves, the
-> inversion has leaked out of definer scope — `test/diff_compiler_shadow_semantics.sh`
-> is the tripwire, and during development it caught exactly that, twice.
+> **Rows 15–20 (importer shadows) did NOT move, and must not.** They are the Fork-1
+> boundary. If any of them moves, the inversion has leaked out of definer scope —
+> `test/diff_compiler_shadow_semantics.sh` is the tripwire, and during development it
+> caught exactly that, twice. It is also what proved the #54 fix stayed in scope: **row
+> 26 moved (deliberately) and rows 15–20 did not**, on the same run.
+>
+> Row 26 used to be named here alongside them, for the opposite reason — it was the S-3
+> **ledger** row and had to stay pinned to the *bug*. #54 fixed the bug, so it moved to
+> REJECT/REJECT/REJECT and is now just another definer cell.
 
 **In-tree census (re-verified 2026-07-14, two independent methods).** The whole
 tree contains **exactly five** definer shadows, and the inversion is a **semantic
@@ -384,10 +509,10 @@ Line numbers at `cfc4fa5a`.
 | S1 detect (build path) | `typecheck.mdk:11475` `computeMangledShadowMap` + `unitMangledShadows:11480`, set once at `elaborateModules:11932` (`mangledShadowMapRef`); consumed by `buildDefinerShadows:11460` and `buildStandaloneShadowsGraph:11487-11497` | recover shadows AFTER mangling renamed the standalone | **forward-constructs `mangledName mid m`** per (module, method) and checks it against actual funDefs — exact, not prefix-stripping; empty map on the un-mangled path (inert) |
 | S1 mark | `typecheck.mdk:11942` `markRpNames` (∪ `buildStandaloneShadowsGraph`) → `prePassDictArg`/`prePassModulePairArg:11943-11944` rewrite occurrences to `EMethodAt` | occurrences get a route ref | graph-wide name set over USER modules (core excluded) |
 | (enabler of the S1 build split) | `compiler/backend/private_mangle.mdk`: `mangleUnits:117`, `buildUnitRenameMap:372`, `renameDecl` DFunDef `~578` + `renameScoped` EVar `~651` rename the standalone def + refs to `<mid>__N`; `renameIfaceMethod:626`/`renameImplMethod:636` leave the method **NAME bare** (header `:34-46`: dispatch is by bare name cross-module) | collision-free private symbols | **the asymmetry**: standalone side mangled, method side bare — which is exactly what defeated name-intersection detection (bug `0b4a7882`); driver order `compiler/entries/entry_support.mdk:133-134` (`runEmitWith`) and `:145-146` (`emitModulesWith`): mangle STRICTLY before mark |
-| S2 type + record (definer) | app-head peel → `definerShadowArgHead` (gated `singleParamIfaceMethod`; fires on `definerShadowNamesRef` OR a mark-seeded `RLocal sym` — the cross-module emit signal) → `inferDefinerShadowApp` + `definerShadowHeadType`. The un-marked `check` path peels via `definerShadowVarHead` → `inferDefinerShadowVarApp`. **`definerReceiverDispatches` is the single decision point** | **[CHANGED — THE INVERSION]** a definer shadow types against the STANDALONE scheme, **always** (via the mangled sym on build — the scheme-selection SIGSEGV fix); `enforceStandaloneDomain` then imposes its declared domain, so a live-impl receiver is a located reject. The only dispatch arm left is S5's dict-bound receiver | ⚠️ **`definerShadowArgHead` fires for IMPORTER shadows too** — its `routeLocalSym != ""` arm is the cross-module emit signal, so `inferDefinerShadowApp` serves BOTH kinds on the mangled path. "Did we reach this function" is therefore **NOT** the same question as "is this a definer shadow": `definerReceiverDispatches` must re-ask it via `isDefinerShadow` (`definerShadowNamesRef` never holds an imported standalone) or the inversion leaks onto importers and breaks `import map` |
+| S2 type + record (definer) | app-head peel → `definerShadowArgHead` (definer disjunct gated `ifaceMethodName`, fires on `definerShadowNamesRef`; importer-on-emit disjunct gated `singleTyparamIfaceMethod`, fires on a mark-seeded `RLocal sym` — the cross-module emit signal) → `inferDefinerShadowApp` + `definerShadowHeadType`. The un-marked `check` path peels via `definerShadowVarHead` → `inferDefinerShadowVarApp`. **`definerReceiverDispatches` is the single decision point** | **[CHANGED — THE INVERSION]** a definer shadow types against the STANDALONE scheme, **always** (via the mangled sym on build — the scheme-selection SIGSEGV fix); `enforceStandaloneDomain` then imposes its declared domain, so a live-impl receiver is a located reject. The only dispatch arm left is S5's dict-bound receiver | ⚠️ **`definerShadowArgHead` fires for IMPORTER shadows too** — its `routeLocalSym != ""` arm is the cross-module emit signal, so `inferDefinerShadowApp` serves BOTH kinds on the mangled path. "Did we reach this function" is therefore **NOT** the same question as "is this a definer shadow": `definerReceiverDispatches` must re-ask it via `isDefinerShadow` (`definerShadowNamesRef` never holds an imported standalone) or the inversion leaks onto importers and breaks `import map` |
 | S2 type + record (importer) | `typecheck.mdk:4950` `shadowStandaloneHead` → `inferShadowApp:4979`; standalone schemes stashed in `shadowStandaloneSchemesRef` (`checkModuleFullImpl:11210`, concrete-head pick); impl query table `shadowKeyTableRef` (`:11217`, includes LOCAL impls per `cfc4fa5a`) | live-impl head ⇒ ordinary app (dispatch); else instantiate the IMPORTED standalone scheme + stamp `RLocal` | standalone scheme = the seedVars entry whose first arrow domain has a **concrete head tycon** (never the poly method scheme) |
 | S2 no-impl obligation skip | `typecheck.mdk:4670` `recordImplObligation`, skip arm `:4688` | a no-impl shadow receiver is a legitimate standalone fallback, not `No impl of …` | bare name ∈ `definerShadowNamesRef` ∪ `standaloneValuesRef` — skips the obligation for EVERY occurrence of the name, impl-having or not (this un-checks row 13: the domain mismatch is never re-imposed) |
-| S2/S3/S5 route stamping | `recordRLocalSite` (gated on `standaloneValuesRef`, suppressed inside `inferDefinerShadowApp`); `resolveRLocalSites` / `resolveRLocalSite`: **`isDefinerShadow` ⇒ `RLocal sym` unconditionally**, else (importer) grounded head + `implExistsForHead` → leave route (dispatch) else `RLocal sym` (`stampRLocalOrFallback`); ungrounded → `RLocal` for definer shadows; build-path RKey via `pendingArgStamps` push → `resolveArgStamps` | **[CHANGED — THE INVERSION]** route by SHADOW KIND first, receiver second. `resolveArgStamps` runs BEFORE `resolveRLocalSites`, so the `RLocal` stamp wins | ⚠️ **`isDefinerShadow`, not a bare `definerShadowNamesRef` membership test.** That ref is populated for a multi-TYPARAM interface's method too, but every *typing* entry point is gated on `singleParamIfaceMethod` and leaves such an occurrence to ordinary dispatch (open bug S-3 / row 26). Forcing `RLocal` here without the same gate routes a site whose TYPE came from the dispatch path — **route and type disagreeing is precisely the P0-20 bug class.** The two gates must stay identical |
+| S2/S3/S5 route stamping | `recordRLocalSite` (gated on `standaloneValuesRef`, suppressed inside `inferDefinerShadowApp`); `resolveRLocalSites` / `resolveRLocalSite`: **`isDefinerShadow` ⇒ `RLocal sym` unconditionally**, else (importer) grounded head + `implExistsForHead` → leave route (dispatch) else `RLocal sym` (`stampRLocalOrFallback`); ungrounded → `RLocal` for definer shadows; build-path RKey via `pendingArgStamps` push → `resolveArgStamps` | **[CHANGED — THE INVERSION]** route by SHADOW KIND first, receiver second. `resolveArgStamps` runs BEFORE `resolveRLocalSites`, so the `RLocal` stamp wins | ⚠️ **`isDefinerShadow` carries the SAME gate as every typing entry point** (`ifaceMethodName` since #54; it was the typaram-count test `singleParamIfaceMethod`, whose mismatch with nothing else was S-3 / row 26). Routing here on a gate the typing entry points do not share routes a site whose TYPE came from the dispatch path — **route and type disagreeing is precisely the P0-20 bug class.** The two gates must stay identical |
 | route representation | `compiler/frontend/ast.mdk:69-72` (`RKey`/`RLocal String`); sexp `compiler/ir/core_ir_sexp.mdk:43-44` (`RLocal ""` serializes to the old nullary form) | ONE occurrence needs TWO names: bare `N` for dispatch, `<mid>__N` for the standalone | the mangled standalone symbol is **carried in the route**, stamped at resolve time (Fork-2 carry-in-route) |
 | lowering | `compiler/ir/core_ir_lower.mdk:144` `EMethodAt name … → CMethod name …` | route + both names survive to the backends | `name` is the single bare field; the RLocal symbol rides the route |
 | emit (LLVM) | `compiler/backend/llvm_emit.mdk:3413` `emitMethod … (RKey tag)` → `implFor e name tag`; `:3435` `… (RLocal sym)` → `emitKnownFnSat e ("mdk_" ++ sym)` | S2's two arms at codegen | RKey needs the **bare** method name; RLocal needs the **mangled** symbol |
@@ -417,11 +542,14 @@ Two properties that keep it from rotting:
 - **A coverage self-audit.** The gate diffs the fixture directory's actual
   contents against its own table and FAILS if a fixture is ever added without
   being wired in — the orphan-corpus failure this gate was written to end.
-- **KNOWN-BAD rows are a ledger, never a skip-list.** An open bug (today: row 26
-  / **S-3**) is pinned to its *current, wrong* behavior, so it is asserted on
-  every run and goes **red the day it is fixed** — which is the signal to correct
-  the row. This is not theoretical: `d10` (row 25) was added as a KNOWN-BAD row
-  pinning the S-1 miscompile, S-1 landed, and the gate went red on the next run.
+- **KNOWN-BAD rows are a ledger, never a skip-list.** An open bug is pinned to
+  its *current, wrong* behavior, so it is asserted on every run and goes **red the
+  day it is fixed** — which is the signal to correct the row. **This has now worked
+  twice.** `d10` (row 25) was added as a KNOWN-BAD row pinning the S-1 miscompile,
+  S-1 landed, and the gate went red on the next run. `d11` (row 26) pinned S-3 the
+  same way, and went red the moment #54 taught the definer entry points this shape
+  (2026-07-17). The only KNOWN-BAD row left is `d18` (a #410 residual: `build`
+  ships a binary that SEGFAULTs while `run` is correct).
 
 CI: the `types` shard (`.github/workflows/ci.yml`); `diff_compiler_ci_shard_coverage`
 enforces that it is in exactly one shard.
@@ -549,10 +677,19 @@ same "which stage owns S4/S6" decision.
 >    the occurrence**, because the marking prePass's shadow arm is tested before its dict
 >    arm, so the call was never marked an `EDictAt` while the *definition* still got its
 >    dict param. `RLocal` now carries the standalone's own dicts (S9).
-> 2. **A multi-TYPARAM interface (`interface Ix a i`) bypasses the whole definer-shadow
->    machinery** (every entry point is gated on `singleParamIfaceMethod`, which counts
->    interface TYPE PARAMS, not method params). `check` and `build` agree, `run` panics.
->    S8 speaks to multi-*param methods*; it does not cover multi-*typaram interfaces*.
+> 2. ~~**A multi-TYPARAM interface (`interface Ix a i`) bypasses the whole definer-shadow
+>    machinery**~~ — **FIXED 2026-07-17 (#54; S-3, row 26; see clause S8).** Every definer
+>    entry point was gated on `singleParamIfaceMethod`, which counts interface TYPE PARAMS,
+>    not method params — **the name states the opposite of what the body does, and that
+>    alone sent one agent down a wrong hypothesis.** `check` and `build` kept the OLD
+>    per-receiver answer (`4,3`); `run`, which has no route stamp to follow and resolves
+>    the bare name lexically to the standalone, E-PANICked `unknown op '*'` on a `Box`.
+>    The fix splits the predicate **by shadow kind rather than by arity**: `ifaceMethodName`
+>    gates the definer arms (the inversion never queries the impl universe, so typaram
+>    arity is irrelevant to them), and the renamed `singleTyparamIfaceMethod` keeps gating
+>    the Fork-1 importer arms, whose per-receiver rule *does* key on the receiver standing
+>    at the interface's one typaram. S8 now covers both multi-*param methods* and
+>    multi-*typaram interfaces*.
 
 > **🐛 NEW CELL + ✅ FIX (2026-07-14, P0-21) — row 27: S1 ("shadow-hood is per-module")
 > was NOT enforced on the single-file/flat path — a user's shadow LEAKED INTO THE

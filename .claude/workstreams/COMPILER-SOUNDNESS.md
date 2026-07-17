@@ -118,16 +118,61 @@ discarded stdout on panic**, so a `println` probe returned nothing whether the p
   night an orchestrator was one command from silently reverting another's merged work inside a PR
   titled something else entirely.
 - **`git diff main` uses your STALE local ref.** Fetch, then diff three-dot against `origin/main`.
-- **`singleParamIfaceMethod` counts interface TYPE PARAMS, not method params.** The name states the
-  opposite of what it does and has already sent one agent down a wrong hypothesis. It is renamed
-  `singleTyparamIfaceMethod` as part of **#54**.
+- **A predicate that counts the wrong thing is worse than no predicate: `singleParamIfaceMethod`
+  counted interface TYPE PARAMS while its name said method params.** It stated the opposite of what
+  it did and sent one agent down a wrong hypothesis; the misnaming *also hid the bug it caused* —
+  reviewers read the name, agreed "single-param methods only, reasonable", and never asked why an
+  arity test was gating a rule that has no arity. **#54 (2026-07-17) renamed it
+  `singleTyparamIfaceMethod` and, in doing so, made the real question visible: the gate was never
+  about arity at all, it was a Fork-1 boundary.** The definer arms now use `ifaceMethodName` (the
+  S2 inversion never queries the impl universe, so typaram arity is irrelevant to them); only the
+  importer arms — whose per-receiver rule genuinely keys on the receiver at the interface's one
+  typaram — keep the renamed count test. Closing **S-3** / SHADOW-SEMANTICS row 26.
+- **⭐ FIXING THE CELL IS NOT CLOSING THE AXIS — cross the fix with receiver PROVENANCE
+  before you call it done.** #54 was filed as row 26's loud `run` panic. Driving that fix
+  to its edges — row 26's axis (typaram arity) × the provenance axis (grounded / literal /
+  **dict-bound**) — found row 29 (`d21`): the *same* bypass, one axis over, where the base
+  binary `eedd1482` **shipped a raw heap pointer at exit 0** (`check` exit 0 with the
+  `Ix a i =>` constraint dropped from the scheme it printed; `run` E-PANIC; `build` exit 0
+  printing `69867028434928`). **Strictly worse than the panic that got the issue filed, and
+  no gate could see it** — by S7 all three engines must agree before a differential gate has
+  anything to compare. That is **twice** the silent bug has been hiding on the provenance
+  axis (rows 27–28 were the first). It is now pinned as row 29, an S5 **GAP** (all three
+  engines agree; S5's dict-var carve-out is not *reached* at multi-typaram width). **Its cause
+  is `parser.mdk`, not the shadow machinery — see the next bullet, which is about how I got
+  that wrong.**
+- **🚨 I ASSERTED A MECHANISM FROM READING THE CODE AND IT WAS PROVABLY FALSE — in the same PR
+  whose headline finding is "a name that lies sends the next agent to the wrong file."** I filed
+  row 29's cause as *"`definerReceiverIsDictVar` does not recognise a multi-typaram constraint
+  var"* — in the spec, the gate row, AND the fixture header. **Wrong.** The real cause is four
+  unmatched pattern arms in the PARSER: `Ty`'s `TyApp Ty Ty` (`frontend/ast.mdk:31`) is binary,
+  so `Ix a i` nests as `TyApp (TyApp (TyCon "Ix") …) …`; `extractConstraints`
+  (`frontend/parser.mdk:1678-1682`) matches only the ONE-arg `TyApp (TyCon iface _) arg` and
+  falls to `_ = []`. **Every ≥2-arg constraint is silently discarded.**
+  `definerReceiverIsDictVar` handles them fine — **it never receives one.** (#604.)
+  - **The proof was already in my own report and I didn't connect it.** I reported two symptoms
+    as *unrelated*: `check` printing `useIface : a -> b -> Int` (constraint gone from the
+    **scheme**) and `fmt` writing `() =>` (an **empty constraint LIST** printed). Both are
+    `TyConstrained []`. **They are one bug.** `() =>` is not a formatter bug at all — the
+    formatter faithfully rendered the tree the parser handed it.
+  - **The lesson is not "read more carefully".** It is that a *mechanism* is an empirical claim
+    and needs a probe, exactly like a bug report does. **The probe was 30 seconds:**
+    `f : NoSuchIface a b => a -> b -> Int` — a constraint naming an interface **that does not
+    exist** — checks at **exit 0**; the 1-arg control errors `Unknown interface`. That isolates
+    the drop upstream of every semantic phase, with **no shadow anywhere in the file**. I never
+    ran it, because I was reasoning about the shadow machinery I had just spent hours in — I
+    looked for the cause where my attention already was.
+  - ⚠️ **The reviewer caught it. `pr-review` graded the diff APPROVE/zero-defects — craft review
+    reads the DIFF and cannot see that a comment names the wrong file.** Only the CONFORMANCE
+    review, which re-derives claims against the spec and the tree, caught it. **A green craft
+    review is not evidence your prose is true.**
 
 ---
 
 ## Where the specs live
 
 - `docs/spec/SHADOW-SEMANTICS.md` — the standalone-fn ⇄ interface-method shadowing rules (S1–S8), and
-  the **S7 path-agreement** rule that #54 violates.
+  the **S7 path-agreement** rule that #54 violated (S-3 / row 26, closed 2026-07-17).
 - `compiler/SHADOW-INVERSION-DESIGN.md` — the design for **#50** (a standalone must WIN over a
   same-named method). *The compiler is obeying the spec; the SPEC is the bug.*
 - `docs/spec/DICT-SEMANTICS.md` — dictionary-passing semantics (D1–D10, all closed).
