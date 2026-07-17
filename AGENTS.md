@@ -92,7 +92,16 @@ Support files:
 weight-balanced ordered trees; `hash_map`/`hash_set` are mutable hash tables; `mut_array` is
 a growable vector (amortized-O(1) `push`); `json` is a recursive-descent parser/serializer;
 `byteparser`/`bytebuilder` are a binary parser-combinator library and its symmetric output
-builder. **Only `core.mdk` is auto-prelude** — import the rest by bare name (`import map`).
+builder. **Only `core.mdk` is auto-prelude.** For the rest, **an import must say what it
+binds**: `import map.{Map, get}` (selective — the common form), `import map.*` (everything
+exported), or `import map as M` → `M.get` (**values only** — an alias-qualified name in
+*type* position is a parse error, so import types by name). Combinations (`import m.{f} as
+A`, `import m.* as A`) are rejected with a diagnostic that names the fix.
+⚠️ **A bare `import map` binds NO names** — not values, not types, not `map.get` (qualified
+access exists *only* via `as`). But it is **not** a no-op: **any** import of a module brings
+that module's `impl`s into scope for dispatch, which is the whole job of the bare form (e.g.
+`stdlib/json.mdk:40`'s `import array` — without it, `map (+ 1) [|1,2,3|]` is *"No impl of
+Mappable for Array"*).
 `io.mdk` is the ergonomic layer over the `runtime.mdk` IO externs.
 
 ## 🚦 How work lands: `main` is PROTECTED — you cannot push to it
