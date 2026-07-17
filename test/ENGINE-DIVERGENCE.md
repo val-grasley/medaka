@@ -321,7 +321,7 @@ auto-print wrap (`main = println <e>`) cannot resolve a `Display` instance →
 `Ambiguous instance for Display`. Arguably a real diagnostic gap for bottom-typed
 mains.
 
-### 4.7 `wasm:emitter-gap` — 26 fixtures
+### 4.7 `wasm:emitter-gap` — count DERIVED, never encoded (see the ⚠️ below)
 
 > **`math_externs`, `bitwise_ops`, `lit_int_large_tag` FIXED 2026-07-15 (#101).** The 23
 > libm math externs (sqrt/floor/ceil/trunc/round + transcendentals + pow/atan2/hypot +
@@ -352,11 +352,30 @@ mains.
 > nested `CGBind` inside the RHS finishes evaluating before the outer `local.set`, so live
 > ranges never overlap.
 
-> ⚠️ **The `26 fixtures` in the heading above was STALE when this note was written**: the
-> ledger held **31** `wasm:emitter-gap` rows while the heading said 26, so the obvious
-> `26 − 5 = 21` would have been wrong twice over. It is 26 *now* only because five rows
-> were promoted out of 31. **Derive it, never subtract it:**
-> `grep -c 'wasm:emitter-gap' test/engine_divergence.txt`.
+> ⚠️ **This note has now been wrong THREE times, in three different ways — the heading no
+> longer carries a number at all.**
+>
+> 1. It said `26 fixtures` while the ledger held **31**, so the obvious `26 − 5 = 21`
+>    would have been wrong twice over. Hence: *derive it, never subtract it.*
+> 2. **The derivation it then prescribed was ITSELF WRONG.** `grep -c 'wasm:emitter-gap'
+>    test/engine_divergence.txt` returns **24** — but ~20 of those hits are the category
+>    NAME appearing in this ledger's own header prose and category list, not rows. Anyone
+>    following the recipe got a confidently wrong number *from the very paragraph warning
+>    about confidently wrong numbers.*
+> 3. Consequently the `26` stood while the true row count fell to **2** (2026-07-17, #597).
+>
+> **Count ROWS, keyed on the category FIELD, skipping comments:**
+> ```sh
+> grep -v '^#' test/engine_divergence.txt | awk '$3=="wasm:emitter-gap"' | wc -l
+> # every category at once, and it must sum to the gate's own `known (ledgered)` figure:
+> grep -v '^#' test/engine_divergence.txt | grep -v '^[[:space:]]*$' | awk '{print $3}' \
+>   | sort | uniq -c | sort -rn
+> ```
+> ⚠️ **The other `### 4.x` headings in this section carry the same class of encoded count
+> and at least one is provably rotten** — §4.5 `native:prelude-collision` says *7 fixtures*
+> where the row count is **28** (derived 2026-07-17). They were not corrected here because
+> that census was not investigated, and swapping in an unexamined number is the exact
+> failure this note is about. **Derive before you cite any of them.**
 
 The WasmGC emitter cannot produce a module that assembles and validates. It reports
 its own gaps, which is to its credit. Distinct causes, by frequency:
@@ -371,6 +390,7 @@ its own gaps, which is to its credit. Distinct causes, by frequency:
 | 2 | `wasm-tools parse: unknown type $str` |
 | 2 | `scalar-mode: unsupported Core IR node CRecord` |
 | 2 | `scalar-mode: unsupported Core IR node CLetGroup` |
+| 2 | `ref-mode: unsupported Core IR node ? [in lg:concatRev]` — the slice receivers: `eager_global_list_slice`, `eager_global_string_slice` (#597, reproduced 2026-07-17). eval and native both run and are **correct**; only wasm cannot lower the node, and it says so. Note the `?` — the diagnostic does not name the node it choked on, which is the one thing it most needs to say |
 | … | (see `test/engine_divergence.txt` for the per-fixture reason) |
 
 > ⚠️ **The paragraph that used to sit here was stale, and it was load-bearing.** It said

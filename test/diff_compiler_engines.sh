@@ -334,6 +334,27 @@ else
   fi
 fi
 
+# ── MEDAKA_REQUIRE_WASM — the degradation is right for a dev box, WRONG for CI ──
+#
+# Default-off, so a dev box with no wasm toolchain keeps the honest, announced
+# degradation above (T1 still gates fully).  CI's `engines` shard sets it to 1: there
+# the toolchain is GUARANTEED, so an unavailable wasm arm means the WIRING broke, and
+# a wiring break must never again be reported as a green two-engine run (#597).
+#
+# ⚠️ `exit 1`, NOT `exit 2`.  run_gates.sh:47 carries
+#     LEGIT_SKIP_RE='no C compiler|libgc \(bdw-gc\)|not on PATH'
+# and this gate's own reason string is "wasm-tools not on PATH" — which MATCHES that
+# regex.  An exit 2 would therefore be reclassified at run_gates.sh:101 as a
+# LEGITIMATE skip and the shard would stay GREEN — reintroducing the exact silence
+# this flag exists to abolish.  exit 1 is an unconditional FAIL.  Verified by hand:
+#     echo 'wasm-tools not on PATH' | grep -qE 'no C compiler|libgc \(bdw-gc\)|not on PATH'  -> match
+if [ "${MEDAKA_REQUIRE_WASM:-0}" = 1 ] && [ "$WASM_OK" != 1 ]; then
+  echo "MEDAKA_REQUIRE_WASM=1 but the wasm arm is unavailable: $WASM_OFF_WHY" >&2
+  echo "  the engines shard guarantees wasm-tools + Node 24 + test/bin/wasm_emit_modules_main;" >&2
+  echo "  if this fired in CI the toolchain wiring regressed — see .github/workflows/ci.yml (engines shard)." >&2
+  exit 1
+fi
+
 [ -x "$EMITTER" ] && export MEDAKA_EMITTER="$EMITTER"
 # `medaka build --target wasm` reads the compiled wasm emitter from here (build_cmd.mdk);
 # without it the CLI falls back to `medaka run`ning the emitter entry, which cannot
@@ -527,6 +548,25 @@ fi
 # Never report success having compared nothing.
 if [ "$t1p" -eq 0 ] && [ "$t2p" -eq 0 ]; then
   echo "ZERO-COMPARISON: no tier made a single passing comparison — the gate did not run"
+  exit 1
+fi
+
+# ── The same lie, one level down (#597) ───────────────────────────────────────
+# An empty corpus satisfies every check above vacuously: zero fixtures means zero
+# REGRESS, zero PROMOTE, zero PINFAIL — a green report about nothing.
+if [ "$compared" -eq 0 ]; then
+  echo "ZERO-CORPUS: not a single fixture was enumerated — the gate compared nothing" >&2
+  exit 1
+fi
+
+# And under REQUIRE_WASM, WASM_OK=1 only proves the TOOLCHAIN is present, not that the
+# wasm arm ever ran over a fixture.  A corpus-selection bug that fed T2 zero fixtures
+# would otherwise report a green "T2 native == wasm  0 agree  0 differ" — the wiring
+# check passing while the comparison it guards never happened.
+if [ "${MEDAKA_REQUIRE_WASM:-0}" = 1 ] && [ "$((t2p + t2f))" -eq 0 ]; then
+  echo "MEDAKA_REQUIRE_WASM=1 and the wasm toolchain is present, but T2 (native == wasm)" >&2
+  echo "  ran over ZERO fixtures ($t2p agree / $t2f differ / $t2n n/a of $compared) — a" >&2
+  echo "  corpus-selection bug, not a green run." >&2
   exit 1
 fi
 

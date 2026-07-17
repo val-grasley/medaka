@@ -135,6 +135,19 @@ env:
   # hidden by parallelism. The emitter is the reused workhorse and stays -O2.
   ORACLE_OPT: -O0
 
+  # ── The wasm toolchain pin — ONE definition, TWO consumers (#597) ────────────
+  # Pinned to the dev box's version (AGENTS.md: reproducible, deterministic bytes),
+  # so CI and local runs parse/validate the emitted WAT with IDENTICAL wasm-tools.
+  #
+  # Workflow-level ON PURPOSE. Two jobs install this toolchain — `wasm:` (its five
+  # WasmGC gates) and `gates:`' `engines` shard (the T2/T3 arms of the 3-engine
+  # differential, #597) — and two copies of a version pin that can silently disagree
+  # is this repo's most-documented failure shape. Both read these two vars; there is
+  # no second number to keep in sync. Node is pinned here for the same reason, and is
+  # consumed by `actions/setup-node`'s node-version in BOTH jobs.
+  WASM_TOOLS_VERSION: "1.219.1"
+  WASM_NODE_VERSION: "24"
+
 jobs:
   # ── T-4b: docs-only fast path ───────────────────────────────────────────────
   #
@@ -425,11 +438,19 @@ jobs:
           # SLOWEST shard, and grouping by subsystem stacked the three most expensive
           # gates in the repo onto one runner while five others idled for four minutes.
           #
-          # Measured per-gate CPU seconds (2026-07-14, wasm-tools absent = what a hosted
-          # runner sees; a shard's wall ≈ setup + Σcpu / 2, since run_gates' outer pool is
-          # JOBS=2 on a 4-core hosted runner):
+          # ⚠️ HISTORICAL SNAPSHOT — the reasoning below is why the shards are shaped the
+          # way they are; the NUMBERS are from 2026-07-14 and have since rotted. Two of
+          # them provably: the engines corpus was 346 fixtures and is now 435, and
+          # "wasm-tools absent" is no longer true of the `engines` shard, which installs
+          # it and runs a third engine (#597). `engines` is ALSO no longer the critical
+          # path — `types` is. Do not plan against these; re-measure (see the `engines`
+          # entry below for the one-liner) and put new heavy gates where there is room.
           #
-          #   diff_compiler_engines  ..  834   <- 346 fixtures x (medaka build + clang)
+          # Measured per-gate CPU seconds (2026-07-14, wasm-tools absent = what a hosted
+          # runner saw THEN; a shard's wall ≈ setup + Σcpu / 2, since run_gates' outer pool
+          # is JOBS=2 on a 4-core hosted runner):
+          #
+          #   diff_compiler_engines  ..  834   <- then-346 fixtures x (medaka build + clang)
           #   build_construct_coverage   282   <- 144 fixtures x (medaka build + clang)
           #   sqlite/test/*oracle (22)   188   <- 22 gates, 3-15s each
           #   backend (12 gates)         298
@@ -457,16 +478,32 @@ jobs:
           # are nearly free; a long pole is not. When you add a heavy gate, put it where
           # there is ROOM, and update the table above.
           - name: engines
-            # ALONE ON ITS RUNNER, on purpose. 834 CPU-s — the single most expensive thing
-            # in the suite by 3x, and irreducible: 346 fixtures each paying a full `medaka
-            # build` + clang. On a 4-core runner that is a ~210s floor no matter what else
-            # we do, so anything sharing this shard is added directly to the critical path.
+            # ALONE ON ITS RUNNER, on purpose: the single most expensive gate in the suite,
+            # and irreducible — every fixture in the corpus pays a full `medaka build` +
+            # clang, now on THREE engines. Anything sharing this shard is added directly to
+            # its wall time.
             #
-            # `full_cores` (below) matters as much as the pattern: the gate's own default is
+            # ⚠️ This shard is NOT the critical path — `types` is. (It was, before
+            # `full_cores` below gave this gate the whole box; the old "~5.8 min / longest
+            # pole" note outlived the change that fixed it and misrouted #597's design.)
+            # Do not encode a new number here: read the current one off a real run —
+            #   gh run view <id> --json jobs --jq '.jobs[]|select(.name|startswith("gates"))
+            #     |{name, s:(((.completedAt|fromdate)-(.startedAt|fromdate)))}'
+            # and put new heavy gates wherever that says there is room.
+            #
+            # `full_cores` matters as much as the pattern: the gate's own default is
             # ENGINE_JOBS=NCPU/2, which is the right hedge when it shares a runner with other
             # gates and leaves HALF THE BOX IDLE when it doesn't. It doesn't, now.
+            #
+            # `wasm_arm` (#597): this shard — and ONLY this shard — installs wasm-tools +
+            # Node and builds the wasm oracle, so diff_compiler_engines can actually run its
+            # T2 (native == wasm) and T3 (all three agree) tiers. Without it the gate honestly
+            # degrades to a TWO-engine differential and the required check goes green having
+            # never compared the backends. MEDAKA_REQUIRE_WASM=1 (set with it) makes that
+            # degradation a HARD FAIL here, so the wiring can never silently rot back.
             pattern: "'diff_compiler_engines'"
             full_cores: "1"
+            wasm_arm: "1"
           - name: sqlite
             # THE 22 differential gates that diff the pure-Medaka SQLite library against the
             # REAL sqlite3 CLI (T8). They had never run in CI — not because anyone excluded
@@ -507,9 +544,11 @@ jobs:
             # COST not theme — it is a text diff of the two JS hosts (run.js vs
             # playground/worker.js, WASM-SEMANTICS WH3) and needs no compiler, no oracle
             # and no wasm toolchain, so it costs ~0 CPU-s wherever it lands. It is in a
-            # REQUIRED shard on purpose: the `wasm` job is advisory (not a required
-            # context), so a shim-only PR could otherwise break playground/runner parity
-            # and still go green.
+            # REQUIRED shard on purpose — originally because the `wasm` job was advisory.
+            # ⚠️ That premise is now FALSE (`wasm` has been a required context since
+            # 2026-07-15; see the `wasm:` job's header for the derivation), but the
+            # placement stands on its own: this gate is free, and a required shard is
+            # where a free gate belongs. Do not "restore symmetry" by moving it.
             #
             # 'diff_compiler_preflight_base' (#560): parked here for COST, not theme —
             # it is pure git (builds its own synthetic repo with `git init`), needs no
@@ -541,16 +580,16 @@ jobs:
             # 'diff_compiler_dispatch_shape' is a BACKEND gate living in a shard named
             # eval, deliberately — shards are scheduled by COST, not by theme (see the
             # header). It is ~3s (two `medaka build --keep-ir` of tiny probes), and the
-            # backend shard is already the 2nd-heaviest at 5.3min, close to the
-            # gates(engines) 5.8min critical path. This shard has room; backend does not.
+            # backend shard is one of the heaviest. This shard has room; backend does not.
+            # (This line used to call gates(engines) "the 5.8min critical path" — stale and
+            # false; see the engines entry. Re-measure rather than trusting any of it.)
             #
             # 'diff_compiler_prelude_obj' (39s) is the soundness gate for the
             # MEDAKA_PRELUDE_OBJ fast path — it proves the inline and prebuilt link paths
             # produce IDENTICAL program output across 24 fixtures at both opt levels. It is
             # the exact analogue of diff_compiler_rt_obj (which lives in `backend`), but
-            # backend is the 2nd-heaviest shard at 5.3min against gates(engines)' 5.8min
-            # critical path, so it goes where there is ROOM. Same reasoning as
-            # dispatch_shape below and build_construct_coverage in `frontend`.
+            # backend is one of the heaviest shards, so it goes where there is ROOM. Same
+            # reasoning as dispatch_shape below and build_construct_coverage in `frontend`.
             #
             # 'diff_compiler_slice_oob' (#550, 9.3s measured) is a BACKEND gate here for
             # the SAME cost reason, third time over: its nearest sibling by shape is
@@ -578,15 +617,15 @@ jobs:
             # dev-tool server driven directly over stdio, no test/bin oracle to
             # build). Placed by COST, not just theme: it reads no oracle and the
             # T1 handshake fixture is a handful of tiny `./medaka mcp` invocations
-            # (<1s), so it adds negligible weight to this shard, while `engines`
-            # (5.8min critical path) and `backend` (5.3min, 2nd-heaviest) have none
-            # to spare.
+            # (<1s), so it adds negligible weight to this shard, while `engines` and
+            # `backend` — the two heaviest — have none to spare.
             # 'diff_compiler_entry_exit_codes' (#440): pins that the shared probe
             # scaffolding (compiler/entries/entry_support.mdk) exits NON-ZERO on an
             # error instead of handing a redirecting harness an empty artifact +
             # success. Parked here for COST, not theme — it is one oracle and six
             # cheap invocations (~2s), and `tools` is the shard with room (114 CPU-s
-            # vs engines' 834, which is the critical path and must never grow).
+            # vs engines' 834 — engines is the heaviest shard and must never grow;
+            # it is NOT, despite what this line once said, the critical path).
             pattern: "'diff_compiler_lint*' 'diff_compiler_lsp*' 'diff_compiler_mcp' 'diff_compiler_codemod' 'diff_compiler_repl' 'diff_compiler_new' 'diff_compiler_test' 'diff_compiler_ported' 'diff_compiler_doc' 'diff_compiler_index' 'diff_compiler_capability_matrix' 'diff_compiler_internal_extern' 'diff_compiler_effect*' 'diff_compiler_entry_exit_codes' 'diff_compiler_run_check_agreement' 'diff_compiler_run_stdout_flush' 'diff_compiler_run_entry_subdir' 'diff_compiler_ci_shard_coverage' 'diff_compiler_fixture_corpus_coverage' 'diff_compiler_source_bytes' 'check_syntax_examples' 'cross_project_deps' 'cross_project_twonames' 'manifest_emit' 'lsp_harness' 'diff_net'"
     name: gates (${{ matrix.name }})
     steps:
@@ -702,6 +741,31 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y clang libgc-dev sqlite3
 
+      # ── The wasm arm of the 3-engine differential (#597) — `engines` shard ONLY ────
+      # These two steps are the PEER of the identically-named steps in the `wasm:` job
+      # below; both read WASM_NODE_VERSION / WASM_TOOLS_VERSION from the workflow-level
+      # `env:` block, so the toolchain cannot drift between the two jobs that install it.
+      # If you change how either is installed, change it in BOTH places (grep
+      # WASM_TOOLS_VERSION — two consumers, by construction).
+      #
+      # Guarded on matrix.wasm_arm so the other six shards pay nothing: ~3s of setup-node
+      # plus ~1s of curl, on the one shard that needs it.
+      - name: Set up Node.js ${{ env.WASM_NODE_VERSION }} (wasm arm)
+        if: steps.plan.outputs.has_work == 'true' && matrix.wasm_arm != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.WASM_NODE_VERSION }}
+
+      - name: Install wasm-tools (wasm arm)
+        if: steps.plan.outputs.has_work == 'true' && matrix.wasm_arm != ''
+        run: |
+          set -eu
+          v="$WASM_TOOLS_VERSION"
+          url="https://github.com/bytecodealliance/wasm-tools/releases/download/v${v}/wasm-tools-${v}-x86_64-linux.tar.gz"
+          curl -sSfL "$url" | tar xz
+          sudo mv "wasm-tools-${v}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          wasm-tools --version
+
       # See the "Caching" note at the top of this file for the completeness
       # argument. Exact-match key only — no restore-keys.
       - name: Restore cached medaka binary
@@ -775,6 +839,23 @@ jobs:
         if: steps.plan.outputs.has_work == 'true' && steps.oracle-cache.outputs.cache-hit != 'true'
         run: FORCE=1 sh test/build_oracles.sh --for ${{ steps.plan.outputs.pats }}
 
+      # build_oracles.sh does NOT build the wasm emitter oracles — it says so itself
+      # ("note: these gates also read probe binaries this script does not build"). That
+      # is why diff_compiler_engines' wasm arm was structurally dead on this runner (#597).
+      #
+      # --modules-only: diff_compiler_engines reads exactly ONE of the three wasm oracles
+      # (WASMBIN=…/wasm_emit_modules_main, diff_compiler_engines.sh:144). Building all
+      # three here would be a ~2.6x over-buy on the shard; the `wasm:` job still builds
+      # all three because its five gates open all three.
+      #
+      # NOT cached (peer of the same decision in the `wasm:` job): a pure function of the
+      # whole compiler graph, which the medaka cache above already keys.
+      - name: Build the wasm emitter oracle (wasm arm)
+        if: steps.plan.outputs.has_work == 'true' && matrix.wasm_arm != ''
+        run: |
+          export MEDAKA_EMITTER="$PWD/medaka_emitter"
+          sh test/wasm/build_wasm_oracle.sh --modules-only
+
       # Runs the CONCRETE gate list the `plan` step resolved (never a glob) — on a
       # merge_group/push that is the shard's whole pattern, on a narrowed pull_request
       # it is the intersection with the diff. This step is reached only when that list
@@ -786,14 +867,22 @@ jobs:
       # (UNQUOTED substitution is deliberate; quoting it would collapse the gate list
       # into ONE argument and silently degrade the shard to a single bad glob.)
       #
-      # ── `full_cores` — set ONLY on the `engines` shard ────────────────────────────
+      # ── `full_cores` / `wasm_arm` — set ONLY on the `engines` shard ───────────────
       # diff_compiler_engines picks its own fan-out: ENGINE_JOBS, defaulting to NCPU/2.
       # That default is a HEDGE against sharing a runner with other gates (run_gates'
       # outer pool would otherwise oversubscribe it) — and on a 4-core hosted runner it
       # means the suite's single most expensive gate uses TWO CORES and idles the other
-      # two. `engines` is now the only gate in its shard, so give it the whole box: 834
-      # CPU-s at 2 workers is ~420s; at 4 it is ~210s. Purely an env knob the gate
-      # already exposes — no gate change.
+      # two. `engines` is the only gate in its shard, so give it the whole box: at 2
+      # workers it was ~420s; at 4, ~210s. Purely an env knob the gate already exposes —
+      # no gate change. It is what bought the headroom the wasm arm now spends.
+      #
+      # `wasm_arm` turns on MEDAKA_REQUIRE_WASM=1, the companion to the toolchain steps
+      # above: the shard installs wasm-tools + Node and builds the wasm oracle, so the
+      # gate MUST run all three engines here or fail (#597). Measured on the 12-core dev
+      # box at ENGINE_JOBS=4 (the closest available proxy for a 4-core runner): degraded
+      # two-engine 60.9s -> full three-engine 110.0s, i.e. the wasm arm is +49s wall /
+      # x1.94 CPU, plus ~20s of oracle build and ~4s of toolchain setup. A hosted runner
+      # will be slower in absolute terms; the RATIO is the transferable part.
       #
       # Derived from `nproc` rather than hardcoded, so it tracks GitHub's runner size.
       # Every other shard leaves it empty and the gate's own default applies (and no
@@ -804,6 +893,15 @@ jobs:
           if [ -n "${{ matrix.full_cores }}" ]; then
             export ENGINE_JOBS="$(nproc)"
             echo "engines shard owns this runner: ENGINE_JOBS=$ENGINE_JOBS"
+          fi
+          # This shard installed wasm-tools + Node and built the wasm oracle above, so an
+          # unavailable wasm arm here is a WIRING BREAK, not a dev box without a toolchain.
+          # The gate's honest degradation (T2/T3 "NOT RUN") stays the default everywhere
+          # else; here it becomes exit 1. See diff_compiler_engines.sh's MEDAKA_REQUIRE_WASM
+          # block for why it must be exit 1 and never exit 2 (#597).
+          if [ -n "${{ matrix.wasm_arm }}" ]; then
+            export MEDAKA_REQUIRE_WASM=1
+            echo "engines shard: MEDAKA_REQUIRE_WASM=1 — the wasm arm is mandatory here"
           fi
           sh test/run_gates.sh ${{ steps.plan.outputs.pats }}
 
@@ -1113,20 +1211,35 @@ jobs:
   # merge_group (the queue tests the merged tree), and push. NOT narrowed: these five
   # ARE the whole wasm surface and are cheap enough to run in full as one job.
   #
-  # ── NOT YET A REQUIRED CHECK ─────────────────────────────────────────────────────
-  # Branch protection lists ten required contexts; this `wasm` context is NOT among
-  # them, so a red wasm job does not BLOCK a merge yet — it is advisory-but-visible.
-  # Promoting it to required is a repo-settings change (Settings > Branches) that code
-  # cannot make. The job is already shaped required-safe (always runs + reports on every
-  # event, incl. merge_group), so promotion needs no change here.
+  # ── A REQUIRED CHECK (verified 2026-07-17) ───────────────────────────────────────
+  # This block said "NOT YET A REQUIRED CHECK ... advisory-but-visible" until #597. That
+  # was STALE, and it was load-bearing: it is cited by #597 and by docs/spec/
+  # WASM-SEMANTICS.md as the reason wasm parity blocked nothing. `wasm` is in fact in the
+  # required set and has been since 2026-07-15. Derived, not assumed:
+  #
+  #   gh api repos/MedakaLang/medaka/rulesets --jq '.[]|{id,name,enforcement}'
+  #   gh api repos/MedakaLang/medaka/rulesets/<id> \
+  #     --jq '.rules[]|select(.type=="required_status_checks")
+  #            |.parameters.required_status_checks[].context'
+  #
+  # ⚠️ Note WHERE it lives: a REPOSITORY RULESET, not classic branch protection. The
+  # classic endpoint (…/branches/main/protection) answers **404 "Branch not protected"**,
+  # which reads exactly like "nothing is required here" and is how this comment rotted.
+  # That 404 is also why pushes to main fail with `GH013: Repository rule violations`
+  # rather than the classic protection error.
+  #
+  # The job is shaped required-safe and must STAY that way: no job-level `if:`, so it
+  # always runs and always posts its context on every event (incl. merge_group and
+  # docs-only PRs, where its steps skip individually and it reports green in seconds).
+  # Adding a job-level `if:` would make a required context never post and hang the queue.
   wasm:
     needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    env:
-      # Pinned to the dev box's version (AGENTS.md: reproducible, deterministic bytes),
-      # so CI and local runs parse/validate the emitted WAT with IDENTICAL wasm-tools.
-      WASM_TOOLS_VERSION: 1.219.1
+    # WASM_TOOLS_VERSION / WASM_NODE_VERSION come from the WORKFLOW-level `env:` block
+    # at the top of this file — shared verbatim with the `engines` gate shard, which
+    # installs the same toolchain for the 3-engine differential's T2/T3 arms (#597).
+    # Do not re-pin either here; that is precisely the drift the hoist prevents.
     steps:
       - uses: actions/checkout@v4
 
@@ -1138,11 +1251,11 @@ jobs:
 
       # node >= 22 is required for the finalized WasmGC 3.0 GC encoding these gates emit
       # (test/wasm/run.js). ubuntu-latest ships an older node, so pin 24 (the dev box's).
-      - name: Set up Node.js 24
+      - name: Set up Node.js ${{ env.WASM_NODE_VERSION }}
         if: needs.detect.outputs.docs_only != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ env.WASM_NODE_VERSION }}
 
       # wasm-tools (parse + validate the emitted WAT) is NOT on a stock runner. Download
       # the pinned prebuilt release — `cargo install` would cost minutes and drift by

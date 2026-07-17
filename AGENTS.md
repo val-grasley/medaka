@@ -115,15 +115,21 @@ git checkout -b <topic>              # never commit on main
 # ... work; verify with `make preflight` ...
 git push -u origin <topic>
 gh pr create --fill
-gh pr merge --auto --merge           # merges itself the moment all 9 checks go green
+gh pr merge --auto --merge           # merges itself the moment every required check goes green
 ```
 
-**Ten required checks:** the **seven** `gates (…)` shards (engines · backend · tools · sqlite ·
-eval · frontend · types), `soundness`, `seed-health`, `inlang`. ⚠️ **A gate matching
+**Eleven required checks:** the **seven** `gates (…)` shards (engines · backend · tools · sqlite ·
+eval · frontend · types), `soundness`, `seed-health`, `inlang`, `wasm`. ⚠️ **A gate matching
 `test/diff_compiler_*.sh` but no shard pattern in `ci.yml` SILENTLY NEVER RUNS** —
 `diff_compiler_ci_shard_coverage.sh` catches it, and the merge queue will bounce you for it.
-Shards are scheduled by **cost, not theme**: put a new gate where there is ROOM, never on
-`gates (engines)` (~5.8 min — the critical path).
+⚠️ **Don't trust this count either — DERIVE it** (it said "Ten" while `wasm` was advisory, #597):
+`gh api repos/MedakaLang/medaka/branches/main/protection/required_status_checks --jq '.contexts[]'`.
+Shards are scheduled by **cost, not theme**: put a new gate where there is ROOM. ⚠️ **`gates
+(engines)` is NOT the critical path** — that claim (`~5.8 min`) rotted when the shard was given
+the whole runner (`full_cores`, `ci.yml`), and it misrouted #597's design; measured across three
+real runs in July 2026, `gates (types)` was the pole and `engines` the cheapest heavy shard.
+**Numbers here rot — read them off a run instead:**
+`gh run view <id> --json jobs --jq '.jobs[]|select(.name|startswith("gates"))|{name,s:((.completedAt|fromdate)-(.startedAt|fromdate))}'`
 **Zero approvals required** — the *checks* are the gate, not a human, so an agent can
 self-merge on green. The repo is org-owned (MedakaLang), so a **merge queue is live** — see above; `--auto` enqueues.
 
@@ -135,7 +141,7 @@ Two things that are easy to get wrong:
   shipped to `main` with every gate green. The gate shards cannot catch that; `soundness` can.
 - **There is a MERGE QUEUE (2026-07-13).** `gh pr merge --auto --merge` **enqueues** your PR;
   the queue does the rest. It builds a temp branch of *your PR merged onto current `main`, plus
-  everything queued ahead of you*, runs all nine checks **on that**, and merges only if green —
+  everything queued ahead of you*, runs every required check **on that**, and merges only if green —
   so what CI validates is the **merged result**, not your branch in isolation. That is not a
   formality: two green branches have merged cleanly into a **crashing** tree (git auto-merged a
   break it could not see — one branch had added a caller into machinery the other was re-signing,

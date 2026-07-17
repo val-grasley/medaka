@@ -10,7 +10,25 @@
 #   * test/bin/wasm_emit_typed_main  — the W5 TYPED dispatch entry (elaborateDict
 #     path; produces CMethod/CDict/CImplEntry from prelude-free fixtures that define
 #     their own minimal interfaces).  Gate: test/wasm/diff_wasm_typed.sh.
+#   * test/bin/wasm_emit_modules_main — the MULTI-MODULE entry.  Gates:
+#     test/wasm/diff_wasm_modules.sh, test/wasm/diff_sqlite.sh, test/build_wasm_cmd.sh,
+#     and (the only one it needs) test/diff_compiler_engines.sh:144.
+#
+# ── --modules-only ────────────────────────────────────────────────────────────
+# Build ONLY wasm_emit_modules_main.  diff_compiler_engines.sh reads exactly one of
+# the three (`WASMBIN=…/wasm_emit_modules_main`, :144) and never the other two, so the
+# `engines` CI shard — which wants the wasm arm and nothing else — would otherwise pay
+# ~2.6x for binaries no gate on that runner opens.  The DEFAULT is unchanged and builds
+# all three: the `wasm:` job's five gates need all of them.
 set -u
+
+MODULES_ONLY=0
+for a in "$@"; do
+  case "$a" in
+    --modules-only) MODULES_ONLY=1 ;;
+    *) echo "usage: $0 [--modules-only]" >&2; exit 2 ;;
+  esac
+done
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MEDAKA="$ROOT/medaka"
@@ -30,9 +48,11 @@ mkdir -p "$ROOT/test/bin"
 # --allow-internal: the emitter entries pull in the compiler graph, which uses the
 # internal-only array-kernel externs (arrayGetUnsafe, …) — the same flag the LLVM
 # entry oracles pass in test/build_oracles.sh.
-"$MEDAKA" build --allow-internal "$ENTRY" -o "$OUT" || { echo "build failed for $ENTRY"; exit 1; }
-echo "built $ENTRY -> $OUT"
-"$MEDAKA" build --allow-internal "$ENTRY_TYPED" -o "$OUT_TYPED" || { echo "build failed for $ENTRY_TYPED"; exit 1; }
-echo "built $ENTRY_TYPED -> $OUT_TYPED"
+if [ "$MODULES_ONLY" = 0 ]; then
+  "$MEDAKA" build --allow-internal "$ENTRY" -o "$OUT" || { echo "build failed for $ENTRY"; exit 1; }
+  echo "built $ENTRY -> $OUT"
+  "$MEDAKA" build --allow-internal "$ENTRY_TYPED" -o "$OUT_TYPED" || { echo "build failed for $ENTRY_TYPED"; exit 1; }
+  echo "built $ENTRY_TYPED -> $OUT_TYPED"
+fi
 "$MEDAKA" build --allow-internal "$ENTRY_MODULES" -o "$OUT_MODULES" || { echo "build failed for $ENTRY_MODULES"; exit 1; }
 echo "built $ENTRY_MODULES -> $OUT_MODULES"

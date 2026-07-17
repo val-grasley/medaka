@@ -510,11 +510,41 @@ git diff --exit-code test/snapshots   # ← the gate
 Medaka's "goldens never bake an absolute path" is currently a *convention* — make it
 a **normalization pass**.
 
-### 4.4 The differential tier — the biggest win available, and it is nearly free
+### 4.4 The differential tier — the biggest win available ✅ BUILT (`test/diff_compiler_engines.sh`)
+
+> **STATUS (2026-07-17, #597). Built, and REQUIRED on all three engines.** The proposal
+> below is kept for its rationale; two of its claims are now retired by measurement.
+>
+> **What it guarantees:** *the three engines agree, and where pinned, agree with a
+> hand-verified value.* The second half is not decoration — it is the whole answer to the
+> circularity this section indicts. Cross-engine agreement alone cannot catch a bug all
+> three engines share, so `test/engine_value_pins/` asserts absolute expected values by
+> hand; a PINFAIL fires even when every engine agrees. Declared, reproduced divergences
+> live in `test/engine_divergence.txt` (an accidental fix FAILS the gate and must be
+> promoted), never in a skip.
+>
+> **⚠️ "nearly free" is RETIRED — it is not.** Measured on the 12-core dev box at
+> `ENGINE_JOBS=4`: the two-engine (degraded) path is **60.9s**; the full three-engine path
+> is **110.0s** — the wasm arm costs **+49s wall / ×1.94 CPU**, plus ~20s to build the wasm
+> oracle (`build_wasm_oracle.sh --modules-only`) and ~4s of toolchain setup. That is the
+> price of the third engine and it is worth paying, but it is real, it lands on a heavy
+> shard, and a future reader planning against "nearly free" will plan wrong. Re-measure
+> rather than trusting these numbers; they are dated for a reason.
+>
+> **⚠️ It was worse than merely costly — until #597 the third engine NEVER RAN in CI.**
+> The gate degrades honestly (`T2 native == wasm  NOT RUN — <reason>`) when wasm-tools or
+> the oracle is missing, which is right for a dev box; on the hosted gates runner both were
+> *always* missing, so a REQUIRED check reported green having compared **two** engines, for
+> as long as it existed. The gate was never the bug — the CI wiring was. It is now pinned
+> shut from both ends: the `engines` shard installs the toolchain, and
+> `MEDAKA_REQUIRE_WASM=1` (set only there) turns the degradation into `exit 1`. It must be
+> `exit 1`, never `exit 2`: `run_gates.sh`'s `LEGIT_SKIP_RE` matches the gate's own
+> `"wasm-tools not on PATH"`, so an exit 2 would be reclassified a *legitimate skip* — the
+> silence, restored, by the mechanism meant to abolish it.
 
 **Medaka owns three implementations of its own semantics** — the `eval.mdk`
-interpreter, the LLVM native backend, and the WasmGC backend — **and no program in the
-tree is ever compared across all three.** Measured:
+interpreter, the LLVM native backend, and the WasmGC backend — **and (when this was
+written) no program in the tree was ever compared across all three.** Measured then:
 
 | | |
 |---|---|
@@ -547,6 +577,13 @@ everything else in this document — **it finds bugs that are currently invisibl
 
 **This is the highest-priority item in the redesign, and it does not depend on any of
 the rest of it.** Do it first, even if nothing else here happens.
+
+> **Epilogue.** It was done first, and it worked — the gate found four bug classes on its
+> first run. Then its third engine was quietly absent from CI for the gate's entire life,
+> and the section you are reading advertised it as a three-engine guarantee throughout.
+> **Building the gate was necessary and not sufficient; a gate that fires into a log nobody
+> reads, or an arm that silently never runs, buys nothing.** See §2.3 — this document's own
+> indictment of the skip that reads as a pass, which this gate then lived out.
 
 ### 4.5 The diagnostic tier — hand-written inline annotations, no bless
 
