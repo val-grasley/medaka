@@ -1410,9 +1410,19 @@ lookupVarG e env x = match lookupAssoc x env
 -- long after every global is initialised, so the load sees the real value — a
 -- gap-`0` here would bake a permanent null into the closure and crash.  (2) An
 -- eager same-init forward ref: orderedValBinds topologically sorts eager
--- dependencies, so a surviving eager forward ref is a genuine value cycle (none
--- arise in practice) and the cell still holds 0 — but that is exactly the
--- interpreter's recursive-value semantics, not an emit-time error.  Either way
+-- dependencies, so a surviving eager forward ref is either a genuine value cycle
+-- or an edge the sort MISSED, and the cell still holds 0.
+-- ⚠️ This comment used to claim such refs are cycles that "none arise in
+-- practice" and that reading 0 "is exactly the interpreter's recursive-value
+-- semantics".  BOTH HALVES ARE FALSE (#553; corrected 2026-07-17).  `x = x + 1`
+-- is a two-line counterexample: the interpreter BLACK-HOLES and raises
+-- E-CYCLIC-VALUE (exit 1), while native silently prints 1 at exit 0 — so the
+-- zero is a DEVIATION from eval, not a shared semantics.  And missed edges are
+-- routine, not absent: `eagerVars` follows no calls and no dispatch, so a global
+-- reached through either is invisible to the sort and lands here (silent 0 for
+-- an unboxed Int, SIGSEGV for a boxed value).  See compiler/EMITTER-GAPS.md
+-- "NATIVE-EAGER-INIT" for the law and the live divergence table; #561 removes
+-- the approximation by making these bindings actually lazy.  Either way
 -- the cell exists (declared `@mdk_g_<name> = global i64 0` up front), so emit
 -- the load.  LTy is unknown until init computes it; default LTInt (the loaded
 -- word is a uniform i64 — a downstream container op re-derives its shape).

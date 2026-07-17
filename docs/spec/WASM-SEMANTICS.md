@@ -143,9 +143,47 @@ above Core IR; these laws are the wasm peers of EMITTER-SEMANTICS §2 (V1–V6).
   **EXPLOITABLE from user code**, and it fails as a **segfault or a silent zero**
   where wasm traps loudly with a named cause. That asymmetry is the only reason
   this was ever found: #543 surfaced solely because the playground's arm is the
-  wasm one. The general fix (#553, an eager-reachability closure that follows
-  calls) MUST cover **both** backends — a wasm-only fix would leave the arm that
-  fails SILENTLY live, which is the worse class.
+  wasm one. The general fix MUST cover **both** backends — a wasm-only fix would
+  leave the arm that fails SILENTLY live, which is the worse class.
+
+  ⚠️ **This law previously stated the remedy as "an eager-reachability closure
+  that follows calls". That was WRONG, and it is the second false claim this row
+  has had to retract.** A closure fixes roughly HALF. #553's design pass
+  reproduced **five** divergences, and **three of them involve no call at all** —
+  because `eagerVars` is not merely call-blind, it also **dropped subterms of the
+  node it was standing on**:
+
+  - `CStringSlice a lo hi _` descended only the receiver and **discarded
+    `lo`/`hi`** (`src.[lo..3]`, `lo` later → native `hel`, eval `el`, exit 0);
+  - `eagerVarsArms` matched `CArm pat _ body`, **discarding the entire guard
+    list** (`m if m < lim`, `lim` later → native takes the WRONG ARM, exit 0).
+
+  ⭐ The decisive control: the neighbouring `CListSlice` arm **did** descend
+  `lo`/`hi` and was green on the identical program. Same shape, adjacent arm, one
+  wrong. **That is a STRUCTURAL-COMPLETENESS defect, not an algorithmic one**, and
+  no call-graph closure addresses it — the edge was never hidden behind anything,
+  it was simply never scanned. **Both drops are FIXED as of #553 Stage A**
+  (`eagerVars`'s `CStringSlice` arm now descends its bounds; `eagerVarsGuarded`
+  walks the guard chain, threading each `Pat <- e` guard's bindings rightward).
+  Gated by `test/llvm_fixtures_typed/eager_global_string_slice.mdk` (+ its
+  `eager_global_list_slice.mdk` control) and `test/llvm_fixtures/eager_global_guard.mdk`.
+  Stage A emits **byte-identical IR for the whole compiler** (679,516 lines, 504
+  globals, no reordering), so it forges no false cycles.
+
+  **STILL BROKEN after Stage A** — the call-hidden arm (the program above), the
+  DISPATCH arm (`cell = mk True` where the impl body reads a later global), and
+  genuine value CYCLES (`x = x + 1` → eval raises `E-CYCLIC-VALUE` exit 1, native
+  silently prints `1` exit 0). **The topo sort cannot be patched into correctness
+  for the last of those**: a sort has no answer for a cycle; laziness does.
+  ⚠️ **This whole law is a DEVIATION from a decided invariant, not the design.**
+  `lazy top-level nullary canonical` is settled and `eval/eval.mdk:539` implements
+  it (`VThunk`/`forceCell`/`blackholeCell`); both backends approximate it with an
+  eager topo sort, which is an **unsound static approximation of laziness** — it
+  is wrong exactly when its edge set is incomplete, and its failure mode is a
+  silent wrong answer at exit 0. **That is why eval is the only correct engine on
+  every known divergence: it is not luck, the backends implement a different
+  language.** The deviation is bounded and owned by **#561**, which deletes the
+  sort rather than fixing it; when it lands, this row and its fixtures drain.
   ⚠️ An earlier draft of #543 claimed *"native is unaffected — it does not eagerly
   init these"*. That was **FALSE**, propagated into #553's body, and is corrected
   here with receipts. It was never grep-proven; the receipts above took ten minutes.
