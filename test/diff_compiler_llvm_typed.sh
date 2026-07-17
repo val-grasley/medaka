@@ -63,9 +63,18 @@ if [ "${1:-}" = "--one" ]; then
   golden="${f%.mdk}.eval.golden"
   ll="$WORKDIR/$name.ll"; bin="$WORKDIR/$name.bin"
   st=0; msg=""
+  # Emit to a raw temp file and check $EMITBIN's OWN exit status directly
+  # (dash has no `set -o pipefail`, so `cmd | perl` in an `if !` tests perl's
+  # exit status, not the emitter's — see #443).  Only on a successful emit do
+  # we run the `()`-strip post-process into $ll.
+  raw="$WORKDIR/$name.raw.ll"
   if [ "${CAPTURE:-0}" = "1" ]; then
-    if ! "$EMITBIN" "$RUNTIME" "$f" 2>"$WORKDIR/$name.emit.err" | perl -0pe 's/\(\)\s*\z//' > "$ll"; then
+    "$EMITBIN" "$RUNTIME" "$f" > "$raw" 2>"$WORKDIR/$name.emit.err"
+    emit_rc=$?
+    if [ "$emit_rc" -ne 0 ]; then
       msg="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
+    elif ! perl -0pe 's/\(\)\s*\z//' "$raw" > "$ll"; then
+      msg="FAIL $name (postprocess: perl failed on emitted IR)"; st=1
     elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
       msg="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
     else
@@ -84,14 +93,20 @@ if [ "${1:-}" = "--one" ]; then
   fi
   if [ ! -f "$golden" ]; then
     msg="no golden for $name (run CAPTURE=1 sh test/diff_compiler_llvm_typed.sh)"; st=1
-  elif ! "$EMITBIN" "$RUNTIME" "$f" 2>"$WORKDIR/$name.emit.err" | perl -0pe 's/\(\)\s*\z//' > "$ll"; then
-    msg="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
-  elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
-    msg="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
   else
-    ref="$(cat "$golden")"; self="$("$bin" 2>/dev/null)"
-    if [ "$ref" = "$self" ]; then msg="ok   $name ($ref)"
-    else msg="$(printf 'FAIL %s\n  ref : %s\n  self: %s' "$name" "$ref" "$self")"; st=1; fi
+    "$EMITBIN" "$RUNTIME" "$f" > "$raw" 2>"$WORKDIR/$name.emit.err"
+    emit_rc=$?
+    if [ "$emit_rc" -ne 0 ]; then
+      msg="$(printf 'FAIL %s (emit)\n%s' "$name" "$(cat "$WORKDIR/$name.emit.err")")"; st=1
+    elif ! perl -0pe 's/\(\)\s*\z//' "$raw" > "$ll"; then
+      msg="FAIL $name (postprocess: perl failed on emitted IR)"; st=1
+    elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
+      msg="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
+    else
+      ref="$(cat "$golden")"; self="$("$bin" 2>/dev/null)"
+      if [ "$ref" = "$self" ]; then msg="ok   $name ($ref)"
+      else msg="$(printf 'FAIL %s\n  ref : %s\n  self: %s' "$name" "$ref" "$self")"; st=1; fi
+    fi
   fi
   printf '%s\n' "$msg" > "$RESULTDIR/$name.out"
   echo "$st" > "$RESULTDIR/$name.status"
