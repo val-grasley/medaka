@@ -762,8 +762,16 @@ jobs:
           set -eu
           v="$WASM_TOOLS_VERSION"
           url="https://github.com/bytecodealliance/wasm-tools/releases/download/v${v}/wasm-tools-${v}-x86_64-linux.tar.gz"
-          curl -sSfL "$url" | tar xz
-          sudo mv "wasm-tools-${v}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          # Extract OUTSIDE the checkout.  `tar xz` in the workspace leaves
+          # `wasm-tools-${v}-x86_64-linux/` behind after the binary is moved out, and the
+          # gates shards end with a review gate (`git status --porcelain`) that FAILS on any
+          # untracked file — so unpacking here turns a toolchain install into a red shard.
+          # The `wasm:` job has no such gate, which is why this was invisible until the
+          # engines shard grew a wasm arm (#597).
+          d="$(mktemp -d)"
+          curl -sSfL "$url" | tar xz -C "$d"
+          sudo mv "$d/wasm-tools-${v}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          rm -rf "$d"
           wasm-tools --version
 
       # See the "Caching" note at the top of this file for the completeness
@@ -1266,8 +1274,16 @@ jobs:
           set -eu
           v="$WASM_TOOLS_VERSION"
           url="https://github.com/bytecodealliance/wasm-tools/releases/download/v${v}/wasm-tools-${v}-x86_64-linux.tar.gz"
-          curl -sSfL "$url" | tar xz
-          sudo mv "wasm-tools-${v}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          # Extract OUTSIDE the checkout.  `tar xz` in the workspace leaves
+          # `wasm-tools-${v}-x86_64-linux/` behind after the binary is moved out, and the
+          # gates shards end with a review gate (`git status --porcelain`) that FAILS on any
+          # untracked file — so unpacking here turns a toolchain install into a red shard.
+          # The `wasm:` job has no such gate, which is why this was invisible until the
+          # engines shard grew a wasm arm (#597).
+          d="$(mktemp -d)"
+          curl -sSfL "$url" | tar xz -C "$d"
+          sudo mv "$d/wasm-tools-${v}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+          rm -rf "$d"
           wasm-tools --version
 
       # Same cache as the gates/inlang jobs — see the top-of-file "Caching" note.

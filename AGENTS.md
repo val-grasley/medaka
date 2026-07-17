@@ -122,8 +122,18 @@ gh pr merge --auto --merge           # merges itself the moment every required c
 eval · frontend · types), `soundness`, `seed-health`, `inlang`, `wasm`. ⚠️ **A gate matching
 `test/diff_compiler_*.sh` but no shard pattern in `ci.yml` SILENTLY NEVER RUNS** —
 `diff_compiler_ci_shard_coverage.sh` catches it, and the merge queue will bounce you for it.
-⚠️ **Don't trust this count either — DERIVE it** (it said "Ten" while `wasm` was advisory, #597):
-`gh api repos/MedakaLang/medaka/branches/main/protection/required_status_checks --jq '.contexts[]'`.
+⚠️ **Don't trust this count either — DERIVE it** (it said "Ten" while `wasm` was already required, #597):
+```sh
+gh api repos/MedakaLang/medaka/rulesets --jq '.[]|select(.enforcement=="active")|.id' | while read -r id; do
+  gh api "repos/MedakaLang/medaka/rulesets/$id" \
+    --jq '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context'
+done
+```
+🚨 **NOT `…/branches/main/protection…` — that endpoint 404s `"Branch not protected"`, which reads
+exactly like "nothing is required here".** Required checks live in a repo **RULESET**, not classic
+branch protection. That 404 is also why `git push origin main` fails with `GH013: Repository rule
+violations` — a *rules* message. **That single 404 is why `ci.yml` (x2) and this file all said
+`wasm` was advisory for two days while it was required**, and it misrouted #597's whole design.
 Shards are scheduled by **cost, not theme**: put a new gate where there is ROOM. ⚠️ **`gates
 (engines)` is NOT the critical path** — that claim (`~5.8 min`) rotted when the shard was given
 the whole runner (`full_cores`, `ci.yml`), and it misrouted #597's design; measured across three
