@@ -212,20 +212,18 @@ if [ -n "$FROZEN_TAG" ]; then
     build_construct)
       # test/construct_fixtures/*.build.golden — see capture_build_golden
       # (defined near the top of this file) for the producer contract.
-      # Skips the SAME 5 known native-CLI-gap fixtures that
-      # build_construct_coverage.sh's own SKIP list skips (kept in sync
-      # manually — that file is out of scope to edit from here); those 5
-      # have no golden and the gate never checks them, so capturing one
-      # would be dead weight the gate never reads.
+      # Captures EVERY fixture under test/construct_fixtures/ — matching
+      # build_construct_coverage.sh, whose own SKIP list is empty (#601: a
+      # stale 5-name skip-list here once diverged from that, claiming those
+      # 5 fixtures had no golden and were ungated — both claims were false
+      # by the time anyone checked; a hand-maintained copy of a skip-list
+      # rots the moment the source of truth changes and nothing re-derives it).
       [ -x "$MAIN" ] || { echo "missing $MAIN — run: make medaka"; exit 2; }
-      BC_SKIP=" tuple_neq json_parse mod_reverse_string newtype_ctor_fn type_alias "
       fixtures=0; mism=0; wrote=0
       TMP="$(mktemp -d)"
       trap 'rm -rf "$TMP"' EXIT
       for f in "$ROOT"/test/construct_fixtures/*.mdk; do
         [ -f "$f" ] || continue
-        label="$(basename "$f" .mdk)"
-        case "$BC_SKIP" in *" $label "*) continue ;; esac
         capture_build_golden "$f" "${f%.mdk}.build.golden"
       done
       rm -rf "$TMP"; trap - EXIT

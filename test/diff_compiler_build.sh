@@ -69,7 +69,13 @@ WORK="$(mktemp -d)"
 RESULTS="$(mktemp -d)"
 trap 'rm -rf "$WORK" "$RESULTS"' EXIT
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap ord_parametric set_literal map_literal set_literal_string monoid_mutual_rec inferred_rec_dict same_head_typeargs letgroup_toplevel float_eform super_returnpos return_pos_most_specific super_method ambns undet_sole undet_chain3b method_constraint_dispatch string_index_slice eq_constraint_op eq_custom_dispatch method_closure_dict poly_unit_main list_index_slice num_hof_ambig record_in_list field_collision pap_wrapped_saturate bimappable_tuple div_by_zero mod_by_zero nonexhaustive comp_tuple comp_list comp_adt_display comp_bool comp_sig_tuple definer_shadow_standalone_wins definer_shadow_nway semigroup_append_operator negate_num_operator float_totalorder_nan eager_call_hidden"
+# DERIVED from the directory, not hand-maintained: every top-level test/build_diff_fixtures/*.mdk
+# is enrolled automatically (the multi-module specials below live in subdirectories, so this glob
+# never touches them). Issue #507: a hand-maintained list silently orphaned 7 fixtures — including
+# two dispatch/SIGSEGV regression pins (hof_shadows_method, impl_requires_sibling) whose guard had
+# never actually fired — because dropping a new .mdk into this directory didn't enroll it.
+PROGRAMS="$(cd "$FIX" && ls -- *.mdk 2>/dev/null | sed 's/\.mdk$//' | sort)"
+[ -n "$PROGRAMS" ] || { echo "test/build_diff_fixtures/*.mdk is empty — the gate compared nothing"; exit 2; }
 
 # Build the (label, src) worklist: plain programs + the multi-module specials.
 {
