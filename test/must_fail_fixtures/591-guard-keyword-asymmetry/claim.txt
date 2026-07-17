@@ -1,0 +1,35 @@
+issue: 591
+what: Medaka uses TWO different guard keywords by context — equation guards use `|`
+what: (`f x` / `  | x > 1 = x`), match-arm guards use `if` (`Some n if n > 1 => n`).
+what: Writing the Haskell/ML habit `|` in a match arm is a hard parse error whose
+what: message BLAMES INDENTATION and puts the caret on the PATTERN — five columns left
+what: of the offending `|`. It never names the fix. docs/spec/SYNTAX.md:310-317 DOES
+what: document the correct form, so this is a DIAGNOSTIC defect, not a doc gap.
+what: parser.mdk already has the fix pattern for this class (hsCaseOfMsg, braceBlockMsg,
+what: foreignKwMsg: "Medaka has no 'elif'. Chain conditions with 'else if', ...").
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 1:2-1:3 unexpected `Some`; expected a dedent
+why-diag: `diag:`, NOT `diag-code:` — THE MESSAGE IS THE DEFECT. The program failing is
+why-diag: correct today (`|` is genuinely not the match-arm guard keyword); what is wrong
+why-diag: is that the message asserts a FALSE CAUSE ("expected a dedent" — the layout is
+why-diag: fine, the keyword is wrong) and never names the fix. Pinning only the code+range
+why-diag: would NOT drain on the actual fix, which is a better message. The range is also
+why-diag: pinned deliberately: 1:2-1:3 is `Some`, the PATTERN — the offending `|` is at
+why-diag: column 9. A fix that merely moves the caret to the `|` without saying "guards
+why-diag: use `if`" is a partial fix and SHOULD flip this row for review.
+control: check-json control.mdk
+why-control: the SAME arm with `if` instead of `|` checks clean (exit 0). That isolates the
+why-control: bug to the GUARD KEYWORD — the single distinguishing feature — and not to match
+why-control: arms, to `Some`, or to guards generally. If the control breaks, match-arm guards
+why-control: broke and the drain would be a lie.
+why-note: ⚠️ This row does NOT prejudge the fix. Two candidates both drain it: (a) a removal
+why-note: -style diagnostic naming `if` (the parser's established pattern), or (b) accepting
+why-note: `|` in match arms outright, making the language self-consistent with equation
+why-note: guards. Whichever ships, the pinned message stops holding. Pin the OBSERVATION,
+why-note: not the fix.
+why-note: ⚠️ The INVERSE also reproduces and is NOT pinned here: an `if` in an equation
+why-note: guard (`f x` / `  if x > 1 = x`) gives `unexpected \`if\`; expected a dedent` —
+why-note: same false cause. One fixture per issue, so this row pins the likelier half (a
+why-note: Haskell-literate stranger writes `|` in a match arm long before the reverse).
+why-note: A fix that addresses only this half leaves the inverse live — see #591's body.
