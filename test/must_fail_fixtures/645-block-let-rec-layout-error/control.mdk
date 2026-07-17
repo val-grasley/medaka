@@ -1,0 +1,3 @@
+main =
+  let go n = if n <= 0 then 0 else n
+  println (go 3)
