@@ -1,16 +1,19 @@
--- SHADOW-SEMANTICS cell D11: definer shadow of a method on a MULTI-TYPARAM
--- interface (`interface Ix a i`, two type params) -- SHADOW-SEMANTICS.md
--- section 5, residual #2 (2026-07-13): "every entry point is gated on
--- singleParamIfaceMethod, which counts interface TYPE PARAMS, not method
--- params" -- so this shadow bypasses the whole definer-shadow machinery.  S8
--- only speaks to multi-PARAM methods, not multi-typaram INTERFACES; this is a
--- distinct, still-open gap (no PR in flight for this one, unlike D10/S-1).
--- KNOWN-BAD on current main: check ACCEPTS and build ACCEPTS printing the
--- (per-receiver-CORRECT!) values 4 then 3 -- but run E-PANICs (`unknown op
--- '*'`), so check/build agree with each other while run disagrees with both,
--- violating S7 path agreement.  Pinning the CURRENT split (not fixing it) so
--- test/diff_compiler_shadow_semantics.sh goes red -- and must be updated --
--- the day `run` is taught to route this shape too.
+-- SHADOW-SEMANTICS cell D11 (matrix row 26): definer shadow of a method on a
+-- MULTI-TYPARAM interface (`interface Ix a i`, two type params).  The d7 twin at
+-- multi-typaram width: under the S2 INVERSION the module's own standalone
+-- `get : Int -> Int -> Int` takes every occurrence, so the `Box` receiver is a
+-- located REJECT (`Int vs Box`) and `get 3 1` -> 3.
+-- Expected: check/run/build all REJECT (`Int vs Box`) at the `get (Box 3) 1` call.
+--
+-- ✅ S-3 FIXED 2026-07-17 (#54).  This cell was the corpus's last KNOWN-BAD row.
+-- Every definer entry point gated on `singleParamIfaceMethod`, which -- despite
+-- its name -- counts interface TYPE PARAMS, not method params, so `Ix a i`
+-- bypassed the definer-shadow machinery entirely: check and build kept the OLD
+-- pre-inversion per-receiver answer (4 then 3, per-receiver CORRECT!) while run,
+-- which has no route stamp to follow and resolves the bare name lexically to the
+-- standalone, E-PANICked `unknown op '*'` on a `Box`.  Two engines agreeing and
+-- the third disagreeing is an S7 path-agreement violation.  The gate now pins the
+-- fixed behavior; see its TABLE row.
 interface Ix a i where
   get : a -> i -> Int
 

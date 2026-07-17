@@ -118,16 +118,23 @@ discarded stdout on panic**, so a `println` probe returned nothing whether the p
   night an orchestrator was one command from silently reverting another's merged work inside a PR
   titled something else entirely.
 - **`git diff main` uses your STALE local ref.** Fetch, then diff three-dot against `origin/main`.
-- **`singleParamIfaceMethod` counts interface TYPE PARAMS, not method params.** The name states the
-  opposite of what it does and has already sent one agent down a wrong hypothesis. It is renamed
-  `singleTyparamIfaceMethod` as part of **#54**.
+- **A predicate that counts the wrong thing is worse than no predicate: `singleParamIfaceMethod`
+  counted interface TYPE PARAMS while its name said method params.** It stated the opposite of what
+  it did and sent one agent down a wrong hypothesis; the misnaming *also hid the bug it caused* —
+  reviewers read the name, agreed "single-param methods only, reasonable", and never asked why an
+  arity test was gating a rule that has no arity. **#54 (2026-07-17) renamed it
+  `singleTyparamIfaceMethod` and, in doing so, made the real question visible: the gate was never
+  about arity at all, it was a Fork-1 boundary.** The definer arms now use `ifaceMethodName` (the
+  S2 inversion never queries the impl universe, so typaram arity is irrelevant to them); only the
+  importer arms — whose per-receiver rule genuinely keys on the receiver at the interface's one
+  typaram — keep the renamed count test. Closing **S-3** / SHADOW-SEMANTICS row 26.
 
 ---
 
 ## Where the specs live
 
 - `docs/spec/SHADOW-SEMANTICS.md` — the standalone-fn ⇄ interface-method shadowing rules (S1–S8), and
-  the **S7 path-agreement** rule that #54 violates.
+  the **S7 path-agreement** rule that #54 violated (S-3 / row 26, closed 2026-07-17).
 - `compiler/SHADOW-INVERSION-DESIGN.md` — the design for **#50** (a standalone must WIN over a
   same-named method). *The compiler is obeying the spec; the SPEC is the bug.*
 - `docs/spec/DICT-SEMANTICS.md` — dictionary-passing semantics (D1–D10, all closed).

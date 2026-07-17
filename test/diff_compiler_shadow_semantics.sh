@@ -79,15 +79,19 @@
 # fixture, vary the receiver's PROVENANCE (literal / grounded / dict-bound), not
 # just its type -- that axis is where every silent bug in this arc has lived.
 #
-# ⚠️ i1/i3/i4/i5 (IMPORTER shadows) and d11 MUST NOT MOVE. Fork 1 confines the
+# ⚠️ i1/i3/i4/i5 (IMPORTER shadows) MUST NOT MOVE. Fork 1 confines the
 # inversion to DEFINER shadows: an `import` is a SIBLING scope, not an inner
 # one. Inverting importers would break the everyday `import map` pattern
 # (i4: `isEmpty [1,2]` must still reach `Foldable.isEmpty`). During
 # development this gate caught exactly that -- inferDefinerShadowApp also
 # serves importer shadows on the mangled emit path, via definerShadowArgHead`s
-# `routeLocalSym != ""` arm -- and it caught d11 moving when the route stamp
-# skipped the singleParamIfaceMethod gate that every typing entry point
-# applies. If either moves again, the inversion has leaked. STOP.
+# `routeLocalSym != ""` arm. If any of them moves, the inversion has leaked.
+# STOP.
+#
+# (This warning used to name d11 alongside them, for a DIFFERENT reason -- it
+# was the KNOWN-BAD row and had to stay pinned to the bug. #54 fixed the bug
+# and d11 moved, deliberately, to REJECT/REJECT/REJECT; the four importer rows
+# did NOT, which is the evidence the definer-only split held.)
 #
 # d10 is the ledger working as designed. It was added by THIS gate as a
 # KNOWN-BAD row pinning the S-1 bug (a CONSTRAINED standalone `Num a =>` shadow
@@ -97,16 +101,23 @@
 # must FAIL when the bug is fixed, so it can't rot"). The row is now re-pinned
 # to the FIXED behavior: ACCEPT/ACCEPT/ACCEPT, value 4, run == build.
 #
-# d11_definer_multityparam_iface.mdk remains the one KNOWN-BAD row: a
-# multi-TYPARAM interface (`interface Ix a i`) bypasses the whole
-# definer-shadow machinery, because every entry point gates on
-# `singleParamIfaceMethod`, which counts INTERFACE type params, not method
-# params. `check` and `build` agree (and are in fact per-receiver CORRECT,
-# printing 4 then 3) while `run` E-PANICs (`unknown op '*'`) -- an S7
-# path-agreement violation. No fix is in flight (doc section 5, residual #2 /
-# "S-3"). Its row is pinned to that CURRENT split; it goes red the day `run`
-# is taught this shape, which is the signal to correct the row, not silence
-# it. A KNOWN-BAD row is not a skip -- it runs and asserts every turn.
+# d11 was that ledger row too, and it drained on 2026-07-17 (#54). It pinned
+# S-3: a multi-TYPARAM interface (`interface Ix a i`) bypassed the whole
+# definer-shadow machinery, because every entry point gated on
+# `singleParamIfaceMethod` -- which, despite its name, counts INTERFACE type
+# params, not method params. `check`+`build` agreed on the OLD pre-inversion
+# per-receiver answer (4 then 3) while `run`, which has no route stamp to
+# follow and resolves the bare name lexically, E-PANICked `unknown op '*'` --
+# an S7 path-agreement violation. The fix splits that predicate by shadow KIND
+# (`ifaceMethodName` for definers -- the S2 inversion never queries the impl
+# universe, so typaram arity is irrelevant to it; `singleTyparamIfaceMethod`
+# keeps gating the Fork-1 importer arms, whose per-receiver rule DOES key on the
+# receiver standing at the interface's one typaram). d11's row went RED on the
+# very next run and is now re-pinned to the fixed behavior -- REJECT/REJECT/
+# REJECT, the d7 twin at multi-typaram width. THE LEDGER WORKED TWICE (d10, d11).
+#
+# There are no KNOWN-BAD-because-broken rows left except d18 (BUILD_CRASH, #410
+# residual). A KNOWN-BAD row is not a skip -- it runs and asserts every turn.
 #
 # Untested-per-the-doc (rows 21-23: importer value-position / importer N-way /
 # return-position method shadow) ship NO fixture in test/shadow_fixtures/ and
@@ -168,7 +179,7 @@ i1_importer_local_iface/main.mdk|I1/I2 importer shadow, LOCAL interface (S2/S6)|
 i3_importer_imported_iface/main.mdk|I3 importer shadow, iface+impl in a THIRD module (S6)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
 i4_importer_prelude_iface/main.mdk|I4 importer shadow of a PRELUDE method (S2, stdlib shape)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue
 d10_definer_constrained.mdk|D10 definer, CONSTRAINED standalone dict-passed via RLocal (S9, was the S-1 bug)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
-d11_definer_multityparam_iface.mdk|D11 KNOWN-BAD: multi-typaram interface bypasses shadow machinery (S-3, doc residual)|ACCEPT|REJECT|ACCEPT|BUILD_EXACT|4\n3
+d11_definer_multityparam_iface.mdk|D11 definer, multi-TYPARAM interface (`interface Ix a i`) now REJECTs its live-impl receiver like every other definer shadow (S2/S8 INVERSION; S-3 FIXED 2026-07-17 #54 -- was the last KNOWN-BAD row: check+build kept the OLD per-receiver answer 4,3 while run E-PANICked `unknown op '*'`, an S7 violation. The definer entry points gated on a typaram COUNT (singleParamIfaceMethod, now split into ifaceMethodName for definers / singleTyparamIfaceMethod for Fork-1 importers), which excused `Ix a i` from the machinery. `get (Box 3) 1` mistypes against the standalone `get : Int -> Int -> Int`; `get 3 1` -> 3. The d7 twin at multi-TYPARAM width)|REJECT|REJECT|REJECT|NONE|
 d12_definer_ungrounded_literal.mdk|D12 definer, UNGROUNDED numeric-literal receiver whose grounded head HAS a live prelude impl (S2+S5; the P0-20 cell, now inverted: the standalone wins, 3 not False)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n30
 i5_importer_ungrounded_literal/main.mdk|I5 importer, UNGROUNDED numeric-literal receiver (S2+S5; regression for S1-RESIDUAL-B, closed 2026-07-14) + the FORK-1 control in the same fixture (isEmpty [1,2] must still reach Foldable)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue
 i6_importer_value_pos/main.mdk|I6 importer, value position over no-impl elements (S4, matrix row 21a; #411 -- was check+run ACCEPT [2,3,4] but BUILD died `no impl of method size for type Int`, a loud S7 split on a valid program). The importer twin of d4: expected IDENTICAL to row 9|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
