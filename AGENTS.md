@@ -268,6 +268,19 @@ sh test/run_gates.sh                                 # ❌ all 83
 FORCE=1 sh test/build_oracles.sh                     # ❌ all 54 oracles. Almost never right.
 ```
 
+🚨 **On a `compiler/backend/*` diff, `make preflight` forces the self-compile fixpoint and the
+loop can exceed the 10-minute foreground tool ceiling — killed at 600s with `exit 143`
+(SIGTERM). That is the CEILING, not your change hanging — do not go debug a phantom.** Same
+risk running `test/diff_compiler_perf_scaling.sh` directly (measured 654-748 s, ~11-12 min) —
+it's one of the slowest gates in the tree and just as foreground-unsafe as a single blocking
+call. **Remedy: run either one detached/backgrounded and poll for completion, not in a single
+foreground turn** (`run_in_background` in this harness, not a blocking call). Before
+committing to a run that long, `PREFLIGHT_DRY=1 sh test/preflight.sh` (add
+`PREFLIGHT_CHANGED_FILE=<path-to-a-file-listing-changed-paths>` if you haven't touched the
+tree yet) prints the derived gate set for free — no build, no run. ⚠️ It does NOT surface a
+forced fixpoint — that decision fires *after* the DRY exit — so a short dry-run gate list does
+not by itself mean the real run will finish inside the ceiling. (#520, #540)
+
 **This is a real cost, not an aesthetic preference.** Several agents share this box. One
 agent running the whole suite + a full oracle build takes the load average past 10 and
 **turns a 30-second gate run into several minutes for everyone else.** Worse, bare
