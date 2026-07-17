@@ -66,8 +66,12 @@
 #     chmod +x "$(git rev-parse --git-common-dir)/hooks/pre-commit"
 #
 # Binary lookup order: $MEDAKA, then <repo-root>/medaka, then `medaka` on PATH.
-# If none is found the hook WARNS and allows the commit (so a fresh clone without
-# a built compiler is not blocked). Emergency bypass: `git commit --no-verify`.
+# If none is found: a commit with NOTHING relevant staged (no .mdk, no snapshot)
+# is allowed silently — this hook has nothing to check either way. But a commit
+# that DOES stage a .mdk (or a snapshot) is FAILED (#437) — a missing binary is
+# the normal state of a fresh worktree, and silently allowing it here would mean
+# exactly the commits that need fmt/lint most (an agent's first .mdk commit in a
+# freshly-spawned worktree) get none. Emergency bypass either way: `git commit --no-verify`.
 #
 # Note: this checks the WORKING-TREE copy of each staged file (the normal
 # full-staging case). Partially-staged files are checked as they exist on disk.
@@ -86,16 +90,6 @@ GATED_CROSSFILE_RULES="rule-duplicate-body"
 LINT_ROOTS="compiler stdlib sqlite"
 
 ROOT="$(git rev-parse --show-toplevel)"
-MEDAKA="${MEDAKA:-$ROOT/medaka}"
-if [ ! -x "$MEDAKA" ]; then
-  if command -v medaka >/dev/null 2>&1; then
-    MEDAKA="$(command -v medaka)"
-  else
-    echo "pre-commit: medaka binary not found (build '$ROOT/medaka', set \$MEDAKA, or add to PATH)." >&2
-    echo "pre-commit: skipping fmt + lint checks — commit allowed." >&2
-    exit 0
-  fi
-fi
 
 # Staged .mdk files, excluding test/ fixtures (checks 1–3).
 files="$(git diff --cached --name-only --diff-filter=ACM -- '*.mdk' ':(exclude)test/**')"
@@ -103,6 +97,34 @@ files="$(git diff --cached --name-only --diff-filter=ACM -- '*.mdk' ':(exclude)t
 # they are in the corpus — plus the snapshots themselves.
 snapfiles="$(git diff --cached --name-only --diff-filter=ACMD -- '*.mdk' 'test/snapshots/*.md')"
 [ -z "$files" ] && [ -z "$snapfiles" ] && exit 0
+
+# Union of both sets, deduped — everything this hook would check if a binary
+# were available. Computed BEFORE the binary lookup below so the "no binary"
+# branch can name exactly what it is failing to check (#437).
+staged_mdk="$(printf '%s\n%s\n' "$files" "$snapfiles" | grep -v '^$' | sort -u)"
+
+MEDAKA="${MEDAKA:-$ROOT/medaka}"
+if [ ! -x "$MEDAKA" ]; then
+  if command -v medaka >/dev/null 2>&1; then
+    MEDAKA="$(command -v medaka)"
+  else
+    # #437: staged .mdk (or a snapshot) with no medaka binary reachable is a REAL
+    # coverage gap, not a no-op commit — this hook is the ONLY fmt/lint enforcement
+    # in the repo (CI does not check tree fmt/lint cleanliness). Unlike the "nothing
+    # relevant staged" early-exit above, this does NOT silently allow the commit.
+    echo "" >&2
+    echo "✗ pre-commit: medaka binary not found — cannot check staged .mdk:" >&2
+    for f in $staged_mdk; do echo "      $f" >&2; done
+    echo "" >&2
+    echo "  This hook is the ONLY fmt/lint enforcement in the repo (CI does not check" >&2
+    echo "  tree fmt/lint cleanliness), so committing unchecked would ship silently." >&2
+    echo "  Build it:      make -C $ROOT medaka" >&2
+    echo "  Or point at one:  MEDAKA=/path/to/medaka git commit ...   (or add to PATH)" >&2
+    echo "  Bypass once:   git commit --no-verify" >&2
+    echo "" >&2
+    exit 1
+  fi
+fi
 
 # ── 1. formatter check ───────────────────────────────────────────────────────
 bad=""
