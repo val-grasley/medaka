@@ -13,7 +13,14 @@
 -- from the environment (the gate script sets them).  Output defaults to the
 -- input's basename sans .mdk, mirroring lib/build_cmd.ml.
 
-import driver.build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, envOr}
+import driver.build_cmd.{
+  BuildResult,
+  BuildOk,
+  BuildErr,
+  TNative,
+  runBuild,
+  envOr,
+}
 import support.util.{reverseL}
 import support.path.{baseOf, chopExt}
 
@@ -33,7 +40,7 @@ main = match parseArgs (args ())
     let outPath = match outOpt
       Some o => o
       None => chopExt (baseOf input)
-    match runBuild root medaka cc inputAbs outPath
+    match runBuild root medaka cc TNative inputAbs outPath False
       BuildOk msg => println msg
       BuildErr msg =>
         let _ = ePutStrLn msg
