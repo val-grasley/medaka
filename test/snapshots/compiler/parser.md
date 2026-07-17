@@ -1,5 +1,5 @@
 # META
-source_lines=4133
+source_lines=4192
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -1505,6 +1505,65 @@ recordPatFieldRest name TEqual = do
   pure (RecPatField name (Some p))
 recordPatFieldRest name _ = pure (RecPatField name None)
 
+-- A reserved keyword sitting where a pattern-variable / identifier is expected is
+-- ALWAYS an error — no keyword starts a legal pattern — and the generic "expected
+-- pattern" (or a downstream layout/`: or =` complaint, once `many`/`orElse` has
+-- swallowed the recoverable failure) hides the real cause: the NAME is reserved.
+-- `reservedIdentKeyword` returns the SOURCE SPELLING of any lowercase-lexeme
+-- keyword token (the full `keywordOrIdent` table in lexer.mdk — the identifiers a
+-- user would plausibly try as a name), or None for a structural token (`=`, `(`,
+-- `,`, …) whose presence is the ordinary end-of-pattern signal that MUST stay a
+-- recoverable `failP` so `many parseParamPat` / list-cons parsing terminates.
+-- `mut`/`record`/`function`/`with` are dead rows here (a pre-grammar token scan
+-- —`letMutRemovedMsg` etc., ~parser.mdk:4108— preempts them), listed for a
+-- complete enumeration of the table.
+-- ⚠️ `let`/`if`/`then`/`else`/`rec` are DELIBERATELY absent (→ None → recoverable
+-- "expected pattern"): `if` legitimately follows a pattern as a match-arm GUARD
+-- (`pat if cond => body`) and `rec` legitimately follows `let` (`let rec go = …`),
+-- so `many parsePatAtom` / the let-binder path MUST stay recoverable at them (a
+-- fatal here miscompiles the compiler's own guarded arms and every `let rec`); the
+-- others are implausible as identifiers and kept generic so existing handling
+-- never regresses.
+reservedIdentKeyword : Token -> Option String
+reservedIdentKeyword TWith = Some "with"
+reservedIdentKeyword TMut = Some "mut"
+reservedIdentKeyword TIn = Some "in"
+reservedIdentKeyword TMatch = Some "match"
+reservedIdentKeyword TData = Some "data"
+reservedIdentKeyword TRecord = Some "record"
+reservedIdentKeyword TInterface = Some "interface"
+reservedIdentKeyword TDefault = Some "default"
+reservedIdentKeyword TImpl = Some "impl"
+reservedIdentKeyword TImport = Some "import"
+reservedIdentKeyword TExport = Some "export"
+reservedIdentKeyword TPublic = Some "public"
+reservedIdentKeyword TWhere = Some "where"
+reservedIdentKeyword TOf = Some "of"
+reservedIdentKeyword TDo = Some "do"
+reservedIdentKeyword TAs = Some "as"
+reservedIdentKeyword TExtern = Some "extern"
+reservedIdentKeyword TRequires = Some "requires"
+reservedIdentKeyword TDeriving = Some "deriving"
+reservedIdentKeyword TType = Some "type"
+reservedIdentKeyword TNewtype = Some "newtype"
+reservedIdentKeyword TProp = Some "prop"
+reservedIdentKeyword TTest = Some "test"
+reservedIdentKeyword TBench = Some "bench"
+reservedIdentKeyword TEffect = Some "effect"
+reservedIdentKeyword TFunction = Some "function"
+reservedIdentKeyword _ = None
+
+reservedKeywordMsg : String -> String
+reservedKeywordMsg name = "`\{name}` is a reserved keyword — it can't be used as a variable or pattern name. Rename it (e.g. `\{name}_`)."
+
+-- Committed (`fatalP`) so the message reaches the user through the enclosing
+-- `many`/`orElse` (which discard a recoverable `PErr`) — the same channel
+-- `intLitTooBigMsg` uses.  A structural token stays a recoverable `failP`.
+reservedOrPatFail : Token -> Parser Pat
+reservedOrPatFail t = match reservedIdentKeyword t
+  Some name => fatalP (reservedKeywordMsg name)
+  None => failP "expected pattern"
+
 parsePatAtom : Parser Pat
 parsePatAtom = do
   t <- peekP
@@ -1524,7 +1583,7 @@ parsePatAtom = do
       upperAtomRest c t2
     TLParen => parsePatParen
     TLBracket => parsePatList
-    _ => failP "expected pattern"
+    _ => reservedOrPatFail t
 
 -- atom-level uppercase: a record pattern `C { … }` or a bare nullary ctor `C`
 -- (an *applied* ctor `C p…` needs parens at atom level, like the OCaml grammar).
@@ -4668,8 +4727,40 @@ parseResultWith src tokList offList =
 (DTypeSig false "recordPatFieldRest" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "RecPatField")))))
 (DFunDef false "recordPatFieldRest" ((PVar "name") (PCon "TEqual")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parsePat")) (ELam ((PVar "p")) (EApp (EVar "pure") (EApp (EApp (EVar "RecPatField") (EVar "name")) (EApp (EVar "Some") (EVar "p")))))))))
 (DFunDef false "recordPatFieldRest" ((PVar "name") PWild) (EApp (EVar "pure") (EApp (EApp (EVar "RecPatField") (EVar "name")) (EVar "None"))))
+(DTypeSig false "reservedIdentKeyword" (TyFun (TyCon "Token") (TyApp (TyCon "Option") (TyCon "String"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TWith")) (EApp (EVar "Some") (ELit (LString "with"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TMut")) (EApp (EVar "Some") (ELit (LString "mut"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TIn")) (EApp (EVar "Some") (ELit (LString "in"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TMatch")) (EApp (EVar "Some") (ELit (LString "match"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TData")) (EApp (EVar "Some") (ELit (LString "data"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TRecord")) (EApp (EVar "Some") (ELit (LString "record"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TInterface")) (EApp (EVar "Some") (ELit (LString "interface"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TDefault")) (EApp (EVar "Some") (ELit (LString "default"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TImpl")) (EApp (EVar "Some") (ELit (LString "impl"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TImport")) (EApp (EVar "Some") (ELit (LString "import"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TExport")) (EApp (EVar "Some") (ELit (LString "export"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TPublic")) (EApp (EVar "Some") (ELit (LString "public"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TWhere")) (EApp (EVar "Some") (ELit (LString "where"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TOf")) (EApp (EVar "Some") (ELit (LString "of"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TDo")) (EApp (EVar "Some") (ELit (LString "do"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TAs")) (EApp (EVar "Some") (ELit (LString "as"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TExtern")) (EApp (EVar "Some") (ELit (LString "extern"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TRequires")) (EApp (EVar "Some") (ELit (LString "requires"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TDeriving")) (EApp (EVar "Some") (ELit (LString "deriving"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TType")) (EApp (EVar "Some") (ELit (LString "type"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TNewtype")) (EApp (EVar "Some") (ELit (LString "newtype"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TProp")) (EApp (EVar "Some") (ELit (LString "prop"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TTest")) (EApp (EVar "Some") (ELit (LString "test"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TBench")) (EApp (EVar "Some") (ELit (LString "bench"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TEffect")) (EApp (EVar "Some") (ELit (LString "effect"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TFunction")) (EApp (EVar "Some") (ELit (LString "function"))))
+(DFunDef false "reservedIdentKeyword" (PWild) (EVar "None"))
+(DTypeSig false "reservedKeywordMsg" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "reservedKeywordMsg" ((PVar "name")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "`")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "` is a reserved keyword — it can't be used as a variable or pattern name. Rename it (e.g. `"))) (EApp (EVar "display") (EVar "name"))) (ELit (LString "_`)."))))
+(DTypeSig false "reservedOrPatFail" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Pat"))))
+(DFunDef false "reservedOrPatFail" ((PVar "t")) (EMatch (EApp (EVar "reservedIdentKeyword") (EVar "t")) (arm (PCon "Some" (PVar "name")) () (EApp (EVar "fatalP") (EApp (EVar "reservedKeywordMsg") (EVar "name")))) (arm (PCon "None") () (EApp (EVar "failP") (ELit (LString "expected pattern"))))))
 (DTypeSig false "parsePatAtom" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parsePatAtom" () (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TIdent" (PVar "x")) () (EApp (EVar "emit") (EApp (EVar "PVar") (EVar "x")))) (arm (PCon "TUnderscore") () (EApp (EVar "emit") (EVar "PWild"))) (arm (PCon "TInt" (PVar "n")) ((GBool (EApp (EVar "isIntMinLit") (EVar "n")))) (EApp (EVar "fatalP") (EVar "intLitTooBigMsg"))) (arm (PCon "TInt" (PVar "n")) () (EApp (EVar "intPatRest") (EApp (EVar "LInt") (EVar "n")))) (arm (PCon "TMinus") () (EVar "negIntPat")) (arm (PCon "TMinusTight") () (EVar "negIntPat")) (arm (PCon "TFloat" (PVar "f")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LFloat") (EVar "f"))))) (arm (PCon "TString" (PVar "s")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LString") (EVar "s"))))) (arm (PCon "TChar" (PVar "s")) () (EApp (EVar "charPatRest") (EApp (EVar "LChar") (EVar "s")))) (arm (PCon "TUpper" (PVar "c")) () (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t2")) (EApp (EApp (EVar "upperAtomRest") (EVar "c")) (EVar "t2"))))))) (arm (PCon "TLParen") () (EVar "parsePatParen")) (arm (PCon "TLBracket") () (EVar "parsePatList")) (arm PWild () (EApp (EVar "failP") (ELit (LString "expected pattern"))))))))
+(DFunDef false "parsePatAtom" () (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TIdent" (PVar "x")) () (EApp (EVar "emit") (EApp (EVar "PVar") (EVar "x")))) (arm (PCon "TUnderscore") () (EApp (EVar "emit") (EVar "PWild"))) (arm (PCon "TInt" (PVar "n")) ((GBool (EApp (EVar "isIntMinLit") (EVar "n")))) (EApp (EVar "fatalP") (EVar "intLitTooBigMsg"))) (arm (PCon "TInt" (PVar "n")) () (EApp (EVar "intPatRest") (EApp (EVar "LInt") (EVar "n")))) (arm (PCon "TMinus") () (EVar "negIntPat")) (arm (PCon "TMinusTight") () (EVar "negIntPat")) (arm (PCon "TFloat" (PVar "f")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LFloat") (EVar "f"))))) (arm (PCon "TString" (PVar "s")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LString") (EVar "s"))))) (arm (PCon "TChar" (PVar "s")) () (EApp (EVar "charPatRest") (EApp (EVar "LChar") (EVar "s")))) (arm (PCon "TUpper" (PVar "c")) () (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t2")) (EApp (EApp (EVar "upperAtomRest") (EVar "c")) (EVar "t2"))))))) (arm (PCon "TLParen") () (EVar "parsePatParen")) (arm (PCon "TLBracket") () (EVar "parsePatList")) (arm PWild () (EApp (EVar "reservedOrPatFail") (EVar "t")))))))
 (DTypeSig false "upperAtomRest" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Pat")))))
 (DFunDef false "upperAtomRest" ((PVar "c") (PCon "TLBrace")) (EApp (EVar "recordPat") (EVar "c")))
 (DFunDef false "upperAtomRest" ((PVar "c") PWild) (EApp (EVar "pure") (EApp (EApp (EVar "PCon") (EVar "c")) (EListLit))))
@@ -5990,8 +6081,40 @@ parseResultWith src tokList offList =
 (DTypeSig false "recordPatFieldRest" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "RecPatField")))))
 (DFunDef false "recordPatFieldRest" ((PVar "name") (PCon "TEqual")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parsePat")) (ELam ((PVar "p")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "RecPatField") (EVar "name")) (EApp (EVar "Some") (EVar "p")))))))))
 (DFunDef false "recordPatFieldRest" ((PVar "name") PWild) (EApp (EMethodRef "pure") (EApp (EApp (EVar "RecPatField") (EVar "name")) (EVar "None"))))
+(DTypeSig false "reservedIdentKeyword" (TyFun (TyCon "Token") (TyApp (TyCon "Option") (TyCon "String"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TWith")) (EApp (EVar "Some") (ELit (LString "with"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TMut")) (EApp (EVar "Some") (ELit (LString "mut"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TIn")) (EApp (EVar "Some") (ELit (LString "in"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TMatch")) (EApp (EVar "Some") (ELit (LString "match"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TData")) (EApp (EVar "Some") (ELit (LString "data"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TRecord")) (EApp (EVar "Some") (ELit (LString "record"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TInterface")) (EApp (EVar "Some") (ELit (LString "interface"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TDefault")) (EApp (EVar "Some") (ELit (LString "default"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TImpl")) (EApp (EVar "Some") (ELit (LString "impl"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TImport")) (EApp (EVar "Some") (ELit (LString "import"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TExport")) (EApp (EVar "Some") (ELit (LString "export"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TPublic")) (EApp (EVar "Some") (ELit (LString "public"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TWhere")) (EApp (EVar "Some") (ELit (LString "where"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TOf")) (EApp (EVar "Some") (ELit (LString "of"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TDo")) (EApp (EVar "Some") (ELit (LString "do"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TAs")) (EApp (EVar "Some") (ELit (LString "as"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TExtern")) (EApp (EVar "Some") (ELit (LString "extern"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TRequires")) (EApp (EVar "Some") (ELit (LString "requires"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TDeriving")) (EApp (EVar "Some") (ELit (LString "deriving"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TType")) (EApp (EVar "Some") (ELit (LString "type"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TNewtype")) (EApp (EVar "Some") (ELit (LString "newtype"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TProp")) (EApp (EVar "Some") (ELit (LString "prop"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TTest")) (EApp (EVar "Some") (ELit (LString "test"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TBench")) (EApp (EVar "Some") (ELit (LString "bench"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TEffect")) (EApp (EVar "Some") (ELit (LString "effect"))))
+(DFunDef false "reservedIdentKeyword" ((PCon "TFunction")) (EApp (EVar "Some") (ELit (LString "function"))))
+(DFunDef false "reservedIdentKeyword" (PWild) (EVar "None"))
+(DTypeSig false "reservedKeywordMsg" (TyFun (TyCon "String") (TyCon "String")))
+(DFunDef false "reservedKeywordMsg" ((PVar "name")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "`")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "` is a reserved keyword — it can't be used as a variable or pattern name. Rename it (e.g. `"))) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "_`)."))))
+(DTypeSig false "reservedOrPatFail" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Pat"))))
+(DFunDef false "reservedOrPatFail" ((PVar "t")) (EMatch (EApp (EVar "reservedIdentKeyword") (EVar "t")) (arm (PCon "Some" (PVar "name")) () (EApp (EVar "fatalP") (EApp (EVar "reservedKeywordMsg") (EVar "name")))) (arm (PCon "None") () (EApp (EVar "failP") (ELit (LString "expected pattern"))))))
 (DTypeSig false "parsePatAtom" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parsePatAtom" () (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TIdent" (PVar "x")) () (EApp (EVar "emit") (EApp (EVar "PVar") (EVar "x")))) (arm (PCon "TUnderscore") () (EApp (EVar "emit") (EVar "PWild"))) (arm (PCon "TInt" (PVar "n")) ((GBool (EApp (EVar "isIntMinLit") (EVar "n")))) (EApp (EVar "fatalP") (EVar "intLitTooBigMsg"))) (arm (PCon "TInt" (PVar "n")) () (EApp (EVar "intPatRest") (EApp (EVar "LInt") (EVar "n")))) (arm (PCon "TMinus") () (EVar "negIntPat")) (arm (PCon "TMinusTight") () (EVar "negIntPat")) (arm (PCon "TFloat" (PVar "f")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LFloat") (EVar "f"))))) (arm (PCon "TString" (PVar "s")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LString") (EVar "s"))))) (arm (PCon "TChar" (PVar "s")) () (EApp (EVar "charPatRest") (EApp (EVar "LChar") (EVar "s")))) (arm (PCon "TUpper" (PVar "c")) () (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t2")) (EApp (EApp (EVar "upperAtomRest") (EVar "c")) (EVar "t2"))))))) (arm (PCon "TLParen") () (EVar "parsePatParen")) (arm (PCon "TLBracket") () (EVar "parsePatList")) (arm PWild () (EApp (EVar "failP") (ELit (LString "expected pattern"))))))))
+(DFunDef false "parsePatAtom" () (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TIdent" (PVar "x")) () (EApp (EVar "emit") (EApp (EVar "PVar") (EVar "x")))) (arm (PCon "TUnderscore") () (EApp (EVar "emit") (EVar "PWild"))) (arm (PCon "TInt" (PVar "n")) ((GBool (EApp (EVar "isIntMinLit") (EVar "n")))) (EApp (EVar "fatalP") (EVar "intLitTooBigMsg"))) (arm (PCon "TInt" (PVar "n")) () (EApp (EVar "intPatRest") (EApp (EVar "LInt") (EVar "n")))) (arm (PCon "TMinus") () (EVar "negIntPat")) (arm (PCon "TMinusTight") () (EVar "negIntPat")) (arm (PCon "TFloat" (PVar "f")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LFloat") (EVar "f"))))) (arm (PCon "TString" (PVar "s")) () (EApp (EVar "emit") (EApp (EVar "PLit") (EApp (EVar "LString") (EVar "s"))))) (arm (PCon "TChar" (PVar "s")) () (EApp (EVar "charPatRest") (EApp (EVar "LChar") (EVar "s")))) (arm (PCon "TUpper" (PVar "c")) () (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t2")) (EApp (EApp (EVar "upperAtomRest") (EVar "c")) (EVar "t2"))))))) (arm (PCon "TLParen") () (EVar "parsePatParen")) (arm (PCon "TLBracket") () (EVar "parsePatList")) (arm PWild () (EApp (EVar "reservedOrPatFail") (EVar "t")))))))
 (DTypeSig false "upperAtomRest" (TyFun (TyCon "String") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Pat")))))
 (DFunDef false "upperAtomRest" ((PVar "c") (PCon "TLBrace")) (EApp (EVar "recordPat") (EVar "c")))
 (DFunDef false "upperAtomRest" ((PVar "c") PWild) (EApp (EMethodRef "pure") (EApp (EApp (EVar "PCon") (EVar "c")) (EListLit))))
