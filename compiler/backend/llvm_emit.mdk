@@ -269,24 +269,6 @@ curGapBind : Ref String
 curGapBind = Ref "?"
 
 -- The CTFail target for a multi-clause function emitted as a CHAIN of single-clause
--- decision trees: when clause K's PATTERN fails to match, control must resume at
--- clause K+1's entry block — the interpreter's "try next clause" semantics.  Holds
--- the current next-clause LLVM label; "" means "no next clause" → a genuine
--- non-exhaustive-match abort.  Set per-clause by emitClauseChain; read ONLY by
--- emitTree's CTFail arm.  A module-level Ref (mirrors gapLog) to avoid threading
--- the label through every emitTree arm.
---
--- ⚠️ This Ref is for CTFail and NOTHING ELSE.  emitDecision/emitTrmcBody/emitGDispBody
--- save+NULL it across a body-level `match` precisely because such a match's own CTFail
--- is a genuine abort, not the enclosing chain's fallthrough.  The `__fallthrough__ ()`
--- SENTINEL — desugar's "this clause's guard chain fell through" marker — is a
--- different thing and used to read this same Ref, which is why a refutable
--- pattern-guard on a multi-clause function MISCOMPILED (it desugars to a body-level
--- CDecision, so the null erased its target and the sentinel became `@mdk_oob`).  The
--- sentinel now carries its own target in the node (`__ft__<label>`, stamped by
--- `labelFallthrough`) — see backend/emit_support.mdk.  Do NOT re-merge the two.
-fallthroughLabelRef : Ref String
-fallthroughLabelRef = Ref ""
 
 -- compile-time closure-arity table, keyed by the closure cell's SSA register
 -- (`%tN`).  ⚠️ `%tN` is only unique WITHIN a define (issue #118 restarts the
@@ -354,9 +336,12 @@ emitFallthrough e fname = match ftLabelOf fname
 -- and rets.  The self-call is NEVER emitted as a `call` — only its arg
 -- recomputation feeds the loop, which is what removes the stack-growing call.
 --
--- A module-level Ref (mirroring fallthroughLabelRef) carries the active context
--- so the decision-tree leaf (emitLeaf) and the single-clause CIf-tail descent
--- (emitTrmcBody) both route into it without threading it through every emit arm.
+-- A module-level Ref carries the active context so the decision-tree leaf
+-- (emitLeaf) and the single-clause CIf-tail descent (emitTrmcBody) both route into
+-- it without threading it through every emit arm.  (The fallthrough label was once
+-- carried the same way; it is now a plain emitTree parameter — issue #354.  This Ref
+-- is NOT analogous: it is saved+restored around a nested match, never NULLED-then-read
+-- as a jump target, so it cannot silently erase one.)
 -- TrmcOff = ordinary (non-TRMC) codegen; TrmcOn self arity destSlot loopL exitL
 -- paramSlots = the live context.  `self` is the SelfRef the loop recurses on (a
 -- top-level CVar name, or a dispatched CMethod method+tag — Phase 2 B-dispatch);
@@ -3259,17 +3244,14 @@ emitGroupBindDefine e env lamName name arity clauses captured =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
   let scope = beginDefine e
-  let savedFt = fallthroughLabelRef.value
-  let _ = setRef fallthroughLabelRef ""
   let _ = emit e "define i64 @\{lamName}(i64 %clos, \{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
-  let _ = emitClauseTree e (((name, ("%clos", LTClosure))::cenv) ++ implParamEnv arity 0) arity (clauseList clauses)
+  let _ = emitClauseTree e (((name, ("%clos", LTClosure))::cenv) ++ implParamEnv arity 0) arity (clauseList clauses) ""
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
-  let _ = setRef fallthroughLabelRef savedFt
   let _ = endDefine e scope
   setRef (bufRef e) saved
 -- A lifted define is a FRESH function: its clause chain's last-clause
@@ -3277,7 +3259,9 @@ emitGroupBindDefine e env lamName name arity clauses captured =
 -- function's leftover next-clause label.  Without this the lifted `go`'s final
 -- clause would `br label %clauseN` to a block defined in the PARENT function —
 -- invalid LLVM once functions are concatenated in the multi-module output
--- (issue #53).  Same save+null+restore discipline emitDecision uses.
+-- (issue #53).  Hence the explicit "" outer argument to emitClauseTree — which since
+-- issue #354 is a parameter, so a fresh define states its own contract instead of
+-- depending on nulling ambient state.
 
 clauseList : List CClause -> List (List Pat, CExpr)
 clauseList [] = []
@@ -5145,8 +5129,6 @@ emitDefaultDefine e fname tag method entry =
     let saved = (bufRef e).value
     let _ = setRef (bufRef e) []
     let scope = beginDefine e
-    let savedFt = fallthroughLabelRef.value
-    let _ = setRef fallthroughLabelRef ""
     let _ = emit e "define i64 @\{fname}(\{implParamDecls arity 0}) {"
     let _ = emit e "entry:"
     let _ = emitGroupBody e fname tag [] arity [(pats, body)]
@@ -5154,7 +5136,6 @@ emitDefaultDefine e fname tag method entry =
     let _ = emit e ""
     let defLines = (bufRef e).value
     let _ = setRef (lamsRef e) (defLines ++ (lamsRef e).value)
-    let _ = setRef fallthroughLabelRef savedFt
     let _ = endDefine e scope
     setRef (bufRef e) saved
 -- G7: the dict-passing pass already PREPENDED one `$dict_<method>_<slot>` param per
@@ -5547,9 +5528,9 @@ emitGroupBody e fname tag positions arity (clauses@[(pats, body)]) =
     let tyList = patPosTys tag positions (listLen pats) 0
     let env = paramEnvByPos pats tyList 0
     emitFnBody e env fname body
-  else emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
+  else emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses ""
 emitGroupBody e fname tag positions arity clauses =
-  emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
+  emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses ""
 
 -- build a LTy list of length n, typed as tagToLTy tag at positions ∈ positions,
 -- LTInt elsewhere.
@@ -5587,23 +5568,28 @@ paramEnvByPos _ _ _ = []
 -- binds the clause's patterns element-wise against those words (`bindArm`) rather
 -- than loading them back out of a cell.  Zero allocation, one fewer (always-true)
 -- tuple-discriminant test, and the param LTys survive into the leaf.
-emitClauseTree : Emit -> List (String, (String, LTy)) -> Int -> List (List Pat, CExpr) -> Unit
-emitClauseTree e env arity clauses =
+-- `outer` is the fallthrough target for the LAST clause of the chain — see
+-- emitClauseChain.  It is a PARAMETER (issue #354): it used to be read out of the
+-- module-level fallthroughLabelRef, which made the contract "whatever ambient value
+-- some ancestor happened to leave behind".  Every caller today passes "" (a chain
+-- either opens a fresh `define` — where inheriting a parent function's block label
+-- would emit invalid cross-function LLVM, issue #53 — or sits at top level), so
+-- making it explicit costs one argument and buys a call-site-local answer.
+emitClauseTree : Emit -> List (String, (String, LTy)) -> Int -> List (List Pat, CExpr) -> String -> Unit
+emitClauseTree e env arity clauses outer =
   let roots = emitArgs e env (implScrutVars arity 0)
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "decend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
-  let saved = fallthroughLabelRef.value
-  let _ = emitClauseChain e env arity clauses roots slot endL rty saved
-  let _ = setRef fallthroughLabelRef saved
+  let _ = emitClauseChain e env arity clauses roots slot endL rty outer
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e "  \{r} = load i64, ptr \{slot}"
   emit e ("  ret i64 " ++ r)
 -- Emit the clauses as a CHAIN of single-clause decision trees sharing one result
--- slot + end label.  Each clause sets fallthroughLabelRef to the NEXT clause's
--- entry block before emitting, so a pattern miss (CTFail) or a guard fallthrough
+-- slot + end label.  Each clause passes the NEXT clause's
+-- entry block to emitTree, so a pattern miss (CTFail) or a guard fallthrough
 -- (`__fallthrough__`) resumes the next clause — the interpreter's "try next
 -- clause" semantics.  The scrutinee is emitted ONCE, before the chain.  (A lone
 -- clause degenerates to the historical single-tree path: no next label → CTFail
@@ -5622,14 +5608,18 @@ emitClauseChain e env arity (c::rest) roots slot endL rty outer =
   -- Stamp this clause's next-clause label INTO its `__fallthrough__` sentinels
   -- (emit_support's labelFallthrough) before building the arms, so the sentinel
   -- lowers to `br %nextL` from the var name alone.  The old code left the sentinel
-  -- bare and had emitFallthrough read `fallthroughLabelRef` — which emitDecision
-  -- NULLS, so a refutable pattern-guard clause (whose guard chain desugars to a
-  -- body-level CDecision) fell through to `@mdk_oob` instead of the next clause.
+  -- bare and had emitFallthrough read the old module-level fallthrough Ref — which
+  -- emitDecision NULLED, so a refutable pattern-guard clause (whose guard chain
+  -- desugars to a body-level CDecision) fell through to `@mdk_oob` instead of the
+  -- next clause.  (That Ref is gone as of issue #354; the label is now threaded.)
   let c2 = ftClause nextL c
   let arms = [clauseArm arity c2]
   let tree = compileTree [False] (implRows [c2] 0)
-  let _ = setRef fallthroughLabelRef nextL
-  let _ = emitTree e env roots arms roots slot endL rty tree
+  -- This tree is SINGLE-ROW (one clause), so its CTFail means "this clause's pattern
+  -- missed" → resume at nextL.  Handed to emitTree as an argument (issue #354); it is
+  -- the only emitTree entry point with a live fallthrough — the other three (a
+  -- self-contained expression match, and the two tail-match descents) pass "".
+  let _ = emitTree e env roots arms roots slot endL nextL rty tree
   if isEmptyL rest then ()
   else
     let _ = emit e (nextL ++ ":")
@@ -5951,18 +5941,15 @@ emitPatLamDefine e env lamName extra pats captured body =
   let saved = (bufRef e).value
   let _ = setRef (bufRef e) []
   let scope = beginDefine e
-  let savedFt = fallthroughLabelRef.value
-  let _ = setRef fallthroughLabelRef ""
   let arity = listLen pats
   let _ = emit e "define i64 @\{lamName}(i64 %clos, \{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
-  let _ = emitClauseTree e (extra ++ cenv ++ implParamEnv arity 0) arity [(pats, body)]
+  let _ = emitClauseTree e (extra ++ cenv ++ implParamEnv arity 0) arity [(pats, body)] ""
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = setRef (lamsRef e) (lamLines ++ (lamsRef e).value)
-  let _ = setRef fallthroughLabelRef savedFt
   let _ = endDefine e scope
   setRef (bufRef e) saved
 
@@ -6599,14 +6586,15 @@ emitDecision e env scrut arms tree =
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "decend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
-  let saved = fallthroughLabelRef.value
-  let _ = setRef fallthroughLabelRef ""
   let savedTrmc = trmcCtxRef.value
   let _ = setRef trmcCtxRef TrmcOff
   let savedGDisp = gDispCtxRef.value
   let _ = setRef gDispCtxRef GDispOff
-  let _ = emitTree e env [sv] arms [sv] slot endL rty tree
-  let _ = setRef fallthroughLabelRef saved
+  -- "" = a miss in an expression-position match is a genuine non-exhaustive abort,
+  -- NOT the enclosing clause chain's fallthrough (the clause's pattern already
+  -- matched to get here).  Passing it as an argument replaces the old
+  -- save+null+restore of fallthroughLabelRef (issue #354).
+  let _ = emitTree e env [sv] arms [sv] slot endL "" rty tree
   let _ = setRef trmcCtxRef savedTrmc
   let _ = setRef gDispCtxRef savedGDisp
   let _ = emit e (endL ++ ":")
@@ -6629,23 +6617,31 @@ emitDecision e env scrut arms tree =
 -- [root] and expanding into a constructor's fields as the tree descends.  Every
 -- path terminates its current block (a `br` to `endL` after storing, a `br` into
 -- a sibling test block, or `unreachable` for CTFail).
-emitTree : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> List String -> String -> String -> Ref LTy -> CTree -> Unit
+emitTree : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> List String -> String -> String -> String -> Ref LTy -> CTree -> Unit
 -- CTFail: the matrix path matched no row.  In a CHAINED single-clause tree
 -- (emitClauseChain) this is "this clause's pattern didn't match" → resume the next
--- clause via the fallthrough label; with no next clause (`""`) it is a genuine
--- non-exhaustive-match abort.  A bare `unreachable` here was UB (LLVM `ud2` → a
+-- clause via `ftL`, the fallthrough label THREADED IN by the caller; with no next
+-- clause (`""`) it is a genuine non-exhaustive-match abort.  A bare `unreachable`
+-- here was UB (LLVM `ud2` → a
 -- silent SIGTRAP, no output); call the noreturn @mdk_nonexhaustive_match (prints
 -- `runtime error [E-NONEXHAUSTIVE-MATCH]` to stderr, exits nonzero — the
 -- interpreter's message MINUS `file:L:C:`, Core IR carrying no loc) before the
 -- `unreachable`, mirroring the div-by-zero trap.  (The GUARD-chain half of "try the
 -- next clause" is NOT this arm — that is the `__fallthrough__` sentinel, lowered by
 -- emitFallthrough from the label stamped into the node.)
-emitTree e _ _ _ _ _ _ _ CTFail = match fallthroughLabelRef.value
-  "" =>
-    let _ = emit e "  call void @mdk_nonexhaustive_match()"
-    emit e "  unreachable"
-  lbl => emit e ("  br label %" ++ lbl)
-emitTree e env roots arms _ slot endL rty (CTLeaf i) =
+--
+-- `ftL` is a PLAIN PARAMETER, not ambient state (issue #354).  It used to be a
+-- module-level Ref that four entry points saved+NULLED+restored, which made "is the
+-- fallthrough live here?" a whole-call-graph question — the exact shape that made the
+-- `__fallthrough__` sentinel branch to @mdk_oob instead of the next clause (a run≠build
+-- miscompile, fixed 2026-07-13 by moving THAT label into the node).  Threading it makes
+-- the answer local and the hazard structurally impossible: an entry point that means
+-- "a miss here is a genuine abort" passes "" and cannot forget to restore.
+emitTree e _ _ _ _ _ _ "" _ CTFail =
+  let _ = emit e "  call void @mdk_nonexhaustive_match()"
+  emit e "  unreachable"
+emitTree e _ _ _ _ _ _ lbl _ CTFail = emit e ("  br label %" ++ lbl)
+emitTree e env roots arms _ slot endL _ rty (CTLeaf i) =
   emitLeaf e env roots arms i slot endL rty
 -- CTGuard i fail: arm i matched but is GUARDED.  Re-bind its pattern (like a
 -- leaf), evaluate its guards; all pass → eval the body (emitLeaf-style); any
@@ -6655,8 +6651,8 @@ emitTree e env roots arms _ slot endL rty (CTLeaf i) =
 -- self-compile path no longer needs the guard-free convention for `CGBool`
 -- guards.  A refutable `p <- e` pattern guard stays a contained gap (not produced
 -- by current source); a bad arm index likewise.
-emitTree e env roots arms occs slot endL rty (CTGuard i fail) = match nthArm arms i
-  Some (CArm pat guards body) => if allGuardsEmittable guards then emitGuardedArm e env roots arms occs pat guards body fail slot endL rty
+emitTree e env roots arms occs slot endL ftL rty (CTGuard i fail) = match nthArm arms i
+  Some (CArm pat guards body) => if allGuardsEmittable guards then emitGuardedArm e env roots arms occs pat guards body fail slot endL ftL rty
   else
     let _ = gapU "refutable pattern guard (`p <- e`) in a match arm (CTGuard) — not yet lowered"
     let _ = emit e ("  store i64 0, ptr " ++ slot)
@@ -6665,10 +6661,10 @@ emitTree e env roots arms occs slot endL rty (CTGuard i fail) = match nthArm arm
     let _ = gapU "guarded arm index out of range (CTGuard)"
     let _ = emit e ("  store i64 0, ptr " ++ slot)
     emit e ("  br label %" ++ endL)
-emitTree e env roots arms occs slot endL rty (CTDrop sub) =
-  emitTree e env roots arms (tailS occs) slot endL rty sub
-emitTree e env roots arms occs slot endL rty (CTSwitch branches dft) =
-  emitSwitch e env roots arms occs branches dft slot endL rty
+emitTree e env roots arms occs slot endL ftL rty (CTDrop sub) =
+  emitTree e env roots arms (tailS occs) slot endL ftL rty sub
+emitTree e env roots arms occs slot endL ftL rty (CTSwitch branches dft) =
+  emitSwitch e env roots arms occs branches dft slot endL ftL rty
 
 -- a terminal leaf: re-match the selected arm's ORIGINAL pattern against the leaf's
 -- root word(s) — `roots` (the tree path guarantees it matches) to bind its
@@ -6702,8 +6698,8 @@ emitLeaf e env roots arms i slot endL rty = match nthArm arms i
 -- plain-`if`-guard case), run the guards (branching to `failL` on any failure),
 -- and on all-pass eval the body into `slot`; then emit `failL` and the `fail`
 -- subtree (resumes the match at the same column context `occs`).
-emitGuardedArm : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> List String -> Pat -> List CGuard -> CExpr -> CTree -> String -> String -> Ref LTy -> Unit
-emitGuardedArm e env roots arms occs pat guards body fail slot endL rty =
+emitGuardedArm : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> List String -> Pat -> List CGuard -> CExpr -> CTree -> String -> String -> String -> Ref LTy -> Unit
+emitGuardedArm e env roots arms occs pat guards body fail slot endL ftL rty =
   let failL = "guardfail" ++ intToString (freshLocal e)
   let env2 = emitRefutArm e env pat roots body failL
   let env3 = emitGuardChain e env2 guards body failL
@@ -6724,7 +6720,7 @@ emitGuardedArm e env roots arms occs pat guards body fail slot endL rty =
         let _ = emit e "  store i64 \{bv}, ptr \{slot}"
         emit e ("  br label %" ++ endL)
   let _ = emit e (failL ++ ":")
-  emitTree e env roots arms occs slot endL rty fail
+  emitTree e env roots arms occs slot endL ftL rty fail
 
 -- emit the guard tests left-to-right: a `CGBool` tests a Bool (`True` = the word
 -- 3) and branches to `failL` on failure, falling through on success; a
@@ -7006,17 +7002,17 @@ nthOr (x::rest) i dflt
 -- branch's head selects the test kind.  HCons/HNil/HTuple map to the same tag the
 -- alloc site stamps (`cellTag` of "Cons"/"Nil"/"$tuple"), so a constructor
 -- test reaches them with no special case beyond the name/arity (see conHeadInfo).
-emitSwitch : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> List String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> Unit
-emitSwitch e env roots arms [] branches dft slot endL rty =
-  emitTree e env roots arms [] slot endL rty dft
-emitSwitch e env roots arms (foc::rest) [] dft slot endL rty =
-  emitTree e env roots arms rest slot endL rty dft
-emitSwitch e env roots arms (foc::rest) (branches@((CTBranch (HLit _) _)::_)) dft slot endL rty = emitLitChain e env roots arms foc rest branches dft slot endL rty
-emitSwitch e env roots arms (foc::rest) ((CTBranch HUnit sub)::_) dft slot endL rty = emitTree e env roots arms rest slot endL rty sub
-emitSwitch e env roots arms (foc::rest) (branches@((CTBranch h _)::_)) dft slot endL rty = match conHeadInfo h
+emitSwitch : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> List String -> List CTBranch -> CTree -> String -> String -> String -> Ref LTy -> Unit
+emitSwitch e env roots arms [] branches dft slot endL ftL rty =
+  emitTree e env roots arms [] slot endL ftL rty dft
+emitSwitch e env roots arms (foc::rest) [] dft slot endL ftL rty =
+  emitTree e env roots arms rest slot endL ftL rty dft
+emitSwitch e env roots arms (foc::rest) (branches@((CTBranch (HLit _) _)::_)) dft slot endL ftL rty = emitLitChain e env roots arms foc rest branches dft slot endL ftL rty
+emitSwitch e env roots arms (foc::rest) ((CTBranch HUnit sub)::_) dft slot endL ftL rty = emitTree e env roots arms rest slot endL ftL rty sub
+emitSwitch e env roots arms (foc::rest) (branches@((CTBranch h _)::_)) dft slot endL ftL rty = match conHeadInfo h
   Some _ =>
     let tagReg = loadDiscriminant e foc
-    emitConChain e env roots arms foc rest tagReg branches dft slot endL rty
+    emitConChain e env roots arms foc rest tagReg branches dft slot endL ftL rty
   None => gapSwitchHead e slot endL
 -- HUnit is irrefutable (Unit has exactly one inhabitant): no discriminant test
 -- needed.  Drop the focus occurrence and descend into the single branch body.
@@ -7053,10 +7049,10 @@ conHeadInfo _ = None
 -- (`cellTag`); on a match, descend with the matched
 -- cell's fields as the new leading columns; on exhausting the branches, take the
 -- default (focus dropped).
-emitConChain : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> String -> List String -> String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> Unit
-emitConChain e env roots arms _ rest _ [] dft slot endL rty =
-  emitTree e env roots arms rest slot endL rty dft
-emitConChain e env roots arms foc rest tagReg ((CTBranch h sub)::more) dft slot endL rty = match conHeadInfo h
+emitConChain : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> String -> List String -> String -> List CTBranch -> CTree -> String -> String -> String -> Ref LTy -> Unit
+emitConChain e env roots arms _ rest _ [] dft slot endL ftL rty =
+  emitTree e env roots arms rest slot endL ftL rty dft
+emitConChain e env roots arms foc rest tagReg ((CTBranch h sub)::more) dft slot endL ftL rty = match conHeadInfo h
   Some (c, a) =>
     let cmp = freshReg e
     let _ = emit e "  \{cmp} = icmp eq i64 \{tagReg}, \{intToString (cellTag e c)}"
@@ -7066,9 +7062,9 @@ emitConChain e env roots arms foc rest tagReg ((CTBranch h sub)::more) dft slot 
     let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
     let _ = emit e (yes ++ ":")
     let fields = loadFields e foc a 0
-    let _ = emitTree e env roots arms (fields ++ rest) slot endL rty sub
+    let _ = emitTree e env roots arms (fields ++ rest) slot endL ftL rty sub
     let _ = emit e (next ++ ":")
-    emitConChain e env roots arms foc rest tagReg more dft slot endL rty
+    emitConChain e env roots arms foc rest tagReg more dft slot endL ftL rty
   None =>
     let _ = gapU "heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
     let _ = emit e ("  store i64 0, ptr " ++ slot)
@@ -7077,10 +7073,10 @@ emitConChain e env roots arms foc rest tagReg ((CTBranch h sub)::more) dft slot 
 -- the literal-switch test chain: compare the focus immediate against each branch's
 -- tagged-int constant; a literal head has arity 0, so a match descends with the
 -- focus simply dropped (no field columns).
-emitLitChain : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> String -> List String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> Unit
-emitLitChain e env roots arms _ rest [] dft slot endL rty =
-  emitTree e env roots arms rest slot endL rty dft
-emitLitChain e env roots arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft slot endL rty =
+emitLitChain : Emit -> List (String, (String, LTy)) -> List String -> List CArm -> String -> List String -> List CTBranch -> CTree -> String -> String -> String -> Ref LTy -> Unit
+emitLitChain e env roots arms _ rest [] dft slot endL ftL rty =
+  emitTree e env roots arms rest slot endL ftL rty dft
+emitLitChain e env roots arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft slot endL ftL rty =
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{intToString (k * 2 + 1)}"
   let n = intToString (freshLocal e)
@@ -7088,11 +7084,11 @@ emitLitChain e env roots arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) df
   let next = "litnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
-  let _ = emitTree e env roots arms rest slot endL rty sub
+  let _ = emitTree e env roots arms rest slot endL ftL rty sub
   let _ = emit e (next ++ ":")
-  emitLitChain e env roots arms foc rest more dft slot endL rty
+  emitLitChain e env roots arms foc rest more dft slot endL ftL rty
 -- Char = immediate codepoint word (cp << 1) | 1 — same comparison shape as Int.
-emitLitChain e env roots arms foc rest ((CTBranch (HLit (LChar c)) sub)::more) dft slot endL rty =
+emitLitChain e env roots arms foc rest ((CTBranch (HLit (LChar c)) sub)::more) dft slot endL ftL rty =
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{intToString (cp * 2 + 1)}"
@@ -7101,13 +7097,13 @@ emitLitChain e env roots arms foc rest ((CTBranch (HLit (LChar c)) sub)::more) d
   let next = "litnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
-  let _ = emitTree e env roots arms rest slot endL rty sub
+  let _ = emitTree e env roots arms rest slot endL ftL rty sub
   let _ = emit e (next ++ ":")
-  emitLitChain e env roots arms foc rest more dft slot endL rty
+  emitLitChain e env roots arms foc rest more dft slot endL ftL rty
 -- String = boxed cell; equality via the @mdk_string_eq runtime helper, which
 -- returns a TAGGED Bool word (3 = True), so branch on `icmp eq i64 r, 3`.
 -- Materialize the literal operand the same way emitLit (LString _) does.
-emitLitChain e env roots arms foc rest ((CTBranch (HLit (LString s)) sub)::more) dft slot endL rty =
+emitLitChain e env roots arms foc rest ((CTBranch (HLit (LString s)) sub)::more) dft slot endL ftL rty =
   let (lit, _) = emitLit e (LString s)
   let r = freshReg e
   let _ = emit e "  \{r} = call i64 @mdk_string_eq(i64 \{foc}, i64 \{lit})"
@@ -7118,10 +7114,10 @@ emitLitChain e env roots arms foc rest ((CTBranch (HLit (LString s)) sub)::more)
   let next = "litnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
-  let _ = emitTree e env roots arms rest slot endL rty sub
+  let _ = emitTree e env roots arms rest slot endL ftL rty sub
   let _ = emit e (next ++ ":")
-  emitLitChain e env roots arms foc rest more dft slot endL rty
-emitLitChain _ _ _ _ _ _ _ _ _ _ _ =
+  emitLitChain e env roots arms foc rest more dft slot endL ftL rty
+emitLitChain _ _ _ _ _ _ _ _ _ _ _ _ =
   gapU "non-Int literal switch (slice 3: no Float / Bool literal heads)"
 
 -- ── small list helpers (slice 3) ────────────────────────────────────────────
@@ -7406,7 +7402,7 @@ emitMultiClauseFn e name clauses =
   let _ = beginDefine e
   let _ = emit e "define i64 @mdk_\{name}(\{implParamDecls arity 0}) {"
   let _ = emit e "entry:"
-  let _ = emitClauseTree e env arity clauses
+  let _ = emitClauseTree e env arity clauses ""
   let _ = emit e "}"
   emit e ""
 
@@ -7541,7 +7537,7 @@ trmcEmitDispatch e reloaded arity clauses single singlePats aenv singleBody =
   if single then
     let env = trmcRenameEnv singlePats aenv
     emitTrmcBody e env singleBody
-  else emitClauseTree e reloaded arity clauses
+  else emitClauseTree e reloaded arity clauses ""
 
 -- bind the clause's PVar param names to the reloaded `aK` operand words (single
 -- clause, all-PVar params — the slice-2 ABI requirement also holds for TRMC).
@@ -7588,18 +7584,15 @@ emitTrmcBody e env (CLetGroup binds b) =
 -- result slot + end label passed to emitTree are a DEAD block (no leaf stores into
 -- them under TrmcOn — every leaf branches to loopL/exitL); LLVM tolerates the
 -- unreachable load/branch (Phase-1 precedent: the nested decision result slot is a
--- dead block).  fallthroughLabelRef is saved+cleared (a non-exhaustive tail match's
--- CTFail is a genuine abort, not the enclosing clause chain's fallthrough).
+-- dead block).  emitTree is passed "" as its fallthrough label (a non-exhaustive tail
+-- match's CTFail is a genuine abort, not the enclosing clause chain's fallthrough).
 emitTrmcBody e env (CDecision scrut arms tree) =
   let (sv, _) = emitExpr e env scrut
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "trmcdecend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
-  let savedFT = fallthroughLabelRef.value
-  let _ = setRef fallthroughLabelRef ""
-  let _ = emitTree e env [sv] arms [sv] slot endL rty tree
-  let _ = setRef fallthroughLabelRef savedFT
+  let _ = emitTree e env [sv] arms [sv] slot endL "" rty tree
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e "  \{r} = load i64, ptr \{slot}"
@@ -7821,8 +7814,8 @@ emitGDispMembers e binds (m::rest) =
 -- binding the synthetic `aK` scrutinee names), then run the ordinary dispatch:
 -- a single all-PVar clause descends its body directly (emitGDispBody); anything
 -- else reuses emitClauseTree verbatim (its emitLeaf/emitGuardedArm are
--- gDispCtx-aware).  fallthroughLabelRef is saved+nulled per member (each
--- member's clause chain manages its own fallthroughs).
+-- gDispCtx-aware).  Each member's clause chain is emitted with "" as its outer
+-- fallthrough (each member manages its own fallthroughs).
 emitGDispMember : Emit -> CBind -> Unit
 emitGDispMember e (CBind name clauses) = match gDispCtxRef.value
   GDispOff => gapU "(b') member emit with no active group context"
@@ -7833,17 +7826,14 @@ emitGDispMember e (CBind name clauses) = match gDispCtxRef.value
       None => []
     let _ = emit e (gDispLabel name ++ ":")
     let reloaded = trmcReloadParams e (gDispTake arity uslots) ptys 0
-    let savedFT = fallthroughLabelRef.value
-    let _ = setRef fallthroughLabelRef ""
     let pairs = clausePairs clauses
-    let _ = match pairs
+    match pairs
       [(pats, body)] =>
         if allPVar pats then
           emitGDispBody e (trmcRenameEnv pats reloaded) body
         else
-          emitClauseTree e reloaded arity pairs
-      _ => emitClauseTree e reloaded arity pairs
-    setRef fallthroughLabelRef savedFT
+          emitClauseTree e reloaded arity pairs ""
+      _ => emitClauseTree e reloaded arity pairs ""
 
 gDispTake : Int -> List a -> List a
 gDispTake n _
@@ -7888,10 +7878,7 @@ emitGDispBody e env (CDecision scrut arms tree) =
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "gdispdecend" ++ intToString (freshLocal e)
   let rty = Ref LTInt
-  let savedFT = fallthroughLabelRef.value
-  let _ = setRef fallthroughLabelRef ""
-  let _ = emitTree e env [sv] arms [sv] slot endL rty tree
-  let _ = setRef fallthroughLabelRef savedFT
+  let _ = emitTree e env [sv] arms [sv] slot endL "" rty tree
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e "  \{r} = load i64, ptr \{slot}"
