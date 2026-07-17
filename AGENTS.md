@@ -407,8 +407,11 @@ route: it will show you a clean tree and "confirm" there is no bug. (Its typed s
 header says exactly this — it just wasn't reachable from here.)
 
 **To see the emitted LLVM IR — `medaka build --keep-ir <file>` (or `MEDAKA_KEEP_IR=1`)**, which
-copies the IR to a predictable path and prints it (`effectiveKeepIr`,
-`compiler/driver/build_cmd.mdk:312`). Reach for this the moment a bug is "check/run are green but
+writes the IR to **`<output>.ll`** — next to the `-o` target — and prints **only that path**
+(`kept IR: <path>`), *not* the IR itself (`effectiveKeepIr` / `keepIrNote`,
+`compiler/driver/build_cmd.mdk:311-318`). **`cat` the `.ll`; don't expect it on stdout.** ⚠️ This
+line said "prints it" until 2026-07-17, which cost an agent a grep cycle looking for IR that was
+never going to arrive. Reach for this the moment a bug is "check/run are green but
 the built binary is wrong": it is the only way to see what the backend *actually* emitted, and it
 settles dispatch/arity/calling-convention questions that are pure speculation from the source. An
 agent debugging a dict-routing S0 on 2026-07-16 called it the single highest-value tool in the
