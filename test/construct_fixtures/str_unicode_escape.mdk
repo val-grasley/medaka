@@ -1,2 +1,12 @@
+-- `\u{HEX}` escapes the lexer must ACCEPT, checked through the BUILT binary so the
+-- codepoint is proved all the way out to the emitted bytes, not just to a token.
+--
+-- `\u{10FFFF}` is the ACCEPT-SIDE EDGE of the digit-count guard (#592). The guard
+-- rejects >6 SIGNIFICANT hex digits, and 10FFFF — the largest valid codepoint — is
+-- itself exactly 6, so the bound has no slack in this direction: tighten it to `>= 6`
+-- and the max valid escape silently stops lexing. Nothing pinned that edge (the #567
+-- fixtures sit at 6-digits-but-out-of-range, at 16 digits, and in the surrogate hole),
+-- so this line is what stands between a `>`/`>=` typo and a silent narrowing.
+-- Its golden bytes are f4 8f bf bf — U+10FFFF in UTF-8.
 main : <IO> Unit
-main = println "\u{48}\u{65}\u{6C}\u{6C}\u{6F}"
+main = println "\u{48}\u{65}\u{6C}\u{6C}\u{6F} \u{10FFFF}"

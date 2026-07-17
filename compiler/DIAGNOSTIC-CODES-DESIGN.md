@@ -26,9 +26,18 @@ decisions" §1 (code scheme) and §5 (warning-range regression).
 
 ## 0. TL;DR for the orchestrator
 
-- **Distinct error kinds per stage:** lex **4**, parse **~3** (one umbrella +
-  two special-cases), resolve **13** (already an ADT), typecheck **~25**,
-  warnings **2** (guard + non-exhaustive-match). **Total ≈ 47 codes.**
+- **Distinct error kinds per stage:** DERIVE, never read from here. The codes
+  emitted as literals (lex `L-*`, parse `P-*`, warnings `W-*`) enumerate with:
+
+  ```sh
+  grep -ohE '"[LPRTW]-[A-Z0-9-]+"' compiler/driver/diagnostics.mdk | sort -u
+  ```
+
+  Resolve and typecheck are **ADTs**, so their kinds are counted at the data
+  declaration, not by this grep. This bullet used to carry per-stage counts and a
+  total; every one of them had rotted (the "lex 4" was 11 by #594), because a
+  written-down count has no derivation and no expiry — the same disease #556 fixed
+  in `diagnostics.mdk` itself. Run the command.
 - **Threading:** three push funcs in typecheck (`pushTypeError`,
   `pushTypeErrorOnce`, `pushTypeErrorOnceAt`) are the only type-error entry
   points → **~55 call sites** must supply a code. Resolve needs **0 call-site
@@ -147,10 +156,11 @@ kinds (enumerated from the message families):
 | **non-exhaustive match** (warning) | `non-exhaustive match — some values may not be covered` (`:4644`) | `W-NONEXHAUSTIVE` |
 | **unreachable match arm** (warning) | `unreachable match arm — this pattern is already covered by an earlier arm` | `W-UNREACHABLE-ARM` |
 
-**Distinct-kind totals:** lex 4 · parse 3 · resolve 20 · typecheck 25 · warnings 3
-(`W-NONEXHAUSTIVE` + `W-UNREACHABLE-ARM` from typecheck + `W-GUARD-INEXHAUSTIVE`
-from exhaust). **≈ 55 codes** (the "~47" TL;DR figure rounds the near-duplicate
-field kinds together; plan for a ~50-code table).
+**Distinct-kind totals:** deliberately NOT written down — see the TL;DR bullet for the
+one-line `grep` that derives them. The counts that stood here (and the divergent ones in
+the TL;DR, which this note tried to reconcile) were both stale: the reconciliation was
+itself evidence that a hand-maintained count in a doc is a liability, not a fact. The
+table above is the inventory; the grep is the census.
 
 ---
 

@@ -1,0 +1,1 @@
+unicode escape uses a `_` separator, which is not allowed here. `_` groups digits in integer literals (`1_000`, `0xD_EAD`), but a `\u{...}` codepoint must be an unbroken run of hex digits — write `\u{41}`, not `\u{4_1}`

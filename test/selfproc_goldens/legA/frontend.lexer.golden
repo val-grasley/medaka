@@ -151,7 +151,9 @@ uniEscChar : Array Char -> Int -> Int -> Option Char
 uniEscCode : Array Char -> Int -> Int -> Option Int
 uniEscEnd : Array Char -> Int -> Int -> Int
 uniEscErr : Array Char -> Int -> Int -> String
+uniEscTermErr : Array Char -> Int -> Int -> Int -> String
 uniEscText : Array Char -> Int -> Int -> String
+uniEscWellFormed : Array Char -> Int -> Int -> Bool
 uniHexSigLen : Array Char -> Int -> Int -> Int
 uniIsSurrogate : Int -> Bool
 wouldIndent : Int -> Int -> List Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)

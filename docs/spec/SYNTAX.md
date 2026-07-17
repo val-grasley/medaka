@@ -78,6 +78,27 @@ a surrogate pair and are never characters on their own). Leading zeros are free 
 codepoint at all. This applies identically to all five places `\u{…}` is scanned — char
 literals, plain and triple-quoted strings, and both interpolation continuations.
 
+`HEX` itself is a **non-empty, unbroken run of hex digits** — `0-9`, `a-f`, `A-F` — that
+must be **closed by `}`**, with at most **six significant** digits once leading zeros are
+dropped. Each half of that is load-bearing and each is a lex error when violated: an
+empty run (`\u{}`) names no codepoint (it is *not* a spelling of `\u{0}`), and a run
+stopped by anything other than `}` (`\u{x}`, or a `\u{41` that hits the end of the
+literal) is unterminated.
+
+**`_` is not a digit separator here.** It separates digits in *integer* literals
+(`1_000`, `0xD_EAD`) but has no meaning inside `\u{…}`, so `\u{4_1}` is a lex error
+rather than another way to write `\u{41}`. This asymmetry with integer literals is
+**deliberate** (decided #592): rejecting `_` is the *reversible* direction — it can be
+widened later to accept `_` without invalidating a single program that compiles today,
+whereas accepting it now could never be walked back. A codepoint is also at most six
+digits, and separators exist to group long runs; Unicode's own notation (U+10FFFF) is
+unbroken.
+
+Before #592 none of this was enforced — the lexer read whatever hex prefix it could,
+*assumed* a `}` followed it, and let the remainder fall through into the string as
+literal data. That silently produced a different string at exit 0, which is why the
+grammar of the run is specified here and not left to the value rules above.
+
 ## String interpolation (`\{ }`)
 
 ```medaka
