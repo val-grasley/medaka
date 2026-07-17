@@ -213,9 +213,6 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | List `map` | PASS | (build_cmd.sh `list_map`) |
 | List `filter` | PASS | `list_filter.mdk` |
 | List `length` (via Foldable) | PASS | `foldable_length_list.mdk` |
-| List comprehension with generator + filter | PASS | `list_comp_basic.mdk` |
-| List comprehension with `let` qualifier | PASS | `list_comp_let.mdk` |
-| Multi-generator comprehension (result not debugged as tuple) | PASS | `list_comp_multi_fst.mdk` |
 | Multi-generator comprehension with `debug` on tuple result | PASS (Gap C closed 2026-06-18 audit) | see §Gap C |
 
 ### Arrays
@@ -768,7 +765,6 @@ test/construct_fixtures/
   if_let.mdk                if_let_else.mdk          if_no_else.mdk
   int_to_float.mdk          interface_impl.mdk       io_write_read.mdk
   let_annot_inline.mdk      let_in.mdk               list_append.mdk
-  list_comp_basic.mdk       list_comp_let.mdk        list_comp_multi_fst.mdk
   list_filter.mdk           lit_binary.mdk           lit_float.mdk
   lit_hex.mdk               lit_octal.mdk            lit_underscores.mdk
   map_option.mdk            match_arm_guard.mdk      match_as_pattern.mdk
