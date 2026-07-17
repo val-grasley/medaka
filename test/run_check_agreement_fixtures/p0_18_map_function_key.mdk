@@ -1,9 +1,17 @@
 -- P0-18 (FINDINGS.md): `Map { f => 1 }` with a function value as the key.
--- check exits 0 (silent, ACCEPT). `run` panics (E-PANIC: intToString: not an
--- Int, exit 1) — again a dead end, check reports nothing to explain it.
--- `build` agrees with check (accepts, exit 0).
--- .expected = ACCEPT. Same divergence direction as the standalone-fn fixture
--- above: run wrongly REJECTS what check is silent on.
+--
+-- .expected = REJECT. All three paths now agree in REJECTING this: a function
+-- is not Ord, so it cannot be a Map key, and check says so rather than staying
+-- silent.
+--
+-- ⚠️ HISTORY, so the flip is not mistaken for a regression: this fixture was
+-- born pinning a DIVERGENCE — check exited 0 (silent ACCEPT) while `run`
+-- panicked (E-PANIC: intToString: not an Int) and `build` accepted. `.expected`
+-- was ACCEPT. A later fix taught check to reject, the data flipped to REJECT,
+-- and this header kept describing the broken state until 2026-07-17 — asserting
+-- ".expected = ACCEPT" twice while the file beside it said REJECT. If you are
+-- reading this for fixture conventions: `.expected` is ground truth, the prose
+-- is not.
 import map.*
 f = x => x + 1
 main = println (Map { f => 1 })
