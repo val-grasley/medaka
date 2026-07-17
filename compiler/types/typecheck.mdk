@@ -1335,7 +1335,7 @@ routeLocalSym _ = ""
 --   • interface-method NAME → (iface name, iface typarams, declared method Ty).  Method
 --     names are globally unique (coherence), so last-write-wins omInsert accumulates to the
 --     same map the per-module `fullUniverse` rebuild produced.  EVERY reader is a by-method-
---     NAME omLookup (singleParamIfaceMethod / ifaceParamMonos / shadowVarHeadMethodScheme /
+--     NAME omLookup (singleTyparamIfaceMethod / ifaceParamMonos / shadowVarHeadMethodScheme /
 --     inferAppExpr / …), never an iteration or an emptiness test, so an extra prior-module
 --     entry that this module never names is never queried — byte-identical output.--   • the SET of interface names with ≥1 method registered.  Read only by ifaceRegistered's
 --     omHasKey existence check (core's Num/Eq/Ord are seeded on both paths, so identical).
@@ -5314,18 +5314,47 @@ shadowStandaloneHead env (EVar name)
 shadowStandaloneHead _ _ = None
 
 -- a name that is BOTH a registered importer shadow (standaloneValuesRef), has a
--- stashed standalone scheme, and names a SINGLE-param interface method.
+-- stashed standalone scheme, and names a single-TYPARAM interface's method.
+--
+-- ⚠️ IMPORTER side ⇒ singleTyparamIfaceMethod, NOT ifaceMethodName (#54).  Fork 1 keeps
+-- the per-receiver rule here, and that rule keys the impl query on the receiver's head
+-- tycon standing at the interface's ONE typaram.  A multi-typaram interface has no such
+-- correspondence to key on -- `FromEntries c e`'s `fromEntries : List e -> c` does not
+-- even take its first typaram as an argument -- so the importer arms stay scoped to the
+-- single-typaram case.  The DEFINER arms do not: under the S2 inversion they never query
+-- the impl universe at all, so they are typaram-agnostic (ifaceMethodName).
 isShadowStandalone : String -> Bool
 isShadowStandalone name = contains name driverState.value.standaloneValuesRef.value
   && isSome (lookupAssoc name perRun.value.shadowStandaloneSchemesRef.value)
-  && singleParamIfaceMethod name
+  && singleTyparamIfaceMethod name
 
 -- True iff [name]'s interface (in methodIfaceParamsRef) takes exactly ONE type
--- parameter (the receiver-directed single-arg case the oracle scopes the fallback to).
-singleParamIfaceMethod : String -> Bool
-singleParamIfaceMethod name = match omLookup name perRun.value.methodIfaceParamsRef.value
+-- parameter -- the receiver-directed case the per-receiver IMPORTER rule (Fork 1) is
+-- scoped to.
+--
+-- ⚠️ RENAMED from `singleParamIfaceMethod` (#54).  The old name said "single-PARAM
+-- method" while the body counts interface TYPE PARAMS; it stated the opposite of what it
+-- does and sent one agent down a wrong hypothesis (issue #54; SHADOW-SEMANTICS.md S8).
+-- A two-PARAM method of a one-typaram interface (`comb : a -> a -> Int`, cell d7) passes
+-- this predicate, and always did.
+singleTyparamIfaceMethod : String -> Bool
+singleTyparamIfaceMethod name = match omLookup name perRun.value.methodIfaceParamsRef.value
   Some (_, typarams, _) => listLen typarams == 1
   None => False
+
+-- True iff [name] is a method of SOME visible interface, whatever its typaram arity --
+-- the DEFINER-side gate (#54, closing S-3 / SHADOW-SEMANTICS.md row 26).
+--
+-- Under the S2 inversion a definer shadow denotes its module's own standalone
+-- unconditionally: the impl universe is never consulted, so there is no receiver-to-
+-- typaram correspondence to require, and gating the definer entry points on the typaram
+-- COUNT only excused `interface Ix a i` from the machinery.  That excusal was the S-3
+-- bug: d11 typed+emitted per-receiver (the OLD, pre-inversion semantics) while eval, which
+-- has no route stamp to follow, resolved the bare name lexically to the standalone and
+-- E-PANICked `unknown op '*'` on a `Box` -- an S7 path-agreement violation.
+ifaceMethodName : String -> Bool
+ifaceMethodName name =
+  isSome (omLookup name perRun.value.methodIfaceParamsRef.value)
 
 -- Bug C: type `toList m` for a no-impl receiver against the imported STANDALONE
 -- scheme (giving the concrete result element type, e.g. `List (String, Int)`) and
@@ -5465,10 +5494,30 @@ recordImporterShadowDicts env mname (r::rest) tx =
 -- this branch is inert there and the ordinary definerShadowNames branch governs.
 definerShadowArgHead : Expr -> Option (String, Ref Route, Ref (List Route))
 definerShadowArgHead (ELoc _ f) = definerShadowArgHead f
+-- ⚠️ #54: the two disjuncts carry DIFFERENT gates, because they serve different shadow
+-- KINDS — this predicate is a Fork-1 boundary, not an arity test.  `isDefinerShadow` is
+-- typaram-agnostic; `importerShadowOnEmitPath` is scoped to single-typaram interfaces (see
+-- its header).  Spelling the definer disjunct as `isDefinerShadow` — rather than inlining
+-- its conjuncts here — is deliberate: that function is ALSO what resolveRLocalSite routes
+-- on, and "the typing entry point and the route stamper must apply the same gate" is the
+-- P0-20 invariant.  Sharing the symbol makes them impossible to drift.
 definerShadowArgHead (EMethodAt name tagRef implRef _)
-  | singleParamIfaceMethod name && (contains name perRun.value.definerShadowNamesRef.value || routeLocalSym tagRef.value != "") = Some (name, tagRef, implRef)
+  | isDefinerShadow name || importerShadowOnEmitPath name tagRef =
+    Some (name, tagRef, implRef)
   | otherwise = None
 definerShadowArgHead _ = None
+
+-- #54: the SECOND disjunct of definerShadowArgHead — the IMPORTER-on-emit signal, kept
+-- separate because it carries a DIFFERENT gate from the definer one.  The mark pass seeds
+-- an importer shadow's route with the provider's mangled standalone symbol, so a non-empty
+-- route symbol says "this is a shadow" cross-module, where definerShadowNamesRef (keyed on
+-- module-local funDefs) cannot.  It stays scoped to singleTyparamIfaceMethod because what
+-- it feeds is Fork 1's per-receiver rule; the definer disjunct (isDefinerShadow) does not,
+-- because the S2 inversion never queries the impl universe.  On the un-mangled run/check
+-- path the route is RNone (sym ""), so this is inert there.
+importerShadowOnEmitPath : String -> Ref Route -> Bool
+importerShadowOnEmitPath name tagRef = singleTyparamIfaceMethod name
+  && routeLocalSym tagRef.value != ""
 
 -- P0-18: type `size (Box 3)` exactly as the ordinary path (against the standalone
 -- scheme the env rebound `size` to, preserving program types), but record the
@@ -5587,12 +5636,16 @@ inferDefinerShadowApp env name tagRef implRef f x =
 -- emit path recovers a mangled local funDef through the mangle map (buildDefinerShadows) —
 -- and never holds an imported standalone, so it is the reliable definer/importer test.
 --
--- The singleParamIfaceMethod conjunct mirrors definerShadowVarHead / definerShadowArgHead
--- verbatim, so every entry point agrees on which occurrences the machinery owns.  A
--- multi-TYPARAM interface (`interface Ix a i`) is deliberately still OUT of scope — that is
--- the pre-existing S-3 / row-26 bug (SHADOW-SEMANTICS.md §2), untouched by this change.
+-- The ifaceMethodName conjunct mirrors definerShadowVarHead / definerShadowArgHead's
+-- definer disjunct verbatim, so every entry point agrees on which occurrences the
+-- machinery owns.  ✅ S-3 / row 26 CLOSED (#54): a multi-TYPARAM interface
+-- (`interface Ix a i`) is now IN scope.  The gate used to be singleParamIfaceMethod (a
+-- typaram COUNT test), which excused `Ix a i` from every typing entry point and left its
+-- occurrences to ordinary dispatch — check/build kept the pre-inversion per-receiver
+-- answer while eval resolved the bare name lexically and E-PANICked (SHADOW-SEMANTICS.md
+-- S8; the S7 violation d11 pinned).
 isDefinerShadow : String -> Bool
-isDefinerShadow name = singleParamIfaceMethod name
+isDefinerShadow name = ifaceMethodName name
   && contains name perRun.value.definerShadowNamesRef.value
 
 -- S2 (THE INVERSION, 2026-07-14; SHADOW-INVERSION-DESIGN.md): True iff the shadow [name]
@@ -5792,12 +5845,15 @@ standaloneShadowDomain name = match lookupAssoc name perRun.value.definerShadowS
 -- which now flags its head (inferShadowAppHead) exactly as the definer path always did.
 -- So per-receiver importer dispatch (i4's `isEmpty [1, 2]` → `Foldable.isEmpty`) is
 -- unchanged — rows 15-20/22 do not move.
+--
+-- #54: the definer arm is gated on ifaceMethodName (typaram-agnostic) and the importer arm
+-- on singleTyparamIfaceMethod (Fork 1's per-receiver scope) — the guards are now per-arm,
+-- where they used to share one leading singleParamIfaceMethod test.
 maybeStandaloneValueMono : String -> Option Mono
 maybeStandaloneValueMono name
   | toggles.value.shadowHeadCtxRef.value = None
-  | not (singleParamIfaceMethod name) = None
-  | contains name perRun.value.definerShadowNamesRef.value =
-    standaloneShadowScheme name
+  | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = standaloneShadowScheme name
+  | not (singleTyparamIfaceMethod name) = None
   | otherwise = importerStandaloneValueScheme name
 
 -- #411: is [name] an occurrence whose TYPE maybeStandaloneValueMono pins to the
@@ -5819,9 +5875,8 @@ maybeStandaloneValueMono name
 standaloneValuePinned : String -> Bool
 standaloneValuePinned name
   | toggles.value.shadowHeadCtxRef.value = False
-  | not (singleParamIfaceMethod name) = False
-  | contains name perRun.value.definerShadowNamesRef.value =
-    isSome (standaloneShadowScheme name)
+  | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = isSome (standaloneShadowScheme name)
+  | not (singleTyparamIfaceMethod name) = False
   | otherwise = isSome (importerStandaloneValueScheme name)
 
 -- #411: the IMPORTED standalone's full scheme, freshly instantiated (`Int -> Int`), for a
@@ -5846,12 +5901,13 @@ standaloneShadowScheme name = map
 -- P0-19: peel an application head to a definer-shadow interface-method occurrence on
 -- the UN-MARKED path (the `check` pipeline runs no marker, so the head is a bare
 -- `EVar`, not the `EMethodAt` that definerShadowArgHead matches on run/build).  Same
--- guard as definerShadowArgHead: a single-param interface method whose name is a
--- module-local standalone (definerShadowNamesRef).
+-- guard as definerShadowArgHead's DEFINER disjunct: an interface method (of an interface
+-- of ANY typaram arity, #54) whose name is a module-local standalone
+-- (definerShadowNamesRef).
 definerShadowVarHead : Expr -> Option String
 definerShadowVarHead (ELoc _ f) = definerShadowVarHead f
 definerShadowVarHead (EVar name)
-  | singleParamIfaceMethod name && contains name perRun.value.definerShadowNamesRef.value = Some name
+  | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = Some name
   | otherwise = None
 definerShadowVarHead _ = None
 
@@ -8197,12 +8253,12 @@ resolveRLocalSite prog implTable keyTable name tagRef am sym monos ifaces = matc
   -- am is the ACTUAL argument type (inferDefinerShadowApp records it), not the standalone's
   -- declared domain, so the importer arm's impl query is still meaningful.
   --
-  -- ⚠️ isDefinerShadow — NOT a bare definerShadowNamesRef membership test.  That ref is
-  -- populated for a multi-TYPARAM interface's method too, but EVERY typing entry point is
-  -- gated on singleParamIfaceMethod and so leaves such an occurrence to ordinary dispatch
-  -- (the open S-3 / row-26 bug).  Forcing RLocal here without the same gate would route a
-  -- site whose TYPE came from the dispatch path — route and type disagreeing is exactly the
-  -- P0-20 bug class.  Keep the two gates identical.
+  -- ⚠️ isDefinerShadow — NOT a bare definerShadowNamesRef membership test.  It carries the
+  -- SAME gate every typing entry point applies (ifaceMethodName, #54; it was the typaram-
+  -- COUNT test singleParamIfaceMethod until S-3 / row 26 was closed).  Routing here on a
+  -- gate the typing entry points do not share would route a site whose TYPE came from the
+  -- dispatch path — route and type disagreeing is exactly the P0-20 bug class.  Keep the
+  -- two gates identical.
   Some tag => stampRLocalOrFallback
     (not (isDefinerShadow name) && implExistsForHead keyTable name tag)
     tagRef sym

@@ -79,15 +79,19 @@
 # fixture, vary the receiver's PROVENANCE (literal / grounded / dict-bound), not
 # just its type -- that axis is where every silent bug in this arc has lived.
 #
-# ⚠️ i1/i3/i4/i5 (IMPORTER shadows) and d11 MUST NOT MOVE. Fork 1 confines the
+# ⚠️ i1/i3/i4/i5 (IMPORTER shadows) MUST NOT MOVE. Fork 1 confines the
 # inversion to DEFINER shadows: an `import` is a SIBLING scope, not an inner
 # one. Inverting importers would break the everyday `import map` pattern
 # (i4: `isEmpty [1,2]` must still reach `Foldable.isEmpty`). During
 # development this gate caught exactly that -- inferDefinerShadowApp also
 # serves importer shadows on the mangled emit path, via definerShadowArgHead`s
-# `routeLocalSym != ""` arm -- and it caught d11 moving when the route stamp
-# skipped the singleParamIfaceMethod gate that every typing entry point
-# applies. If either moves again, the inversion has leaked. STOP.
+# `routeLocalSym != ""` arm. If any of them moves, the inversion has leaked.
+# STOP.
+#
+# (This warning used to name d11 alongside them, for a DIFFERENT reason -- it
+# was the KNOWN-BAD row and had to stay pinned to the bug. #54 fixed the bug
+# and d11 moved, deliberately, to REJECT/REJECT/REJECT; the four importer rows
+# did NOT, which is the evidence the definer-only split held.)
 #
 # d10 is the ledger working as designed. It was added by THIS gate as a
 # KNOWN-BAD row pinning the S-1 bug (a CONSTRAINED standalone `Num a =>` shadow
@@ -97,16 +101,76 @@
 # must FAIL when the bug is fixed, so it can't rot"). The row is now re-pinned
 # to the FIXED behavior: ACCEPT/ACCEPT/ACCEPT, value 4, run == build.
 #
-# d11_definer_multityparam_iface.mdk remains the one KNOWN-BAD row: a
-# multi-TYPARAM interface (`interface Ix a i`) bypasses the whole
-# definer-shadow machinery, because every entry point gates on
-# `singleParamIfaceMethod`, which counts INTERFACE type params, not method
-# params. `check` and `build` agree (and are in fact per-receiver CORRECT,
-# printing 4 then 3) while `run` E-PANICs (`unknown op '*'`) -- an S7
-# path-agreement violation. No fix is in flight (doc section 5, residual #2 /
-# "S-3"). Its row is pinned to that CURRENT split; it goes red the day `run`
-# is taught this shape, which is the signal to correct the row, not silence
-# it. A KNOWN-BAD row is not a skip -- it runs and asserts every turn.
+# d11 was that ledger row too, and it drained on 2026-07-17 (#54). It pinned
+# S-3: a multi-TYPARAM interface (`interface Ix a i`) bypassed the whole
+# definer-shadow machinery, because every entry point gated on
+# `singleParamIfaceMethod` -- which, despite its name, counts INTERFACE type
+# params, not method params. `check`+`build` agreed on the OLD pre-inversion
+# per-receiver answer (4 then 3) while `run`, which has no route stamp to
+# follow and resolves the bare name lexically, E-PANICked `unknown op '*'` --
+# an S7 path-agreement violation. The fix splits that predicate by shadow KIND
+# (`ifaceMethodName` for definers -- the S2 inversion never queries the impl
+# universe, so typaram arity is irrelevant to it; `singleTyparamIfaceMethod`
+# keeps gating the Fork-1 importer arms, whose per-receiver rule DOES key on the
+# receiver standing at the interface's one typaram). d11's row went RED on the
+# very next run and is now re-pinned to the fixed behavior -- REJECT/REJECT/
+# REJECT, the d7 twin at multi-typaram width. THE LEDGER WORKED TWICE (d10, d11).
+#
+# ###################################################################
+# # d21 -- WHAT DRIVING d11's FIX TO ITS EDGES ACTUALLY FOUND       #
+# ###################################################################
+# d11 pinned the LOUD half. Crossing its axis (typaram arity) with the one this
+# gate's own ⭐ rule above names -- receiver PROVENANCE -- found the SILENT half,
+# and nothing in the corpus could express it. d21 is d11 with an S5 dict-bound
+# receiver (`useIface : Ix a i => a -> i -> Int`). On eedd1482, pre-#54:
+#
+#     check -> exit 0, reporting `useIface : a -> b -> Int`
+#              (the `Ix a i =>` constraint SILENTLY DROPPED from the scheme)
+#     run   -> E-PANIC `unknown op '*'`
+#     build -> exit 0; the shipped binary printed  69867028434928  then  3
+#              -- a RAW HEAP POINTER rendered as an Int, at exit 0
+#
+# That is the S-1 / P0-20 garbage-pointer shape, live, reachable through the same
+# bypass d11 pinned -- and STRICTLY WORSE than d11's panic, because it is silent.
+# #54 closes it: all three engines now give the identical located reject. What d21
+# pins is the RESIDUAL -- S5's carve-out ("a dict-bound `=>` receiver DISPATCHES")
+# is unreachable at multi-typaram width.
+#
+# ⚠️ THE CAUSE IS IN THE PARSER, NOT IN THE SHADOW MACHINERY -- issue #604. Ty's
+# `TyApp Ty Ty` (compiler/frontend/ast.mdk:31) is BINARY, so `Ix a i` parses as
+# `TyApp (TyApp (TyCon "Ix") (TyVar "a")) (TyVar "i")`. extractConstraints
+# (compiler/frontend/parser.mdk:1678-1682) matches only `TyApp (TyCon iface _) arg`
+# -- the ONE-argument shape -- so the outer TyApp's first field, itself a TyApp, hits
+# `_ = []`. EVERY >=2-ARGUMENT CONSTRAINT IS SILENTLY DISCARDED (TyConstrained []).
+# S5's antecedent ("a dict-bound `=>` constraint variable") is FALSE by the time
+# typecheck runs: there is no constraint left to be bound by. definerReceiverIsDictVar
+# and constraintTyVars handle multi-arg constraints correctly -- THEY NEVER RECEIVE ONE.
+# The engines are conformant to the program they were GIVEN; the program they were
+# given is not the one on disk. Proof, with no shadow anywhere in the file:
+#
+#     $ cat m2.mdk
+#     f : NoSuchIface a b => a -> b -> Int     # this interface does NOT exist
+#     f x y = 1
+#     $ medaka check m2.mdk ; echo $?
+#     f : a -> b -> Int
+#     0                                        # accepted, exit 0
+#     $ medaka check m1.mdk ; echo $?          # the 1-arg control
+#     <unknown location>: Unknown interface: NoSuchIface
+#     1
+#
+# A 3-arg constraint drops identically, so the rule is >=2 args, not "exactly 2".
+# So d21 is an S5 GAP, not an S7 violation: the three engines agree exactly. It goes
+# RED the day #604 lands, which is the signal to RE-PROBE this cell -- ⚠️ NOT to
+# assume it becomes ACCEPT/3/6. Whether S5's carve-out then works, or merely surfaces
+# a real design question about multi-arg constraint -> dict-slot mapping, is UNKNOWN.
+#
+# ⭐ THE LESSON, AGAIN: the corpus was blind to this cell for the SAME reason it was
+# blind to row 28 -- an unexercised receiver-provenance axis. Twice now, the axis
+# named in this file's own warning is where the silent bug was hiding. When you fix
+# a shadow cell, CROSS ITS AXIS WITH PROVENANCE BEFORE YOU CALL IT DONE.
+#
+# Rows pinned to a KNOWN gap: d18 (BUILD_CRASH, #410 residual) and d21 (S5, #54
+# residual). A KNOWN-BAD row is not a skip -- it runs and asserts every turn.
 #
 # Untested-per-the-doc (rows 21-23: importer value-position / importer N-way /
 # return-position method shadow) ship NO fixture in test/shadow_fixtures/ and
@@ -168,7 +232,7 @@ i1_importer_local_iface/main.mdk|I1/I2 importer shadow, LOCAL interface (S2/S6)|
 i3_importer_imported_iface/main.mdk|I3 importer shadow, iface+impl in a THIRD module (S6)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n4
 i4_importer_prelude_iface/main.mdk|I4 importer shadow of a PRELUDE method (S2, stdlib shape)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue
 d10_definer_constrained.mdk|D10 definer, CONSTRAINED standalone dict-passed via RLocal (S9, was the S-1 bug)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|4
-d11_definer_multityparam_iface.mdk|D11 KNOWN-BAD: multi-typaram interface bypasses shadow machinery (S-3, doc residual)|ACCEPT|REJECT|ACCEPT|BUILD_EXACT|4\n3
+d11_definer_multityparam_iface.mdk|D11 definer, multi-TYPARAM interface (`interface Ix a i`) now REJECTs its live-impl receiver like every other definer shadow (S2/S8 INVERSION; S-3 FIXED 2026-07-17 #54 -- was the last KNOWN-BAD row: check+build kept the OLD per-receiver answer 4,3 while run E-PANICked `unknown op '*'`, an S7 violation. The definer entry points gated on a typaram COUNT (singleParamIfaceMethod, now split into ifaceMethodName for definers / singleTyparamIfaceMethod for Fork-1 importers), which excused `Ix a i` from the machinery. `get (Box 3) 1` mistypes against the standalone `get : Int -> Int -> Int`; `get 3 1` -> 3. The d7 twin at multi-TYPARAM width)|REJECT|REJECT|REJECT|NONE|
 d12_definer_ungrounded_literal.mdk|D12 definer, UNGROUNDED numeric-literal receiver whose grounded head HAS a live prelude impl (S2+S5; the P0-20 cell, now inverted: the standalone wins, 3 not False)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3\n30
 i5_importer_ungrounded_literal/main.mdk|I5 importer, UNGROUNDED numeric-literal receiver (S2+S5; regression for S1-RESIDUAL-B, closed 2026-07-14) + the FORK-1 control in the same fixture (isEmpty [1,2] must still reach Foldable)|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|True\nFalse\nFalse\nTrue
 i6_importer_value_pos/main.mdk|I6 importer, value position over no-impl elements (S4, matrix row 21a; #411 -- was check+run ACCEPT [2,3,4] but BUILD died `no impl of method size for type Int`, a loud S7 split on a valid program). The importer twin of d4: expected IDENTICAL to row 9|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
@@ -179,6 +243,7 @@ d13_definer_return_pos.mdk|D13 definer, RETURN-POSITION method shadow (S4, matri
 d17_definer_value_pos_arity_differ.mdk|D17 definer, value position where METHOD arity (2) DIFFERS from STANDALONE arity (1) (S4; S1-RESIDUAL-A, #410). The emitter lift built a 2-arity closure over a 1-arity body, so map got PAPs back and build printed heap pointers as Ints at exit 0 -- SILENT WRONGNESS. Fixed by methValArity (route-derived, not name-derived). D4/D4b are arity-EQUAL, which is why the corpus was blind to this|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
 d19_definer_value_pos_arity_differ_zeroimpls.mdk|D19 definer, arity-differ value position with ZERO impls (S2+S4, #410) -- shadow-hood + arity mismatch + value position suffice; the impl universe is irrelevant|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
 d20_definer_value_pos_arity_differ_opposite.mdk|D20 definer, OPPOSITE arity direction to d17: METHOD arity 1 < STANDALONE arity 2 (S4, #410). Pins the other side of the route-derived arity -- the closure must be arity 2 so `f 1 2` is a saturated direct call|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3
+d21_definer_multityparam_dictvar_receiver.mdk|D21 definer, S5 CARVE-OUT at MULTI-TYPARAM width: a dict-bound `Ix a i =>` receiver does NOT dispatch. ⚠️ THE CAUSE IS IN THE PARSER, NOT THIS MACHINERY (#604): extractConstraints (compiler/frontend/parser.mdk:1678-1682) matches only the ONE-arg shape `TyApp (TyCon iface _) arg`, and TyApp is binary (ast.mdk:31), so `Ix a i` nests and falls to `_ = []` -- EVERY >=2-arg constraint is silently discarded. S5`s antecedent is false because no constraint survives to bind: definerReceiverIsDictVar never receives one. So the occurrence falls to S2 and useIface monomorphises. An S5 GAP, NOT an S7 violation: all three engines agree, and are conformant to the program they were GIVEN. Pre-#54 this file was SILENT WRONGNESS -- check exit 0, run E-PANIC, build exit 0 printing a RAW HEAP POINTER. Goes RED the day #604 lands (or S5 is honoured here)|REJECT|REJECT|REJECT|NONE|
 d18_definer_value_pos_arity_differ_unannot.mdk|D18 KNOWN-BAD: d17 WITHOUT the List Int annotation (#410 headline repro). println`s Display requirement gets a NULL element dict (RNone route) so the shipped binary SEGFAULTs while run is correct. The element TYPE resolves to Int -- this is the requirement ROUTE, stamped in types/typecheck.mdk, NOT an emitter bug|ACCEPT|ACCEPT|ACCEPT|BUILD_CRASH|[2, 3, 4]'
 
 # --- Coverage self-audit: every top-level fixture unit (a .mdk file, or a

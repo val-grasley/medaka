@@ -106,9 +106,6 @@ SYM	runST	ORCHESTRATING.md quotes "An agent reported 'we need `runST`'" as a cau
 #  check correctly demanded this line's deletion. Left as a note because it is the
 #  ratchet's whole point working end-to-end on its first real cut.)
 
-# ── SYM: proposed rename target, doesn't exist yet by design ───────────────
-SYM	singleTyparamIfaceMethod	COMPILER-SOUNDNESS.md workstream: "**Rename it `singleTyparamIfaceMethod`** as part of this" — a proposed rename of the real (and correctly-cited) `singleParamIfaceMethod`; the new name is not expected to exist until that workstream item lands
-
 # ── FILE: backlog doc whose STATED PURPOSE is to name missing functions ────
 FILE	.claude/workstreams/STDLIB.md	header states "Owns: missing stdlib/support functions" — the file's L-1..L-5 items propose functions that do not exist yet by design (currently dead: foldlMut, zipWithMut, boolToString, strLen, dropSuffix); that is the doc's entire point, not fabrication. (Siblings it mentions in passing — mapMut, dropPrefix, stripPrefix, startsWith, endsWith — already exist and resolve fine on their own, no exception needed for those.)
 

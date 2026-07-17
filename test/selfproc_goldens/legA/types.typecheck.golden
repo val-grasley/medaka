@@ -507,6 +507,7 @@ ifaceForConstraintId : Int -> String
 ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> String
 ifaceForInferredId : String -> Int -> String
 ifaceFromDictApps : Int -> List (Ref (List Route), List Mono, List String) -> String
+ifaceMethodName : String -> Bool
 ifaceMethodNames : List IfaceMethod -> List String
 ifaceMethodSchemes : List Decl -> List (String, Scheme)
 ifaceMethodTy : List Decl -> String -> String -> Option (List String, Ty)
@@ -548,6 +549,7 @@ importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, 
 importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
 importedBindings : UsePath -> Option (List (String, String))
 importerShadowDomain : String -> Option Mono
+importerShadowOnEmitPath : String -> Ref Route -> Bool
 importerStandaloneValueScheme : String -> Option Mono
 indexKind : Mono -> String
 indexOfId : Int -> List Int -> Option Int
@@ -1095,7 +1097,7 @@ sigToSchemeTvs : Ty -> (Scheme, List (String, Mono))
 sigTooGeneralMsg : String -> Ty -> String
 sigTvarIds : List Mono -> List Int
 sigsOf : List Decl -> List (String, Ty)
-singleParamIfaceMethod : String -> Bool
+singleTyparamIfaceMethod : String -> Bool
 siteRDictName : Ref Route -> List String
 siteRDictNamesL : Ref (List Route) -> List String
 sitesFor : String -> Map String (List a) -> List a

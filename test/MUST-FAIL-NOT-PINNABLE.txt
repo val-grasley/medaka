@@ -46,3 +46,17 @@
 583  the defect lives in GitHub's PARSING OF A PR BODY (a closing keyword in prose silently closes an issue on merge). There is no .mdk to pin and no medaka exit code to grade. Out of shape for a harness that runs `medaka` against a fixture.
 
 450  the defect lives in GitHub's RENDERING of a workflow job's conclusion (a narrowed shard with an empty intersection shows the same green tick as one that ran). There is no .mdk to pin and no exit code the harness can grade — diff_compiler_must_fail.sh grades `medaka` against a fixture. Observed 8x on one PR and receipted on the issue; fixture-shaped it is not.
+
+590  the defect IS this harness's own missing `build` verb (run_verb supports check/check-json/check-types/run/fmt-write only). It cannot be pinned by the harness it is about: pinning it would require the very verb whose absence is the bug. Delete this line the day a `build` verb lands — S0 #553 and the five #561 repros are all `build`-shaped and become pinnable the same day.
+
+593  the observable is a SHELL SCRIPT'S EXIT CODE (must_fail_census.sh prints "it does not fail" then `exit 1`), not medaka's. This harness grades `medaka <verb> <fixture>`; there is no .mdk to pin and no medaka exit code to grade. Out of shape.
+
+595  the defect is a GATE's member set — diff_compiler_parse_result.sh encodes PARSER_FIXTURES as a shell literal and so grades 3 of 9 parser-error fixtures. The bug is in which fixtures a gate reads, which no fixture can express: a row pinning it would have to assert something about the harness's own enrolment, not about medaka.
+
+597  the defect is CI WIRING — wasm-tools is absent on the gates runners and the wasm oracle is built in a different job, so diff_compiler_engines' T2/T3 never run on a required check. Nothing about medaka's behavior is wrong; there is no .mdk whose output differs. A fixture cannot observe which runner built which binary.
+
+601  the defect is a CAPTURE SCRIPT's stale skip-list (capture_goldens.sh's BC_SKIP skips 5 goldens build_construct_coverage.sh actively checks). The observable is which goldens a tool declines to regenerate — not a medaka exit code or output. Out of shape.
+
+602  CODE HEALTH with no observable: parseBracketBlock and indentedBody have byte-identical bodies. Both are currently correct, so no program behaves differently and nothing can be pinned. The risk is future divergence, which by definition has no repro today. rule-duplicate-body (cross-file-only) is the right place for this ratchet, not this harness.
+
+603  a DOC defect: LAYOUT-SEMANTICS §12's conformance contract is lexer-scoped but reads as covering the parser, and §7.1's canEndExpr formula names a '?' token that has never existed. Neither changes what medaka does — the compiler is correct; the prose misdirects readers. No exit code to grade.
