@@ -394,10 +394,15 @@ parseCompose =
 lamTail : Expr -> Parser Expr
 lamTail e = located (lamTailRaw e)
 
+-- The body reads via `parseRhsExpr`, not a bare `parseExpr`: `=>` is a layout
+-- herald (LAYOUT-SEMANTICS.md §7.1) — it is absent from the lexer's
+-- `canEndExpr`, so `g x =>⏎  body` opens a bare-INDENT block, and a bare
+-- `parseExpr` has no TIndent case to read it.  Same production the decl body
+-- (`parseBody`) and a let/where RHS (`parseRhsExpr`) already use.
 lamTailRaw : Expr -> Parser Expr
 lamTailRaw e = do
   expectTok TFatArrow
-  body <- parseExpr
+  body <- parseRhsExpr
   pure (ELam (exprToParams e) body)
 
 -- convert a lambda LHS expression to a parameter-pattern list (mirrors the
@@ -2993,9 +2998,11 @@ parseDo = do
   pure (EDo stmts)
 
 -- statements, NEWLINE-separated, until the block's DEDENT
--- A statement-let / where RHS expression: a bare-INDENT block (the RHS sits on
--- its own indented line, e.g. `let n =\n    length pairs`), or an ordinary
--- expression.  Mirrors parser.mly's `expr_no_block` including the
+-- A statement-let / where RHS, or a lambda body (`lamTailRaw`): a bare-INDENT
+-- block (the RHS sits on its own indented line, e.g. `let n =\n    length pairs`
+-- or `g x =>\n  g + x`), or an ordinary expression.  Every herald that opens
+-- such a block is one `canEndExpr` omits — see LAYOUT-SEMANTICS.md §7.1.
+-- Mirrors parser.mly's `expr_no_block` including the
 -- `INDENT nonempty_list(stmt) DEDENT` production, which lets a let binding's RHS
 -- be an indented block.  Without this the lexer's (correct, oracle-identical)
 -- `LET n EQUAL INDENT … DEDENT` stream had no parser rule and failed to parse.

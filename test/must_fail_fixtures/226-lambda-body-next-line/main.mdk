@@ -1,3 +1,0 @@
-f = g x =>
-  g + x
-main = println (f 1 2)
