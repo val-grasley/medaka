@@ -566,7 +566,7 @@ pubSigNames (_::rest) = pubSigNames rest
 export mangledName : String -> String -> String
 mangledName mid name = "\{sanitizeId mid}__\{name}"
 
-sanitizeId : String -> String
+export sanitizeId : String -> String
 sanitizeId s = sanitizeGo s 0 (stringLength s) ""
 
 sanitizeGo : String -> Int -> Int -> String -> String

@@ -570,7 +570,7 @@ pubSigNames (_::rest) = pubSigNames rest
 export mangledName : String -> String -> String
 mangledName mid name = "\{sanitizeId mid}__\{name}"
 
-sanitizeId : String -> String
+export sanitizeId : String -> String
 sanitizeId s = sanitizeGo s 0 (stringLength s) ""
 
 sanitizeGo : String -> Int -> Int -> String -> String
@@ -1016,7 +1016,7 @@ recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
 (DFunDef false "pubSigNames" ((PCons PWild (PVar "rest"))) (EApp (EVar "pubSigNames") (EVar "rest")))
 (DTypeSig true "mangledName" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "mangledName" ((PVar "mid") (PVar "name")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EApp (EVar "sanitizeId") (EVar "mid")))) (ELit (LString "__"))) (EApp (EVar "display") (EVar "name"))) (ELit (LString ""))))
-(DTypeSig false "sanitizeId" (TyFun (TyCon "String") (TyCon "String")))
+(DTypeSig true "sanitizeId" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "sanitizeId" ((PVar "s")) (EApp (EApp (EApp (EApp (EVar "sanitizeGo") (EVar "s")) (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "s"))) (ELit (LString ""))))
 (DTypeSig false "sanitizeGo" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String"))))))
 (DFunDef false "sanitizeGo" ((PVar "s") (PVar "i") (PVar "len") (PVar "acc")) (EIf (EBinOp ">=" (EVar "i") (EVar "len")) (EVar "acc") (EBlock (DoLet false false (PVar "c") (EApp (EApp (EApp (EVar "stringSlice") (EVar "i")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "s"))) (DoLet false false (PVar "c2") (EIf (EApp (EVar "safeChar") (EVar "c")) (EVar "c") (ELit (LString "_")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "sanitizeGo") (EVar "s")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "len")) (EBinOp "++" (EVar "acc") (EVar "c2")))))))
@@ -1300,7 +1300,7 @@ recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
 (DFunDef false "pubSigNames" ((PCons PWild (PVar "rest"))) (EApp (EVar "pubSigNames") (EVar "rest")))
 (DTypeSig true "mangledName" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "mangledName" ((PVar "mid") (PVar "name")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EApp (EVar "sanitizeId") (EVar "mid")))) (ELit (LString "__"))) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString ""))))
-(DTypeSig false "sanitizeId" (TyFun (TyCon "String") (TyCon "String")))
+(DTypeSig true "sanitizeId" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "sanitizeId" ((PVar "s")) (EApp (EApp (EApp (EApp (EVar "sanitizeGo") (EVar "s")) (ELit (LInt 0))) (EApp (EVar "stringLength") (EVar "s"))) (ELit (LString ""))))
 (DTypeSig false "sanitizeGo" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String"))))))
 (DFunDef false "sanitizeGo" ((PVar "s") (PVar "i") (PVar "len") (PVar "acc")) (EIf (EBinOp ">=" (EVar "i") (EVar "len")) (EVar "acc") (EBlock (DoLet false false (PVar "c") (EApp (EApp (EApp (EVar "stringSlice") (EVar "i")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "s"))) (DoLet false false (PVar "c2") (EIf (EApp (EVar "safeChar") (EVar "c")) (EVar "c") (ELit (LString "_")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "sanitizeGo") (EVar "s")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "len")) (EBinOp "++" (EVar "acc") (EVar "c2")))))))

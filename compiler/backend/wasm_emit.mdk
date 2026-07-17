@@ -232,7 +232,7 @@ import backend.trmc_analysis.{
   armBody,
   lastStmtExpr,
 }
-import backend.private_mangle.{hashName}
+import backend.private_mangle.{hashName, sanitizeId}
 import backend.emit_support.{
   eagerReachMap,
   bindEagerReach,
@@ -959,9 +959,9 @@ emitFnsGapsW prog ((CBind name cs)::rest) =
 
 emitImplsGapsW : Prog -> List ImplG -> Unit
 emitImplsGapsW _ [] = ()
-emitImplsGapsW prog ((ImplG method tag arity clauses)::rest) =
-  let _ = setGapBindW "impl \{method}@\{tag}"
-  let _ = emitImplGroup prog (ImplG method tag arity clauses)
+emitImplsGapsW prog ((ImplG method headTag key arity clauses)::rest) =
+  let _ = setGapBindW "impl \{method}@\{headTag}"
+  let _ = emitImplGroup prog (ImplG method headTag key arity clauses)
   emitImplsGapsW prog rest
 
 emitValsGapsW : Prog -> List CBind -> Unit
@@ -3249,7 +3249,7 @@ emitMethodRef prog env d name (RKey tag _) implRoutes methRoutes args =
   -- tag) `$mdk_default_<name>_<tag>` define ONCE from the interface default body
   -- (inner same-iface calls restamped to this tag's concrete impl) and call THAT.
   match implForW prog name tag
-    Some _ => dictWords ++ argInstrs ++ ["call $" ++ implFnSym tag name]
+    Some _ => dictWords ++ argInstrs ++ ["call $" ++ implFnSym prog tag name]
     None => emitDefaultRKeyRef prog dictWords argInstrs name tag
 emitMethodRef prog env d name (RDict dpar) implRoutes methRoutes args =
   emitMethodDispatchRef prog env d name dpar args
@@ -3328,11 +3328,11 @@ emitDispatchChain prog name ((tag, key)::rest) blk tagRead dpar argInstrs nArgs 
   -- reaching this arm is a $dictcell whose field-1 $dictarr carries those nested req dicts in
   -- order (built by routeWitness).  Load field 0..reqDicts-1 and prepend them as the impl fn's
   -- leading dict args, mirroring llvm_emit's loadReqDicts (fields 1..n of the boxed cell).
-  let reqDicts = implReqDictCount prog name tag nArgs
+  let reqDicts = implReqDictCount prog name key nArgs
   let reqLoads = flatMap (loadReqDict dpar) (rangeList 0 reqDicts)
   indentBy idt (tagRead
     ++ ["i32.const " ++ intToString (dictTag key), "i32.eq", "if"])
-    ++ indentBy (idt + 1) (reqLoads ++ argInstrs ++ ["call $" ++ implFnSym tag name, "br " ++ blk])
+    ++ indentBy (idt + 1) (reqLoads ++ argInstrs ++ ["call $" ++ implFnSymOfTag tag name, "br " ++ blk])
     ++ indentBy idt ["else"]
     ++ emitDispatchChain prog name rest blk tagRead dpar argInstrs nArgs (idt + 1)
     ++ indentBy idt ["end"]
@@ -3494,6 +3494,18 @@ methodValArity prog name (RLocal sym dicts) =
 methodValArity prog name _ = methodValArityByName prog name
 
 -- the name-derived (non-shadow) method arity — the pre-#410 behaviour, unchanged.
+--
+-- #324 safety invariant (do NOT "fix" the `tag` below to be findByTagW-matchable):
+-- the `methodImpls` fallback is reached ONLY when `methodArityOf name == 0`, and that
+-- table holds `listLen (methodArgTys sig)` for EVERY interface (user + prelude,
+-- installed by installMethodIface) — so reaching here means the method's true VALUE
+-- arity IS 0.  `methodImpls`'s first pair carries the SYMBOL tag, which for an
+-- overlapping (C7) impl is a SANITIZED key (`Def__Box_a__`) matching neither raw `t`
+-- nor raw `k` in `implClauseFor` → `implGroupArity [] = 0` — the correct answer here.
+-- The un-sanitized (prelude-free/untyped) path has no C7 collisions, so its tags stay
+-- raw-matchable and yield the real requires-free clause arity.  Routing the RAW route
+-- key instead would return an overlapping `requires`-impl's dict-inflated clause arity
+-- (e.g. `def`'s `Box a` clause `[$dict]` → 1) — WRONG for a nullary method value.
 methodValArityByName : Prog -> String -> Int
 methodValArityByName prog name =
   let viaTable = methodArityOf name
@@ -3527,11 +3539,84 @@ applyArgsC : CExpr -> List CExpr -> CExpr
 applyArgsC hd [] = hd
 applyArgsC hd (a::rest) = applyArgsC (CApp hd a) rest
 
--- the impl-function symbol: $mdk_impl_<tag>_<method>.  For the minimal slice every
--- (method, head-tag) pair has a SOLE impl, so the bare head tag is the symbol tag
--- (no C7 same-head-tycon collision; that canonical-key path is out of scope).
-implFnSym : String -> String -> String
-implFnSym tag method = "mdk_impl_\{gname tag}_\{gname method}"
+-- the impl-function symbol: $mdk_impl_<symTag>_<method>.  [tag] is a RAW dispatch
+-- tag — the bare head tycon (the common case: a sole impl per head) OR the canonical
+-- full-type key stamped into an overlapping-instance route (`Default|(Box a)|`).
+-- #324 (wasm half of DICT-SEMANTICS §6): resolve it to the SYMBOL tag the same way
+-- llvm_emit does (implFnSymTag) — the bare head when that head has a single impl (so
+-- every existing symbol stays byte-identical / fixpoint-safe), else the SANITIZED
+-- canonical key, byte-distinct per overlapping impl.  Resolution is identical at the
+-- func DEFINITION (emitImplGroup passes the group's key) and every call/reference
+-- site (they pass the route tag), so def and ref always agree.
+implFnSym : Prog -> String -> String -> String
+implFnSym prog tag method = implFnSymOfTag (implSymTagW prog method tag) method
+
+-- build the symbol from an ALREADY-RESOLVED symbol tag (a bare head, or a sanitized
+-- canonical key) — used where the caller already computed the symTag (the RDict
+-- dispatch chain, via methodImpls) so it need not re-resolve through findByTagW.
+implFnSymOfTag : String -> String -> String
+implFnSymOfTag symTag method = "mdk_impl_\{symTag}_\{gname method}"
+
+-- resolve a raw dispatch tag (head OR canonical key) to the impl's SYMBOL tag.  Find
+-- the matching impl entry (findByTagW matches on head t OR key k), then apply the C7
+-- head-uniqueness rule to its (head, key).  No entry (a defaulted method has its own
+-- $mdk_default_* path, never this) ⇒ sanitize the raw tag defensively.
+implSymTagW : Prog -> String -> String -> String
+implSymTagW prog method tag = match findByTagW method tag (progImpls prog)
+  Some (CImplEntry _ _ (CImplTagged t k _ _ _ _)) =>
+    implFnSymTagW (progImpls prog) method t k
+  _ => sanitizeId tag
+
+-- TYPECHECK-AUDIT C7 (wasm peer of llvm_emit's implFnSymTag): the SYMBOL tag a
+-- same-head-tycon impl is emitted/dispatched under.  Sole impl of (method, head) ⇒
+-- the bare head (existing symbols unchanged); a genuine C7 collision (≥2 distinct
+-- canonical keys at one head) ⇒ the sanitized canonical key, byte-distinct per impl.
+implFnSymTagW : List CImplEntry -> String -> String -> String -> String
+implFnSymTagW entries method tag key =
+  if headTagUniqueW entries method tag then
+    tag
+  else
+    sanitizeId key
+
+-- does the head tycon [tag] of [method] have a single impl, or several distinct ones
+-- (C7 collision)?  Count DISTINCT canonical keys at this head — a multi-clause impl
+-- contributes several entries sharing ONE key, and the joint prelude+module list
+-- duplicates prelude impls; a real collision is ≥2 DIFFERENT keys at (method, head).
+headTagUniqueW : List CImplEntry -> String -> String -> Bool
+headTagUniqueW entries method tag =
+  listLen (distinctKeysAtHeadW entries method tag []) <= 1
+
+distinctKeysAtHeadW : List CImplEntry -> String -> String -> List String -> List String
+distinctKeysAtHeadW [] _ _ acc = acc
+distinctKeysAtHeadW ((CImplEntry n _ (CImplTagged t k _ _ _ _))::rest) method tag acc
+  | n == method && t == tag && not (contains k acc) =
+    distinctKeysAtHeadW rest method tag (k::acc)
+  | otherwise = distinctKeysAtHeadW rest method tag acc
+distinctKeysAtHeadW (_::rest) method tag acc =
+  distinctKeysAtHeadW rest method tag acc
+
+-- the ROUTE key an impl is dispatched under at runtime (mirror of llvm_emit's
+-- implEntryRouteKey): the bare head when the head is unique (byte-identical to the
+-- pre-C7 dict header hash), else the RAW canonical key.  Distinct from the SYMBOL tag
+-- (implFnSymTagW) only in the collision arm — the symbol SANITIZES the key while the
+-- route key is hashed raw, and the dict WITNESS (routeWitness `dictTag routeTag`)
+-- hashes the SAME raw canonical key the typechecker stamps, so witness and dispatch
+-- agree.
+implEntryRouteKeyW : List CImplEntry -> String -> String -> String -> String
+implEntryRouteKeyW entries method tag key =
+  if headTagUniqueW entries method tag then
+    tag
+  else
+    key
+
+-- the head tycon of the impl whose canonical key is [key] (mirror of llvm_emit's
+-- headTagForKey) — the group's dispatch/self/Float tag, distinct from its symbol tag.
+headTagForKeyW : String -> String -> List CImplEntry -> String
+headTagForKeyW _ _ [] = ""
+headTagForKeyW method key ((CImplEntry m _ (CImplTagged t k _ _ _ _))::rest)
+  | m == method && k == key = t
+  | otherwise = headTagForKeyW method key rest
+headTagForKeyW method key (_::rest) = headTagForKeyW method key rest
 
 -- ── §W5 impl-function emission ───────────────────────────────────────────────
 -- Coalesce the CImplEntry list (one entry per clause) by (method, symTag) into
@@ -3542,7 +3627,12 @@ emitImplFns : Prog -> List String
 emitImplFns prog = flatMap (emitImplGroup prog) (implGroups (progImpls prog))
 
 -- (method, tag, arity, clauses) per distinct impl key, in first-seen order.
-data ImplG = ImplG String String Int (List CClause)
+-- (method, headTag, key, arity, clauses) per distinct canonical impl key.  #324:
+-- headTag drives dispatch/self-recursion/Float-param decisions (mirror of llvm_emit's
+-- ImplGroup `tag`), while [key] drives the SYMBOL (via implFnSym) and clause selection
+-- (mirror of `symTag`/`key`).  For a sole impl per head the two coincide in effect
+-- (headTagUniqueW ⇒ symbol == headTag), so existing output is byte-identical.
+data ImplG = ImplG String String String Int (List CClause)
 
 implGroups : List CImplEntry -> List ImplG
 implGroups entries = mapGatherGroups entries (distinctImplKeys entries)
@@ -3554,12 +3644,17 @@ mapGatherGroups entries (k::rest) =
   let g = gatherImplGroup entries k
   g :: mapGatherGroups entries rest
 
--- the (method, tag) keys present, first-seen order.
+-- the (method, canonical-key) groups present, first-seen order.  #324: key on the
+-- CANONICAL KEY (field 2), not the head tycon — so two overlapping same-head impls
+-- (`Default (Box a)` / `Default (Box Int)`, both head `Box`) form DISTINCT groups
+-- and get distinct $mdk_impl_* functions, instead of collapsing into one.  For a sole
+-- impl per head the key↔head map is 1:1, so the group set (and its emit order) is
+-- unchanged from the old head-keyed form.
 distinctImplKeys : List CImplEntry -> List (String, String)
 distinctImplKeys entries = dedupPairs (flatMap implKeyOf entries) []
 
 implKeyOf : CImplEntry -> List (String, String)
-implKeyOf (CImplEntry m _ (CImplTagged tag _ _ _ _ _)) = [(m, tag)]
+implKeyOf (CImplEntry m _ (CImplTagged _ key _ _ _ _)) = [(m, key)]
 implKeyOf _ = []
 
 -- dedup a (method, tag) key list, first-seen order (dedupKeep is String-only).
@@ -3580,8 +3675,9 @@ containsPair (a, b) ((c, dd)::rest) =
     containsPair (a, b) rest
 
 gatherImplGroup : List CImplEntry -> (String, String) -> ImplG
-gatherImplGroup entries (m, tag) =
-  let clauses = flatMap (implClauseFor m tag) entries
+gatherImplGroup entries (m, key) =
+  let headTag = headTagForKeyW m key entries
+  let clauses = flatMap (implClauseFor m key) entries
   -- W9b: eta-expand a POINT-FREE / under-applied impl (`length = fold g 0`, clause
   -- arity 0) to the method's full DECLARED arity (methodArityOf), so the lifted
   -- $mdk_impl_<tag>_<method> takes every call-site arg.  maxI keeps a multi-clause
@@ -3600,7 +3696,7 @@ gatherImplGroup entries (m, tag) =
   let nDicts = wLeadingDictPats (firstImplClausePats clauses)
   let arity = maxI (implGroupArity clauses) (methodArityOf m + nDicts)
   let clauses2 = map (etaExpandClause arity) clauses
-  ImplG m tag arity clauses2
+  ImplG m headTag key arity clauses2
 
 -- count of leading `$dict_…` param patterns the dict-pass prepends ahead of the
 -- source value params (mirror of llvm_emit's leadingDictPats; uses wIsDictParamName).
@@ -3702,9 +3798,15 @@ applyEtaArgsW body ((PVar x)::rest) =
   applyEtaArgsW (CApp body (CVar x AGlobal)) rest
 applyEtaArgsW body (_::rest) = applyEtaArgsW body rest
 
+-- clauses of (method, tag) where [tag] is EITHER the head tycon OR the canonical key
+-- (#324): the def-side grouping passes a canonical key (selecting exactly one impl's
+-- clauses even when it shares a head with an overlapping sibling), while arity probes
+-- (implArityFor) pass a route's head tag.  Matching on `t == tag || k == tag` (as
+-- findByTagW does) serves both; a canonical key contains `|` so it never spuriously
+-- equals a bare head, and vice versa.
 implClauseFor : String -> String -> CImplEntry -> List CClause
-implClauseFor m tag (CImplEntry n _ (CImplTagged t _ _ _ pats body)) =
-  if n == m && t == tag then
+implClauseFor m tag (CImplEntry n _ (CImplTagged t k _ _ pats body)) =
+  if n == m && (t == tag || k == tag) then
     [CClause pats body]
   else
     []
@@ -3715,21 +3817,21 @@ implGroupArity ((CClause pats _)::_) = listLen pats
 implGroupArity [] = 0
 
 emitImplGroup : Prog -> ImplG -> List String
-emitImplGroup prog (ImplG method tag arity clauses) =
-  let fnName = implFnSym tag method
+emitImplGroup prog (ImplG method headTag key arity clauses) =
+  let fnName = implFnSym prog key method
   let params = synthParams arity
   -- Phase 2 B-dispatch (TRMC-DESIGN §"Phase 2"): a DISPATCHED self-recursive cons/ctor-tail
   -- impl (the `List map`: self-call is a `CMethod method (RKey tag)`) is emitted as a
   -- destination-passing loop — the WasmGC peer of llvm_emit's trmcImplTry.  Eligibility +
   -- the safety-critical `mentionsSelfMethod` disqualification are in wTrmcImplTry; an
   -- ineligible impl (non-tail self, dict-passed, no cons-tail) returns None → ordinary body.
-  match wTrmcImplTry prog method tag arity clauses
+  match wTrmcImplTry prog method headTag key arity clauses
     Some tmcDef => tmcDef
     None =>
       -- W8b: an `impl … Float` method's params are Float — record their (pattern-var) names
       -- so the body's bare-CVar arithmetic lowers to f64.  `signum`/`abs`/`negate`/`add`/…
       -- all take Float args.  Reset for every other impl (Int/String/etc. stay i31).
-      let _ = setRef floatLocalsRef (if tag == "Float" then flatMap clausePatVars clauses else [])
+      let _ = setRef floatLocalsRef (if headTag == "Float" then flatMap clausePatVars clauses else [])
       -- A1: impl-method params are concrete-typed (the impl tag), never poly-`Num`; reset.
       let _ = setRef numPolyLocalsRef []
       -- layer-18: arm the plain-tail impl-method return_call context for THIS impl, so a
@@ -3738,7 +3840,7 @@ emitImplGroup prog (ImplG method tag arity clauses) =
       -- recursive `call`.  Disarmed immediately after (default defines + everything else
       -- must NOT see it).
       let savedImplSelf = implSelfCtxRef.value
-      let _ = setRef implSelfCtxRef (ImplSelfOn method tag arity)
+      let _ = setRef implSelfCtxRef (ImplSelfOn method headTag arity)
       let bodyLines = emitClausesImpl prog fnName params arity clauses
       let _ = setRef implSelfCtxRef savedImplSelf
       let _ = setRef floatLocalsRef []
@@ -3897,15 +3999,24 @@ emitClausesImpl prog fnName params arity clauses =
 -- bare head tag IS the key (sole impl per head), so symTag == routeKey == tag.
 methodImpls : Prog -> String -> List (String, String)
 methodImpls prog method =
-  dedupPairs (flatMap (methodImplKey method) (progImpls prog)) []
+  dedupPairs
+    (flatMap (methodImplKey (progImpls prog) method) (progImpls prog))
+    []
 
-methodImplKey : String -> CImplEntry -> List (String, String)
-methodImplKey method (CImplEntry n _ (CImplTagged tag _ _ _ _ _)) =
+-- one (symTag, routeKey) candidate per impl entry of [method].  #324: symTag is the
+-- CALL symbol tag (bare head when unique, else the SANITIZED canonical key); routeKey
+-- is the RUNTIME-dispatch hash tag (bare head when unique, else the RAW canonical
+-- key), which `emitDispatchChain` hashes with `dictTag` to match the dict witness.
+-- For a sole impl per head both are the bare head — byte-identical to the old (tag,
+-- tag) — and dedupPairs collapses the multiple entries of one impl to a single arm;
+-- two overlapping same-head impls yield two DISTINCT arms.
+methodImplKey : List CImplEntry -> String -> CImplEntry -> List (String, String)
+methodImplKey entries method (CImplEntry n _ (CImplTagged t k _ _ _ _)) =
   if n == method then
-    [(tag, tag)]
+    [(implFnSymTagW entries method t k, implEntryRouteKeyW entries method t k)]
   else
     []
-methodImplKey _ _ = []
+methodImplKey _ _ _ = []
 
 -- ── layer-15: defaulted-method emission (peer to llvm_emit's E19 default subsystem) ──
 -- A `Filterable List` provides `filterMap` as a CONCRETE impl but inherits `filter`
@@ -6042,12 +6153,17 @@ clauseToPair (CClause pats body) = (pats, body)
 -- count is uniform across clauses.  Returns Some def when eligible (the whole
 -- `(func …)` define via emitWasmTrmcCore with the impl symbol + SelfByMethod), else None
 -- so emitImplGroup falls back to the ordinary emitClausesImpl body.
-wTrmcImplTry : Prog -> String -> String -> Int -> List CClause -> Option (List String)
-wTrmcImplTry prog method tag arity clauses =
-  let self = SelfByMethod method tag
+-- #324: [headTag] drives the SelfByMethod self-call recognition (the in-body self
+-- route is stamped with the head for a sole impl), while [key] drives the emitted
+-- SYMBOL (via implFnSym) so it agrees with emitImplGroup's fnName.  For a sole impl
+-- per head the two coincide (headTagUniqueW ⇒ symbol == headTag), keeping every
+-- existing trmc'd impl byte-identical.
+wTrmcImplTry : Prog -> String -> String -> String -> Int -> List CClause -> Option (List String)
+wTrmcImplTry prog method headTag key arity clauses =
+  let self = SelfByMethod method headTag
   let pairs = map clauseToPair clauses
   if arity > 0 && dictUniformClauses clauses && trmcEligible (c => isCtor prog c) (c => ctorArity prog c) self arity pairs then
-    Some (emitWasmTrmcCore prog (implFnSym tag method) self (implFnSym tag method) arity clauses (wTrmcCtorSet prog self arity pairs))
+    Some (emitWasmTrmcCore prog (implFnSym prog key method) self (implFnSym prog key method) arity clauses (wTrmcCtorSet prog self arity pairs))
   else
     None
 
@@ -6108,7 +6224,7 @@ emitWasmTrmcFn prog name arity clauses ctorSet =
 
 -- the shared destination-passing-loop emitter for BOTH the top-level path (SelfByVar) and
 -- the Phase-2 B-dispatch impl path (SelfByMethod).  `funcSym` is the rendered func symbol
--- (no leading `$`; `gname name` for a top-level fn, `implFnSym tag method` for an impl);
+-- (no leading `$`; `gname name` for a top-level fn, `implFnSym prog key method` for an impl);
 -- `self` is the SelfRef the TMC analysis + leaf-emit thread (CVar vs CMethod recognition);
 -- `lblRoot` is the clause-block label root (unique per emitted define).
 emitWasmTrmcCore : Prog -> String -> SelfRef -> String -> Int -> List CClause -> List (String, Int) -> List String
@@ -6414,7 +6530,7 @@ implSelfReturnCall prog env name route methRoutes implRoutes app args = match im
         let dictWords = flatMap (routeWitness prog env 0) (methRoutes ++ implRoutes)
         let argInstrs = flatMap (a => emitRefExpr prog env 0 a) args
         Some
-          (dictWords ++ argInstrs ++ ["return_call $" ++ implFnSym rtag name])
+          (dictWords ++ argInstrs ++ ["return_call $" ++ implFnSym prog rtag name])
       None => None
     _ => None
   else None
