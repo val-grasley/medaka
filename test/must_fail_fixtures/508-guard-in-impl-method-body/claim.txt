@@ -1,0 +1,10 @@
+issue: 508
+what: a guard in an IMPL METHOD body is a hard parse error; the identical guard works
+what: standalone. The message ("expected a dedent") never mentions guards.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 6:2-6:3 unexpected `sz`; expected a dedent
+control: check-json control.mdk
+why-control: control.mdk is THE SAME GUARDED FUNCTION at top level, byte-for-byte in its
+why-control: body. It must parse clean. This is the sharpest control in the suite: it
+why-control: isolates the bug to the IMPL-METHOD context and nothing else.

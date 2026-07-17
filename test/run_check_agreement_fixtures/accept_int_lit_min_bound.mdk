@@ -1,0 +1,8 @@
+-- #171 counterpart: `-4611686018427387904` (intMinBound, -2^62) is the writable
+-- minimum and MUST stay expressible — that requirement is the whole reason the
+-- lexer's magnitude guard admits 2^62 in the first place. The parser fuses the
+-- `-` with the literal; the token already carries the wrapped intMinBound value,
+-- and `negate intMinBound` wraps back to itself, so the number is unchanged.
+-- The .out pin is the real assertion: over-rejecting this, or accepting it and
+-- producing some other number, both fail here.
+main = println -4611686018427387904

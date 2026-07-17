@@ -1,0 +1,12 @@
+-- #171, `parsePatAtom` arm: 2^62 as a bare PATTERN literal. Distinct rejection
+-- site from the expression atom (`parseAtomRaw`) — every other #171 fixture
+-- routes through that one, so without this the pattern site has no coverage and
+-- a future arm-reorder or mis-copied guard silently restores the S0 here: the
+-- pattern would match intMinBound instead of the number the user wrote, and
+-- every gate would stay green. Asserts the DIAGNOSTIC (a frontend defect is
+-- invisible to engine-parity gates — eval/native/wasm all wrap identically).
+f n = match n
+  4611686018427387904 => 1
+  _ => 0
+
+main = println (f 1)

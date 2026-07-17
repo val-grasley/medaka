@@ -1,0 +1,13 @@
+issue: 99
+what: the guard-exhaustiveness warning has NO location — human output says "<unknown
+what: location>", and `check --json` FABRICATES a 0:0-0:0 range pointing at a line that has
+what: nothing to do with the guards (they are on lines 2-3).
+cmd: check-json main.mdk
+exit: 0
+diag: W-GUARD-INEXHAUSTIVE 0:0-0:0 guards may not be exhaustive
+control: check-json control.mdk
+why-control: the same function with EXHAUSTIVE guards (`otherwise`) must emit no diagnostic
+why-control: at all. That isolates the bug to the warning's RANGE, and proves the warning
+why-control: itself still fires only when it should.
+why-note: this row pins a FABRICATED range, not a real one — when #99 is fixed the range
+why-note: becomes the guards' real location and this row drains.

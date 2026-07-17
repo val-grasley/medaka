@@ -24,7 +24,9 @@ type-clean.
   path. **And read the count it prints back** — it will happily say `0 blessed`, and a stale golden
   shipped once because that number went unread.
 - **A ledger, never a skip-list.** A skip-list cannot notice an *accidental fix*, so it rots. **Every
-  exception entry must fail when the thing gets BETTER, too.**
+  exception entry must fail when the thing gets BETTER, too.** ⭐ The **tracker** was the last
+  un-drained ledger — six entries were already dead when it was re-derived on 2026-07-14, two of them
+  labelled *silent build miscompile*. `diff_compiler_must_fail.sh` is its expiry (#547).
 - **Measure allocation, not wall-clock**, for perf gates. GC bytes are deterministic — machine-independent
   and noise-free, which no timing gate can be on a shared runner.
 - **A gate must RUN where the bug lands.** A docs gate inside a gate shard is *skipped on docs-only PRs*
@@ -106,6 +108,7 @@ cannot reproduce.
 | `diff_compiler_perf_scaling.sh` | The O(n²) detector — grades **allocation** growth, not wall-clock |
 | `diff_compiler_capability_matrix.sh` | Every extern in `stdlib/runtime.mdk` vs what each engine implements. **Its absence let 37 externs drift for six weeks** |
 | `diff_compiler_shadow_semantics.sh` | Pins every shadow cell, **including the KNOWN-BAD ones** |
+| `diff_compiler_must_fail.sh` | **The TRACKER's self-drain** (#547). Each `test/must_fail_fixtures/*/` pins one OPEN issue's bug as still reproducing; a fix flips it RED and the message says to close the issue. A RED here is usually a GOOD failure. Runs as a named step in `soundness` — NOT a shard, because shards are narrowed on `pull_request` and the drain would only fire in the merge queue |
 
 **Stale oracles:** `diff_native_cli` and the bootstrap suites are especially stale-prone — force-rebuild
 before trusting a pass/fail from those.

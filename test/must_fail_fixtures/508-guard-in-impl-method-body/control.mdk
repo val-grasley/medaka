@@ -1,0 +1,7 @@
+data B = B Int
+
+sz (B n)
+  | n > 0 = n
+  | otherwise = 0
+
+main = println (sz (B 3))

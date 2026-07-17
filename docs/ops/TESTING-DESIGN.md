@@ -2,7 +2,9 @@
 
 **Status:** PARTIAL — built 2026-07-13. §§1–3 are the diagnosis + research (unchanged).
 §4.4 (the differential tier) and the capability gate ARE BUILT and merged on
-`testing-arc`. §4.3/§4.6/§4.7 (the snapshot migration) are **not started** — the 79
+`testing-arc`. **§4.6 (the must-fail suite) IS BUILT — 2026-07-17, #547:**
+`test/diff_compiler_must_fail.sh` + `test/must_fail_fixtures/`, run as a named step in
+CI's `soundness` job. §4.3/§4.7 (the snapshot migration) are **not started** — the
 bash gates are all still there.
 
 ---
@@ -562,13 +564,40 @@ a graded corpus and an explicit copy standard — an auto-blessed diagnostic gol
 without anyone reading it. The assertion is on `code` + `range` (stable); the prose
 can change freely.
 
-### 4.6 A must-fail suite — make the gap census executable
+### 4.6 A must-fail suite — make the gap census executable ✅ BUILT (#547, 2026-07-17)
 
 Steal rustc's `tests/crashes`: tests that assert the **current wrong behavior**, whose
 purpose is to detect *accidental fixes*. Medaka's residual gaps live in prose today —
 `EMITTER-GAPS.md`'s refutable-`CGBind` `gapU`, the `-0.0` interp/native divergence, the
 `1e12` scientific-notation gap. Turn each into a fixture tagged `known-bug`. The prose
 census becomes executable, and it tells you the day a gap closes.
+
+**AS BUILT:** `test/diff_compiler_must_fail.sh` grades `test/must_fail_fixtures/*/`, and
+the target turned out to be bigger than "the gap census" — it is **the TRACKER**. That is
+the last un-drained ledger in the repo: six backlog entries were already dead when it was
+re-derived on 2026-07-14 (two labelled *silent build miscompile*), and #72 had all four of
+its holes fixed while sitting open. Each fixture pins one OPEN issue's bug; when a fix
+lands the pin stops holding, the gate goes RED, and the message tells the fixer to close
+the issue and delete the fixture. Read that script's header before adding a fixture — it
+carries the design rules, and the one that matters most is *run it, don't reason about it*.
+
+Two things worth knowing before extending it:
+
+- **The mechanism already existed twice in embryo and was never generalized.**
+  `test/diff_compiler_shadow_semantics.sh` has must-fail rows keyed to open issues (`d11`
+  *is* #54; `d18` *is* #410), and its `BUILD_CRASH` row has already fired once when PR #25
+  fixed the bug it pinned. `sqlite/findings/verify_compiler_bugs.sh` re-runs every repro
+  and prints OPEN/FIXED — it is the only reason we know 4 of those 11 bugs had self-fixed.
+  Neither drains the tracker; that is the gap this closes.
+- **Deliberately NOT blessable, per §4.5.** A must-fail row you can rubber-stamp is a
+  skip-list with extra steps, and a skip-list cannot notice an accidental fix, so it rots.
+- **The member set is `ls test/must_fail_fixtures/`** — no table, no count. Adding a
+  fixture is adding one directory. (Contrast the shadow gate, which needs a coverage
+  self-audit precisely *because* it encodes a set it could derive.)
+
+**Not built:** the other half of the ratchet — *"the issue is CLOSED but the fixture still
+reproduces"*. It needs `gh` + network, so it cannot live in a gate; it belongs in
+`nightly.yml`. A half version would be worse than none.
 
 ### 4.7 `--promote` for the inline tiers (steal OCaml)
 
