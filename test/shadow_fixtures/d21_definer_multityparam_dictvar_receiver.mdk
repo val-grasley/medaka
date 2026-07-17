@@ -4,11 +4,21 @@
 -- says such a receiver DISPATCHES -- writing `Ix a i =>` is an explicit, written-
 -- down request to resolve through the interface.
 --
--- ⚠️ IT DOES NOT, at multi-typaram width: `definerReceiverIsDictVar` does not
--- recognise a multi-typaram constraint var, so the occurrence falls to S2 and
--- `useIface` monomorphises to the standalone's domain (`Int -> Int -> Int`),
--- making the `Box` call a located reject.  That is an S5 CONFORMANCE GAP, pinned
--- here, NOT an S7 violation -- check/run/build agree exactly.  See #54's residual.
+-- ⚠️ IT DOES NOT, at multi-typaram width -- AND THE CAUSE IS IN THE PARSER, NOT IN
+-- THE SHADOW MACHINERY.  See issue #604.  `Ty`'s `TyApp Ty Ty` (frontend/ast.mdk:31)
+-- is BINARY, so `Ix a i` parses as `TyApp (TyApp (TyCon "Ix") (TyVar "a")) (TyVar "i")`.
+-- `extractConstraints` (frontend/parser.mdk:1678-1682) matches only the ONE-argument
+-- shape `TyApp (TyCon iface _) arg`, so the outer `TyApp` -- whose first field is
+-- itself a `TyApp` -- falls through to `_ = []`.  EVERY >=2-ARGUMENT CONSTRAINT IS
+-- SILENTLY DISCARDED, yielding `TyConstrained []`.
+--
+-- So S5's antecedent ("a dict-bound `=>` constraint variable") is FALSE by the time
+-- typecheck runs: there is no constraint left to be bound by.  `definerReceiverIsDictVar`
+-- handles a multi-argument constraint correctly -- IT NEVER RECEIVES ONE.  The
+-- occurrence falls to S2 and `useIface` monomorphises to the standalone's domain
+-- (`Int -> Int -> Int`), making the `Box` call a located reject.  An S5 GAP, NOT an S7
+-- violation: check/run/build agree exactly, and are conformant TO THE PROGRAM THEY WERE
+-- GIVEN -- which is not the one written below.
 -- Expected: check/run/build all REJECT (`Int vs Box`) at the `useIface (Box 3) 1` call.
 --
 -- ⭐ WHY THIS CELL EXISTS.  It is the receiver-PROVENANCE axis (grounded / literal /
@@ -24,15 +34,21 @@
 --
 -- #54 closed that by bringing multi-typaram interfaces into the definer machinery;
 -- the reject below is the S2 default it now (correctly, consistently) lands on.  The
--- residual is only that S5's carve-out cannot re-open it.  A cell that trades a
--- garbage-pointer miscompile for a located reject is a fix; this row pins the trade
--- so the remaining half cannot rot silently, and goes RED the day S5 is honoured here.
+-- residual is only that S5's carve-out cannot re-open it, and that residual is #604's
+-- to close, not this machinery's.  A cell that trades a garbage-pointer miscompile for
+-- a located reject is a fix; this row pins the trade so the remaining half cannot rot,
+-- and goes RED the day #604 lands -- ⚠️ which is the signal to RE-PROBE this cell, NOT
+-- to assume it becomes 3 then 6.  Both of `check`'s pre-#54 symptoms above are #604:
+-- the dropped constraint in the scheme, and the `() =>` the formatter wrote (an EMPTY
+-- constraint LIST printed -- `TyConstrained []` -- not a missing constraint).  They
+-- were filed as two unrelated bugs; they are one.
 -- 🚨 DO NOT RUN `medaka fmt --write` ON THIS FILE.  It DESTROYS the `Ix a i =>`
 -- constraint below, rewriting it to `() =>`, which is not even parseable
--- (`expected type atom`).  Found while adding this fixture, 2026-07-17; single-typaram
--- constraints round-trip fine, so the formatter has never been exercised on this shape.
--- Reported with #54.  The pre-commit hook excludes `test/` from `fmt --check`, which is
--- the only reason this file can be committed at all.
+-- (`expected type atom`).  That is NOT a formatter bug: the parser handed fmt a
+-- `TyConstrained []` (see above), and `() =>` is what an EMPTY constraint list prints
+-- as -- the formatter is faithfully rendering the tree it was given.  Same root cause,
+-- issue #604.  The pre-commit hook excludes `test/` from `fmt --check`, which is the
+-- only reason this file can be committed at all.
 interface Ix a i where
   get : a -> i -> Int
 

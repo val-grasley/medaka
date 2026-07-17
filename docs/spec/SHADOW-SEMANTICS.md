@@ -7,9 +7,12 @@ verdict AND (per **S7**) that `run` and the built binary print the same pinned
 value. **No cell diverges any more** — S-3 (row 26, multi-typaram interface), the
 last **BUG**, was closed on 2026-07-17 (#54), and its KNOWN-BAD ledger row did
 exactly what a ledger row is for: it went RED the day the bug was fixed. One **GAP**
-remains (row 26's residual, row 29 / `d21`: S5's dict-bound-receiver carve-out is not
-honoured at multi-typaram width) — a clause the binary does not reach, on which all
-three engines nonetheless agree, pinned by the gate so it cannot rot. Until
+remains (row 29 / `d21`: S5's dict-bound-receiver carve-out is unreachable at
+multi-typaram width — **the cause is in the parser, [#604](https://github.com/MedakaLang/medaka/issues/604),
+not in the shadow machinery**), plus one **UNVERIFIED** row (row 30, multi-typaram
+*importer* shadows — nobody has run it). ⚠️ **`0 BUG` in the tally below means only
+"no two engines disagree" — that is an observability property, not a health claim; see
+the note under the matrix, and S7's own warning.** Until
 this gate existed the corpus below **ran nowhere**, and the matrix's own Status
 column had silently gone stale in the OK direction (see the note under §2).
 **Scope:** a bare name `N` that is BOTH a top-level standalone function AND an
@@ -166,14 +169,59 @@ Given an occurrence of bare name `N`:
   (`definerReceiverIsDictVar`; gated: `accept_constrained_receiver_shadow` → `14`,
   and `definer_shadow_nway`, which dispatches N-way through exactly this channel.)
 
-  ⚠️ **GAP (row 29 / `d21`, #54 residual): the carve-out is NOT honoured when the
-  interface has more than one typaram.** `definerReceiverIsDictVar` does not recognise
-  a multi-typaram constraint variable, so `useIface : Ix a i => a -> i -> Int` calling
-  `get x i` falls to S2 and monomorphises to the standalone's domain, making a `Box`
-  call a located reject. All three engines agree, so this is a **conformance gap
-  against S5, not an S7 violation** — and it is what #54 *left*, not what it broke:
-  before #54 this same cell shipped a binary printing a raw heap pointer at exit 0.
-  Honouring S5 here is follow-up work; the gate's `d21` row goes RED the day it lands.
+  ⚠️ **GAP (row 29 / `d21`): the carve-out is unreachable when the interface has more
+  than one typaram — and the cause is in the PARSER, not in this machinery
+  ([#604](https://github.com/MedakaLang/medaka/issues/604)).** `Ty`'s `TyApp Ty Ty`
+  (`compiler/frontend/ast.mdk:31`) is **binary/curried**, so `Ix a i` parses as
+  `TyApp (TyApp (TyCon "Ix") (TyVar "a")) (TyVar "i")`. `extractConstraints`
+  (`compiler/frontend/parser.mdk:1678-1682`) matches only
+  `TyApp (TyCon iface _) arg` — a **one**-argument constraint — so the outer `TyApp`,
+  whose first field is itself a `TyApp`, falls through to `_ = []`. **Every ≥2-argument
+  constraint is silently discarded, yielding `TyConstrained [] rhs`.**
+
+  So S5's antecedent — "a receiver that is a **dict-bound `=>` constraint variable**" —
+  is **false by the time typecheck runs: there is no constraint left to be bound by.**
+  `definerReceiverIsDictVar` and `constraintTyVars` handle a multi-argument constraint
+  correctly; **they never receive one.** The occurrence therefore falls to S2 and
+  `useIface` monomorphises to the standalone's domain, making a `Box` call a located
+  reject. **The engines are conformant to the program they were given — the program they
+  were given is not the one on disk.**
+
+  Two independent proofs, both on the shipping binary, **with no shadow anywhere in the
+  file** (so this is upstream of everything this document specifies):
+
+  ```
+  $ cat q1.mdk                          $ cat q2.mdk
+  interface Sz a where                  interface Ix a i where
+    size : a -> Int                       get : a -> i -> Int
+  useIface : Sz a => a -> Int           useIface : Ix a i => a -> i -> Int
+  useIface x = size x                   useIface x i = get x i
+
+  $ medaka check --types q1.mdk         $ medaka check --types q2.mdk
+  useIface : Sz a => a -> Int             useIface : a -> b -> Int
+           ^^^^^^^ kept                            ^^ constraint GONE
+  ```
+  ```
+  $ cat m2.mdk
+  f : NoSuchIface a b => a -> b -> Int      # interface does NOT exist
+  f x y = 1
+  $ medaka check m2.mdk ; echo $?
+  f : a -> b -> Int
+  0                                          # ← accepted. exit 0.
+
+  $ medaka check m1.mdk ; echo $?            # the 1-arg control
+  <unknown location>: Unknown interface: NoSuchIface
+  1
+  ```
+  A constraint naming an interface **that does not exist** passes at exit 0 when it has
+  two arguments, and is correctly diagnosed when it has one. A 3-argument constraint
+  (`Ix3 a b c =>`, the `Index c k v` shape) drops identically, so the rule is **≥2
+  arguments**, not "exactly 2".
+
+  Honouring S5 here is blocked on #604; the gate's `d21` row goes RED the day it lands.
+  ⚠️ **Whether S5's carve-out then works, or merely surfaces a real design question about
+  multi-argument constraint → dict-slot mapping, is UNKNOWN and must be re-probed — not
+  assumed in either direction.**
 
 - **S6 (module-independence).** **[CHANGED]** For a **definer** shadow the impl
   query is *deleted*, so S6 is **trivially satisfied**: where the interface and impl
@@ -213,8 +261,20 @@ Given an occurrence of bare name `N`:
   in #54). Fork 1's per-receiver rule genuinely does key the impl query on the receiver
   head standing at the interface's ONE typaram, and a multi-typaram interface offers no
   such correspondence to key on — `FromEntries c e`'s `fromEntries : List e -> c` does
-  not even take its first typaram as an argument. **Multi-typaram *importer* shadows are
-  therefore still out of scope, deliberately; they ship no fixture and no matrix row.**
+  not even take its first typaram as an argument.
+
+  ⚠️ **That is an implementation boundary, NOT a rule of the language — and #54 did not
+  make it one.** S2's importer arm is itself unqualified by typaram arity and carries an
+  explicit fallback (*"else → the standalone (`RLocal`), with the same domain
+  obligation"*), so the **specified** outcome for a multi-typaram *importer* shadow is
+  the standalone. That is not what `singleTyparamIfaceMethod` declining produces: all
+  three importer entry points decline and the occurrence falls through to **ordinary
+  dispatch**, which has no "else → standalone" arm at all. So this is a **probable live
+  divergence from S2** — recorded as **row 30, UNVERIFIED: nobody has run it.** An
+  earlier draft of this clause called such shadows "out of scope, deliberately"; that was
+  a claim about the *language* with nothing in S2 to support it, and it is **retracted**.
+  A boundary in the code explains why the code is shaped as it is; it does not license
+  this document to stop specifying.
 
 ### S9 — a CONSTRAINED standalone (added 2026-07-13; closes S-1)
 
@@ -352,10 +412,31 @@ three of run / build / check. Fixtures in `test/shadow_fixtures/`.
 | 27 | definer · **UNGROUNDED (numeric-literal) receiver** whose grounded head HAS a live prelude impl | S2+S5 | standalone → 3, 30 | `d12_definer_ungrounded_literal.mdk` | 3,30 | 3,30 | accept | **OK** (the P0-20 cell, now INVERTED: `eq 1 2` = 3, was `False`. `groundShadowReceiver` grounds the literal to the standalone's domain BEFORE the S2 question, so check/run/build ask it about the same head) |
 | 28 | **importer** · **UNGROUNDED (numeric-literal) receiver** · prelude iface + the Fork-1 control | S2+S5 | standalone → True, False; **method** → False, True | `i5_importer_ungrounded_literal/` | T,F,F,T | T,F,F,T | accept | **OK** (fixed 2026-07-14, **S1-RESIDUAL-B** — was `Type mismatch: Int literal vs Int Int` on ALL THREE paths, PRE-EXISTING, and invisible to the corpus because i1/i3/i4 all use GROUNDED receivers. The last two lines are the Fork-1 control: an importer shadow still dispatches on a live-impl head) |
 
-| 29 | definer · **dict-bound `=>` receiver** (S5's carve-out) on a **multi-TYPARAM interface** | S5 (carve-out) | **dispatch** → 3, 6 | `d21_definer_multityparam_dictvar_receiver.mdk` | reject `Int vs Box` | reject | reject | **GAP** (**S5 not honoured at multi-typaram width** — `definerReceiverIsDictVar` does not recognise a multi-typaram constraint var, so the occurrence falls to S2 and `useIface` monomorphises to the standalone's domain. ⚠️ **Not an S7 violation** — the three engines agree exactly; this is a conformance gap against S5, pinned by the gate so it cannot rot. **#54 residual.** Found by crossing d11's axis with receiver PROVENANCE while fixing #54; pre-#54 this exact cell was **SILENT WRONGNESS** — `check` exit 0 with the `Ix a i =>` constraint dropped from the reported scheme, `run` E-PANIC, and `build` exit 0 shipping a binary that printed the raw heap pointer `69867028434928`. #54 traded that for a located reject) |
+| 29 | definer · **dict-bound `=>` receiver** (S5's carve-out) on a **multi-TYPARAM interface** | S5 (carve-out) | **dispatch** → 3, 6 | `d21_definer_multityparam_dictvar_receiver.mdk` | reject `Int vs Box` | reject | reject | **GAP — CAUSE IS IN THE PARSER, NOT THE SHADOW MACHINERY ([#604](https://github.com/MedakaLang/medaka/issues/604))**. `extractConstraints` (`compiler/frontend/parser.mdk:1678-1682`) matches only the ONE-argument shape `TyApp (TyCon iface _) arg`; `TyApp` is binary (`ast.mdk:31`), so `Ix a i` nests and falls to `_ = []`. **Every ≥2-arg constraint is silently discarded** → `TyConstrained []`. S5's antecedent is false because there is no constraint left to bind: `definerReceiverIsDictVar` handles multi-arg constraints fine, it never receives one. The occurrence falls to S2 and `useIface` monomorphises. ⚠️ **Not an S7 violation** — the three engines agree exactly, and they are conformant *to the program they were given*. Proof (no shadow in the file): `f : NoSuchIface a b => a -> b -> Int` — a **nonexistent** interface — checks at **exit 0**, while the 1-arg control errors `Unknown interface`. Found by crossing d11's axis with receiver PROVENANCE while fixing #54; pre-#54 this cell was **SILENT WRONGNESS** — `check` exit 0, `run` E-PANIC, `build` exit 0 shipping a binary that printed the raw heap pointer `69867028434928`. #54 traded that for a located reject |
+
+| 30 | **importer** · shadow of a method on a **multi-TYPARAM interface** | S2 (importer arm) | live impl at the receiver head → dispatch; **else → the standalone (`RLocal`)** | *(none — no fixture)* | ? | ? | ? | **UNVERIFIED — NOBODY HAS RUN THIS.** S2's importer arm is unqualified by typaram arity, but all three importer entry points are gated on `singleTyparamIfaceMethod`, so at multi-typaram width they decline and the occurrence falls to **ordinary dispatch — which has no "else → standalone" arm.** That is a *probable* divergence from S2's second half, but it is **derived from reading, not from running**, and this table does not accept derived verdicts (see the ⭐ note below row 26). #54 deliberately did NOT move this: its fix is definer-only, so whatever this cell does today, it did before. ⚠️ Predicting the outcome is exactly the error #54's own S-3 rewrite indicts. **Run it, then fill the row in.** Blocked in practice by [#604](https://github.com/MedakaLang/medaka/issues/604) for any cell whose fixture needs a `=>` constraint |
 
 **Tally: 22 OK · 0 BUG · 1 GAP (row 29, S5 at multi-typaram width) ·
-3 UNTESTED-NO-FIXTURE · 1 UNREACHABLE · 2 baselines.**
+1 UNVERIFIED (row 30) · 3 UNTESTED-NO-FIXTURE · 1 UNREACHABLE · 2 baselines.**
+
+> ### ⚠️ **`0 BUG` DOES NOT MEAN "NO VIOLATIONS". READ THE GAP AND UNVERIFIED COLUMNS.**
+>
+> **BUG** here means *the engines disagree with each other* — and that is an
+> **observability** property, not a severity one. It is the thing a differential gate can
+> see, which is why the column exists; it is **not** the thing that hurts users.
+> **S7's own note above says why: `run`/`check`/`build` are *guaranteed* to agree, so a
+> shadow violation they all share is invisible BY CONSTRUCTION** — the `eq [1] [2]`
+> erasure that this entire inversion exists to fix was agreed on by all three engines, and
+> P0-20 once "fixed" a cell by making all three agree on the *wrong* answer.
+>
+> **Under a naive reading of the BUG column, both of those would have counted as `0 BUG`.**
+> So: a **GAP** (a clause the binary does not reach, row 29) and an **UNVERIFIED** row
+> (row 30) are *not* lesser findings that happened not to qualify. Row 29's cell was
+> shipping a **raw heap pointer at exit 0** three days ago. Three engines agreeing is the
+> *precondition* for the worst bug this document knows about, not evidence of health.
+>
+> **The tally is a map of what is CHECKED, not a claim about what is CORRECT.** If you
+> want the second thing, read the rows.
 Rows 10/12/13/14 were BUG until P0-19; row 25 was BUG until S-1; **row 28 was BUG
 until 2026-07-14 (S1-RESIDUAL-B) — and it was PRE-EXISTING, not introduced by the
 inversion.** Row 26 was the last open **BUG** and closed 2026-07-17 (#54) — which is also when

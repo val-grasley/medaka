@@ -138,7 +138,34 @@ discarded stdout on panic**, so a `println` probe returned nothing whether the p
   no gate could see it** — by S7 all three engines must agree before a differential gate has
   anything to compare. That is **twice** the silent bug has been hiding on the provenance
   axis (rows 27–28 were the first). It is now pinned as row 29, an S5 **GAP** (all three
-  engines agree; S5's dict-var carve-out just is not reached at multi-typaram width).
+  engines agree; S5's dict-var carve-out is not *reached* at multi-typaram width). **Its cause
+  is `parser.mdk`, not the shadow machinery — see the next bullet, which is about how I got
+  that wrong.**
+- **🚨 I ASSERTED A MECHANISM FROM READING THE CODE AND IT WAS PROVABLY FALSE — in the same PR
+  whose headline finding is "a name that lies sends the next agent to the wrong file."** I filed
+  row 29's cause as *"`definerReceiverIsDictVar` does not recognise a multi-typaram constraint
+  var"* — in the spec, the gate row, AND the fixture header. **Wrong.** The real cause is four
+  unmatched pattern arms in the PARSER: `Ty`'s `TyApp Ty Ty` (`frontend/ast.mdk:31`) is binary,
+  so `Ix a i` nests as `TyApp (TyApp (TyCon "Ix") …) …`; `extractConstraints`
+  (`frontend/parser.mdk:1678-1682`) matches only the ONE-arg `TyApp (TyCon iface _) arg` and
+  falls to `_ = []`. **Every ≥2-arg constraint is silently discarded.**
+  `definerReceiverIsDictVar` handles them fine — **it never receives one.** (#604.)
+  - **The proof was already in my own report and I didn't connect it.** I reported two symptoms
+    as *unrelated*: `check` printing `useIface : a -> b -> Int` (constraint gone from the
+    **scheme**) and `fmt` writing `() =>` (an **empty constraint LIST** printed). Both are
+    `TyConstrained []`. **They are one bug.** `() =>` is not a formatter bug at all — the
+    formatter faithfully rendered the tree the parser handed it.
+  - **The lesson is not "read more carefully".** It is that a *mechanism* is an empirical claim
+    and needs a probe, exactly like a bug report does. **The probe was 30 seconds:**
+    `f : NoSuchIface a b => a -> b -> Int` — a constraint naming an interface **that does not
+    exist** — checks at **exit 0**; the 1-arg control errors `Unknown interface`. That isolates
+    the drop upstream of every semantic phase, with **no shadow anywhere in the file**. I never
+    ran it, because I was reasoning about the shadow machinery I had just spent hours in — I
+    looked for the cause where my attention already was.
+  - ⚠️ **The reviewer caught it. `pr-review` graded the diff APPROVE/zero-defects — craft review
+    reads the DIFF and cannot see that a comment names the wrong file.** Only the CONFORMANCE
+    review, which re-derives claims against the spec and the tree, caught it. **A green craft
+    review is not evidence your prose is true.**
 
 ---
 

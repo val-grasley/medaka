@@ -134,10 +134,35 @@
 # bypass d11 pinned -- and STRICTLY WORSE than d11's panic, because it is silent.
 # #54 closes it: all three engines now give the identical located reject. What d21
 # pins is the RESIDUAL -- S5's carve-out ("a dict-bound `=>` receiver DISPATCHES")
-# is still not honoured at multi-typaram width, because definerReceiverIsDictVar
-# does not recognise a multi-typaram constraint var. That is an S5 CONFORMANCE GAP,
-# not an S7 violation: the three engines agree exactly. It goes RED the day S5 is
-# honoured here, which is the signal to re-pin it to ACCEPT/3/6.
+# is unreachable at multi-typaram width.
+#
+# ⚠️ THE CAUSE IS IN THE PARSER, NOT IN THE SHADOW MACHINERY -- issue #604. Ty's
+# `TyApp Ty Ty` (compiler/frontend/ast.mdk:31) is BINARY, so `Ix a i` parses as
+# `TyApp (TyApp (TyCon "Ix") (TyVar "a")) (TyVar "i")`. extractConstraints
+# (compiler/frontend/parser.mdk:1678-1682) matches only `TyApp (TyCon iface _) arg`
+# -- the ONE-argument shape -- so the outer TyApp's first field, itself a TyApp, hits
+# `_ = []`. EVERY >=2-ARGUMENT CONSTRAINT IS SILENTLY DISCARDED (TyConstrained []).
+# S5's antecedent ("a dict-bound `=>` constraint variable") is FALSE by the time
+# typecheck runs: there is no constraint left to be bound by. definerReceiverIsDictVar
+# and constraintTyVars handle multi-arg constraints correctly -- THEY NEVER RECEIVE ONE.
+# The engines are conformant to the program they were GIVEN; the program they were
+# given is not the one on disk. Proof, with no shadow anywhere in the file:
+#
+#     $ cat m2.mdk
+#     f : NoSuchIface a b => a -> b -> Int     # this interface does NOT exist
+#     f x y = 1
+#     $ medaka check m2.mdk ; echo $?
+#     f : a -> b -> Int
+#     0                                        # accepted, exit 0
+#     $ medaka check m1.mdk ; echo $?          # the 1-arg control
+#     <unknown location>: Unknown interface: NoSuchIface
+#     1
+#
+# A 3-arg constraint drops identically, so the rule is >=2 args, not "exactly 2".
+# So d21 is an S5 GAP, not an S7 violation: the three engines agree exactly. It goes
+# RED the day #604 lands, which is the signal to RE-PROBE this cell -- ⚠️ NOT to
+# assume it becomes ACCEPT/3/6. Whether S5's carve-out then works, or merely surfaces
+# a real design question about multi-arg constraint -> dict-slot mapping, is UNKNOWN.
 #
 # ⭐ THE LESSON, AGAIN: the corpus was blind to this cell for the SAME reason it was
 # blind to row 28 -- an unexercised receiver-provenance axis. Twice now, the axis
@@ -218,7 +243,7 @@ d13_definer_return_pos.mdk|D13 definer, RETURN-POSITION method shadow (S4, matri
 d17_definer_value_pos_arity_differ.mdk|D17 definer, value position where METHOD arity (2) DIFFERS from STANDALONE arity (1) (S4; S1-RESIDUAL-A, #410). The emitter lift built a 2-arity closure over a 1-arity body, so map got PAPs back and build printed heap pointers as Ints at exit 0 -- SILENT WRONGNESS. Fixed by methValArity (route-derived, not name-derived). D4/D4b are arity-EQUAL, which is why the corpus was blind to this|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
 d19_definer_value_pos_arity_differ_zeroimpls.mdk|D19 definer, arity-differ value position with ZERO impls (S2+S4, #410) -- shadow-hood + arity mismatch + value position suffice; the impl universe is irrelevant|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|[2, 3, 4]
 d20_definer_value_pos_arity_differ_opposite.mdk|D20 definer, OPPOSITE arity direction to d17: METHOD arity 1 < STANDALONE arity 2 (S4, #410). Pins the other side of the route-derived arity -- the closure must be arity 2 so `f 1 2` is a saturated direct call|ACCEPT|ACCEPT|ACCEPT|ALL_EXACT|3
-d21_definer_multityparam_dictvar_receiver.mdk|D21 definer, S5 CARVE-OUT at MULTI-TYPARAM width: a dict-bound `Ix a i =>` receiver does NOT dispatch -- `definerReceiverIsDictVar` does not recognise a multi-typaram constraint var, so the occurrence falls to S2 and `useIface` monomorphises to the standalone`s domain. An S5 CONFORMANCE GAP (#54 residual), NOT an S7 violation: all three engines agree exactly. Pre-#54 this file was SILENT WRONGNESS -- check exit 0 (constraint dropped from the reported scheme), run E-PANIC, build exit 0 printing a RAW HEAP POINTER. Goes RED the day S5 is honoured here|REJECT|REJECT|REJECT|NONE|
+d21_definer_multityparam_dictvar_receiver.mdk|D21 definer, S5 CARVE-OUT at MULTI-TYPARAM width: a dict-bound `Ix a i =>` receiver does NOT dispatch. ⚠️ THE CAUSE IS IN THE PARSER, NOT THIS MACHINERY (#604): extractConstraints (compiler/frontend/parser.mdk:1678-1682) matches only the ONE-arg shape `TyApp (TyCon iface _) arg`, and TyApp is binary (ast.mdk:31), so `Ix a i` nests and falls to `_ = []` -- EVERY >=2-arg constraint is silently discarded. S5`s antecedent is false because no constraint survives to bind: definerReceiverIsDictVar never receives one. So the occurrence falls to S2 and useIface monomorphises. An S5 GAP, NOT an S7 violation: all three engines agree, and are conformant to the program they were GIVEN. Pre-#54 this file was SILENT WRONGNESS -- check exit 0, run E-PANIC, build exit 0 printing a RAW HEAP POINTER. Goes RED the day #604 lands (or S5 is honoured here)|REJECT|REJECT|REJECT|NONE|
 d18_definer_value_pos_arity_differ_unannot.mdk|D18 KNOWN-BAD: d17 WITHOUT the List Int annotation (#410 headline repro). println`s Display requirement gets a NULL element dict (RNone route) so the shipped binary SEGFAULTs while run is correct. The element TYPE resolves to Int -- this is the requirement ROUTE, stamped in types/typecheck.mdk, NOT an emitter bug|ACCEPT|ACCEPT|ACCEPT|BUILD_CRASH|[2, 3, 4]'
 
 # --- Coverage self-audit: every top-level fixture unit (a .mdk file, or a
