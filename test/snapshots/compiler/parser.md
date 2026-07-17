@@ -1,5 +1,5 @@
 # META
-source_lines=4192
+source_lines=4196
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -1514,9 +1514,13 @@ recordPatFieldRest name _ = pure (RecPatField name None)
 -- user would plausibly try as a name), or None for a structural token (`=`, `(`,
 -- `,`, …) whose presence is the ordinary end-of-pattern signal that MUST stay a
 -- recoverable `failP` so `many parseParamPat` / list-cons parsing terminates.
--- `mut`/`record`/`function`/`with` are dead rows here (a pre-grammar token scan
--- —`letMutRemovedMsg` etc., ~parser.mdk:4108— preempts them), listed for a
--- complete enumeration of the table.
+-- `mut`/`record`/`function`/`with` are listed for a complete enumeration of the
+-- table but never reach this arm on the loader/user-facing path (`parseResult`/
+-- `parseLocatedResult`): a pre-grammar token scan —`letMutRemovedMsg` etc.,
+-- ~parser.mdk:4108— preempts them there. The narrower internal `parse`/
+-- `parseLocated` entry (self-typecheck tool) runs no such scan, so the arm can
+-- fire for them — harmless, since none is ever a legal identifier under any
+-- channel.
 -- ⚠️ `let`/`if`/`then`/`else`/`rec` are DELIBERATELY absent (→ None → recoverable
 -- "expected pattern"): `if` legitimately follows a pattern as a match-arm GUARD
 -- (`pat if cond => body`) and `rec` legitimately follows `let` (`let rec go = …`),

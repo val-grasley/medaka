@@ -197,6 +197,7 @@ kebab-case; never renumber (append only).
 | `P-BRACE-BLOCK` | C-style `{ … }` brace block on `if` (suggest `then`/`else` + indentation) |
 | `P-FOR-WHILE` | foreign `for`/`while` loop (suggest recursion or list functions) |
 | `P-DEF-KEYWORD` | foreign `def`/`function` header (suggest `f x = …`) |
+| `P-RESERVED-KEYWORD` | a reserved keyword (`as`, `test`, `type`, …) used where a variable/pattern name is expected (machine-applicable `fix`: append `_`) |
 
 ### Resolve (one per `ResError` constructor)
 | Code | Constructor |
