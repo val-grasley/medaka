@@ -5,11 +5,13 @@
 --
 -- Why: desugar lowers a clause's guard chain to a body-level `CDecision` whose
 -- wildcard arm is the `__fallthrough__ ()` sentinel ("this clause didn't match —
--- try the next one").  The LLVM emitter took that sentinel's target from a mutable
--- `fallthroughLabelRef`, which `emitDecision` NULLS across any body-level match (so a
--- nested match's own non-exhaustive CTFail is a genuine abort, not a jump to the next
+-- try the next one").  The LLVM emitter USED TO take that sentinel's target from a
+-- mutable module-level Ref, which `emitDecision` NULLED across any body-level match (so
+-- a nested match's own non-exhaustive CTFail is a genuine abort, not a jump to the next
 -- clause).  A refutable guard IS such a body-level match — so the null erased its
--- target and "try the next clause" became `@mdk_oob`.  The label now rides in the node
+-- target and "try the next clause" became `@mdk_oob`.  (That Ref was retired entirely in
+-- issue #354: CTFail's label is now a plain `emitTree` parameter, so there is no longer
+-- any nulled ambient state for either mechanism to read.)  The label now rides in the node
 -- (`__ft__<label>`, emit_support's `labelFallthrough` — the design WasmGC already had
 -- and which is why WasmGC never had this bug).
 --
