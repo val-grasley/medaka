@@ -1,0 +1,7 @@
+-- #556 counterpart to accept_int_lit_min_bound: the radix guard must land on the
+-- SAME bound as the decimal one, so `-0x4000000000000000` (-2^62, the writable
+-- minimum) stays expressible exactly as `-4611686018427387904` does, and the
+-- largest positive `0x3FFFFFFFFFFFFFFF` (2^62-1) still parses to its own value.
+-- A bound one step too tight — the way #171's was one step too loose — fails here.
+-- All three bases are pinned: the admissible digit count differs per base.
+main = println (0x3FFFFFFFFFFFFFFF, -0x4000000000000000, 0o377777777777777777777, -0b100000000000000000000000000000000000000000000000000000000000000)

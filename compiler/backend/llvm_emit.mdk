@@ -569,13 +569,28 @@ fieldNameToLTy _ = None
 declSigTypesRef : Ref (List (String, (List String, String)))
 declSigTypesRef = Ref []
 
+-- Index over `declSigTypesRef`, built at the single install point below so it can
+-- never go stale. `reverseL` makes the FIRST list entry win on a duplicate key,
+-- matching the `lookupAssoc` first-match it replaces (the table is
+-- `runtimeDecls ++ allDecls`, so a runtime decl shadows a same-named user decl —
+-- preserving that order is load-bearing). The table is set once per emit run and
+-- GROWS with the program (one entry per annotated fn), and `declSigOf` is called
+-- once per binding per inference pass, so the old scan was quadratic.
+declSigMapRef : Ref (Option (OrdMap (List String, String)))
+declSigMapRef = Ref None
+
 export installDeclSigTypes : List (String, (List String, String)) -> Unit
-installDeclSigTypes t = setRef declSigTypesRef t
+installDeclSigTypes t =
+  let _ = setRef declSigTypesRef t
+  setRef declSigMapRef (Some (omFromPairs (reverseL t) omEmpty))
 
 -- the declared (param-type-head-names, return-type-head-name) of a function, or
--- None when it has no annotation.
+-- None when it has no annotation.  Falls back to the linear scan only when the
+-- index is uninstalled (mirrors `sigLookup`).
 declSigOf : String -> Option (List String, String)
-declSigOf name = lookupAssoc name declSigTypesRef.value
+declSigOf name = match declSigMapRef.value
+  Some m => omLookup name m
+  None => lookupAssoc name declSigTypesRef.value
 
 nthName : List String -> Int -> Option String
 nthName (x::_) 0 = Some x
@@ -883,17 +898,26 @@ ctorMapRef = Ref None
 installCtorMap : List (String, Int) -> Unit
 installCtorMap t = setRef ctorMapRef (Some (omFromPairs (reverseL t) omEmpty))
 
--- sig table index — ONLY for the GLOBAL-`sigs` users (fnRetTy/fnArity), which read
--- the Emit's `sigs` field. That field is set once at construction and never
--- mutated (constant), so a memo built from `sigTable e` is byte-identical to the
--- old `lookupAssoc name sigs.value`. NOTE: callRetTy/nthParamTy use a DIFFERENT,
--- THREADED `sigs` augmented with locally-inferred Float-propagation types — those
--- are NOT covered here (see the reverted sig-table attempt + fn_float_chain).
+-- sig table index — the GLOBAL-`sigs` users (fnRetTy/fnArity) read the Emit's
+-- `sigs` field. That field is set once at construction and never mutated
+-- (constant), so a memo built from `sigTable e` is byte-identical to the old
+-- `lookupAssoc name sigs.value`.
 sigMapRef : Ref (Option (OrdMap FnSig))
 sigMapRef = Ref None
 
 installSigMap : List (String, FnSig) -> Unit
 installSigMap t = setRef sigMapRef (Some (omFromPairs (reverseL t) omEmpty))
+
+-- Index an assoc sig table for the THREADED `sigs` parameter (the pure inference
+-- pass's own table, and the `sigTable e` handed to bindVarTy). `reverseL` makes
+-- the FIRST list entry win on a duplicate key, exactly matching the `lookupAssoc`
+-- first-match this replaces. Unlike the Ref-held indexes above this is a plain
+-- VALUE threaded where the list was, so it cannot go stale or index the wrong
+-- table — the two callers (nthParamTy/callRetTy) scanned a table that GROWS with
+-- the program (|fns| ≈ 9.2K for the medaka_cli graph), making the old scan the
+-- emitter's one measured quadratic (9.1% of runtime; see PERF-RESULTS.md).
+sigsToMap : List (String, FnSig) -> OrdMap FnSig
+sigsToMap t = omFromPairs (reverseL t) omEmpty
 
 -- E22: the EMITTED define arity per top-level fn (post eta-saturate), the truth a
 -- CDict call site needs to decide under-application.  Computed by replaying
@@ -957,12 +981,24 @@ canonFnName e name =
 -- from `sigTable e` at emitProgram). Byte-identical to `lookupAssoc name (sigTable
 -- e)`: the map is built with `reverseL` so the FIRST list entry wins on a duplicate
 -- key, matching lookupAssoc's first-match. Falls back to the linear scan only when
--- the map is uninstalled. Use ONLY for GLOBAL-sigs sites (`sigTable e`), never a
--- threaded/augmented `sigs` parameter (those carry local Float-propagation types).
+-- the map is uninstalled. Use for GLOBAL-sigs sites (`sigTable e`); the threaded
+-- `sigs` parameter is a DIFFERENT table, not a mutated one — it is indexed too, via
+-- `sigMapOf` below. (This line used to forbid that, claiming threaded `sigs` is
+-- "augmented" with Float-propagation types. It is not: `sigs` is never consed,
+-- appended or iterated anywhere — only threaded and looked up.)
 sigLookup : Emit -> String -> Option FnSig
 sigLookup e name = match sigMapRef.value
   Some m => omLookup name m
   None => lookupAssoc name (sigTable e)
+
+-- The GLOBAL sig table as a map, for the sites that thread `sigs` onward rather
+-- than look up a single name (bindVarTy → paramUseTy). Reuses the installed
+-- `sigMapRef` index; rebuilds from `sigTable e` only when uninstalled, which is
+-- the same fallback `sigLookup` takes and preserves first-match either way.
+sigMapOf : Emit -> OrdMap FnSig
+sigMapOf e = match sigMapRef.value
+  Some m => m
+  None => sigsToMap (sigTable e)
 
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
@@ -5881,7 +5917,7 @@ emitRecLamDefine e env lamName f pats captured body =
   let _ = emit e "define i64 @\{lamName}(\{closureParamDecls pats}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
-  let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
+  let penv = paramEnv pats (inferParamTys (sigMapOf e) pats body) 0
   let _ = emitFnBody e (((f, ("%clos", LTClosure))::cenv) ++ penv) lamName body
   let _ = emit e "}"
   let _ = emit e ""
@@ -6062,7 +6098,7 @@ emitLamDefine e env lamName pats captured body =
   let _ = emit e "define i64 @\{lamName}(\{closureParamDecls pats}) {"
   let _ = emit e "entry:"
   let cenv = loadCaptures e env captured 0
-  let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
+  let penv = paramEnv pats (inferParamTys (sigMapOf e) pats body) 0
   let _ = emitFnBody e (cenv ++ penv) lamName body
   let _ = emit e "}"
   let _ = emit e ""
@@ -6799,7 +6835,7 @@ bindVarTy : Emit -> List (String, (String, LTy)) -> String -> String -> CExpr ->
 bindVarTy e env x v body declName =
   let ty = match fieldNameToLTy declName
     Some t => t
-    None => match paramUseTy (sigTable e) [] x body
+    None => match paramUseTy (sigMapOf e) [] x body
       Some t => t
       None => LTInt
   (x, (v, ty))::env
@@ -8550,7 +8586,7 @@ emitGlobalDecls e (b::rest) =
 -- structural type of an expression given known fn signatures + a var→type env.
 -- Unknown vars (top-level value globals) default to Int — the slice's existing
 -- assumption (function bodies referencing globals are out of scope anyway).
-typeOf : List (String, FnSig) -> List (String, LTy) -> CExpr -> LTy
+typeOf : OrdMap FnSig -> List (String, LTy) -> CExpr -> LTy
 typeOf _ _ (CLit (LInt _)) = LTInt
 typeOf _ _ (CLit (LFloat _)) = LTFloat
 typeOf _ _ (CLit (LBool _)) = LTBool
@@ -8606,10 +8642,10 @@ typeOf sigs env app =
 -- Unit-returning wrapper (e.g. `println x = putStrLn (display x)`) as LTInt and
 -- mis-rendering `main`'s result as `0` instead of `()` (Stage 3 #2b).  Resolve
 -- them to LTUnit up front, matching the real emit path (`emitIoExtern`).
-callRetTy : List (String, FnSig) -> String -> LTy
+callRetTy : OrdMap FnSig -> String -> LTy
 callRetTy sigs fname =
   if isIoExtern fname then LTUnit
-  else match lookupAssoc fname sigs
+  else match omLookup fname sigs
     Some (FnSig _ rty) => rty
     None => LTInt
 
@@ -8617,17 +8653,17 @@ callRetTy sigs fname =
 -- well-typed match).  Pattern-bound vars are unknown to the pure pass, so a body
 -- referencing them defaults via typeOf's CVar/None branch; the fixtures' arms are
 -- Int-typed, matching the runtime-captured `rty`.
-armsRetTy : List (String, FnSig) -> List (String, LTy) -> List CArm -> LTy
+armsRetTy : OrdMap FnSig -> List (String, LTy) -> List CArm -> LTy
 armsRetTy _ _ [] = LTInt
 armsRetTy sigs env ((CArm _ _ body)::_) = typeOf sigs env body
 
-letGroupEnv : List (String, FnSig) -> List (String, LTy) -> List CBind -> List (String, LTy)
+letGroupEnv : OrdMap FnSig -> List (String, LTy) -> List CBind -> List (String, LTy)
 letGroupEnv _ env [] = env
 letGroupEnv sigs env ((CBind name [CClause [] rhs])::rest) =
   letGroupEnv sigs ((name, typeOf sigs env rhs)::env) rest
 letGroupEnv _ env _ = env
 
-blockTy : List (String, FnSig) -> List (String, LTy) -> List CStmt -> LTy
+blockTy : OrdMap FnSig -> List (String, LTy) -> List CStmt -> LTy
 blockTy sigs env [CSExpr ex] = typeOf sigs env ex
 blockTy sigs env ((CSExpr _)::rest) = blockTy sigs env rest
 blockTy sigs env ((CSLet _ (PVar x) ex)::rest) =
@@ -8670,7 +8706,7 @@ mapVarLTInt (x::rest) = (x, LTInt) :: mapVarLTInt rest
 -- literal, an env-typed var) use it — so int-literal-anchored arith (`a + 1`) keeps
 -- its inline fast path.  Non-arith ops keep the historical `typeOf other` (a
 -- comparison var has the same type as what it is compared to).
-binOperandTy : List (String, FnSig) -> List (String, LTy) -> String -> CExpr -> LTy
+binOperandTy : OrdMap FnSig -> List (String, LTy) -> String -> CExpr -> LTy
 binOperandTy sigs env op other =
   if isArithOp op then match concreteNumTy sigs env other
     Some t => t
@@ -8680,7 +8716,7 @@ binOperandTy sigs env op other =
 -- Some (concrete numeric LTy) when `e` is DEFINITELY typed; None when its type would
 -- only be a guess (a bare var absent from env, a call result) — mirrors typeOf but
 -- treats typeOf's LTInt-default as "unknown" so binOperandTy can pick LTNum instead.
-concreteNumTy : List (String, FnSig) -> List (String, LTy) -> CExpr -> Option LTy
+concreteNumTy : OrdMap FnSig -> List (String, LTy) -> CExpr -> Option LTy
 concreteNumTy _ _ (CLit (LInt _)) = Some LTInt
 concreteNumTy _ _ (CLit (LFloat _)) = Some LTFloat
 concreteNumTy sigs env (CUnOp "-" x) = concreteNumTy sigs env x
@@ -8695,7 +8731,7 @@ concreteNumTy sigs env (CBinPrim op l r _) =
     None
 concreteNumTy _ _ _ = None
 
-paramUseTy : List (String, FnSig) -> List (String, LTy) -> String -> CExpr -> Option LTy
+paramUseTy : OrdMap FnSig -> List (String, LTy) -> String -> CExpr -> Option LTy
 paramUseTy sigs env p (CIf c t f) =
   if isVarNamed p c then
     Some LTBool
@@ -8739,7 +8775,7 @@ paramUseTy sigs env p app =
 
 -- if `p` is passed as the Nth argument to a known function, its type is that
 -- function's Nth parameter type.
-argPosTy : List (String, FnSig) -> List (String, LTy) -> String -> String -> List CExpr -> Int -> Option LTy
+argPosTy : OrdMap FnSig -> List (String, LTy) -> String -> String -> List CExpr -> Int -> Option LTy
 argPosTy _ _ _ _ [] _ = None
 argPosTy sigs env p fname (a::rest) i =
   if isVarNamed p a then
@@ -8748,8 +8784,8 @@ argPosTy sigs env p fname (a::rest) i =
     argPosTy sigs env p fname rest (i + 1)
 
 -- the type of the Nth parameter of a known function (None if unknown).
-nthParamTy : List (String, FnSig) -> String -> Int -> Option LTy
-nthParamTy sigs fname i = match lookupAssoc fname sigs
+nthParamTy : OrdMap FnSig -> String -> Int -> Option LTy
+nthParamTy sigs fname i = match omLookup fname sigs
   Some (FnSig ptys _) => nthTy ptys i
   None => None
 
@@ -8758,14 +8794,14 @@ nthTy [] _ = None
 nthTy (t::_) 0 = Some t
 nthTy (_::rest) i = nthTy rest (i - 1)
 
-paramUseArgs : List (String, FnSig) -> List (String, LTy) -> String -> List CExpr -> Option LTy
+paramUseArgs : OrdMap FnSig -> List (String, LTy) -> String -> List CExpr -> Option LTy
 paramUseArgs _ _ _ [] = None
 paramUseArgs sigs env p (a::rest) =
   firstSome (paramUseTy sigs env p a) (paramUseArgs sigs env p rest)
 
 -- scan block statements for a determining use of `p` in any statement's expression
 -- (CSExpr / CSLet rhs); unknown statement shapes are skipped.
-paramUseStmts : List (String, FnSig) -> List (String, LTy) -> String -> List CStmt -> Option LTy
+paramUseStmts : OrdMap FnSig -> List (String, LTy) -> String -> List CStmt -> Option LTy
 paramUseStmts _ _ _ [] = None
 paramUseStmts sigs env p ((CSExpr ex)::rest) =
   firstSome (paramUseTy sigs env p ex) (paramUseStmts sigs env p rest)
@@ -8782,7 +8818,7 @@ firstSome (Some x) _ = Some x
 firstSome None y = y
 
 -- infer one function's full signature against the current (partial) sig table.
-inferOneSig : List (String, FnSig) -> Option (List String, String) -> CBind -> FnSig
+inferOneSig : OrdMap FnSig -> Option (List String, String) -> CBind -> FnSig
 inferOneSig sigs dsig (CBind _ [CClause pats body]) =
   let ptys = inferParamTysSeed sigs dsig pats body 0
   let env = zipParamEnv pats ptys
@@ -8824,7 +8860,7 @@ declScalarAt names i = match nthName names i
 -- non-Int params (`implParamEnvTyped`) and non-Int result (`fnRetTy` → print
 -- selection) were both lost.  (Gap E1: a declared scalar param/return seeds over
 -- the guess via `seedParamTy`/`seedRetTy`.)
-inferMultiSig : List (String, FnSig) -> Option (List String, String) -> List CClause -> FnSig
+inferMultiSig : OrdMap FnSig -> Option (List String, String) -> List CClause -> FnSig
 inferMultiSig sigs dsig clauses =
   let arity = clauseArityC clauses
   let ptys = inferMultiParamTys sigs dsig clauses arity 0
@@ -8834,18 +8870,18 @@ clauseArityC : List CClause -> Int
 clauseArityC ((CClause pats _)::_) = listLen pats
 clauseArityC [] = 0
 
-inferMultiParamTys : List (String, FnSig) -> Option (List String, String) -> List CClause -> Int -> Int -> List LTy
+inferMultiParamTys : OrdMap FnSig -> Option (List String, String) -> List CClause -> Int -> Int -> List LTy
 inferMultiParamTys sigs dsig clauses arity i
   | i >= arity = []
   | otherwise = seedParamTy dsig i (paramTyAcross sigs clauses i) :: inferMultiParamTys sigs dsig clauses arity (i + 1)
 
 -- the i-th param's type: the first informative finding across clauses, else Int.
-paramTyAcross : List (String, FnSig) -> List CClause -> Int -> LTy
+paramTyAcross : OrdMap FnSig -> List CClause -> Int -> LTy
 paramTyAcross sigs clauses i = match firstInformative sigs clauses i
   Some t => t
   None => LTInt
 
-firstInformative : List (String, FnSig) -> List CClause -> Int -> Option LTy
+firstInformative : OrdMap FnSig -> List CClause -> Int -> Option LTy
 firstInformative _ [] _ = None
 firstInformative sigs ((CClause pats body)::rest) i =
   firstSome (clausePatTy sigs pats body i) (firstInformative sigs rest i)
@@ -8853,7 +8889,7 @@ firstInformative sigs ((CClause pats body)::rest) i =
 -- one clause's contribution to the i-th param type: a plain var is inferred from
 -- its body use; a literal pattern carries its literal type; a ctor/tuple/wild
 -- pattern is uninformative (an i64 word, defaulted to Int by the caller).
-clausePatTy : List (String, FnSig) -> List Pat -> CExpr -> Int -> Option LTy
+clausePatTy : OrdMap FnSig -> List Pat -> CExpr -> Int -> Option LTy
 clausePatTy sigs pats body i = match nthPat pats i
   Some (PVar x) => paramUseTy sigs [] x body
   Some (PLit l) => Some (litTy l)
@@ -8874,12 +8910,12 @@ nthPat [] _ = None
 
 -- the multi-clause return type: the first clause's body typed under that clause's
 -- (var-pattern → inferred-param-type) env.
-inferMultiRetTy : List (String, FnSig) -> List CClause -> List LTy -> LTy
+inferMultiRetTy : OrdMap FnSig -> List CClause -> List LTy -> LTy
 inferMultiRetTy sigs ((CClause pats body)::_) ptys =
   typeOf sigs (zipParamEnv pats ptys) body
 inferMultiRetTy _ [] _ = LTInt
 
-inferParamTys : List (String, FnSig) -> List Pat -> CExpr -> List LTy
+inferParamTys : OrdMap FnSig -> List Pat -> CExpr -> List LTy
 inferParamTys _ [] _ = []
 inferParamTys sigs pats body
   | isArithSectionLam pats body = mapConst LTNum pats
@@ -8918,7 +8954,7 @@ mapConst v (_::rest) = v :: mapConst v rest
 -- Float literal anchor, so the guess is LTInt → int arith on a boxed Float;
 -- the declared `Float` overrides to LTFloat).  Index-tracked so each param's
 -- declared type lines up by position.
-inferParamTysSeed : List (String, FnSig) -> Option (List String, String) -> List Pat -> CExpr -> Int -> List LTy
+inferParamTysSeed : OrdMap FnSig -> Option (List String, String) -> List Pat -> CExpr -> Int -> List LTy
 inferParamTysSeed sigs dsig pats body i =
   inferParamTysSeedD sigs dsig pats body i i
 
@@ -8929,7 +8965,7 @@ inferParamTysSeed sigs dsig pats body i =
 -- params — stay aligned to the source params.  Without this, a `Num a =>` fn's
 -- real param sits one slot right of where `declScalarAt`/`isNumPolyParam` look
 -- (the G3 root cause: x's LTNum seed was read at the dict's index → missed).
-inferParamTysSeedD : List (String, FnSig) -> Option (List String, String) -> List Pat -> CExpr -> Int -> Int -> List LTy
+inferParamTysSeedD : OrdMap FnSig -> Option (List String, String) -> List Pat -> CExpr -> Int -> Int -> List LTy
 inferParamTysSeedD _ _ [] _ _ _ = []
 inferParamTysSeedD sigs dsig ((PVar x)::rest) body i di
   | isDictParamName x =
@@ -9015,7 +9051,7 @@ zipParamEnv _ _ = []
 -- one inference pass: recompute every function's signature using the prior table.
 -- (Gap E1: each binding's DECLARED signature, looked up by name in the installed
 -- `declSigTypesRef` table, seeds its param/return types over the body-use guess.)
-inferPass : List (String, FnSig) -> List CBind -> List (String, FnSig)
+inferPass : OrdMap FnSig -> List CBind -> List (String, FnSig)
 inferPass _ [] = []
 inferPass sigs (b::rest) =
   (bindName b, inferOneSig sigs (declSigOf (bindName b)) b) ::
@@ -9027,8 +9063,8 @@ inferPass sigs (b::rest) =
 -- type-flow chains than caller→callee→sibling exist in the subset).
 inferSigs : List CBind -> List (String, FnSig)
 inferSigs fns =
-  let pass1 = inferPass [] fns
-  inferPass pass1 fns
+  let pass1 = inferPass omEmpty fns
+  inferPass (sigsToMap pass1) fns
 
 -- ── operator -> LLVM mnemonic tables ────────────────────────────────────────
 intOp : String -> String

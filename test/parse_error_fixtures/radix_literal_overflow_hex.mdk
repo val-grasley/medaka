@@ -1,0 +1,7 @@
+-- #556: a HEX literal whose magnitude exceeds 2^62 is a lexer error, exactly as
+-- the decimal `int_literal_overflow` fixture is.  Before the fix the radix path
+-- had NO guard at all: `parseRadix` accumulated in the compiler's own 63-bit Int
+-- and wrapped silently, so this literal became -1 with exit 0 — a source literal
+-- reinterpreted as a different number, with no diagnostic.
+-- Self-hosted reference: integer literal too large for Int (max magnitude 2^62)
+x = 0xFFFFFFFFFFFFFFFF

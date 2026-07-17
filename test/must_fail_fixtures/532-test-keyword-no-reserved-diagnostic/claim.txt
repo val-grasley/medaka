@@ -1,0 +1,28 @@
+issue: 532
+what: `test` is a reserved keyword (lexer.mdk `keywordOrIdent "test" = TTest`) but NO
+what: diagnostic ever says so. `let test = ...` is rejected with a LAYOUT complaint —
+what: "unexpected `let`; expected a dedent" — and the range points at `let` (2:2-2:3),
+what: the token that is FINE. The offending token is `test`, three characters later.
+what: The words "test", "reserved" and "keyword" appear nowhere in the output, so nothing
+what: in the diagnostic can lead you to the cause; it sends you to the offside rule
+what: instead. This cost an agent ~20 minutes and two wrong theories (list literals,
+what: then `++` continuations) before a minimal repro isolated the identifier.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 2:2-2:3 unexpected `let`; expected a dedent
+control: check-json control.mdk
+why-control: byte-for-byte the SAME program with the binder renamed `test` -> `tst`. It
+why-control: exits 0 with zero diagnostics. That is the whole proof: the layout is not
+why-control: wrong, the indentation is not wrong, the `++` continuation is not wrong —
+why-control: only the NAME is. It isolates the defect to `test` being reserved and rules
+why-control: out every theory the diagnostic's own wording invites.
+why-note: this row pins a MISPLACED range and a MISLEADING message, not a parse failure.
+why-note: Rejecting `let test = ...` may well be correct (that is the #532 fix-shape-2
+why-note: decision: make `test` contextual, as `importIdentFor TTest = emit "test"` in
+why-note: parser.mdk:2130 already does ad hoc for imports). So this gate goes RED on
+why-note: EITHER fix: a diagnostic that names `test`/"reserved" and points at 2:6 (fix 1),
+why-note: or contextual lexing that accepts the program outright (fix 2). Both are wins;
+why-note: both mean: close #532 and delete this fixture.
+why-note: ⚠️ `test` is ONE row in `keywordOrIdent`. Whoever fixes this must enumerate the
+why-note: WHOLE keyword table for other plausible user identifiers — fixing only `test`
+why-note: re-files the same issue under a different name in a month.

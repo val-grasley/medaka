@@ -1,0 +1,12 @@
+issue: 532
+what: `test` is a reserved keyword, but NO diagnostic ever says so. `let test = 1` reports
+what: "unexpected `let`; expected a dedent" — the caret is on `let`, the message blames
+what: indentation, and the word `test` never appears. On the 0.1.0 floor.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 1:2-1:3 unexpected `let`; expected a dedent
+control: check-json control.mdk
+why-control: the identical binding named `tst` must parse clean. That isolates the bug to
+why-control: the RESERVED WORD and rules out a layout problem in the fixture — which is
+why-control: exactly what the misleading message tempts a reader to believe.
+why-diag: the MESSAGE is the defect (it never names `test`), so it is pinned in full.

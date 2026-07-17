@@ -1,0 +1,18 @@
+issue: 93
+what: `check --types` prints a SPLICED, NON-EXISTENT scheme for a name that shadows a
+what: prelude method: the prelude's Eq.eq shape (a -> a -> Bool) wearing the USER's
+what: constraint (Num b) over an UNBOUND b. It is not any real type. LSP hover shares the
+what: same ppSchemeNamed bare-name-first-match, so an editor shows the same wrong type.
+cmd: check-types main.mdk
+exit: 0
+stdout-line: eq : Num b => a -> a -> Bool
+stdout-line: eq : Num a => a -> a
+control: check-types control.mdk
+why-control: the same function named `myEq` (shadowing nothing) must still dump cleanly at
+why-control: exit 0 — proving the --types path works and isolating the bug to SHADOWING.
+why-stdout-line: ⚠️ stdout-line, NOT stdout, and this row is WHY that verb exists.
+why-stdout-line: `check --types` dumps EVERY prelude scheme (~130 lines) which move whenever
+why-stdout-line: the prelude does; a whole-stdout pin would drain on any prelude edit. Both
+why-stdout-line: lines are required: the FABRICATED one (the bug) and the user's REAL one
+why-stdout-line: (proving the dump ran and that the name is printed TWICE with no
+why-stdout-line: indication which wins — the issue's second half).

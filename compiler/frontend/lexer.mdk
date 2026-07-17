@@ -39,7 +39,7 @@ import support.char.{
   isAlnum,
   isHexDigit,
 }
-import support.util.{joinWith, compareDecMag}
+import support.util.{joinWith, compareDecMag, listLen, anyList}
 
 public export data Token =
   | TInt Int
@@ -594,11 +594,76 @@ parseRadix src p endp base acc
   | otherwise =
     parseRadix src (p + 1) endp base (acc * base + digitVal (at src p))
 
+-- ── Radix-literal range guard (#556) ────────────────────────────────────
+-- `parseRadix` accumulates in the compiler's own 63-bit `Int` and wraps
+-- SILENTLY, so — exactly as on the decimal path (`intLitOverflows`) — the range
+-- is decided on the DIGIT STRING, with no arithmetic, never by parsing.
+--
+-- The bound is deliberately the SAME one the decimal path uses: magnitude
+-- ≤ 2^62.  The lexer sees only unsigned digits (the `-` is a separate token,
+-- negated in the parser), so it must admit magnitude 2^62 to keep the negative
+-- minimum -2^62 writable — `-0x4000000000000000` stays legal exactly as
+-- `-4611686018427387904` does.  A BARE positive 2^62 wraps to `intMinBound`
+-- here and is then rejected in positive position by the parser's `isIntMinLit`
+-- (#171), which keys on the value and so covers every spelling of 2^62 —
+-- decimal and radix alike — from one rule.  Anything above 2^62 never reaches
+-- the parser: it is rejected right here, in whatever base it was written.
+--
+-- 2^62 in each radix is one leading digit followed by zeros, so the bound is
+-- described exactly by (significant-digit count, leading digit):
+--   hex  2^62 = 4 * 16^15  ->  "4" ++ 15 zeros  ->  (16, 4)
+--   oct  2^62 = 4 * 8^20   ->  "4" ++ 20 zeros  ->  (21, 4)
+--   bin  2^62 = 1 * 2^62   ->  "1" ++ 62 zeros  ->  (63, 1)
+-- Compared digit-VALUE-wise rather than by `stringCompare` (which
+-- `compareDecMag` can use because decimal digits sort by ASCII): hex digits do
+-- NOT, since 'A'(65) < 'a'(97) both exceed '9'(57), so a mixed-case literal
+-- would compare wrong.
+radixMaxLen : Char -> Int
+radixMaxLen 'x' = 16
+radixMaxLen 'b' = 63
+radixMaxLen _ = 21
+
+radixMaxLead : Char -> Int
+radixMaxLead 'b' = 1
+radixMaxLead _ = 4
+
+-- Significant digits of [p, endp): '_' separators and leading zeros dropped.
+-- Once a nonzero digit is seen the rest is taken verbatim (minus separators),
+-- so interior zeros are preserved and only the LEADING run is stripped.
+sigRadixDigits : Array Char -> Int -> Int -> List Char
+sigRadixDigits src p endp
+  | p >= endp = []
+  | at src p == '_' || at src p == '0' = sigRadixDigits src (p + 1) endp
+  | otherwise = collectNoUs src p endp
+
+radixMagOverflows : List Char -> Int -> Int -> Bool
+radixMagOverflows [] _ _ = False
+radixMagOverflows (d::rest) maxLen maxLead =
+  let n = 1 + listLen rest
+  n > maxLen
+    || n == maxLen && (digitVal d > maxLead || digitVal d == maxLead && anyList (!= '0') rest)
+
+radixLitOverflows : Array Char -> Int -> Int -> Char -> Bool
+radixLitOverflows src start endp k =
+  radixMagOverflows
+    (sigRadixDigits src start endp)
+    (radixMaxLen k)
+    (radixMaxLead k)
+
 scanRadix : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanRadix src len pos depth id =
   let k = at src (pos + 1)
   let e = radixEnd src len (pos + 2) k
-  RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0)) pos e :: scan src len e depth id
+  radixTok src len pos e k depth id
+
+-- Mirrors `numFinish`'s shape, and shares its message verbatim: `parseErrCode`
+-- keys L-INT-OVERFLOW on the "integer literal too large" prefix, and one
+-- user-facing defect should not need two diagnostic codes.
+radixTok : Array Char -> Int -> Int -> Int -> Char -> Int -> Int -> List RawTok
+radixTok src len pos e k depth id
+  | radixLitOverflows src (pos + 2) e k =
+    lexErrorTok pos "integer literal too large for Int (max magnitude 2^62)"
+  | otherwise = RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0)) pos e :: scan src len e depth id
 
 scanNumber : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanNumber src len pos depth id

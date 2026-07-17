@@ -1,0 +1,14 @@
+issue: 567
+what: an out-of-range `\u{...}` escape SILENTLY becomes a SPACE. charFromCode
+what: (runtime/medaka_rt.c) correctly bounds [0,0x10FFFF] minus surrogates and returns
+what: None — the LEXER THROWS THE None AWAY via `fromOption ' '` (lexer.mdk:982/:1004).
+what: The check exists and fires; its answer is DISCARDED. A source literal becomes
+what: different data, exit 0, no diagnostic. Frontend => all 3 engines identically
+what: wrong => no parity gate can see it. S0, release-blocker, 0.1.0.
+cmd: run main.mdk
+exit: 0
+stdout: a b
+control: run control.mdk
+why-control: `\u{41}` is an IN-RANGE escape and must keep printing `aAb`. It isolates the
+why-control: bug to the DISCARDED OOB RESULT — if this breaks, unicode escapes broke
+why-control: generally (or string interpolation did) and the drain would be a lie.

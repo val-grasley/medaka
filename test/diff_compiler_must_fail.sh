@@ -50,6 +50,31 @@
 #      never look like "this passed" — every silent-green bug in this repo is that
 #      sentence.
 #
+# ── ⚠️ CHOOSING A PIN: A PIN THAT MOVES FOR AN UNRELATED REASON IS A FALSE DRAIN ─
+#
+# A false drain is WORSE THAN NO FIXTURE: the row goes RED, a reader believes the issue
+# is fixed, and closes a LIVE BUG on the strength of it. So pin the NARROWEST thing that
+# is actually the defect, and nothing else:
+#
+#   diag:         code + range + FULL MESSAGE. Use when THE MESSAGE IS THE DEFECT —
+#                 #532 (never says `test` is reserved), #66/#135 (blames indentation).
+#   diag-code:    code + range ONLY. THE DEFAULT per TESTING-DESIGN §4.5 ("the assertion
+#                 is on `code` + `range` (stable); the prose can change freely").
+#                 Use when the message legitimately varies. #333's message embeds the
+#                 ENTIRE stdlib module list — a `diag:` pin there would drain the day
+#                 someone adds a stdlib module, an event with no relation to #333.
+#   stdout:       exact whole stdout. stdout-bytes: same, no trailing newline appended.
+#   stdout-line:  each named EXACT WHOLE LINE must be present. For large dumps no fixture
+#                 can pin whole — #93's `check --types` prints every prelude scheme, which
+#                 move whenever the prelude does. Literal whole-line, never substring,
+#                 never regex (ppx_expect and Dune both shipped regex matchers and then
+#                 DELIBERATELY REMOVED them). Pin BOTH the bug's line AND a line proving
+#                 the command still ran.
+#   file-after:   the fixture's bytes after an in-place rewrite (fmt --write).
+#
+# Ask of every pin: "what ELSE in this repo could move this string?" If the answer is
+# anything at all, pin something narrower.
+#
 # ── DIAGNOSTIC PINS ARE HAND-WRITTEN AND DELIBERATELY NOT BLESSABLE ─────────────
 #
 # There is no --bless here, on purpose (docs/ops/TESTING-DESIGN.md §4.5). A must-fail
@@ -129,8 +154,9 @@ claim_has() { grep -q "^$2:" "$1"; }
 run_verb() {
   _verb="$1"; _dir="$2"; _file="$3"; _out="$4"
   case "$_verb" in
-    check)      bound "$MEDAKA" check      "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
-    check-json) bound "$MEDAKA" check --json "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
+    check)       bound "$MEDAKA" check         "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
+    check-json)  bound "$MEDAKA" check --json  "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
+    check-types) bound "$MEDAKA" check --types "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
     run)        bound "$MEDAKA" run        "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
     fmt-write)
       _work="$TMP/fmtwork"; rm -rf "$_work"; mkdir -p "$_work"
@@ -213,6 +239,60 @@ for dir in "$FIXDIR"/*/; do
         fail="$fail\n       - (none)"
       fi
     fi
+  fi
+
+  # ── diag-code: CODE + RANGE only, message NOT asserted. ────────────────────────
+  #
+  # ⚠️ USE THIS WHEN THE MESSAGE LEGITIMATELY VARIES — and use `diag:` when the MESSAGE
+  # IS THE DEFECT. Getting this backwards manufactures a FALSE DRAIN, which is worse
+  # than no fixture: the row goes RED, someone reads "issue fixed", and closes a live bug.
+  #
+  # This verb exists because #333's real message embeds the ENTIRE stdlib module list
+  # ("unknown module: X — available modules: array, async, base64, …"). Pinning that with
+  # `diag:` would drain the row the day ANYONE ADDS A STDLIB MODULE — an event with no
+  # connection whatsoever to #333. The pin would have been an encoded fact about a set
+  # that moves for unrelated reasons.
+  #
+  # It is also what docs/ops/TESTING-DESIGN.md §4.5 prescribes as the DEFAULT: "The
+  # assertion is on `code` + `range` (stable); the prose can change freely." `diag:` is
+  # the stricter, deliberate exception, for rows where the wording is the bug being
+  # pinned (#532: the message never says `test` is reserved; #66: it blames indentation).
+  if claim_has "$claim" diag-code; then
+    render_diags "$out" | awk '{print $1, $2}' > "$TMP/$name.dcodes"
+    claim_get "$claim" diag-code > "$TMP/$name.wantdcodes"
+    if ! cmp -s "$TMP/$name.dcodes" "$TMP/$name.wantdcodes"; then
+      fail="$fail\n     diagnostic code+range: expected:"
+      while IFS= read -r l; do fail="$fail\n       - $l"; done < "$TMP/$name.wantdcodes"
+      fail="$fail\n                            actual:"
+      if [ -s "$TMP/$name.dcodes" ]; then
+        while IFS= read -r l; do fail="$fail\n       - $l"; done < "$TMP/$name.dcodes"
+      else
+        fail="$fail\n       - (none)"
+      fi
+    fi
+  fi
+
+  # ── stdout-line: each named EXACT LINE must be present in stdout. ──────────────
+  #
+  # For a command whose output is a large DUMP that no fixture can pin whole — #93's
+  # `check --types` prints every scheme in the prelude, ~130 lines that move whenever
+  # the prelude does. Pinning all of it with `stdout:` would drain on any prelude edit.
+  #
+  # This is a LITERAL WHOLE-LINE match, not a substring and not a regex ("normalize the
+  # ACTUAL, never the expected" — ppx_expect and Dune both shipped regex matchers and
+  # then DELIBERATELY REMOVED them). Discrimination comes from pinning BOTH the bug's
+  # line AND a line that proves the command still worked: #93 pins the fabricated
+  # `eq : Num b => a -> a -> Bool` AND the real `eq : Num a => a -> a`, so a dump that
+  # broke entirely fails as "expected line missing" on BOTH, and its control catches it.
+  if claim_has "$claim" stdout-line; then
+    claim_get "$claim" stdout-line > "$TMP/$name.wantlines"
+    while IFS= read -r want; do
+      [ -z "$want" ] && continue
+      if ! grep -qxF -- "$want" "$out"; then
+        fail="$fail\n     stdout-line: expected this EXACT line in stdout, and it is absent:"
+        fail="$fail\n       - $want"
+      fi
+    done < "$TMP/$name.wantlines"
   fi
 
   # ── file-after: the fixture's bytes after an in-place rewrite (fmt --write) ──

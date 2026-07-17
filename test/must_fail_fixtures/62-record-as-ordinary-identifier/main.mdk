@@ -1,0 +1,2 @@
+record = 1
+main = println record
