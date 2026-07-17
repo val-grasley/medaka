@@ -24,6 +24,30 @@ import driver.main_autoprint.{
   underivedMainDiags,
 }
 
+-- ── failure ──────────────────────────────────────────────────────────────────
+
+-- EVERY error path in these probe drivers must exit NON-ZERO (issue #440).
+--
+-- These probes' output contract is "the artifact on STDOUT" (IR, an S-expr dump,
+-- a decl listing).  So an error path that prints to stderr and falls through to a
+-- 0 exit hands a redirecting harness `> out.ll` an EMPTY FILE plus SUCCESS —
+-- indistinguishable from a real emit, and invisible to the near-universal
+-- `2>/dev/null` idiom that hides the only evidence.  `cmd > out.ll || die` never
+-- fires.  That is this repo's #1 documented failure class: a step that can
+-- silently no-op will, and "green" is not "ran" (empty-vs-empty diffs "identical").
+--
+-- #440 was filed against ONE path (driveModules' usage/arity error, the one an
+-- agent tripped over).  It was under-scoped: this module had ZERO `exit` calls
+-- against 21 error paths, and is imported by 22 entry probes — so the bug was
+-- every error path in every probe, including a nonexistent input file and a real
+-- typecheck diagnostic, which are far likelier in a harness than a wrong arity.
+--
+-- Route every such path through `failWith` rather than a bare `ePutStrLn`.
+export failWith : String -> <IO> Unit
+failWith msg =
+  let _ = ePutStrLn msg
+  exit 1
+
 -- ── file readers ───────────────────────────────────────────────────────────────
 
 -- parse + desugar each prelude file in order, concatenating their decls.
@@ -57,11 +81,11 @@ driveRuntimeArgs (runtimePath::rest) emit = match splitLast rest
       Ok preludeDecls => match readFile targetPath
         Ok tsrc =>
           emit (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc))
-        Err msg => ePutStrLn msg
-      Err msg => ePutStrLn msg
-    Err msg => ePutStrLn msg
-  None => ePutStrLn usageRuntime
-driveRuntimeArgs _ emit = ePutStrLn usageRuntime
+        Err msg => failWith msg
+      Err msg => failWith msg
+    Err msg => failWith msg
+  None => failWith usageRuntime
+driveRuntimeArgs _ emit = failWith usageRuntime
 
 -- CLI shape: <prelude.mdk>... <target.mdk> (no separate runtime).  Calls
 -- `emit preludeDecls userDecls` (which prints).
@@ -70,9 +94,9 @@ drivePrelude emit = match splitLast (args ())
   Some (preludePaths, targetPath) => match readAllDecls preludePaths
     Ok preludeDecls => match readFile targetPath
       Ok tsrc => emit preludeDecls (desugar (parse tsrc))
-      Err msg => ePutStrLn msg
-    Err msg => ePutStrLn msg
-  None => ePutStrLn usagePrelude
+      Err msg => failWith msg
+    Err msg => failWith msg
+  None => failWith usagePrelude
 
 export usageRuntime : String
 usageRuntime = "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
@@ -93,7 +117,7 @@ export driveModules : (List Decl -> List Decl -> List (String, List Decl) -> <IO
 driveModules runEmit = match args ()
   runtimeP::coreP::entry::roots =>
     driveModulesGo runEmit runtimeP coreP entry (rootsOrDefault entry roots)
-  _ => ePutStrLn usageModules
+  _ => failWith usageModules
 
 rootsOrDefault : String -> List String -> List String
 rootsOrDefault entry [] = [dirOf entry]
@@ -104,11 +128,11 @@ desugarPair (mid, p) = (mid, desugar p)
 
 driveModulesGo : (List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit) -> String -> String -> String -> List String -> <IO> Unit
 driveModulesGo runEmit runtimeP coreP entry roots = match readFile runtimeP
-  Err e => ePutStrLn e
+  Err e => failWith e
   Ok rsrc => match readFile coreP
-    Err e => ePutStrLn e
+    Err e => failWith e
     Ok csrc => match loadProgram entry roots
-      Err e => ePutStrLn e
+      Err e => failWith e
       Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
 
 -- ── shared composite-main emit glue (parameterized by the backend's emitTail) ──
@@ -130,7 +154,7 @@ runEmitWith emitTail runtimeDecls coreDecls modules =
   if shouldAutoPrintMain coreDecls modules then
     let modulesW = autoPrintWrapModules modules
     match underivedMainDiags runtimeDecls coreDecls modulesW
-      d::_ => ePutStrLn (tcMsg d)
+      d::_ => failWith (tcMsg d)
       [] => emitModulesWith emitTail runtimeDecls coreDecls modulesW
   else emitTail runtimeDecls coreD modules2
 
@@ -188,14 +212,14 @@ batchLoop sentinel render (path::rest) = match readFile path
 export driveRuntimeBatch : String -> (List Decl -> List Decl -> List Decl -> String) -> <IO> Unit
 driveRuntimeBatch sentinel render = match args ()
   runtimePath::corePath::targets => match readFile runtimePath
-    Err msg => ePutStrLn msg
+    Err msg => failWith msg
     Ok rsrc => match readFile corePath
-      Err msg => ePutStrLn msg
+      Err msg => failWith msg
       Ok csrc =>
         let runtimeDecls = desugar (parse rsrc)
         let coreDecls = desugar (parse csrc)
         batchLoop sentinel (render runtimeDecls coreDecls) targets
-  _ => ePutStrLn usageRuntime
+  _ => failWith usageRuntime
 
 -- lazy batch CLI shape: <runtime.mdk> <core.mdk> <target.mdk>...  runtime + core
 -- PARSED (raw, not desugared — resolve/check take the raw AST), all target sources
@@ -203,10 +227,10 @@ driveRuntimeBatch sentinel render = match args ()
 export driveParseSources : (List Decl -> List Decl -> List (String, String) -> String) -> <IO> Unit
 driveParseSources render = match args ()
   runtimePath::corePath::targets => match readFile runtimePath
-    Err msg => ePutStrLn msg
+    Err msg => failWith msg
     Ok rsrc => match readFile corePath
-      Err msg => ePutStrLn msg
+      Err msg => failWith msg
       Ok csrc => match readAllSources targets
-        Err msg => ePutStrLn msg
+        Err msg => failWith msg
         Ok srcs => putStr (render (parse rsrc) (parse csrc) srcs)
-  _ => ePutStrLn usageRuntime
+  _ => failWith usageRuntime

@@ -389,10 +389,15 @@ settles dispatch/arity/calling-convention questions that are pure speculation fr
 agent debugging a dict-routing S0 on 2026-07-16 called it the single highest-value tool in the
 investigation — it turned "I think the wrong impl is selected" into `call
 @mdk_impl_S__List_a___s` on the screen, which disproved the filed root cause outright.
-⚠️ **`./medaka_emitter <file>` is NOT the way to get IR** — given too few args it prints a usage
-message to **stderr**, but still exits **0** with **empty stdout** (issue #440). A harness that
-redirects stdout to a file, or discards/merges stderr the usual way (`2>/dev/null`), sees a silent
-no-op: empty IR + apparent success, not an empty program.
+⚠️ **`./medaka_emitter <file>` is still NOT the way to get IR** — its CLI is
+`<runtime.mdk> <core.mdk> <entry.mdk> [root ...]`, so a bare `./medaka_emitter <file>` is a usage
+error, not a build. It no longer LIES about it: every error path of the shared probe scaffolding
+now exits **1** with a stderr diagnostic (#440 — `failWith`,
+`compiler/entries/entry_support.mdk`), so
+`./medaka_emitter … > out.ll || die` fires. Until 2026-07-17 all of them exited **0** with **empty
+stdout**, which handed a redirecting harness an empty artifact + apparent success — the same for a
+**nonexistent input file** or a **real typecheck error**, not just a wrong arity. `medaka build
+--keep-ir` remains the supported route.
 
 **Playground e2e:** `playground/e2e/` is a Playwright harness driving a real browser against
 the built CM6 playground (`cd playground/e2e && ./run.sh`). Needs **node v24+** and a
