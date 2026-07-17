@@ -1,0 +1,10 @@
+interface C a where
+  cname : a -> Int
+
+impl C Int where
+  cname _ = 1
+
+impl C a where
+  cname _ = 2
+
+main = println (cname 5)

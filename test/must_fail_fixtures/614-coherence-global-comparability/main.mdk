@@ -1,0 +1,15 @@
+data Pair a b = MkPair a b
+
+interface C a where
+  cname : a -> Int
+
+impl C (Pair Int a) where
+  cname _ = 1
+
+impl C (Pair a Int) where
+  cname _ = 2
+
+impl C (Pair Int Int) where
+  cname _ = 3
+
+main = println (cname (MkPair 1 1))
