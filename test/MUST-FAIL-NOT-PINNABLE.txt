@@ -1,0 +1,50 @@
+# MUST-FAIL-NOT-PINNABLE.txt — issues deliberately NOT pinned by the must-fail suite,
+# each with a reason. Read by test/must_fail_census.sh (#569).
+#
+# The census (test/must_fail_census.sh) reports open+verified issues that have no fixture
+# in test/must_fail_fixtures/. Large parts of the tracker are legitimately UN-pinnable:
+# gate/CI defects, doc defects, perf work, and code health have no `main.mdk` to pin and
+# no exact observable for `diff_compiler_must_fail.sh` to grade. Listing one here says:
+# "a human looked at this and judged it out of shape for THAT HARNESS" — it is not a
+# statement that the bug is unimportant, and it is not a wontfix.
+#
+# ── A LEDGER, NOT A LABEL, AND NOT A SKIP-LIST ────────────────────────────────
+#
+# This is a file rather than a `not-pinnable` GitHub label ON PURPOSE. A label has no
+# REASON FIELD and needs no review: anyone can silence the census with one click, with no
+# PR, no reviewer, and no rationale anybody can audit later. That is a skip-list, and
+# **a skip-list cannot notice when it stops earning its place, so it rots** (that is how
+# test/ported/ died). An entry here costs a PR and a sentence a reviewer reads.
+#
+# ── SELF-DRAINING IN BOTH DIRECTIONS, EACH HALF CHECKED WHERE IT CAN BE ────────
+#
+# `.claude/ORCHESTRATING.md`: an exceptions ledger must FAIL when an entry stops earning
+# its place — BOTH when the excused thing came back AND when nothing cites it anymore.
+# Half a ratchet is a skip-list. So:
+#
+#   * test/diff_compiler_must_fail.sh (the GATE — tree-only, no network) FAILS when an
+#     entry HAS A FIXTURE after all. The corpus contradicts the exemption: someone found
+#     a way to pin it, and the entry is now a lie.
+#   * test/must_fail_census.sh (NIGHTLY — has the GitHub API) reports an entry whose
+#     issue is CLOSED. The exemption has no subject left; remove the line.
+#
+# Neither half can check the other's: the gate has no network (it runs on every dev box
+# via `make gates`), and only the API knows whether an issue is still open.
+#
+# Format (one entry per line; blank lines and '#' comments ignored):
+#   <issue-number>  <reason — MANDATORY, and it must say what SHAPE the problem is>
+#
+# A reason that does not survive being read aloud to a reviewer is not a reason. "Hard"
+# and "not worth it" are not shapes. Name the thing the harness cannot express.
+
+510  needs a deliberately-broken stdlib/core.mdk. Hostable via MEDAKA_ROOT (the stdlib root IS overridable — compiler/driver/medaka_cli.mdk), but only by checking a SYNTHETIC stdlib tree into git, which is a copy of the real one that rots silently. Wants its own gate that corrupts a copy of the real stdlib/ at run time, deriving the tree instead of storing it.
+
+407  needs the filed 3.4 MB binary input. Probed 2026-07-16: an 8-byte hostile file (invalid UTF-8 c0/c1 + an embedded NUL + 0xff) round-trips readFile->writeFile BYTE-IDENTICAL and stringLength reports 8, so there is NO small repro to pin today. Committing a multi-MB binary to test/ for one row is out of shape. If anyone narrows it to a small deterministic input this becomes an easy `run` + exact-stdout row — delete this line then.
+
+142  ALREADY COVERED by a different self-draining ledger — test/fmt_roundtrip_known_divergence.txt lists it, and diff_compiler_fmt_roundtrip.sh FAILS when a listed file round-trips clean, naming the issue to close. A must-fail row would be duplicate machinery for one bug in two places that can silently DISAGREE. Not out of shape for the harness; already drained by a better-placed one.
+
+226  CONTESTED, not confirmed. docs/spec/LAYOUT-SEMANTICS.md lists the failing form verbatim as WORKING, so either the lexer is wrong (a bug — pinnable) or the spec is wrong (a doc bug — and then a fixture would pin CORRECT behavior as a defect, never flip, and sit forever asserting a non-bug). Nobody has made that call. Pin it the day the fork is resolved in the lexer's disfavour — and delete this line then.
+
+583  the defect lives in GitHub's PARSING OF A PR BODY (a closing keyword in prose silently closes an issue on merge). There is no .mdk to pin and no medaka exit code to grade. Out of shape for a harness that runs `medaka` against a fixture.
+
+450  the defect lives in GitHub's RENDERING of a workflow job's conclusion (a narrowed shard with an empty intersection shows the same green tick as one that ran). There is no .mdk to pin and no exit code the harness can grade — diff_compiler_must_fail.sh grades `medaka` against a fixture. Observed 8x on one PR and receipted on the issue; fixture-shaped it is not.
