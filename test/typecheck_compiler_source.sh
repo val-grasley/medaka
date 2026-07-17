@@ -145,9 +145,11 @@ printf '%s\n' "$entries" \
     xargs -P "$JOBS" -n 1 -I{} sh "$0" --one {}
 
 fail_count=0
+seen_count=0
 entry_errors=""
 for s in "$RESULTS"/*.status; do
   [ -f "$s" ] || continue
+  seen_count=$((seen_count + 1))
   if [ "$(cat "$s")" != 0 ]; then
     fail_count=$((fail_count + 1))
     o="${s%.status}.out"
@@ -155,6 +157,15 @@ for s in "$RESULTS"/*.status; do
 "
   fi
 done
+
+# Completeness check (issue #637): a worker killed mid-run (e.g. by a signal
+# under xargs -P) writes no .status file at all, so it would otherwise vanish
+# from BOTH fail_count and the printed total — a silently-shrunk "green" run.
+if [ "$seen_count" -ne "$n_entries" ]; then
+  missing=$((n_entries - seen_count))
+  echo "FAIL: $missing of $n_entries compiler/entries/*.mdk workers produced no result — a worker died/was killed; this run is INCOMPLETE, not green."
+  exit 1
+fi
 
 echo "typechecked $n_entries entries"
 

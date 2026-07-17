@@ -85,16 +85,31 @@ if ! "$CC" $GC_CFLAGS -c "$RT" -o "$RTOBJ" 2>/dev/null; then RTOBJ="$RT"; fi
 JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
 
 # Fan the fixtures across an xargs -P pool of --one workers (see top of file).
-ls "$FIXDIR"/*.mdk 2>/dev/null \
-  | EMITBIN="$EMITBIN" CC="$CC" GC_CFLAGS="$GC_CFLAGS" GC_LIBS="$GC_LIBS" \
-    RTOBJ="$RTOBJ" WORKDIR="$WORK" RESULTDIR="$RESULTS" \
-    xargs -P "$JOBS" -n 1 -I{} sh "$0" --one {}
+fixtures="$(ls "$FIXDIR"/*.mdk 2>/dev/null)"
+n_fixtures=0
+if [ -n "$fixtures" ]; then
+  n_fixtures="$(printf '%s\n' "$fixtures" | wc -l | tr -d ' ')"
+  printf '%s\n' "$fixtures" \
+    | EMITBIN="$EMITBIN" CC="$CC" GC_CFLAGS="$GC_CFLAGS" GC_LIBS="$GC_LIBS" \
+      RTOBJ="$RTOBJ" WORKDIR="$WORK" RESULTDIR="$RESULTS" \
+      xargs -P "$JOBS" -n 1 -I{} sh "$0" --one {}
+fi
 
-pass=0; fail=0
+pass=0; fail=0; seen=0
 for s in "$RESULTS"/*.status; do
   [ -f "$s" ] || continue
+  seen=$((seen+1))
   if [ "$(cat "$s")" = 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
 done
+
+# Completeness check (issue #637): a worker killed mid-run under xargs -P
+# writes no .status file at all, so it would otherwise vanish from BOTH
+# pass and fail — a silently-shrunk "green" run.
+if [ "$seen" -ne "$n_fixtures" ]; then
+  missing=$((n_fixtures - seen))
+  echo "FAIL: $missing of $n_fixtures workers produced no result — a worker died/was killed; this run is INCOMPLETE, not green."
+  exit 1
+fi
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
