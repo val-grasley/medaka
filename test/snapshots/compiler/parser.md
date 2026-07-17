@@ -1,5 +1,5 @@
 # META
-source_lines=4128
+source_lines=4133
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -1667,7 +1667,12 @@ patListFor _ = do
 -- ── Types ───────────────────────────────────────────────────────────────
 -- a full type is a function/effect type, optionally prefixed by a constraint
 -- list: `C a => ty`.  The constraint LHS is itself parsed as a ty_fun and
--- reinterpreted (TyApp(TyCon I, a) → one constraint; TyTuple → many).
+-- reinterpreted by `extractConstraints` below: a `TyApp` spine bottoming at a
+-- `TyCon` head → `Constraint I args` at ANY arity; `TyTuple` → many.
+-- ⚠️ It reads the WHOLE spine on purpose.  Matching only one level
+-- (`TyApp (TyCon I) a`) silently dropped every >=2-arg constraint — `Ix a i` is
+-- `TyApp (TyApp (TyCon Ix) a) i`, whose outer TyApp holds a TyApp, not a TyCon,
+-- so it fell through to `_ = []` and the constraint vanished at exit 0 (#604).
 parseTy : Parser Ty
 parseTy = do
   lhs <- parseTyFun
