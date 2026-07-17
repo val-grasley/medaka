@@ -982,12 +982,29 @@ emitWarnLines file (w::ws) =
   emitWarnLines file ws
 
 -- ── new ───────────────────────────────────────────────────────────────────
+-- `medaka new <name>` scaffolds a project directory named after `name` — so
+-- `name` must be validated BEFORE any filesystem write happens (#582). A
+-- leading-dash arg is never a legal project name: `--help`/`-h` is help (print
+-- usage, exit 0, no scaffolding), anything else starting with `-` is an
+-- unrecognized option (error + usage to stderr, nonzero exit, no
+-- scaffolding). Mirrors `runFmtCmd`'s "-"-prefix flag detection and
+-- `buildUsage`'s subcommand-local `--help` handling.
+newUsageLine : String
+newUsageLine = "Usage: medaka new <name>"
+
 runNewCmd : List String -> <IO> Unit
-runNewCmd [name] =
-  let code = newProject name
-  if code == 0 then () else exit code
+runNewCmd [arg] =
+  if arg == "--help" || arg == "-h" then putStrLn newUsageLine
+  else
+    if stringLength arg > 0 && stringSlice 0 1 arg == "-" then
+      let _ = ePutStrLn ("medaka new: unknown option '" ++ arg ++ "'")
+      let _ = ePutStrLn newUsageLine
+      exit 2
+    else
+      let code = newProject arg
+      if code == 0 then () else exit code
 runNewCmd _ =
-  let _ = ePutStrLn "Usage: medaka new <name>"
+  let _ = ePutStrLn newUsageLine
   exit 2
 
 -- ── build ─────────────────────────────────────────────────────────────────
