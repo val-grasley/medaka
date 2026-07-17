@@ -19,12 +19,14 @@
 #
 # Corpus: the UNION of ALL FOUR emitter corpora —
 #
-#   test/llvm_fixtures/        (201)   untyped, prelude-free
-#   test/llvm_fixtures_typed/   (45)   real prelude, TYPECHECKS
-#   test/wasm/fixtures/        (149)   untyped, prelude-free
-#   test/wasm/fixtures_typed/    (9)   real prelude, TYPECHECKS
-#                              ────
-#                               404
+#   test/llvm_fixtures/               untyped, prelude-free
+#   test/llvm_fixtures_typed/         real prelude, TYPECHECKS
+#   test/wasm/fixtures/               untyped, prelude-free
+#   test/wasm/fixtures_typed/         real prelude, TYPECHECKS
+#
+# (Corpus size is NOT hardcoded here on purpose — each directory's fixture count
+# drifts as fixtures are added, and a hand-maintained total rots the moment it
+# does. The gate derives and reports the live count itself; read it off a run.)
 #
 # Before this gate the two backends were validated on essentially disjoint corpora
 # (5 basenames in common) — which is exactly why 7 of the 22 known divergences are
@@ -162,6 +164,34 @@ TIMEOUT="${TIMEOUT:-60}"
 
 run_t() { perl -e 'alarm shift; exec @ARGV' "$@"; }   # portable timeout (no coreutils on mac)
 
+# Sets WASM_OK / WASM_OFF_WHY / NODE.  Factored out of the (former) inline preflight
+# block so BOTH the normal parallel run and a standalone `--one` invocation (issue
+# #448) can compute the same wasm-availability verdict — the parallel run calls this
+# once up front and exports the result to every worker; a standalone `--one` call
+# (which never goes through that fan-out) calls it for itself, below.
+detect_wasm_ok() {
+  WASM_OK=1; WASM_OFF_WHY=""
+  NODE="${NODE:-node}"
+  if ! [ -x "$WASMBIN" ]; then
+    WASM_OK=0; WASM_OFF_WHY="test/bin/wasm_emit_modules_main not built (sh test/wasm/build_wasm_oracle.sh)"
+  elif ! command -v wasm-tools >/dev/null 2>&1; then
+    WASM_OK=0; WASM_OFF_WHY="wasm-tools not on PATH"
+  else
+    major=$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+    if [ "$major" -lt 24 ]; then
+      export NVM_DIR="$HOME/.nvm"
+      # shellcheck disable=SC1091
+      [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" >/dev/null 2>&1 && nvm use 24 >/dev/null 2>&1 || true
+      major=$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+    fi
+    if [ "$major" -lt 24 ]; then
+      WASM_OK=0; WASM_OFF_WHY="Node >= 24 required for finalized WasmGC (have $($NODE --version 2>/dev/null))"
+    else
+      NODE="$(command -v "$NODE")"
+    fi
+  fi
+}
+
 # ── Per-fixture worker ────────────────────────────────────────────────────────
 # Writes $RESULTDIR/<slug>.sig :  <key> \t <signature> \t <t1> \t <t2> \t <t3>
 # signature = "<en>:<nw>:<ew>:<eval>:<native>:<wasm>" — the three PAIRWISE verdicts
@@ -169,6 +199,29 @@ run_t() { perl -e 'alarm shift; exec @ARGV' "$@"; }   # portable timeout (no cor
 # "eq:eq:eq:ran:ran:ran".  Plus <slug>.detail (the three outputs + why an arm is n/a).
 if [ "${1:-}" = "--one" ]; then
   f="$2"
+
+  # ── Standalone bootstrap (issue #448) ────────────────────────────────────
+  # WORKDIR / RESULTDIR / WASM_OK / MEDAKA_EMITTER / MEDAKA_WASM_EMITTER are
+  # normally injected into this worker's env ONLY by the xargs fan-out at the
+  # bottom of this file (`WORKDIR="$WORK" RESULTDIR="$RESULTS" ... xargs ...
+  # bash "$0" --one {}`).  A direct `sh test/diff_compiler_engines.sh --one
+  # <fixture>` — the whole point of a debug affordance — never goes through
+  # that fan-out, so under `set -u` it died at "WORKDIR: unbound variable"
+  # (~line 188 pre-fix) before running a single engine.  Detect that case
+  # (WORKDIR unset ⇒ we were invoked standalone, not as a fan-out worker) and
+  # compute the same sane single-run values the parallel path's preflight
+  # would have exported, so the shared per-fixture body below runs identically
+  # either way.
+  if [ -z "${WORKDIR:-}" ]; then
+    STANDALONE_TMP="$(mktemp -d)"
+    WORKDIR="$STANDALONE_TMP/work"; RESULTDIR="$STANDALONE_TMP/results"
+    mkdir -p "$WORKDIR" "$RESULTDIR"
+    trap 'rm -rf "$STANDALONE_TMP"' EXIT
+    detect_wasm_ok
+    [ -x "$EMITTER" ] && export MEDAKA_EMITTER="$EMITTER"
+    [ "$WASM_OK" = 1 ] && export MEDAKA_WASM_EMITTER="$WASMBIN"
+  fi
+
   # Key by CORPUS + basename.  18 basenames collide across the four corpora as
   # DIFFERENT files (adt_option, fn_factorial, fn_gcd, fn_tailsum, global_chain,
   # ctor_pap_arity across the two untyped ones; arr_get, str_lit, uni_to_upper, …
@@ -279,8 +332,9 @@ if [ "${1:-}" = "--one" ]; then
     [ -n "$wrong" ] && pin_v="WRONG:${wrong%,}"
   fi
 
-  printf '%s\t%s:%s:%s:%s:%s:%s\t%s\t%s\t%s\t%s\n' \
-    "$key" "$en" "$nw" "$ew" "$eva" "$nat" "$wsm" "$t1" "$t2" "$t3" "$pin_v" > "$RESULTDIR/$slug.sig"
+  sig="$en:$nw:$ew:$eva:$nat:$wsm"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$key" "$sig" "$t1" "$t2" "$t3" "$pin_v" > "$RESULTDIR/$slug.sig"
 
   {
     printf '  eval   [%-3s] %s\n' "$eva" "$(head -c 200 "$W/eval.out"   | tr '\n' '|')"
@@ -294,7 +348,7 @@ if [ "${1:-}" = "--one" ]; then
     [ "$pin_v" != - ] && printf '  pin        [%s] %s\n' "$pin_v" "$(head -c 200 "$pinfile" 2>/dev/null | tr '\n' '|')"
   } > "$RESULTDIR/$slug.detail"
 
-  [ -n "${VERBOSE:-}" ] && printf '%-34s %s\n' "$key" "$agree:$eva:$nat:$wsm"
+  [ -n "${VERBOSE:-}" ] && printf '%-34s %s\n' "$key" "$sig"
   rm -rf "$W"
   exit 0
 fi
@@ -313,26 +367,7 @@ command -v clang >/dev/null 2>&1 || { echo "no C compiler (clang) on PATH — sk
 # run T1 (eval == native), the tier that removes the golden circularity.  Skipping
 # the whole gate over an optional third arm would silently drop 300+ live two-engine
 # comparisons — the exact failure mode docs/ops/TESTING-DESIGN.md §2.3 indicts.
-WASM_OK=1; WASM_OFF_WHY=""
-NODE="${NODE:-node}"
-if ! [ -x "$WASMBIN" ]; then
-  WASM_OK=0; WASM_OFF_WHY="test/bin/wasm_emit_modules_main not built (sh test/wasm/build_wasm_oracle.sh)"
-elif ! command -v wasm-tools >/dev/null 2>&1; then
-  WASM_OK=0; WASM_OFF_WHY="wasm-tools not on PATH"
-else
-  major=$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
-  if [ "$major" -lt 24 ]; then
-    export NVM_DIR="$HOME/.nvm"
-    # shellcheck disable=SC1091
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" >/dev/null 2>&1 && nvm use 24 >/dev/null 2>&1 || true
-    major=$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
-  fi
-  if [ "$major" -lt 24 ]; then
-    WASM_OK=0; WASM_OFF_WHY="Node >= 24 required for finalized WasmGC (have $($NODE --version 2>/dev/null))"
-  else
-    NODE="$(command -v "$NODE")"
-  fi
-fi
+detect_wasm_ok
 
 # ── MEDAKA_REQUIRE_WASM — the degradation is right for a dev box, WRONG for CI ──
 #
@@ -408,6 +443,7 @@ CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk \
              "$ROOT"/test/wasm/fixtures/*.mdk \
              "$ROOT"/test/wasm/fixtures_typed/*.mdk 2>/dev/null)"
 [ -n "$CORPUS" ] || { echo "the fixture corpus is empty — the gate compared nothing"; exit 2; }
+n_dispatched="$(printf '%s\n' "$CORPUS" | wc -l | tr -d ' ')"
 
 # Fan-out. NOTE this gate deliberately does NOT honour run_gates.sh's INNER_JOBS
 # (which it exports to every gate as $JOBS, default 3). Every other gate is a
@@ -434,6 +470,19 @@ printf '%s\n' "$CORPUS" \
 cat "$RESULTS"/*.sig 2>/dev/null | sort > "$WORK/all.tsv"
 compared=$(wc -l < "$WORK/all.tsv" | tr -d ' ')
 [ "$compared" -gt 0 ] || { echo "ZERO-COMPARISON: not one fixture produced a result — the gate did not run"; exit 2; }
+
+# Completeness check (issue #448 follow-up, same shape as #637's fix to the sibling
+# xargs -P aggregation gates): a worker killed mid-run under xargs -P (the
+# documented xargs -P-pool-killed hazard on this box) writes no .sig file at all,
+# so it would otherwise vanish from EVERY tally below — a silently-shrunk "green"
+# run reporting fewer comparisons than were actually dispatched, never announcing
+# it ran less than the full corpus. N == 0 dispatched can't reach here (the CORPUS
+# emptiness check above already exits first), but the formula is safe for it too.
+if [ "$compared" -ne "$n_dispatched" ]; then
+  missing=$((n_dispatched - compared))
+  echo "FAIL: $missing of $n_dispatched workers produced no result — a worker died/was killed; this run is INCOMPLETE, not green."
+  exit 1
+fi
 
 # ── CAPTURE: rewrite the ledger from the observed signatures ──────────────────
 # Emits a line only for a fixture that is NOT clean.  The category+reason text is
