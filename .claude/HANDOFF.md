@@ -1,4 +1,112 @@
-# Next-orchestrator handoff — Medaka (2026-07-14)
+# Next-orchestrator handoff — Medaka (2026-07-17)
+
+## 🗂️ TRIAGE + SELF-DRAIN SESSION — 2026-07-16/17. The tracker was re-triaged end to end, the 0.1.0 floor was re-derived, and the tracker now **drains itself**.
+
+### 🚦 The four things that change what you do today
+
+**1. The 0.1.0 audience bar is SETTLED: "HN/Reddit strangers who'll try to break it"** (Val, 2026-07-16).
+This answers the open framing question in issue #73 / `docs/ops/RELEASE-0.1.0-PLAN.md:254`, which that doc
+says **gates the sizing of everything else**. Consequence: S1s are **blockers, not `KNOWN-GAPS.md`
+footnotes**, and hostile-poke bugs (deep nesting, weird literals, unicode) are **in scope**.
+
+**2. The floor is no longer 5 release chores — it now holds every S0/S1 plus the table-stakes S2/S3s.**
+Before this session it contained **zero correctness bugs** while a reproduced S0 sat unlabelled. Derive it,
+never trust a number (including this file's):
+```sh
+gh issue list --state open --milestone "0.1.0 public preview" --limit 100 --json number,title,labels
+```
+⚠️ `gh issue list` defaults to **30** — always pass `--limit`. Bare `gh issue view` exits 1 (Projects-classic
+deprecation); always `--json`.
+
+**3. 0.1.0 ships macOS AND Linux — and NO CI job runs on macOS** (all jobs are `ubuntu-latest`). Val verifies
+the Mac **ad hoc before a tag** (issue #549 has the doc half; #74 carries the pre-tag checklist). **Green CI
+proves nothing about half the shipping matrix.** When you touch a build/test script, keep both arms alive by
+inspection (`stat -c %Y` *or* `stat -f %m`; `pkg-config`/`-lgc` *or* `brew --prefix bdw-gc`).
+
+**4. ⚠️ `test/diff_compiler_must_fail.sh` is LIVE, and a RED there is usually a GOOD failure — NOT your break.**
+Each `test/must_fail_fixtures/<N>-slug/` asserts one OPEN bug **still reproduces**. When your change fixes
+that bug the row flips green and **FAILS the gate**, printing the issue number and a two-step remedy. Do
+what it says: close the issue, delete the directory. It runs in `soundness` (not a shard), and it has
+already fired on a genuine S0 fix within a day. Adding a row = **one directory, zero gate edits**; the
+member set is `ls`-derived, one fixture per issue (enforced). See `docs/ops/TESTING-DESIGN.md` §4.6.
+
+### 🚨 A NEW TRAP, and it is the INVERSE of the one we already document
+
+**A closing keyword in PROSE silently closes an issue on merge.** PR #568's body explained a control
+mechanism with a sentence of the shape *"…can never read as 'you F‑I‑X‑E‑D #NNN'"* (spelled out here on
+purpose — see below). GitHub parsed that as a closing keyword and **live S2 issue #508 was reopened only
+after it closed 2 seconds behind the merge**, while its bug still reproduced. The author hit it twice in
+his own PRs.
+
+⚠️ **This paragraph is itself a demonstration, twice over.** The first draft of this handoff quoted the
+offending sentence *verbatim* — which on merge would have closed issue #508 for a second time. A self-check
+grep caught it. The **rewrite then re-armed it again**, in the very sentence describing the catch, because
+naming the keyword next to the number is enough — **backticks do not help.** Only spelling the keyword out
+(`F‑I‑X‑E‑D`) or dropping the number defuses it. **You cannot quote this trap; quoting it re-arms it.**
+Run this before you push any body or doc that discusses issues:
+```sh
+grep -inE "(clos(e|es|ed)|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+" <file>
+```
+
+This is the **exact inverse** of ``Fixes **#N**`` **failing** to close (the `**` breaks it — that one once
+left four fixed issues open). **Opposite failures, opposite remedies**: one trains you to make references
+plainer, the other punishes plain references. **Hold both.** Never write a bare
+`fix/fixes/fixed/close/closes/closed/resolve(s|d)` immediately before a `#N` — backticks do **not** help;
+rephrase. **After any merge, read back the state of every issue the PR mentions**, not just the one you
+meant to close. Filed as issue #583.
+
+**Nothing else could have caught it**: the gate stayed *green* (the bug reproduces, so the fixture was
+correct). Only the tracker-vs-corpus census saw it — which is the whole thesis: **the corpus is a
+measurement, the tracker is a claim, and when they disagree the claim is usually wrong.**
+
+### ⭐ THE LESSON OF THE TRIAGE — "the affordance exists" is not a close
+
+Six issue-closes were proposed after a surface-level pass. **Five were reversed** by independent
+falsification. Every one failed the same way: **the evidence was accurate but aimed at an adjacent claim,
+not the filed grievance.** `--for` really does exist (#398); `PREFLIGHT_NO_FULL` really does exist (#520);
+the comment really does say `inst→RKey` (#462) — and all three closes were still wrong.
+
+That is the same error as the agents being audited, one level up: *they* inferred a gap from a failed
+attempt; *the auditor* inferred a fix from a passing grep. **Before closing anything, re-read what the
+issue actually complains about.** And a grep is not a test — a guard that *exists* is not a guard that
+*fires*; the one close that survived (#72) did so only because someone exercised each guard and showed the
+output.
+
+### Also landed / still open
+
+- **Issue #543 — the playground front door is BROKEN.** `playground_e2e` is red on the nightly:
+  hello-world traps `dereferencing a null pointer` in a real browser, hover returns `null`, completion
+  returns `[]`. Toolchain steps all pass — it is the app. **Nightly is not a required check, so nothing
+  forces anyone to look.** The failure is verified from CI logs; the **cause is NOT** — the window is ~178
+  commits and nightly history is non-monotonic, so **bisect; do not trust the tip**.
+- **Issue #544** — work parked behind gates that no longer exist (#359 and #160 are both closed, yet five
+  issues still defer behind them). **Re-derive a "blocked on X" premise before honouring it.**
+- **Issue #545** — one AGENTS.md preflight PR: the borrow lede, `PREFLIGHT_DRY` discoverability, and the
+  **undocumented 600 s tool ceiling** (`exit 143` is the harness, not your change hanging; a
+  `compiler/backend/*` diff forces the fixpoint with **no banner and no opt-out**).
+- **Issue #569 / the census** — nightly, reports-never-acts, **delta not backlog**. It drains **by time,
+  which is forgetting, not resolving** — it says so on every run. `--all` for a deliberate sweep.
+  `test/MUST-FAIL-NOT-PINNABLE.txt` records what cannot be pinned **with a mandatory reason**, and
+  self-drains in both directions.
+- **Issue #450 is live and was observed firing 8 times on one PR** — a narrowed shard passing in 4-9 s on a
+  diff that derives nothing. A green tick from a shard that ran **nothing**.
+
+### Process, learned the hard way (again)
+
+- **A required check must be CAUSED BY the diff it gates.** That is why `soundness` can host must-fail (a
+  diff can fix a bug) but cannot host the census (no diff can close an issue). Use it to settle gate
+  placement in one line.
+- **Cite the SYMBOL, never the line.** Across ~160 issues audited, nearly every cited line number had
+  drifted; every symbol still resolved.
+- **Never encode a count.** Three separate issues (#446, #87, #516) shipped a wrong fixture count — one of
+  them *while citing the AGENTS.md passage that warns against exactly that*.
+- **Hand an agent its worktree path; never let it construct one.** An agent invented
+  `.claude/worktrees/agent-<its-own-id>/`, the path **existed** (a sibling's), and it ran `make medaka`
+  there for half a session. The isolation classifier fires on `cp` but **not** on `ls`/`grep`/`cd`/`make -C`.
+- **`gh pr edit --body-file` silently no-ops** here (the deprecation prints an error and leaves the body
+  unchanged). Use `gh api -X PATCH …` and **read back** after any write.
+
+# ── previous handoff (2026-07-14) ──
 
 ## ⏱️ PERF SESSION — 2026-07-14. **`medaka build` is 3.1× faster. CI's critical-path gate: 367 s → 107 s.**
 
