@@ -100,7 +100,7 @@ A`, `import m.* as A`) are rejected with a diagnostic that names the fix.
 ⚠️ **A bare `import map` binds NO names** — not values, not types, not `map.get` (qualified
 access exists *only* via `as`). But it is **not** a no-op: **any** import of a module brings
 that module's `impl`s into scope for dispatch, which is the whole job of the bare form (e.g.
-`stdlib/json.mdk:40`'s `import array` — without it, `map (+ 1) [|1,2,3|]` is *"No impl of
+`stdlib/json.mdk`'s bare `import array` — without it, `map (+ 1) [|1,2,3|]` is *"No impl of
 Mappable for Array"*).
 `io.mdk` is the ergonomic layer over the `runtime.mdk` IO externs.
 
