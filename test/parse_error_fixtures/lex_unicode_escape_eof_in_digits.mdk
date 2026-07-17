@@ -1,0 +1,12 @@
+-- Lexer error: the `\u{…}` hex run reaching END OF FILE. The `he >= len` arm of
+-- `uniEscTermErr` (#592), and the ONLY fixture that reaches it.
+--
+-- ⚠️ This file DELIBERATELY has no trailing newline, and must keep it that way: the hex
+-- run has to hit EOF itself. Add one and `uHexEnd` stops at the `\n` instead, `he < len`,
+-- and the `otherwise` arm fires with a different message — the fixture would still fail
+-- the build, so it would silently pin the WRONG arm rather than break loudly.
+--
+-- The string is unterminated too, but the unicode error WINS: `scanStr` decodes the
+-- escape at the backslash, before it ever reaches the string-termination check. Verified,
+-- not assumed — `L-UNTERMINATED-STRING` never fires here.
+x = "a\u{41

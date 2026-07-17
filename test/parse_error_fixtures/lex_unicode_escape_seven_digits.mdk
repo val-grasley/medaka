@@ -1,0 +1,7 @@
+-- Lexer error: the REJECT-SIDE EDGE of the digit-count guard (#567/#592). 1000000 is
+-- SEVEN significant hex digits, the smallest run the `>6` guard rejects — its exact
+-- boundary. The existing #567 cases sit at 16 digits, far past where a slip would show.
+-- Its sibling `lex_unicode_escape_six_digit_max` is the largest run the guard LETS
+-- THROUGH; see that file for why the pair cannot identify WHICH bound rejected, and
+-- why `\u{10FFFF}` on the accept side is the edge that actually has teeth.
+x = "a\u{1000000}b"

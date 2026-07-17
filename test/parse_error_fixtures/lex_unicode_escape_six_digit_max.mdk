@@ -1,0 +1,13 @@
+-- Lexer error: FFFFFF is the largest SIX-digit escape, so it passes the `>6` digit
+-- guard and must then be caught by `charFromCode`'s range check — 16777215 is far past
+-- 10FFFF. Sibling of `lex_unicode_escape_seven_digits` (#567/#592): this is the last
+-- value on the guard's ACCEPT side and that is the first on its REJECT side.
+--
+-- ⚠️ The two DELIBERATELY share one message (#567 keyed both on "out of range" rather
+-- than mint a second code for one user-facing defect), so this pair pins only that both
+-- are REJECTED — it cannot tell you WHICH bound fired. That is why the accept-side edge
+-- `\u{10FFFF}` in test/construct_fixtures/str_unicode_escape.mdk is the load-bearing
+-- one: a `>6`→`>=6` slip is invisible here and shows up only there. Neither bound is
+-- redundant — the digit count stops `parseRadix` WRAPPING and the range check stops a
+-- non-character; #567 showed either alone leaves the other live.
+x = "a\u{FFFFFF}b"

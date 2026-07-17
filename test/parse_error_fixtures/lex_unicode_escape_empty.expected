@@ -1,0 +1,1 @@
+unicode escape `\u{}` has no digits. A codepoint needs at least one hex digit — `\u{41}` is 'A' and `\u{0}` is NUL

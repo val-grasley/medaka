@@ -1,0 +1,9 @@
+-- Lexer error: `_` is a digit separator in Medaka INTEGER literals (`1_000`,
+-- `0xD_EAD`) but NOT inside `\u{…}`, and this fixture pins that DECIDED fork (#592).
+-- It used to be an S0: `uHexEnd` stops at the first non-hex-digit and never checked
+-- WHAT stopped it, so `4` became the whole codepoint (a fabricated U+0004) and `1}`
+-- fell through into the string as literal DATA — `"a\u{4_1}b"` printed the bytes
+-- 61 04 31 7d 62 at exit 0, with no diagnostic.
+-- Rejecting is the reversible direction: this could be widened later to MEAN `\u{41}`
+-- without breaking any program, whereas accepting it could never be walked back.
+x = "a\u{4_1}b"

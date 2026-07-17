@@ -1004,6 +1004,28 @@ charClose src len p
 -- `radixMagOverflows` models "one leading digit followed by zeros", a shape that
 -- cannot express the 0x10FFFF bound.
 
+-- ── Well-formedness of the digit run itself (#592). The bounds above are about the
+-- VALUE an escape names; these are about whether it is an escape at all.
+--
+-- `uHexEnd` stops at the first non-hex-digit and does not care WHAT stopped it, and
+-- `uniEscEnd` then steps blindly past that char assuming it is `}`. Nothing checked
+-- either assumption, so a malformed escape silently became a DIFFERENT string at
+-- exit 0: `"a\u{4_1}b"` took `4` as the whole codepoint (a fabricated U+0004) and let
+-- `1}` fall through into the string as literal data, and `"a\u{}b"` parsed an empty
+-- run as `charFromCode 0` — a silent NUL. Both are valid scalar values, so no range
+-- check above can see them: this is a SYNTAX defect, not a range defect.
+--
+-- The rule enforced here is the whole grammar of the run: NON-EMPTY, hex digits only,
+-- `}`-terminated. `uniEscEnd`'s `+ 1` is sound only because `uniEscChar` rejects
+-- everything else before any caller reaches it.
+
+-- Is the escape's digit run non-empty AND closed by the `}` that `uniEscEnd` assumes?
+uniEscWellFormed : Array Char -> Int -> Int -> Bool
+uniEscWellFormed src len p =
+  let s = p + 3
+  let he = uHexEnd src len s
+  he > s && he < len && at src he == '}'
+
 -- Significant hex digits of [p, endp) — the LEADING ZERO RUN dropped. `\u{0000041}`
 -- is seven digits but only two significant, and is a perfectly good `A`: counting raw
 -- digits here would reject it.
@@ -1027,11 +1049,15 @@ uniEscCode src len p =
 uniEscText : Array Char -> Int -> Int -> String
 uniEscText src len p = substr src p (uHexEnd src len (p + 3) + 1)
 
--- The decoded Char, or `None` for any `\u{…}` escape the lexer must reject.
+-- The decoded Char, or `None` for any `\u{…}` escape the lexer must reject. Shape is
+-- checked BEFORE value: an ill-formed run has no codepoint to range-check, and its
+-- `uHexEnd` is not a trustworthy end position for `uniEscText` to quote.
 uniEscChar : Array Char -> Int -> Int -> Option Char
-uniEscChar src len p = match uniEscCode src len p
-  None => None
-  Some cp => charFromCode cp
+uniEscChar src len p
+  | not (uniEscWellFormed src len p) = None
+  | otherwise = match uniEscCode src len p
+    None => None
+    Some cp => charFromCode cp
 
 -- The UTF-16 surrogate block: 0xD800-0xDFFF, the halves of a surrogate PAIR, which
 -- encode nothing on their own and are the one hole in `charFromCode`'s range. Written
@@ -1045,10 +1071,36 @@ uniIsSurrogate cp = cp >= 55296 && cp <= 57343
 -- should not need two diagnostic codes (same reasoning as `radixTok`'s message).
 -- The `_` arm covers BOTH an in-range-Int-but-not-a-codepoint value and the `None`
 -- (too many digits to parse exactly) case: to the user both are "too big".
+--
+-- The ill-formed arms come FIRST and must not use `uniEscText`: it quotes through
+-- `uHexEnd + 1`, which is the very position these arms exist to disbelieve.
+--
+-- ⭐ THE `_` FORK (#592), DECIDED: `_` is a digit separator in Medaka INTEGER literals
+-- (`1_000`, `0xD_EAD`, via `radixEnd`) but is NOT one inside `\u{…}`. It gets a named
+-- arm rather than falling into the generic "expected `}`" message, because a user who
+-- wrote `\u{4_1}` was reading it as `\u{41}` and deserves to be told so.
+-- WHY reject rather than accept: rejecting is the REVERSIBLE direction. `\u{4_1}` is a
+-- lex error today, so it could be widened to MEAN `\u{41}` later without breaking any
+-- program that compiles now; accepting it here could never be walked back. A codepoint
+-- is also at most 6 digits — separators exist to group long runs, and Unicode's own
+-- notation (U+10FFFF) is unbroken. See docs/spec/SYNTAX.md, which states this grammar.
+-- WHY the run is ill-formed. `s` is the first digit position, `he` the char that
+-- stopped the run — the one `uniEscEnd` used to step blindly past.
+uniEscTermErr : Array Char -> Int -> Int -> Int -> String
+uniEscTermErr src len s he
+  | he >= len = "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but the file ended"
+  | at src he == '_' = "unicode escape uses a `_` separator, which is not allowed here. `_` groups digits in integer literals (`1_000`, `0xD_EAD`), but a `\\u{...}` codepoint must be an unbroken run of hex digits — write the digits unbroken, as in `\\u{41}` rather than `\\u{4_1}`"
+  | he == s && at src he == '}' = "unicode escape `\\u{}` has no digits. A codepoint needs at least one hex digit — `\\u{41}` is 'A' and `\\u{0}` is NUL"
+  | he == s = "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but found `\{charToStr (at src he)}`"
+  | otherwise = "unicode escape is not terminated. Expected `}` after the hex digits, but found `\{charToStr (at src he)}`"
+
 uniEscErr : Array Char -> Int -> Int -> String
-uniEscErr src len p = match uniEscCode src len p
-  Some cp if uniIsSurrogate cp => "unicode escape '\{uniEscText src len p}' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own"
-  _ => "unicode escape '\{uniEscText src len p}' is out of range. A codepoint must be at most 10FFFF"
+uniEscErr src len p
+  | not (uniEscWellFormed src len p) =
+    uniEscTermErr src len (p + 3) (uHexEnd src len (p + 3))
+  | otherwise = match uniEscCode src len p
+    Some cp if uniIsSurrogate cp => "unicode escape '\{uniEscText src len p}' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own"
+    _ => "unicode escape '\{uniEscText src len p}' is out of range. A codepoint must be at most 10FFFF"
 
 -- `\u{HEX}'` : the hex codepoint, then `}` then closing `'`.
 readCharUnicode : Array Char -> Int -> Int -> Int -> Int -> List RawTok
@@ -1073,6 +1125,10 @@ uHexEnd src len p
 isUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
 isUnicodeEsc src len p e = e == 'u' && p + 2 < len && at src (p + 2) == '{'
 
+-- Resume position: past the `}`. The `+ 1` is a CLAIM that a `}` sits at `uHexEnd` —
+-- unchecked until #592, which is exactly how a malformed escape's tail leaked into the
+-- string as data. It is sound only on the `Some` path: every one of the five scan
+-- sites reaches this via `uniEscChar`, which rejects any run `uniEscWellFormed` fails.
 uniEscEnd : Array Char -> Int -> Int -> Int
 uniEscEnd src len p = uHexEnd src len (p + 3) + 1
 

@@ -1,5 +1,5 @@
 # META
-source_lines=1806
+source_lines=1862
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka lexer — Stage 1 port of `lib/lexer.mll`.
@@ -1008,6 +1008,28 @@ charClose src len p
 -- `radixMagOverflows` models "one leading digit followed by zeros", a shape that
 -- cannot express the 0x10FFFF bound.
 
+-- ── Well-formedness of the digit run itself (#592). The bounds above are about the
+-- VALUE an escape names; these are about whether it is an escape at all.
+--
+-- `uHexEnd` stops at the first non-hex-digit and does not care WHAT stopped it, and
+-- `uniEscEnd` then steps blindly past that char assuming it is `}`. Nothing checked
+-- either assumption, so a malformed escape silently became a DIFFERENT string at
+-- exit 0: `"a\u{4_1}b"` took `4` as the whole codepoint (a fabricated U+0004) and let
+-- `1}` fall through into the string as literal data, and `"a\u{}b"` parsed an empty
+-- run as `charFromCode 0` — a silent NUL. Both are valid scalar values, so no range
+-- check above can see them: this is a SYNTAX defect, not a range defect.
+--
+-- The rule enforced here is the whole grammar of the run: NON-EMPTY, hex digits only,
+-- `}`-terminated. `uniEscEnd`'s `+ 1` is sound only because `uniEscChar` rejects
+-- everything else before any caller reaches it.
+
+-- Is the escape's digit run non-empty AND closed by the `}` that `uniEscEnd` assumes?
+uniEscWellFormed : Array Char -> Int -> Int -> Bool
+uniEscWellFormed src len p =
+  let s = p + 3
+  let he = uHexEnd src len s
+  he > s && he < len && at src he == '}'
+
 -- Significant hex digits of [p, endp) — the LEADING ZERO RUN dropped. `\u{0000041}`
 -- is seven digits but only two significant, and is a perfectly good `A`: counting raw
 -- digits here would reject it.
@@ -1031,11 +1053,15 @@ uniEscCode src len p =
 uniEscText : Array Char -> Int -> Int -> String
 uniEscText src len p = substr src p (uHexEnd src len (p + 3) + 1)
 
--- The decoded Char, or `None` for any `\u{…}` escape the lexer must reject.
+-- The decoded Char, or `None` for any `\u{…}` escape the lexer must reject. Shape is
+-- checked BEFORE value: an ill-formed run has no codepoint to range-check, and its
+-- `uHexEnd` is not a trustworthy end position for `uniEscText` to quote.
 uniEscChar : Array Char -> Int -> Int -> Option Char
-uniEscChar src len p = match uniEscCode src len p
-  None => None
-  Some cp => charFromCode cp
+uniEscChar src len p
+  | not (uniEscWellFormed src len p) = None
+  | otherwise = match uniEscCode src len p
+    None => None
+    Some cp => charFromCode cp
 
 -- The UTF-16 surrogate block: 0xD800-0xDFFF, the halves of a surrogate PAIR, which
 -- encode nothing on their own and are the one hole in `charFromCode`'s range. Written
@@ -1049,10 +1075,36 @@ uniIsSurrogate cp = cp >= 55296 && cp <= 57343
 -- should not need two diagnostic codes (same reasoning as `radixTok`'s message).
 -- The `_` arm covers BOTH an in-range-Int-but-not-a-codepoint value and the `None`
 -- (too many digits to parse exactly) case: to the user both are "too big".
+--
+-- The ill-formed arms come FIRST and must not use `uniEscText`: it quotes through
+-- `uHexEnd + 1`, which is the very position these arms exist to disbelieve.
+--
+-- ⭐ THE `_` FORK (#592), DECIDED: `_` is a digit separator in Medaka INTEGER literals
+-- (`1_000`, `0xD_EAD`, via `radixEnd`) but is NOT one inside `\u{…}`. It gets a named
+-- arm rather than falling into the generic "expected `}`" message, because a user who
+-- wrote `\u{4_1}` was reading it as `\u{41}` and deserves to be told so.
+-- WHY reject rather than accept: rejecting is the REVERSIBLE direction. `\u{4_1}` is a
+-- lex error today, so it could be widened to MEAN `\u{41}` later without breaking any
+-- program that compiles now; accepting it here could never be walked back. A codepoint
+-- is also at most 6 digits — separators exist to group long runs, and Unicode's own
+-- notation (U+10FFFF) is unbroken. See docs/spec/SYNTAX.md, which states this grammar.
+-- WHY the run is ill-formed. `s` is the first digit position, `he` the char that
+-- stopped the run — the one `uniEscEnd` used to step blindly past.
+uniEscTermErr : Array Char -> Int -> Int -> Int -> String
+uniEscTermErr src len s he
+  | he >= len = "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but the file ended"
+  | at src he == '_' = "unicode escape uses a `_` separator, which is not allowed here. `_` groups digits in integer literals (`1_000`, `0xD_EAD`), but a `\\u{...}` codepoint must be an unbroken run of hex digits — write the digits unbroken, as in `\\u{41}` rather than `\\u{4_1}`"
+  | he == s && at src he == '}' = "unicode escape `\\u{}` has no digits. A codepoint needs at least one hex digit — `\\u{41}` is 'A' and `\\u{0}` is NUL"
+  | he == s = "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but found `\{charToStr (at src he)}`"
+  | otherwise = "unicode escape is not terminated. Expected `}` after the hex digits, but found `\{charToStr (at src he)}`"
+
 uniEscErr : Array Char -> Int -> Int -> String
-uniEscErr src len p = match uniEscCode src len p
-  Some cp if uniIsSurrogate cp => "unicode escape '\{uniEscText src len p}' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own"
-  _ => "unicode escape '\{uniEscText src len p}' is out of range. A codepoint must be at most 10FFFF"
+uniEscErr src len p
+  | not (uniEscWellFormed src len p) =
+    uniEscTermErr src len (p + 3) (uHexEnd src len (p + 3))
+  | otherwise = match uniEscCode src len p
+    Some cp if uniIsSurrogate cp => "unicode escape '\{uniEscText src len p}' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own"
+    _ => "unicode escape '\{uniEscText src len p}' is out of range. A codepoint must be at most 10FFFF"
 
 -- `\u{HEX}'` : the hex codepoint, then `}` then closing `'`.
 readCharUnicode : Array Char -> Int -> Int -> Int -> Int -> List RawTok
@@ -1077,6 +1129,10 @@ uHexEnd src len p
 isUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
 isUnicodeEsc src len p e = e == 'u' && p + 2 < len && at src (p + 2) == '{'
 
+-- Resume position: past the `}`. The `+ 1` is a CLAIM that a `}` sits at `uHexEnd` —
+-- unchecked until #592, which is exactly how a malformed escape's tail leaked into the
+-- string as data. It is sound only on the `Some` path: every one of the five scan
+-- sites reaches this via `uniEscChar`, which rejects any run `uniEscWellFormed` fails.
 uniEscEnd : Array Char -> Int -> Int -> Int
 uniEscEnd src len p = uHexEnd src len (p + 3) + 1
 
@@ -2192,6 +2248,8 @@ collectComments s =
 (DFunDef false "rawChar" ((PVar "src") (PVar "len") (PVar "p") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EVar "charClose") (EVar "src")) (EVar "len")) (EVar "p"))) (DoExpr (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TChar") (EApp (EApp (EApp (EVar "substr") (EVar "src")) (EVar "p")) (EVar "e")))) (EVar "p")) (EBinOp "+" (EVar "e") (ELit (LInt 1)))) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "e") (ELit (LInt 1)))) (EVar "depth")) (EVar "id"))))))
 (DTypeSig false "charClose" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
 (DFunDef false "charClose" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EBinOp ">=" (EVar "p") (EVar "len")) (EVar "p") (EIf (EApp (EVar "isApos") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EVar "p") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "charClose") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "uniEscWellFormed" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
+(DFunDef false "uniEscWellFormed" ((PVar "src") (PVar "len") (PVar "p")) (EBlock (DoLet false false (PVar "s") (EBinOp "+" (EVar "p") (ELit (LInt 3)))) (DoLet false false (PVar "he") (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EVar "s"))) (DoExpr (EBinOp "&&" (EBinOp "&&" (EBinOp ">" (EVar "he") (EVar "s")) (EBinOp "<" (EVar "he") (EVar "len"))) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "he")) (ELit (LChar "}")))))))
 (DTypeSig false "uniHexSigLen" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
 (DFunDef false "uniHexSigLen" ((PVar "src") (PVar "p") (PVar "endp")) (EIf (EBinOp ">=" (EVar "p") (EVar "endp")) (ELit (LInt 0)) (EIf (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "p")) (ELit (LChar "0"))) (EApp (EApp (EApp (EVar "uniHexSigLen") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "endp")) (EIf (EVar "otherwise") (EBinOp "-" (EVar "endp") (EVar "p")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "uniEscCode" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
@@ -2199,11 +2257,13 @@ collectComments s =
 (DTypeSig false "uniEscText" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
 (DFunDef false "uniEscText" ((PVar "src") (PVar "len") (PVar "p")) (EApp (EApp (EApp (EVar "substr") (EVar "src")) (EVar "p")) (EBinOp "+" (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3)))) (ELit (LInt 1)))))
 (DTypeSig false "uniEscChar" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Char"))))))
-(DFunDef false "uniEscChar" ((PVar "src") (PVar "len") (PVar "p")) (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "cp")) () (EApp (EVar "charFromCode") (EVar "cp")))))
+(DFunDef false "uniEscChar" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EApp (EVar "not") (EApp (EApp (EApp (EVar "uniEscWellFormed") (EVar "src")) (EVar "len")) (EVar "p"))) (EVar "None") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "cp")) () (EApp (EVar "charFromCode") (EVar "cp")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "uniIsSurrogate" (TyFun (TyCon "Int") (TyCon "Bool")))
 (DFunDef false "uniIsSurrogate" ((PVar "cp")) (EBinOp "&&" (EBinOp ">=" (EVar "cp") (ELit (LInt 55296))) (EBinOp "<=" (EVar "cp") (ELit (LInt 57343)))))
+(DTypeSig false "uniEscTermErr" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String"))))))
+(DFunDef false "uniEscTermErr" ((PVar "src") (PVar "len") (PVar "s") (PVar "he")) (EIf (EBinOp ">=" (EVar "he") (EVar "len")) (ELit (LString "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but the file ended")) (EIf (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "he")) (ELit (LChar "_"))) (ELit (LString "unicode escape uses a `_` separator, which is not allowed here. `_` groups digits in integer literals (`1_000`, `0xD_EAD`), but a `\\u{...}` codepoint must be an unbroken run of hex digits — write the digits unbroken, as in `\\u{41}` rather than `\\u{4_1}`")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "he") (EVar "s")) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "he")) (ELit (LChar "}")))) (ELit (LString "unicode escape `\\u{}` has no digits. A codepoint needs at least one hex digit — `\\u{41}` is 'A' and `\\u{0}` is NUL")) (EIf (EBinOp "==" (EVar "he") (EVar "s")) (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but found `")) (EApp (EVar "display") (EApp (EVar "charToStr") (EApp (EApp (EVar "at") (EVar "src")) (EVar "he"))))) (ELit (LString "`"))) (EIf (EVar "otherwise") (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape is not terminated. Expected `}` after the hex digits, but found `")) (EApp (EVar "display") (EApp (EVar "charToStr") (EApp (EApp (EVar "at") (EVar "src")) (EVar "he"))))) (ELit (LString "`"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DTypeSig false "uniEscErr" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
-(DFunDef false "uniEscErr" ((PVar "src") (PVar "len") (PVar "p")) (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "Some" (PVar "cp")) ((GBool (EApp (EVar "uniIsSurrogate") (EVar "cp")))) (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EVar "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own")))) (arm PWild () (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EVar "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is out of range. A codepoint must be at most 10FFFF"))))))
+(DFunDef false "uniEscErr" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EApp (EVar "not") (EApp (EApp (EApp (EVar "uniEscWellFormed") (EVar "src")) (EVar "len")) (EVar "p"))) (EApp (EApp (EApp (EApp (EVar "uniEscTermErr") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3)))) (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3))))) (EIf (EVar "otherwise") (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "Some" (PVar "cp")) ((GBool (EApp (EVar "uniIsSurrogate") (EVar "cp")))) (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EVar "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own")))) (arm PWild () (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EVar "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is out of range. A codepoint must be at most 10FFFF"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "readCharUnicode" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok"))))))))
 (DFunDef false "readCharUnicode" ((PVar "src") (PVar "len") (PVar "p") (PVar "depth") (PVar "id")) (EMatch (EApp (EApp (EApp (EVar "uniEscChar") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "None") () (EApp (EApp (EVar "lexErrorTok") (EVar "p")) (EApp (EApp (EApp (EVar "uniEscErr") (EVar "src")) (EVar "len")) (EVar "p")))) (arm (PCon "Some" (PVar "c")) () (EBlock (DoLet false false (PVar "he") (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3))))) (DoExpr (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TChar") (EApp (EVar "charToStr") (EVar "c")))) (EVar "p")) (EBinOp "+" (EVar "he") (ELit (LInt 2)))) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "he") (ELit (LInt 2)))) (EVar "depth")) (EVar "id"))))))))
 (DTypeSig false "uHexEnd" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
@@ -2862,6 +2922,8 @@ collectComments s =
 (DFunDef false "rawChar" ((PVar "src") (PVar "len") (PVar "p") (PVar "depth") (PVar "id")) (EBlock (DoLet false false (PVar "e") (EApp (EApp (EApp (EVar "charClose") (EVar "src")) (EVar "len")) (EVar "p"))) (DoExpr (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TChar") (EApp (EApp (EApp (EVar "substr") (EVar "src")) (EVar "p")) (EVar "e")))) (EVar "p")) (EBinOp "+" (EVar "e") (ELit (LInt 1)))) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "e") (ELit (LInt 1)))) (EVar "depth")) (EVar "id"))))))
 (DTypeSig false "charClose" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
 (DFunDef false "charClose" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EBinOp ">=" (EVar "p") (EVar "len")) (EVar "p") (EIf (EApp (EVar "isApos") (EApp (EApp (EVar "at") (EVar "src")) (EVar "p"))) (EVar "p") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "charClose") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "uniEscWellFormed" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
+(DFunDef false "uniEscWellFormed" ((PVar "src") (PVar "len") (PVar "p")) (EBlock (DoLet false false (PVar "s") (EBinOp "+" (EVar "p") (ELit (LInt 3)))) (DoLet false false (PVar "he") (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EVar "s"))) (DoExpr (EBinOp "&&" (EBinOp "&&" (EBinOp ">" (EVar "he") (EVar "s")) (EBinOp "<" (EVar "he") (EVar "len"))) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "he")) (ELit (LChar "}")))))))
 (DTypeSig false "uniHexSigLen" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
 (DFunDef false "uniHexSigLen" ((PVar "src") (PVar "p") (PVar "endp")) (EIf (EBinOp ">=" (EVar "p") (EVar "endp")) (ELit (LInt 0)) (EIf (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "p")) (ELit (LChar "0"))) (EApp (EApp (EApp (EVar "uniHexSigLen") (EVar "src")) (EBinOp "+" (EVar "p") (ELit (LInt 1)))) (EVar "endp")) (EIf (EVar "otherwise") (EBinOp "-" (EVar "endp") (EVar "p")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DTypeSig false "uniEscCode" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
@@ -2869,11 +2931,13 @@ collectComments s =
 (DTypeSig false "uniEscText" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
 (DFunDef false "uniEscText" ((PVar "src") (PVar "len") (PVar "p")) (EApp (EApp (EApp (EVar "substr") (EVar "src")) (EVar "p")) (EBinOp "+" (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3)))) (ELit (LInt 1)))))
 (DTypeSig false "uniEscChar" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Char"))))))
-(DFunDef false "uniEscChar" ((PVar "src") (PVar "len") (PVar "p")) (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "cp")) () (EApp (EVar "charFromCode") (EVar "cp")))))
+(DFunDef false "uniEscChar" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EApp (EVar "not") (EApp (EApp (EApp (EVar "uniEscWellFormed") (EVar "src")) (EVar "len")) (EVar "p"))) (EVar "None") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "cp")) () (EApp (EVar "charFromCode") (EVar "cp")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "uniIsSurrogate" (TyFun (TyCon "Int") (TyCon "Bool")))
 (DFunDef false "uniIsSurrogate" ((PVar "cp")) (EBinOp "&&" (EBinOp ">=" (EVar "cp") (ELit (LInt 55296))) (EBinOp "<=" (EVar "cp") (ELit (LInt 57343)))))
+(DTypeSig false "uniEscTermErr" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String"))))))
+(DFunDef false "uniEscTermErr" ((PVar "src") (PVar "len") (PVar "s") (PVar "he")) (EIf (EBinOp ">=" (EVar "he") (EVar "len")) (ELit (LString "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but the file ended")) (EIf (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "he")) (ELit (LChar "_"))) (ELit (LString "unicode escape uses a `_` separator, which is not allowed here. `_` groups digits in integer literals (`1_000`, `0xD_EAD`), but a `\\u{...}` codepoint must be an unbroken run of hex digits — write the digits unbroken, as in `\\u{41}` rather than `\\u{4_1}`")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "he") (EVar "s")) (EBinOp "==" (EApp (EApp (EVar "at") (EVar "src")) (EVar "he")) (ELit (LChar "}")))) (ELit (LString "unicode escape `\\u{}` has no digits. A codepoint needs at least one hex digit — `\\u{41}` is 'A' and `\\u{0}` is NUL")) (EIf (EBinOp "==" (EVar "he") (EVar "s")) (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but found `")) (EApp (EMethodRef "display") (EApp (EVar "charToStr") (EApp (EApp (EVar "at") (EVar "src")) (EVar "he"))))) (ELit (LString "`"))) (EIf (EVar "otherwise") (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape is not terminated. Expected `}` after the hex digits, but found `")) (EApp (EMethodRef "display") (EApp (EVar "charToStr") (EApp (EApp (EVar "at") (EVar "src")) (EVar "he"))))) (ELit (LString "`"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DTypeSig false "uniEscErr" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "String")))))
-(DFunDef false "uniEscErr" ((PVar "src") (PVar "len") (PVar "p")) (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "Some" (PVar "cp")) ((GBool (EApp (EVar "uniIsSurrogate") (EVar "cp")))) (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EMethodRef "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own")))) (arm PWild () (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EMethodRef "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is out of range. A codepoint must be at most 10FFFF"))))))
+(DFunDef false "uniEscErr" ((PVar "src") (PVar "len") (PVar "p")) (EIf (EApp (EVar "not") (EApp (EApp (EApp (EVar "uniEscWellFormed") (EVar "src")) (EVar "len")) (EVar "p"))) (EApp (EApp (EApp (EApp (EVar "uniEscTermErr") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3)))) (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3))))) (EIf (EVar "otherwise") (EMatch (EApp (EApp (EApp (EVar "uniEscCode") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "Some" (PVar "cp")) ((GBool (EApp (EVar "uniIsSurrogate") (EVar "cp")))) (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EMethodRef "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own")))) (arm PWild () (EBinOp "++" (EBinOp "++" (ELit (LString "unicode escape '")) (EApp (EMethodRef "display") (EApp (EApp (EApp (EVar "uniEscText") (EVar "src")) (EVar "len")) (EVar "p")))) (ELit (LString "' is out of range. A codepoint must be at most 10FFFF"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "readCharUnicode" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "RawTok"))))))))
 (DFunDef false "readCharUnicode" ((PVar "src") (PVar "len") (PVar "p") (PVar "depth") (PVar "id")) (EMatch (EApp (EApp (EApp (EVar "uniEscChar") (EVar "src")) (EVar "len")) (EVar "p")) (arm (PCon "None") () (EApp (EApp (EVar "lexErrorTok") (EVar "p")) (EApp (EApp (EApp (EVar "uniEscErr") (EVar "src")) (EVar "len")) (EVar "p")))) (arm (PCon "Some" (PVar "c")) () (EBlock (DoLet false false (PVar "he") (EApp (EApp (EApp (EVar "uHexEnd") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "p") (ELit (LInt 3))))) (DoExpr (EBinOp "::" (EApp (EApp (EApp (EVar "RTok") (EApp (EVar "TChar") (EApp (EVar "charToStr") (EVar "c")))) (EVar "p")) (EBinOp "+" (EVar "he") (ELit (LInt 2)))) (EApp (EApp (EApp (EApp (EApp (EVar "scan") (EVar "src")) (EVar "len")) (EBinOp "+" (EVar "he") (ELit (LInt 2)))) (EVar "depth")) (EVar "id"))))))))
 (DTypeSig false "uHexEnd" (TyFun (TyApp (TyCon "Array") (TyCon "Char")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))

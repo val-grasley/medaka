@@ -1,0 +1,5 @@
+-- Lexer error: the `\u{…}` digit run must be closed by `}`. Third face of #592's one
+-- root — `uniEscEnd` did `uHexEnd … + 1`, a blind step that ASSUMED a `}` was there.
+-- Nothing checked it, so whatever actually sat at that position was skipped and the
+-- rest was re-scanned as string content. `x` is not a hex digit and not a `}`.
+x = "a\u{x}b"

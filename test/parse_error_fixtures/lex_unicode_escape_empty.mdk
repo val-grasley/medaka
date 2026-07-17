@@ -1,0 +1,8 @@
+-- Lexer error: a `\u{…}` escape with NO digits. The other face of #592, same root —
+-- the digit run was never required to be non-empty, so an empty run parsed as
+-- `charFromCode 0` and `"a\u{}b"` silently produced a NUL byte (61 00 62) at exit 0.
+-- U+0000 is a perfectly valid scalar value, so no range check could ever see this;
+-- only requiring a non-empty run can. (A NUL a user ASKED for — `\u{0}` — still lexes:
+-- the defect was fabricating one from an empty escape, not the codepoint itself.)
+-- A half-finished edit is exactly how you get `\u{}`.
+x = "a\u{}b"

@@ -26,9 +26,18 @@ decisions" §1 (code scheme) and §5 (warning-range regression).
 
 ## 0. TL;DR for the orchestrator
 
-- **Distinct error kinds per stage:** lex **4**, parse **~3** (one umbrella +
-  two special-cases), resolve **13** (already an ADT), typecheck **~25**,
-  warnings **2** (guard + non-exhaustive-match). **Total ≈ 47 codes.**
+- **Distinct error kinds per stage:** DERIVE, never read from here. The codes
+  emitted as literals (lex `L-*`, parse `P-*`, warnings `W-*`) enumerate with:
+
+  ```sh
+  grep -ohE '"[LPRTW]-[A-Z0-9-]+"' compiler/driver/diagnostics.mdk | sort -u
+  ```
+
+  Resolve and typecheck are **ADTs**, so their kinds are counted at the data
+  declaration, not by this grep. This bullet used to carry per-stage counts and a
+  total; every one of them had rotted (the "lex 4" was 11 by #594), because a
+  written-down count has no derivation and no expiry — the same disease #556 fixed
+  in `diagnostics.mdk` itself. Run the command.
 - **Threading:** three push funcs in typecheck (`pushTypeError`,
   `pushTypeErrorOnce`, `pushTypeErrorOnceAt`) are the only type-error entry
   points → **~55 call sites** must supply a code. Resolve needs **0 call-site
@@ -147,10 +156,11 @@ kinds (enumerated from the message families):
 | **non-exhaustive match** (warning) | `non-exhaustive match — some values may not be covered` (`:4644`) | `W-NONEXHAUSTIVE` |
 | **unreachable match arm** (warning) | `unreachable match arm — this pattern is already covered by an earlier arm` | `W-UNREACHABLE-ARM` |
 
-**Distinct-kind totals:** lex 4 · parse 3 · resolve 20 · typecheck 25 · warnings 3
-(`W-NONEXHAUSTIVE` + `W-UNREACHABLE-ARM` from typecheck + `W-GUARD-INEXHAUSTIVE`
-from exhaust). **≈ 55 codes** (the "~47" TL;DR figure rounds the near-duplicate
-field kinds together; plan for a ~50-code table).
+**Distinct-kind totals:** deliberately NOT written down — see the TL;DR bullet for the
+one-line `grep` that derives them. The counts that stood here (and the divergent ones in
+the TL;DR, which this note tried to reconcile) were both stale: the reconciliation was
+itself evidence that a hand-maintained count in a doc is a liability, not a fact. The
+table above is the inventory; the grep is the census.
 
 ---
 
@@ -167,7 +177,7 @@ kebab-case; never renumber (append only).
 | `L-UNTERMINATED-STRING` | unterminated string literal |
 | `L-UNTERMINATED-COMMENT` | unterminated block comment |
 | `L-BAD-ESCAPE` | invalid escape sequence |
-| `L-BAD-UNICODE-ESCAPE` | `\u{…}` escape that names no Unicode character — out of range (`> 10FFFF`), or a UTF-16 surrogate (`D800`–`DFFF`), which is never a scalar value. Covers **both** the value being out of range and the digit run being too long to parse exactly: `parseRadix` accumulates in a wrapping 63-bit `Int`, so `\u{8000000000000041}` (= 2^63+65) once wrapped back to `65` and silently lexed as `A` — a range check alone cannot see that, so the lexer rejects >6 significant hex digits before parsing. Both causes deliberately share one code (as `L-INT-OVERFLOW` does across its two stages): they are one user-facing defect — "this escape is not a character" — and the two messages share the `"unicode escape"` prefix that `parseErrCode` (`compiler/driver/diagnostics.mdk`) keys on, while still naming the specific cause in prose. Raised from all five `\u{…}` scan sites (char literal, plain/triple string, both interpolation continuations) |
+| `L-BAD-UNICODE-ESCAPE` | Any `\u{…}` escape the lexer must reject. Two families: **ill-formed** — the digit run is empty, is not closed by `}`, or contains a `_` (a digit separator in *integer* literals, deliberately not here — #592); and **well-formed but naming no character** — out of range (`> 10FFFF`), or a UTF-16 surrogate (`D800`–`DFFF`), which is never a scalar value. **The enumeration of causes lives in the guard clauses of `uniEscWellFormed`/`uniEscTermErr`/`uniEscErr` (`compiler/frontend/lexer.mdk`), not in this cell** — read them there. This row used to say "Covers **both**… the two messages", which #592 silently made wrong by adding four more; a list written down here has no derivation and no expiry, so it is stated as a rule instead: *every* `\u{…}` defect shares this one code (as `L-INT-OVERFLOW` does across its two stages) because they are one user-facing defect — "this escape is not a character" — and *every* message therefore opens with the `"unicode escape"` prefix that `parseErrCode` (`compiler/driver/diagnostics.mdk`) keys on, while still naming its specific cause in prose. Three checks are independently load-bearing and none is redundant: shape (an ill-formed run has no codepoint to check at all, and its terminator is not where the scanner assumed — the #592 S0), digit count (`parseRadix` accumulates in a wrapping 63-bit `Int`, so `\u{8000000000000041}` = 2^63+65 once wrapped to `65` and lexed as `A`, which no range check can see), and range (which no digit count can see — `\u{110000}` is 6 digits). Raised from all five `\u{…}` scan sites (char literal, plain/triple string, both interpolation continuations) |
 | `L-BAD-CHAR` | unexpected character |
 | `L-HS-LAMBDA` | stray `\` (Haskell lambda `\x -> e`; suggest `x => e`) |
 | `L-HS-DOLLAR` | stray `$` (Haskell low-precedence apply; suggest direct apply/parens/`\|>`) |
@@ -307,9 +317,12 @@ code from the per-stage helper below — not 20 ad-hoc literals.
   **derive at the boundary** (parser messages stay untouched).
 
 - **Lex — recover at the parse boundary.** `TLexError` surfaces as a
-  `ParseError`; match the 4 lexer messages there to emit `L-*` (else `P-PARSE`).
+  `ParseError`; match the lexer messages there to emit `L-*` (else `P-PARSE`).
   Alternatively thread a code on `RawTok (TLexError …)`. Recommend the
-  message-match at the boundary (4 patterns, contained).
+  message-match at the boundary (contained). This is now **implemented** as
+  `parseErrCode` (`compiler/driver/diagnostics.mdk`), so its `L-*` arms — not this
+  bullet — are the pattern set; the TL;DR's grep enumerates them. The bullet said
+  "the 4 lexer messages … (4 patterns)" long after there were more.
 
 - **Guard warning (exhaust).** `checkGuardExhaustiveness : … -> List String`.
   Map its output to `W-GUARD-INEXHAUSTIVE` at the two conversion sites in

@@ -6934,6 +6934,54 @@ RPAREN
 NEWLINE
 DEDENT
 NEWLINE
+IDENT "uniEscWellFormed"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "uniEscWellFormed"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+INDENT
+LET
+IDENT "s"
+EQUAL
+IDENT "p"
+PLUS
+INT 3
+NEWLINE
+LET
+IDENT "he"
+EQUAL
+IDENT "uHexEnd"
+IDENT "src"
+IDENT "len"
+IDENT "s"
+NEWLINE
+IDENT "he"
+GT
+IDENT "s"
+AND
+IDENT "he"
+LT
+IDENT "len"
+AND
+IDENT "at"
+IDENT "src"
+IDENT "he"
+EQ_EQ
+CHAR "}"
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "uniHexSigLen"
 COLON
 UPPER "Array"
@@ -7085,6 +7133,20 @@ IDENT "uniEscChar"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+INDENT
+PIPE
+IDENT "not"
+LPAREN
+IDENT "uniEscWellFormed"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+EQUAL
+UPPER "None"
+NEWLINE
+PIPE
+IDENT "otherwise"
 EQUAL
 MATCH
 IDENT "uniEscCode"
@@ -7101,6 +7163,8 @@ IDENT "cp"
 FAT_ARROW
 IDENT "charFromCode"
 IDENT "cp"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
@@ -7121,6 +7185,82 @@ IDENT "cp"
 LEQ
 INT 57343
 NEWLINE
+IDENT "uniEscTermErr"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "uniEscTermErr"
+IDENT "src"
+IDENT "len"
+IDENT "s"
+IDENT "he"
+INDENT
+PIPE
+IDENT "he"
+GEQ
+IDENT "len"
+EQUAL
+STRING "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but the file ended"
+NEWLINE
+PIPE
+IDENT "at"
+IDENT "src"
+IDENT "he"
+EQ_EQ
+CHAR "_"
+EQUAL
+STRING "unicode escape uses a `_` separator, which is not allowed here. `_` groups digits in integer literals (`1_000`, `0xD_EAD`), but a `\\u{...}` codepoint must be an unbroken run of hex digits — write the digits unbroken, as in `\\u{41}` rather than `\\u{4_1}`"
+NEWLINE
+PIPE
+IDENT "he"
+EQ_EQ
+IDENT "s"
+AND
+IDENT "at"
+IDENT "src"
+IDENT "he"
+EQ_EQ
+CHAR "}"
+EQUAL
+STRING "unicode escape `\\u{}` has no digits. A codepoint needs at least one hex digit — `\\u{41}` is 'A' and `\\u{0}` is NUL"
+NEWLINE
+PIPE
+IDENT "he"
+EQ_EQ
+IDENT "s"
+EQUAL
+INTERP_OPEN "unicode escape is not terminated. Expected one to six hex digits (0-9, a-f, A-F) then `}`, but found `"
+IDENT "charToStr"
+LPAREN
+IDENT "at"
+IDENT "src"
+IDENT "he"
+RPAREN
+INTERP_END "`"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+INTERP_OPEN "unicode escape is not terminated. Expected `}` after the hex digits, but found `"
+IDENT "charToStr"
+LPAREN
+IDENT "at"
+IDENT "src"
+IDENT "he"
+RPAREN
+INTERP_END "`"
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "uniEscErr"
 COLON
 UPPER "Array"
@@ -7136,6 +7276,40 @@ IDENT "uniEscErr"
 IDENT "src"
 IDENT "len"
 IDENT "p"
+INDENT
+PIPE
+IDENT "not"
+LPAREN
+IDENT "uniEscWellFormed"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+EQUAL
+INDENT
+IDENT "uniEscTermErr"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 3
+RPAREN
+LPAREN
+IDENT "uHexEnd"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 3
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PIPE
+IDENT "otherwise"
 EQUAL
 MATCH
 IDENT "uniEscCode"
@@ -7164,6 +7338,8 @@ IDENT "src"
 IDENT "len"
 IDENT "p"
 INTERP_END "' is out of range. A codepoint must be at most 10FFFF"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE

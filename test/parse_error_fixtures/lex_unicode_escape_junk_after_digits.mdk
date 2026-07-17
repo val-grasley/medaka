@@ -1,0 +1,7 @@
+-- Lexer error: a `\u{…}` run of VALID hex digits stopped by something that is not `}`.
+-- The `otherwise` arm of `uniEscTermErr` (#592) — distinct from `lex_unicode_escape_
+-- unterminated`, where the run is EMPTY and nothing valid was read at all. This is the
+-- arm that catches the S0's exact shape: `uniEscEnd` did `uHexEnd … + 1`, blindly
+-- assuming a `}` sat where `g` does, so pre-#592 the `41` became the codepoint and
+-- `g}` fell through into the string as literal DATA at exit 0.
+x = "a\u{41g}b"
