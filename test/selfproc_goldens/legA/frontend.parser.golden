@@ -361,6 +361,7 @@ parseLetGroupDecl : Bool -> Parser Decl
 parseLetStmt : Parser DoStmt
 parseListE : Parser Expr
 parseLocated : String -> List Decl
+parseLocatedResult : String -> Result ParseError (List Decl)
 parseMatch : Parser Expr
 parseMul : Parser Expr
 parseNamedFields : Parser (List Field)
@@ -384,6 +385,7 @@ parseProgram : Parser (List Decl)
 parseProp : Bool -> Parser Decl
 parseRecordUpdate : Parser Expr
 parseResult : String -> Result ParseError (List Decl)
+parseResultWith : String -> List Token -> List Int -> Result ParseError (List Decl)
 parseRhsExpr : Parser Expr
 parseSectionOp : String -> Parser Expr
 parseStmt : Parser (List DoStmt)

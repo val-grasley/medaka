@@ -21,7 +21,14 @@ import frontend.ast.{
   UseAlias,
   Loc,
 }
-import frontend.parser.{parse, parseLocated}
+import frontend.parser.{
+  ParseError,
+  parseResult,
+  parseLocatedResult,
+  parseErrorLine,
+  parseErrorCol,
+  parseErrorMessage,
+}
 import support.util.{
   contains,
   listLen,
@@ -397,11 +404,33 @@ findInRoots (r::rs) modId =
   let path = fileOfModuleId r modId
   if fileExists path then Some (path, r) else findInRoots rs modId
 
-readModuleProg : List (String, String) -> List String -> String -> <IO> Result String (String, List Decl)
-readModuleProg deps roots modId = match findModuleFile deps roots modId
-  None => Err (stringConcat ["unknown module: ", modId])
-  Some (path, owningRoot) =>
-    map (src => (owningRoot, parse src)) (readFile path)
+-- ── the loader's error channel (issue #100) ─────────────────────────────────
+--
+-- A load failure is DATA, not a panic.  `LoadMsg` carries the pre-existing
+-- free-text failures verbatim (unknown module / cyclic dependency / unreadable
+-- file), so every caller that only wants a string is unaffected via
+-- `loadErrorMessage`.  `LoadParseFailed path src err` is the structured half: a
+-- parse or lex error inside a MODULE of the graph, carrying the owning module's
+-- FILE PATH and the exact SOURCE that was parsed, plus the located `ParseError`.
+--
+-- Both extra fields are load-bearing.  The path is the whole point: before this,
+-- the parser panicked and the failure lost the module it belonged to, so the
+-- driver could only ever attribute it to the ENTRY file.  The source must travel
+-- WITH the error rather than be re-read by the caller, because under the LSP's
+-- unsaved-buffer `read` override the on-disk bytes are NOT what was parsed —
+-- re-reading would render the caret against stale text.
+public export data LoadError =
+  | LoadMsg String
+  | LoadParseFailed String String ParseError
+
+-- Flatten a LoadError to the free-text message the pre-#100 `Result String` API
+-- returned.  Keeps the ~15 callers that only report a string a one-line change,
+-- and upgrades them for free: a module parse error now prints
+-- `path:line:col: message` instead of a bare unlocated `parse error` panic.
+export loadErrorMessage : LoadError -> String
+loadErrorMessage (LoadMsg m) = m
+loadErrorMessage (LoadParseFailed path _ e) =
+  "\{path}:\{parseErrorLine e}:\{parseErrorCol e}: \{parseErrorMessage e}"
 
 -- ── read-callback variant (B.10.5: unsaved-editor-buffer overrides) ──
 --
@@ -410,22 +439,34 @@ readModuleProg deps roots modId = match findModuleFile deps roots modId
 -- on-disk file with an editor buffer that has not been saved yet; `None` falls
 -- back to `readFile`.  This lets the LSP analyse a project against the documents
 -- the client currently holds rather than the (possibly stale) disk copies.  The
--- existing disk-only `loadProgram`/`readModuleProg` are kept unchanged; this is
--- purely additive (`loadProgramFiles` below threads the callback through the same
--- topo-sort, so there is no second graph-walk to keep in sync).
+-- purely additive (`loadProgramFilesE` below threads the callback through the same
+-- topo-sort, so there is no second graph-walk to keep in sync).  `loadProgram` is
+-- now a projection of this walk too (see below) — there is exactly ONE DFS.
 
 -- Resolve a module ID to its FILE PATH + source, consulting the override callback
 -- first (so an unsaved buffer wins), then disk.  Returns (path, decls) so the
 -- caller can bucket diagnostics BY FILE.  `read` is the path-keyed override;
--- `parseFn` is the parser to apply (so the located variant can carry real ELoc
--- spans via parseLocated while the plain variant uses placeholder-loc parse).
-readModuleProgF : (String -> List Decl) -> (String -> Option String) -> List (String, String) -> List String -> String -> <IO> Result String (String, String, List Decl)
+-- `parseFn` is the NON-PANICKING parser to apply (so the located variant can carry
+-- real ELoc spans via parseLocatedResult while the plain variant uses
+-- placeholder-loc parseResult).  A parse failure becomes a `LoadParseFailed`
+-- tagged with THIS module's path + the exact source `parseFn` saw.
+readModuleProgF : (String -> Result ParseError (List Decl)) -> (String -> Option String) -> List (String, String) -> List String -> String -> <IO> Result LoadError (String, String, List Decl)
 readModuleProgF parseFn read deps roots modId = match findModuleFile deps roots modId
-  None => Err (stringConcat ["unknown module: ", modId])
+  None => Err (LoadMsg (stringConcat ["unknown module: ", modId]))
   Some (path, owningRoot) => match read path
-    Some src => Ok (owningRoot, path, parseFn src)
-    None => map (src => (owningRoot, path, parseFn src)) (readFile path)
+    Some src => parsedModule parseFn owningRoot path src
+    None => match readFile path
+      Err e => Err (LoadMsg e)
+      Ok src => parsedModule parseFn owningRoot path src
 -- unsaved editor buffer shadows disk
+
+-- Parse one module's source, tagging a failure with the module it came from.
+-- The single place a `ParseError` is promoted to a `LoadError`, so both the
+-- buffer-override and the on-disk arm attribute identically.
+parsedModule : (String -> Result ParseError (List Decl)) -> String -> String -> String -> Result LoadError (String, String, List Decl)
+parsedModule parseFn owningRoot path src = match parseFn src
+  Err e => Err (LoadParseFailed path src e)
+  Ok prog => Ok (owningRoot, path, prog)
 
 -- ── canonical module-id rewrite (F1b loader module identity) ─────────────────
 --
@@ -575,33 +616,6 @@ childDeps deps owningRoot roots =
   else
     deps ++ readDeps owningRoot
 
-visitMod : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
-visitMod deps roots stack visited acc modId =
-  if contains modId visited then Ok (visited, acc)
-  else
-    if contains modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
-    else match readModuleProg deps roots modId
-      Err e => Err e
-      Ok (owningRoot, prog) =>
-        let croots = childRoots owningRoot roots
-        let cdeps = childDeps deps owningRoot roots
-        let prog2 = rewriteDecls cdeps croots prog
-        map
-          ((visited2, acc2) => (modId::visited2, acc2 ++ [(modId, prog2)]))
-          (visitMods
-            cdeps
-            croots
-            (modId::stack)
-            visited
-            acc
-            (directImports prog2))
-
-visitMods : List (String, String) -> List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
-visitMods _ _ _ visited acc [] = Ok (visited, acc)
-visitMods deps roots stack visited acc (d::ds) = match visitMod deps roots stack visited acc d
-  Err e => Err e
-  Ok (v2, a2) => visitMods deps roots stack v2 a2 ds
-
 -- Load a root file + all transitive deps, dependency-first.  roots resolves
 -- module IDs to file paths (compiler: a single project dir).  Cross-project
 -- dependencies declared in the entry project's medaka.toml are read here and
@@ -658,27 +672,37 @@ trustedModsGo deps roots trustedRoots (m::ms) = match findModuleFile deps roots 
       trustedModsGo deps roots trustedRoots ms
   None => trustedModsGo deps roots trustedRoots ms
 
+-- Load a root file + transitive deps, dependency-first, WITHOUT the file paths.
+-- A projection of `loadProgramFilesE` (disk-only read, paths dropped) rather than a
+-- second DFS: until #100 this had its own `visitMod`/`visitMods`/`readModuleProg`
+-- twin of the walk below, which is exactly the parallel-driver shape that lets a
+-- fix land in one copy and silently miss the other.  Same order, same cycle
+-- detection — there is only one implementation of either now.
 export loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
-loadProgram entry roots =
-  let deps = readDeps (findProjectRoot (parentDir entry))
-  map
-    ((_, acc) => acc)
-    (visitMod deps roots [] [] [] (moduleIdOfPath roots entry))
+loadProgram entry roots = mapErr loadErrorMessage (loadProgramE entry roots)
+
+-- `loadProgram` with the structured error retained.  The check/--json drivers use
+-- this so a `LoadParseFailed` can be attributed to the module that owns it; the
+-- string-only callers keep the flattened `loadProgram` above.
+export loadProgramE : String -> List String -> <IO> Result LoadError (List (String, List Decl))
+loadProgramE entry roots = map
+  (mods => map dropPathTriple mods)
+  (loadProgramFilesE (_ => None) entry roots)
+
+dropPathTriple : (String, String, List Decl) -> (String, List Decl)
+dropPathTriple (mid, _, decls) = (mid, decls)
 
 -- ── path-carrying read-callback topo-sort (B.10.5) ──
 --
--- The same dependency-first DFS as visitMod, but (a) every read goes through the
--- `read` override callback (unsaved buffers win) and (b) the accumulator carries
--- the FILE PATH alongside (modId, decls), so analyzeProject can bucket diagnostics
--- by file.  Structurally identical to visitMod/visitMods — only the read source
--- (readModuleProgF) and the acc tuple shape differ — so the cycle detection and
--- ordering guarantees carry over verbatim.
+-- The one dependency-first DFS: every read goes through the `read` override
+-- callback (unsaved buffers win) and the accumulator carries the FILE PATH
+-- alongside (modId, decls), so analyzeProject can bucket diagnostics by file.
 
-visitModF : (String -> List Decl) -> (String -> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO> Result String (List String, List (String, String, List Decl))
+visitModF : (String -> Result ParseError (List Decl)) -> (String -> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO> Result LoadError (List String, List (String, String, List Decl))
 visitModF parseFn read deps roots stack visited acc modId =
   if contains modId visited then Ok (visited, acc)
   else
-    if contains modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
+    if contains modId stack then Err (LoadMsg (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)]))
     else match readModuleProgF parseFn read deps roots modId
       Err e => Err e
       Ok (owningRoot, path, prog) =>
@@ -697,7 +721,7 @@ visitModF parseFn read deps roots stack visited acc modId =
             acc
             (directImports prog2))
 
-visitModsF : (String -> List Decl) -> (String -> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO> Result String (List String, List (String, String, List Decl))
+visitModsF : (String -> Result ParseError (List Decl)) -> (String -> Option String) -> List (String, String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO> Result LoadError (List String, List (String, String, List Decl))
 visitModsF _ _ _ _ _ visited acc [] = Ok (visited, acc)
 visitModsF parseFn read deps roots stack visited acc (d::ds) = match visitModF parseFn read deps roots stack visited acc d
   Err e => Err e
@@ -707,25 +731,33 @@ visitModsF parseFn read deps roots stack visited acc (d::ds) = match visitModF p
 -- override and FILE PATHS in the result.  Mirrors lib/diagnostics.ml's
 -- `Loader.load_program ~read` returning `(mod_id, file_path, prog)` triples.
 -- A `read` of `(_ => None)` is exactly `loadProgram` (disk-only) plus paths.
--- Uses placeholder-loc `parse`.
-export loadProgramFiles : (String -> Option String) -> String -> List String -> <IO> Result String (List (String, String, List Decl))
-loadProgramFiles read entry roots =
-  let deps = readDeps (findProjectRoot (parentDir entry))
-  map
-    ((_, acc) => acc)
-    (visitModF parse read deps roots [] [] [] (moduleIdOfPath roots entry))
-
--- Like loadProgramFiles but parses every module with `parseLocated`, so the
--- resulting decls carry REAL ELoc spans (B.10.2b) — the LSP project path uses
--- this so type-error diagnostics get expr-level ranges, mirroring the single-doc
--- `analyzeLocated`.
-export loadProgramFilesLocated : (String -> Option String) -> String -> List String -> <IO> Result String (List (String, String, List Decl))
-loadProgramFilesLocated read entry roots =
+-- Uses placeholder-loc `parseResult`.
+export loadProgramFilesE : (String -> Option String) -> String -> List String -> <IO> Result LoadError (List (String, String, List Decl))
+loadProgramFilesE read entry roots =
   let deps = readDeps (findProjectRoot (parentDir entry))
   map
     ((_, acc) => acc)
     (visitModF
-      parseLocated
+      parseResult
+      read
+      deps
+      roots
+      []
+      []
+      []
+      (moduleIdOfPath roots entry))
+
+-- Like loadProgramFilesE but parses every module with `parseLocatedResult`, so the
+-- resulting decls carry REAL ELoc spans (B.10.2b) — the LSP project path uses
+-- this so type-error diagnostics get expr-level ranges, mirroring the single-doc
+-- `analyzeLocated`.
+export loadProgramFilesLocatedE : (String -> Option String) -> String -> List String -> <IO> Result LoadError (List (String, String, List Decl))
+loadProgramFilesLocatedE read entry roots =
+  let deps = readDeps (findProjectRoot (parentDir entry))
+  map
+    ((_, acc) => acc)
+    (visitModF
+      parseLocatedResult
       read
       deps
       roots
@@ -757,13 +789,18 @@ parseCacheLimit = 24
 -- memoizing parseLocated: consult the cache by source, else parse + insert.
 -- Most-recently-used moves to the front; the list is truncated to the limit so a
 -- long editing session does not grow it unboundedly.
-parseCachedLocated : Ref (List (String, List Decl)) -> String -> List Decl
+-- Only SUCCESSES are cached: a failure is cheap (the parse stopped early) and
+-- caching it would widen the session-lived cache's type to a Result, which every
+-- LSP caller's `Ref (List (String, List Decl))` signature would have to follow for
+-- no gain.
+parseCachedLocated : Ref (List (String, List Decl)) -> String -> Result ParseError (List Decl)
 parseCachedLocated cacheRef src = match lookupAssoc src cacheRef.value
-  Some decls => decls
-  None =>
-    let decls = parseLocated src
-    let _ = setRef cacheRef (takeFirst parseCacheLimit ((src, decls) :: dropKey src cacheRef.value))
-    decls
+  Some decls => Ok decls
+  None => match parseLocatedResult src
+    Err e => Err e
+    Ok decls =>
+      let _ = setRef cacheRef (takeFirst parseCacheLimit ((src, decls) :: dropKey src cacheRef.value))
+      Ok decls
 
 -- drop any existing entry with this key (so a re-parse refreshes its position).
 dropKey : String -> List (String, List Decl) -> List (String, List Decl)
@@ -778,12 +815,18 @@ takeFirst n (x::xs)
   | n <= 0 = []
   | otherwise = x :: takeFirst (n - 1) xs
 
--- Like loadProgramFilesLocated but parses each module through the source-keyed
+-- Like loadProgramFilesLocatedE but parses each module through the source-keyed
 -- memo `parseCacheRef`.  Behaviourally identical (same located decls per module);
 -- only the cost differs (unchanged deps skip re-parsing).  The LSP threads a
 -- session-lived cache so reuse spans didChange events.
 export loadProgramFilesLocatedCached : Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> <IO> Result String (List (String, String, List Decl))
 loadProgramFilesLocatedCached parseCacheRef read entry roots =
+  mapErr
+    loadErrorMessage
+    (loadProgramFilesLocatedCachedE parseCacheRef read entry roots)
+
+export loadProgramFilesLocatedCachedE : Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> <IO> Result LoadError (List (String, String, List Decl))
+loadProgramFilesLocatedCachedE parseCacheRef read entry roots =
   let deps = readDeps (findProjectRoot (parentDir entry))
   map
     ((_, acc) => acc)

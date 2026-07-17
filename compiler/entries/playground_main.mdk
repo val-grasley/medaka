@@ -55,7 +55,13 @@ import frontend.parser.{
   parseErrorMessage,
 }
 import frontend.desugar.{desugar}
-import driver.loader.{loadProgram, unknownModuleIdOf, findImportLoc}
+import driver.loader.{
+  LoadMsg,
+  LoadParseFailed,
+  loadProgramE,
+  unknownModuleIdOf,
+  findImportLoc,
+}
 import driver.diagnostics.{
   analyzeProject,
   analyzeLocated,
@@ -153,8 +159,11 @@ run runtimeP coreP entry roots = match readFile runtimeP
       Err e => emitLoadFail entry e
       Ok tsrc => match parseResult tsrc
         Err pe => emitParseError entry pe
-        Ok _ => match loadProgram entry roots
-          Err lmsg =>
+        Ok _ => match loadProgramE entry roots
+          -- #100: a parse/lex error in an IMPORTED module squiggles THAT module,
+          -- exactly as an entry-file parse error squiggles the entry.
+          Err (LoadParseFailed mpath _ pe) => emitParseError mpath pe
+          Err (LoadMsg lmsg) =>
             -- Recover the failing import's own span so the squiggle lands on the
             -- bad `import` line, not line 1 (mirrors medaka_cli's F3 Chunk B
             -- entry-scan). Available-modules help is CLI-only (needs a stdlib dir
@@ -266,8 +275,9 @@ mainShapeError decls = match findMainFunDef decls
 -- Display …` diagnostic (via the __MEDAKA_DIAGNOSTICS__ marker, NOT the WAT
 -- marker).  A Unit/Async main is unchanged.
 doEmit : String -> String -> String -> String -> List String -> List (String, String, List Diag) -> <IO> Unit
-doEmit rsrc csrc tsrc entry roots warnTriples = match loadProgram entry roots
-  Err e => emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError "R-MODULE-LOAD" e None None None])])
+doEmit rsrc csrc tsrc entry roots warnTriples = match loadProgramE entry roots
+  Err (LoadParseFailed mpath _ pe) => emitParseError mpath pe
+  Err (LoadMsg e) => emitDiagnostics (cjAllToJson [(entry, "", [Diag SevError "R-MODULE-LOAD" e None None None])])
   Ok mods =>
     let rt = desugar (parse rsrc)
     let core = desugar (parse csrc)

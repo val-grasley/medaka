@@ -74,8 +74,11 @@ import frontend.resolve.{
   resolveModulesToHumaneByPath,
 }
 import driver.loader.{
-  loadProgram,
-  loadProgramFilesLocated,
+  LoadError,
+  LoadMsg,
+  LoadParseFailed,
+  loadProgramE,
+  loadProgramFilesLocatedE,
   findProjectRoot,
   entrySearchRoots,
   projectTrustedMods,
@@ -375,9 +378,9 @@ runCheckCmd argv =
               -- which collapses every span to 1:0, so an import-bearing
               -- file's Unbound-variable diagnostic pointed at the import
               -- line instead of the actual use site.
-              Ok _ => match loadProgramFilesLocated (_ => None) target roots
-                Err lmsg =>
-                  let _ = ePutStrLn (moduleLoadErrText tsrc target stdlibDir lmsg)
+              Ok _ => match loadProgramFilesLocatedE (_ => None) target roots
+                Err lerr =>
+                  let _ = ePutStrLn (moduleLoadErrText tsrc target stdlibDir lerr)
                   exit 1
                 Ok modsWithPath =>
                   let mods = map dropModPath modsWithPath
@@ -406,8 +409,14 @@ runCheckCmd argv =
 -- an actionable fix.  Other loader errors (cycle / unreadable file) are
 -- unaffected: `unknownModuleIdOf` gates the hint to the one message shape it
 -- applies to.
-moduleLoadErrText : String -> String -> String -> String -> <IO> String
-moduleLoadErrText tsrc target stdlibDir lmsg = match unknownModuleIdOf lmsg
+-- A parse/lex error inside an IMPORTED module (#100) renders exactly as though
+-- that module had been checked directly: `ppParseError` against the module's OWN
+-- source and path, so the file, line/col, caret and `P-*`/`L-*` code all name the
+-- module that is actually broken rather than the entry that imported it.
+moduleLoadErrText : String -> String -> String -> LoadError -> <IO> String
+moduleLoadErrText _ _ _ (LoadParseFailed mpath msrc e) =
+  ppParseError msrc mpath e
+moduleLoadErrText tsrc target stdlibDir (LoadMsg lmsg) = match unknownModuleIdOf lmsg
   None => lmsg
   Some mid =>
     let msg = lmsg ++ availableModulesHint stdlibDir
@@ -649,7 +658,8 @@ hasFlag flag (x::rest)
 -- multi-module path has a known limitation for single-file type errors:
 --   single module (no non-core imports) → analyzeLocated (single-file path)
 --   multi-module → analyzeProject (loader path)
--- Parse errors are detected FIRST (before loadProgram panics) via parseResult.
+-- The ENTRY's parse errors are detected FIRST via parseResult; an IMPORTED
+-- module's are reported by the loader itself (#100), attributed to that module.
 -- Output: {"files":[{"file":<path>,"diagnostics":[...]}]}
 -- Exits 1 if any error diagnostic; 0 otherwise.
 -- The whole routing (parse-error / load-error / single / multi module) now lives
@@ -1110,12 +1120,13 @@ typecheckGate allowInternal root input =
       Err msg => TGErr msg
       Ok csrc => match readFile input
         Err msg => TGErr msg
-        -- PARSE-ERROR-LOCATION Stage 1: a located parse diagnostic before
-        -- loadProgram's panicking `parse` fires a bare `parse error`.
+        -- PARSE-ERROR-LOCATION Stage 1: a located parse diagnostic for the ENTRY.
+        -- An IMPORTED module's parse error is located by the loader itself (#100)
+        -- and rendered by moduleLoadErrText.
         Ok tsrc => match parseResult tsrc
           Err e => TGErr (ppParseError tsrc input e)
-          Ok _ => match loadProgram input roots
-            Err msg => TGErr msg
+          Ok _ => match loadProgramE input roots
+            Err lerr => TGErr (moduleLoadErrText tsrc input stdlibDir lerr)
             Ok mods =>
               let trusted = projectTrustedMods input roots stdlibDir mods
               typecheckGateRoute allowInternal trusted roots rsrc csrc tsrc input mods
@@ -1291,15 +1302,17 @@ runRunCmd argv =
           -- uses placeholder-loc `parse`, which collapses every span to 1:0.
           -- Structurally identical decls → eval output byte-identical.
           -- PARSE-ERROR-LOCATION Stage 1: surface a located parse error on the
-          -- entry file BEFORE loadProgramFilesLocated's panicking `parse` fires a
-          -- bare `parse error`.  Error-path only; valid input is unaffected.
+          -- ENTRY file.  An IMPORTED module's parse error is located by the loader
+          -- itself (#100) and rendered by moduleLoadErrText, so neither one is a
+          -- bare `parse error` panic any more.  Error-path only; valid input is
+          -- unaffected.
           Ok csrc => match parseResult (readFileSafe target)
             Err e =>
               let _ = ePutStrLn (ppParseError (readFileSafe target) target e)
               exit 1
-            Ok _ => match map (map dropModPath) (loadProgramFilesLocated (_ => None) target roots)
-              Err msg =>
-                let _ = ePutStrLn msg
+            Ok _ => match map (map dropModPath) (loadProgramFilesLocatedE (_ => None) target roots)
+              Err lerr =>
+                let _ = ePutStrLn (moduleLoadErrText (readFileSafe target) target stdlibDir lerr)
                 exit 1
               Ok mods =>
                 let rtD = desugar (parse rsrc)

@@ -198,8 +198,11 @@ LSP does:
   `MEDAKA_ROOT` + `stdlib/runtime.mdk`/`core.mdk`).
 - **Project:** use the loader + diagnostics path —
   `checkModules : List Decl -> List Decl -> List (String,List Decl) -> <Mut> List (String,List (String,Scheme))`
-  (`typecheck.mdk:9807`), fed by `loadProgramFiles`/`loadProgramFilesLocated`
-  (`loader.mdk:532,545`).
+  (`typecheck.mdk:9807`), fed by `loadProgramFilesE`/`loadProgramFilesLocatedE`
+  (the string-error `loadProgramFiles`/`loadProgramFilesLocated` wrappers were
+  removed with #100 — these return `Result LoadError`, so a dependency's parse
+  error arrives attributed to ITS file; flatten with `loadErrorMessage` if the
+  caller only wants text).
 - **`typechecked` flag:** harvest errors via
   `checkProgramDiags : … -> <Mut> (List (String,Option Loc), List (String,Option Loc))`
   (`typecheck.mdk:9314`) or the boolean `checkErrorsWithRuntime`
@@ -289,7 +292,7 @@ This is a **third pass** in the lint run, after the per-file `Rule` pass and the
 | `compiler/tools/lint.mdk` | New `record TypedRule`, `record TypeOracle`, `isIrrefutableArm`, `lintTypedProgram`/`runTypedRuleOn`, the typed-rule fns + `allTypedRules` registry. (`Rule`/`CrossFileRule` untouched.) |
 | `compiler/tools/lint.mdk` | New `import frontend.exhaust.{Oracle(..), buildOracle, oGetCtors, oGetCtorType, oGetCtorFields}` and `import types.typecheck.{Scheme(..), Mono(..)}` (Tier 1). |
 | `compiler/driver/medaka_cli.mdk` | In `runLintCmd` (`:764-781`): `let typeAware = hasFlag "--type-aware" argv` (`:765-769`; `lintTargets` at `:942` already strips any `--`-prefixed token, so no change there). When set, build the `TypeOracle` (Tier 0 always; Tier 1 via the harvest below) and call `lintTypedProgram` after the existing per-file/cross-file passes. |
-| `compiler/driver/medaka_cli.mdk` | New oracle-build helper near the lint helpers (`lintOneFileReport` `:899`, `parseLintFiles` `:813`): single-file mirrors `docSchemes` (`lsp.mdk:479-486`) + `currentLocalSchemes`; project mirrors `checkModules` fed by `loadProgramFiles`. Reads runtime/core like `runCheckCmd` (`:115-128`). |
+| `compiler/driver/medaka_cli.mdk` | New oracle-build helper near the lint helpers (`lintOneFileReport` `:899`, `parseLintFiles` `:813`): single-file mirrors `docSchemes` (`lsp.mdk:479-486`) + `currentLocalSchemes`; project mirrors `checkModules` fed by `loadProgramFilesE`. Reads runtime/core like `runCheckCmd` (`:115-128`). |
 | (reuse, no edit) | `compiler/frontend/exhaust.mdk` `buildOracle`/accessors (`:108-190`); `compiler/types/typecheck.mdk` `checkProgramSchemesWithRuntime` (`:7460`), `currentLocalSchemes` (`:1458`), `checkProgramDiags` (`:9314`), `checkModules` (`:9807`); `compiler/driver/diagnostics.mdk` `analyzeProject` (`:340`). |
 
 No seed re-mint expected: `lint` is outside the self-compile graph (per

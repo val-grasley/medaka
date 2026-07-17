@@ -52,9 +52,11 @@ import types.typecheck.{
   tcMsg,
 }
 import driver.loader.{
-  loadProgramFilesLocated,
+  LoadMsg,
+  LoadParseFailed,
   loadProgramFilesLocatedCached,
-  loadProgram,
+  loadProgramFilesLocatedCachedE,
+  loadProgramE,
   projectTrustedMods,
   entrySearchRoots,
   findImportLoc,
@@ -506,10 +508,7 @@ wrappedRead cacheRef staleRef read path = match read path
       let _ = setRef cacheRef (cachePut path src cacheRef.value)
       Some src
     Err e =>
-      let ploc = parseErrLoc path e
-      let (phelp, pfix) = parseErrHelpFix (parseErrorMessage e) ploc
-      let diag = Diag SevError (parseErrCode (parseErrorMessage e)) (parseErrorMessage e) (Some ploc) phelp pfix
-      let _ = setRef staleRef ((path, diag)::staleRef.value)
+      let _ = setRef staleRef ((path, parseErrDiag path e)::staleRef.value)
       match lookupAssoc path cacheRef.value
         Some good => Some good
         None => Some src  -- no cached version → use the broken one
@@ -522,6 +521,22 @@ parseErrLoc path e =
   let ln = parseErrorLine e
   let c = parseErrorCol e
   Loc path ln c ln (c + 1)
+
+-- A located parse/lex `Diag` for `path`, carrying the stable `P-*`/`L-*` code and
+-- any machine-applicable fix.  One definition shared by the stale-buffer path and
+-- the loader's `LoadParseFailed` path (#100) so an imported module's parse error
+-- is byte-for-byte the diagnostic that file gets when checked directly.
+export parseErrDiag : String -> ParseError -> Diag
+parseErrDiag path e =
+  let ploc = parseErrLoc path e
+  let (phelp, pfix) = parseErrHelpFix (parseErrorMessage e) ploc
+  Diag
+    SevError
+    (parseErrCode (parseErrorMessage e))
+    (parseErrorMessage e)
+    (Some ploc)
+    phelp
+    pfix
 
 -- ── project analysis ────────────────────────────────────────────────────────
 --
@@ -554,8 +569,14 @@ analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
   let wread = p => wrappedRead cacheRef staleRef read p
   let runtimeP = preludeDesugared parseCacheRef runtimeSrc
   let coreP = preludeDesugared parseCacheRef coreSrc
-  match loadProgramFilesLocatedCached parseCacheRef wread entry roots
-    Err e =>
+  match loadProgramFilesLocatedCachedE parseCacheRef wread entry roots
+    -- #100: a parse/lex error in a dependency is attributed to THAT module's file
+    -- with its own located `P-*`/`L-*` diag — this is the LSP's most common input
+    -- (a half-typed buffer), and it used to reach here as a panic that took the
+    -- whole didChange response with it.
+    Err (LoadParseFailed mpath _ pe) =>
+      appendStale staleRef [(mpath, [parseErrDiag mpath pe])]
+    Err (LoadMsg e) =>
       appendStale staleRef [(entry, [mkDiag SevError "R-MODULE-LOAD" e None])]
     Ok mods =>
       let seeded = seedAll (map midPath mods) []
@@ -911,8 +932,12 @@ checkJsonFile allowInternal rsrc csrc target stdlibDir =
   let roots = entrySearchRoots (dirOf target) ++ [stdlibDir]
   match parseResult src
     Err e => (cjParseErrJson target src e, True)
-    Ok _ => match loadProgram target roots
-      Err lmsg =>
+    Ok _ => match loadProgramE target roots
+      -- #100: a parse/lex error in an IMPORTED module serializes exactly like one
+      -- in the entry — same `P-*`/`L-*` code, same real range — only attributed to
+      -- the MODULE's file and rendered against the module's OWN source.
+      Err (LoadParseFailed mpath msrc pe) => (cjParseErrJson mpath msrc pe, True)
+      Err (LoadMsg lmsg) =>
         let mloc = match unknownModuleIdOf lmsg
           None => None
           Some mid => findImportLoc mid (parseLocated src)

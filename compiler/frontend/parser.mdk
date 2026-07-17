@@ -4026,53 +4026,77 @@ semicolonMsg =
 -- drivers (check / eval / fmt) rely on.
 export parseResult : String -> Result ParseError (List Decl)
 parseResult src = match tokenizeWithOffsets src
-  (tokList, offList) =>
-    let toks = arrayFromList tokList
-    let offs = arrayFromList offList
-    let srcLen = stringLength src
-    let seIdx = firstSlashEqIdx toks 0
-    let lmIdx = firstMutIdx toks 0
-    let recIdx = firstRecordIdx toks 0
-    let fnIdx = firstFunctionIdx toks 0
-    let ilIdx = firstInlineLetMissingIn toks 0
-    let coIdx = firstHsCaseOfIdx toks 0
-    let btIdx = firstBacktickIdx toks 0
-    let wiIdx = firstWithIdx toks 0
-    let sigIdx = firstHsSigIdx toks 0 0 True
-    let bcIdx = firstBlockCommentIdx toks 0
-    let bbIdx = firstBraceBlockIdx toks 0
-    let fkwIdx = firstForeignKwIdx toks 0 True
-    match firstLexError toks 0
-      Some (leIdx, leMsg) =>
-        let leMsg2 = if leMsg == "unexpected character ';'" then
-          semicolonMsg
-        else
-          leMsg
-        Err (mkLocated src toks offs srcLen leMsg2 leIdx)
-      None =>
-        if seIdx >= 0 then
-          Err (mkLocated src toks offs srcLen "unexpected '/='. (Did you mean '!='?)" seIdx)
-        else if lmIdx >= 0 then
-          Err (mkLocated src toks offs srcLen letMutRemovedMsg lmIdx)
-        else if recIdx >= 0 then
-          Err (mkLocated src toks offs srcLen recordRemovedMsg recIdx)
-        else if fnIdx >= 0 then
-          Err (mkLocated src toks offs srcLen functionRemovedMsg fnIdx)
-        else if ilIdx >= 0 then
-          Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
-        else if coIdx >= 0 then
-          Err (mkLocated src toks offs srcLen hsCaseOfMsg coIdx)
-        else if btIdx >= 0 then
-          Err (mkLocated src toks offs srcLen backtickInfixMsg btIdx)
-        else if wiIdx >= 0 then
-          Err (mkLocated src toks offs srcLen letRecWithRemovedMsg wiIdx)
-        else if sigIdx >= 0 then
-          Err (mkLocated src toks offs srcLen hsSigMsg sigIdx)
-        else if bcIdx >= 0 then
-          Err (mkLocated src toks offs srcLen blockCommentMsg bcIdx)
-        else if bbIdx >= 0 then
-          Err (mkLocated src toks offs srcLen braceBlockMsg bbIdx)
-        else if fkwIdx >= 0 then
-          Err (mkLocated src toks offs srcLen (foreignKwMsg (peekTok toks fkwIdx)) fkwIdx)
-        else
-          resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)
+  (tokList, offList) => parseResultWith src tokList offList
+
+-- Non-panicking located parse: the `parseResult` of `parseLocated`.  Sets the
+-- loc-state refs from the (start, end) offset pairs — so the ELoc wrappers carry
+-- REAL line/col, exactly as `parseLocated` does — then runs the SAME scanners and
+-- grammar as `parseResult` via the shared `parseResultWith` body.  The loader
+-- uses this so a parse/lex error in an imported module surfaces as located DATA
+-- (issue #100) instead of `parseLocated`'s `panic "parse error"`.
+--
+-- `tokenizeWithOffsetPairs` yields the byte-identical token stream
+-- `tokenizeWithOffsets` does (both are `layout*` over the same chars) and its
+-- pair STARTS are exactly the latter's offsets, so `map fst` feeds
+-- `parseResultWith` the array it expects — one tokenize, not two.
+export parseLocatedResult : String -> Result ParseError (List Decl)
+parseLocatedResult src = match tokenizeWithOffsetPairs src
+  (tokList, offPairs) =>
+    let _ = setLocState src (arrayFromList offPairs)
+    parseResultWith src tokList (map fst offPairs)
+
+-- Shared body of `parseResult` / `parseLocatedResult`: the removed-construct and
+-- lex-error pre-scans, then the grammar, over an ALREADY-tokenized stream.  Split
+-- out so the located entry does not have to tokenize a second time (the loader
+-- parses every module in the graph through it).
+parseResultWith : String -> List Token -> List Int -> Result ParseError (List Decl)
+parseResultWith src tokList offList =
+  let toks = arrayFromList tokList
+  let offs = arrayFromList offList
+  let srcLen = stringLength src
+  let seIdx = firstSlashEqIdx toks 0
+  let lmIdx = firstMutIdx toks 0
+  let recIdx = firstRecordIdx toks 0
+  let fnIdx = firstFunctionIdx toks 0
+  let ilIdx = firstInlineLetMissingIn toks 0
+  let coIdx = firstHsCaseOfIdx toks 0
+  let btIdx = firstBacktickIdx toks 0
+  let wiIdx = firstWithIdx toks 0
+  let sigIdx = firstHsSigIdx toks 0 0 True
+  let bcIdx = firstBlockCommentIdx toks 0
+  let bbIdx = firstBraceBlockIdx toks 0
+  let fkwIdx = firstForeignKwIdx toks 0 True
+  match firstLexError toks 0
+    Some (leIdx, leMsg) =>
+      let leMsg2 = if leMsg == "unexpected character ';'" then
+        semicolonMsg
+      else
+        leMsg
+      Err (mkLocated src toks offs srcLen leMsg2 leIdx)
+    None =>
+      if seIdx >= 0 then
+        Err (mkLocated src toks offs srcLen "unexpected '/='. (Did you mean '!='?)" seIdx)
+      else if lmIdx >= 0 then
+        Err (mkLocated src toks offs srcLen letMutRemovedMsg lmIdx)
+      else if recIdx >= 0 then
+        Err (mkLocated src toks offs srcLen recordRemovedMsg recIdx)
+      else if fnIdx >= 0 then
+        Err (mkLocated src toks offs srcLen functionRemovedMsg fnIdx)
+      else if ilIdx >= 0 then
+        Err (mkLocated src toks offs srcLen inlineLetMissingInMsg ilIdx)
+      else if coIdx >= 0 then
+        Err (mkLocated src toks offs srcLen hsCaseOfMsg coIdx)
+      else if btIdx >= 0 then
+        Err (mkLocated src toks offs srcLen backtickInfixMsg btIdx)
+      else if wiIdx >= 0 then
+        Err (mkLocated src toks offs srcLen letRecWithRemovedMsg wiIdx)
+      else if sigIdx >= 0 then
+        Err (mkLocated src toks offs srcLen hsSigMsg sigIdx)
+      else if bcIdx >= 0 then
+        Err (mkLocated src toks offs srcLen blockCommentMsg bcIdx)
+      else if bbIdx >= 0 then
+        Err (mkLocated src toks offs srcLen braceBlockMsg bbIdx)
+      else if fkwIdx >= 0 then
+        Err (mkLocated src toks offs srcLen (foreignKwMsg (peekTok toks fkwIdx)) fkwIdx)
+      else
+        resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)

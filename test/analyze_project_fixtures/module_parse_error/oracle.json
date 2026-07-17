@@ -1,0 +1,1 @@
+{"files":[{"file":"test/analyze_project_fixtures/module_parse_error/broken.mdk","diagnostics":[{"message":"unexpected `=`","range":{"end":{"character":11,"line":3},"start":{"character":10,"line":3}},"severity":1,"source":"medaka"}]}]}

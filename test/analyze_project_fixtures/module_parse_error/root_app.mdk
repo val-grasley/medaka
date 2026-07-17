@@ -1,0 +1,4 @@
+import helper.{inc}
+import broken.{bad}
+
+main = println (inc bad)
