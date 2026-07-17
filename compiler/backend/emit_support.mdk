@@ -57,6 +57,8 @@ eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
 eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
 eagerVars b (CStringIndex a i) = eagerVars b a ++ eagerVars b i
 eagerVars b (CStringSlice a lo hi _) = eagerVars b a
+  ++ eagerVars b lo
+  ++ eagerVars b hi
 eagerVars b (CListIndex a i) = eagerVars b a ++ eagerVars b i
 eagerVars b (CListSlice a lo hi _) = eagerVars b a
   ++ eagerVars b lo
@@ -72,8 +74,21 @@ eagerVarsList b (e::rest) = eagerVars b e ++ eagerVarsList b rest
 
 eagerVarsArms : List String -> List CArm -> List String
 eagerVarsArms _ [] = []
-eagerVarsArms b ((CArm pat _ body)::rest) = eagerVars (patVars pat ++ b) body
+eagerVarsArms b ((CArm pat gs body)::rest) = eagerVarsGuarded (patVars pat ++ b) gs body
   ++ eagerVarsArms b rest
+
+-- an arm's guard chain + body.  A guard is EAGER — it runs when the arm is
+-- tested, so a global it reads is a real init-order edge (dropping the whole
+-- guard list is what let `cell = match 3 { m if m < lim => … }` be emitted
+-- before `lim` and silently take the wrong arm).  A `Pat <- e` guard binds to
+-- its RIGHT: its pattern vars scope over the later guards and the body, exactly
+-- as the arm's own pattern does, so thread them rather than scanning flat.
+eagerVarsGuarded : List String -> List CGuard -> CExpr -> List String
+eagerVarsGuarded b [] body = eagerVars b body
+eagerVarsGuarded b ((CGBool c)::rest) body = eagerVars b c
+  ++ eagerVarsGuarded b rest body
+eagerVarsGuarded b ((CGBind pat e)::rest) body = eagerVars b e
+  ++ eagerVarsGuarded (patVars pat ++ b) rest body
 
 eagerVarsFields : List String -> List CField -> List String
 eagerVarsFields _ [] = []

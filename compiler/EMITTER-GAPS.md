@@ -813,3 +813,78 @@ Eval-only fixtures capture the shape (these pass under `eval_typed_modules_main`
 **Pointer for a future session:** the discrepancy is between `implEntriesOf` (`compiler/backend/llvm_emit.mdk`, the impl-entry registry the emitter's define-generation walks) and how `compiler/entries/llvm_emit_modules_main.mdk` assembles impl entries across a multi-module build — a sibling module's impl entries appear to reach the call-emission path but not the define-generation walk. Not yet root-caused; tracked here so a future session doesn't have to rediscover the repro.
 
 **With this + approach C, Float on WasmGC is CLOSED** — monomorphic concrete-Float (C, both backends) AND polymorphic Num/Ord (A, wasm). Remaining Float items: C4 bare-Float-main auto-print (orthogonal, deferred); B/monomorphization (the separate instance-DCE roadmap item, not a Float bug).
+
+---
+
+## NATIVE-EAGER-INIT — eager value-global init is ordered by DEPENDENCY, not source (#553; deviation owned by #561)
+
+**This law existed nowhere for the native backend until 2026-07-17.** `grep -i eager` over
+`STAGE2-DESIGN.md`, `RUNTIME-DESIGN.md` and this file returned **zero hits**; the only written
+law lived in a file called **WASM-SEMANTICS** (WP10). That silence is not cosmetic — it
+produced **two confident, checkably false claims in `llvm_emit.mdk` itself**, both defaulting
+to the unsafe direction, both unchallenged for months:
+
+1. *"native is unaffected — it does not eagerly init these globals"* (via #543/#553's body).
+   **False.** `orderedValBinds` (`backend/llvm_emit.mdk`) is fed by `bindFreeVars` =
+   the **same shared `eagerVars`** (`backend/emit_support.mdk`) as wasm's `topoSortValBinds`,
+   with the same blind spots. Same root, both backends.
+2. *"a surviving eager forward ref is a genuine value cycle (**none arise in practice**) and
+   the cell still holds 0 — but that is **exactly the interpreter's recursive-value
+   semantics**"* (`llvm_emit.mdk`, the `emitVar` global-load comment). **Both halves false.**
+   `x = x + 1` is a two-line counterexample: eval raises `E-CYCLIC-VALUE` and exits 1; native
+   silently prints `1` and exits 0. The interpreter does **not** hold 0 — it black-holes and
+   raises. The comment has been corrected in place.
+
+### The law
+
+A nullary top-level binding is an **eagerly-initialized value global**. The `@main` init
+prologue computes each rhs **once, eagerly**, so a binding whose rhs reads another value
+global must be emitted **after** that dependency, or it captures the still-zero cell. Source
+order is not dependency order, so `orderedValBinds` topologically sorts by intra-value-global
+references, with edges from `eagerVars`.
+
+**The failure mode is SILENT and tracks the poisoned global's TYPE:** an unboxed `Int` reads
+a zero word and returns a plausible wrong answer at **exit 0**; a boxed value dereferences
+null and **SIGSEGVs (exit 139)**. Wasm traps loudly at instantiate. **Only the loud arm was
+ever noticed** (#543, via the playground) — the silent arm is the S0.
+
+⚠️ **This is a DEVIATION from a decided invariant, not the design.** `lazy top-level nullary
+canonical` is settled, and `eval/eval.mdk` implements it (`VThunk`/`forceCell`/`blackholeCell`).
+The eager sort is an **unsound static approximation of laziness**: it is correct only where its
+edge set is complete, and incomplete edges fail silently at exit 0. **That is why eval is the
+only correct engine on every known divergence — the backends implement a different language.**
+The deviation is bounded and owned by **#561**, which DELETES the sort rather than fixing it.
+
+### Status (2026-07-17, after #553 Stage A)
+
+`eagerVars` was never only call-blind — it also **dropped subterms of the node it stood on**.
+Stage A restored those; the remaining arms need reachability (#553 Stage B) or thunks (#561).
+
+| # | shape | eval | native | status |
+|---|---|---|---|---|
+| 1 | `mkVal _ = base` · `cell = mkVal ()` · `base = 42` | `42` | `0` silent | **OPEN** — call-hidden; needs the Stage B closure |
+| 2 | `src = "hello"` · `part = src.[lo..3]` · `lo = 1` | `el` | was `hel` silent | ✅ **FIXED (Stage A)** — `CStringSlice` now descends `lo`/`hi` |
+| 3 | `m if m < lim` guard in a global's rhs, `lim` later | `under` | was `over` silent | ✅ **FIXED (Stage A)** — `eagerVarsGuarded` replaces the guard-discarding wildcard |
+| 4 | `cell = mk True`, impl body reads a later global | `42` | `0` silent | **OPEN** — a DISPATCH edge (`CMethod`/`CDict`), not a `CVar`; a call-graph closure alone misses it |
+| 5 | `x = x + 1` | `E-CYCLIC-VALUE` exit 1 | `1` exit 0 | **OPEN** — a sort has no answer for a cycle; laziness does (#561) |
+
+**#2, #3 and #5 involve NO CALL.** The remedy WP10 stated — *"a closure that follows calls"* —
+fixes roughly half, and is corrected there.
+
+⭐ **The decisive control:** `CListSlice` descended `lo`/`hi` all along and was **green on the
+identical program** while `CStringSlice` was wrong. Same shape, neighbouring arm. That is what
+makes this **structural completeness**, not an algorithm choice — the edge was never hidden,
+it was never scanned. Pinned by `test/llvm_fixtures_typed/eager_global_{string,list}_slice.mdk`
+and `test/llvm_fixtures/eager_global_guard.mdk`; the call-hidden arm stays ledgered under
+`emitter:shared-eager-init` in `test/engine_divergence.txt` and drains when Stage B lands.
+
+⚠️ **No gate we have can prove the edge set complete.** A parity gate is blind here (both
+backends are equally wrong), the fixpoint is native and was green throughout (in the compiler's
+own graph native escapes only by **luck** — `resetCrossModuleState ()` overwrites the poisoned
+bundle before any reader dereferences it), the in-language suite runs under **eval**, the one
+correct engine, and `diff_compiler_perf_scaling.sh` grades **allocation**, so a pure scan is
+invisible to it **by construction**. Only removing the approximation (#561) can close this class.
+
+**Until then:** a value global whose initializer reaches another global through a **call** or a
+**method dispatch** is unsound on both backends. Keep the read in the binding's own body (pass
+it as an argument) so `eagerVars` can see it.

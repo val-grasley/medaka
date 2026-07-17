@@ -1,0 +1,41 @@
+-- WP10 (docs/spec/WASM-SEMANTICS.md §1) — #553 Stage A: the THIRD silent S0, and the one
+-- nobody had ever named. It was found by the design pass, not by any gate or any report.
+--
+-- Like `eager_global_string_slice.mdk` and unlike `eager_global_call_hidden.mdk`, this
+-- involves NO CALL — so WP10's stated remedy ("a closure that follows calls") leaves it
+-- live. A match GUARD is evaluated EAGERLY when the arm is tested, so a global it reads is
+-- a real init-order edge:
+--
+--   cell =
+--     match 3
+--       m if m < lim => "under"   -- `lim` is read here, at init time
+--       _ => "over"
+--   lim = 10                      -- ...but declared later
+--
+-- `eagerVarsArms` (compiler/backend/emit_support.mdk) matched `CArm pat _ body` — the
+-- underscore DISCARDED THE ENTIRE GUARD LIST. So `lim` produced no edge, `cell` was
+-- emitted before it, the guard compared against a still-zero cell, `3 < 0` was False, and
+-- the program silently took the WRONG ARM.
+--
+-- Measured on the shipping engines BEFORE the fix (2026-07-17, origin/main 01eadd60):
+--   eval   -> under          (correct)
+--   native -> over, exit 0   (a WRONG ANSWER with no diagnostic — the S0)
+--
+-- Note the failure is not a null read or a crash: it is a wrong BRANCH. The poisoned zero
+-- is a perfectly valid Int, the comparison succeeds, and the program returns a plausible
+-- answer. There is nothing for a crash-based or trap-based gate to catch, on either
+-- backend — which is why this one survived unnamed while the loud wasm arm of the same
+-- root cause (#543) got noticed within a day.
+--
+-- Stage A replaced the discarding wildcard with `eagerVarsGuarded`, which walks the guard
+-- chain and threads each `Pat <- e` guard's bindings into the guards to its right and the
+-- body — matching the arm's real scoping rather than scanning flat.
+
+cell =
+  match 3
+    m if m < lim => "under"
+    _ => "over"
+
+lim = 10
+
+main = cell
