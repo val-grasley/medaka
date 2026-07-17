@@ -551,7 +551,15 @@ jobs:
             # backend is the 2nd-heaviest shard at 5.3min against gates(engines)' 5.8min
             # critical path, so it goes where there is ROOM. Same reasoning as
             # dispatch_shape below and build_construct_coverage in `frontend`.
-            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'diff_compiler_dispatch_shape' 'diff_compiler_prelude_obj' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
+            #
+            # 'diff_compiler_slice_oob' (#550, 9.3s measured) is a BACKEND gate here for
+            # the SAME cost reason, third time over: its nearest sibling by shape is
+            # diff_compiler_let_refute (also run≠build, also build+exec, also a coded
+            # runtime abort), which lives in `backend` — but backend has no room, and this
+            # shard does. It needs ./medaka + the emitter (6 real `medaka build` + clang),
+            # which this shard already provides for dispatch_shape's `build --keep-ir`
+            # and prelude_obj.
+            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'diff_compiler_dispatch_shape' 'diff_compiler_prelude_obj' 'diff_compiler_slice_oob' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
             # 'build_cmd' (T8): THE end-to-end gate for the SHIPPING `medaka build` CLI —
             # 14 real programs built through the actual CLI, each binary's stdout diffed

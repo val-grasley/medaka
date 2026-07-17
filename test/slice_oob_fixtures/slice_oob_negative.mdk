@@ -1,0 +1,3 @@
+-- #550: negative `lo` reads BEFORE the array.  The element count (1 - -2 = 3) is
+-- positive and small, so nothing but the explicit `lo < 0` disjunct catches this.
+main = println [|1, 2, 3|].[-2..1]

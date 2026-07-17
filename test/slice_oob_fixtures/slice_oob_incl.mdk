@@ -1,0 +1,3 @@
+-- #550: the INCLUSIVE form `arr.[lo..=hi]`.  Its end is hi+1, so the guard must compare
+-- the ALREADY-ADJUSTED end against the length — the off-by-one this form invites.
+main = println [|1, 2, 3, 4, 5|].[2..=99]
