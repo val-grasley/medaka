@@ -67,7 +67,16 @@ RNG) depends on this; to detect it, bounds-check the operands against
 `intMinBound`/`intMaxBound`, or
 the polymorphic `minBound`/`maxBound : Bounded a => a` with a type annotation.)
 
-String escapes: `\n \t \\ \" \{` and unicode `\u{48}`.
+String escapes: `\n \t \r \0 \\ \" \{` and unicode `\u{48}` (char literals also take
+`\'`).
+
+A `\u{HEX}` escape must name a **Unicode scalar value**: `\u{0}` through `\u{10FFFF}`,
+**excluding** the UTF-16 surrogate block `\u{D800}`–`\u{DFFF}` (those encode one half of
+a surrogate pair and are never characters on their own). Leading zeros are free —
+`\u{0000041}` is the same `A` as `\u{41}`. Anything else is a **lex error**
+(`L-BAD-UNICODE-ESCAPE`): out of range, a surrogate, or too many digits to be a
+codepoint at all. This applies identically to all five places `\u{…}` is scanned — char
+literals, plain and triple-quoted strings, and both interpolation continuations.
 
 ## String interpolation (`\{ }`)
 

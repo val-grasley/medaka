@@ -1,0 +1,8 @@
+-- Lexer error: `\u{8000000000000041}` = 2^63+65.  A DISTINCT bound from the two
+-- range fixtures beside this one, and the reason a range check alone is not
+-- enough: `parseRadix` accumulates in the compiler's own WRAPPING 63-bit Int, so
+-- this used to wrap to 65 and reach `charFromCode` looking like a legitimate
+-- 'A' — which is exactly what it silently printed (#567).  The lexer now rejects
+-- >6 significant hex digits BEFORE parsing, so the wrap is unreachable.
+-- Self-hosted reference: unicode escape '\u{8000000000000041}' is out of range...
+x = "x\u{8000000000000041}y"

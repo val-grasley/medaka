@@ -1,0 +1,6 @@
+-- Lexer error: `\u{110000}` is past the top of the Unicode range (max 10FFFF),
+-- so it names no character.  `charFromCode` (runtime/medaka_rt.c) already
+-- returned None for it; the lexer used to DISCARD that None via `fromOption ' '`
+-- and silently substitute a SPACE — exit 0, no diagnostic (#567, an S0).
+-- Self-hosted reference: unicode escape '\u{110000}' is out of range...
+x = "a\u{110000}b"

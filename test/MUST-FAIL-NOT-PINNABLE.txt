@@ -43,8 +43,6 @@
 
 142  ALREADY COVERED by a different self-draining ledger — test/fmt_roundtrip_known_divergence.txt lists it, and diff_compiler_fmt_roundtrip.sh FAILS when a listed file round-trips clean, naming the issue to close. A must-fail row would be duplicate machinery for one bug in two places that can silently DISAGREE. Not out of shape for the harness; already drained by a better-placed one.
 
-226  CONTESTED, not confirmed. docs/spec/LAYOUT-SEMANTICS.md lists the failing form verbatim as WORKING, so either the lexer is wrong (a bug — pinnable) or the spec is wrong (a doc bug — and then a fixture would pin CORRECT behavior as a defect, never flip, and sit forever asserting a non-bug). Nobody has made that call. Pin it the day the fork is resolved in the lexer's disfavour — and delete this line then.
-
 583  the defect lives in GitHub's PARSING OF A PR BODY (a closing keyword in prose silently closes an issue on merge). There is no .mdk to pin and no medaka exit code to grade. Out of shape for a harness that runs `medaka` against a fixture.
 
 450  the defect lives in GitHub's RENDERING of a workflow job's conclusion (a narrowed shard with an empty intersection shows the same green tick as one that ran). There is no .mdk to pin and no exit code the harness can grade — diff_compiler_must_fail.sh grades `medaka` against a fixture. Observed 8x on one PR and receipted on the issue; fixture-shaped it is not.
