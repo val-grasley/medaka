@@ -1,6 +1,6 @@
 -- #607, two-hop FORWARDED shape (PR #617 craft review). A `=>`-signed function
 -- delegating to another on the same type vars — the "#23 two-hop forward" shape
--- `forwardedObls`/`allCallObls` exists for.
+-- `forwardedVecObls` handles (off the raw pendingCallObligations delta).
 --
 -- This pins the DIAGNOSTIC COUNT, which is the whole point: an exit-code gate
 -- cannot see this bug (3 diagnostics and 1 diagnostic are both REJECT). The
