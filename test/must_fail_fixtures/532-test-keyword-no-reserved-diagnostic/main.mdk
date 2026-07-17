@@ -1,0 +1,4 @@
+main =
+  let u = "ab"
+  let test = u ++ u
+  println test
