@@ -1,0 +1,41 @@
+issue: 614
+what: The declaration-time coherence check enforces DICT-SEMANTICS §6.1 condition (a)
+what: GLOBAL COMPARABILITY — any two impls whose heads unify must be ⊑-comparable — but
+what: the spec commits to (c) PER-GOAL UNIQUE MINIMUM, which is strictly weaker. §6.1:
+what: "Recommended: (c) as the semantics (it is also GHC's condition) ... An implementation
+what: MAY additionally warn at declaration time on (a)-violations as an early diagnostic,
+what: but ACCEPTANCE IS PER-GOAL." main.mdk is §6.1's OWN named separating case, verbatim:
+what: C (Pair Int a), C (Pair a Int), C (Pair Int Int). At the ground goal C (Pair Int Int)
+what: the first two are incomparable but the third is ⊑ both, so it is the unique minimum —
+what: "(c) accepts with an unambiguous winner; (a)/(b) reject". Expected under the spec:
+what: exit 0, main prints 3. Actual: rejected at the IMPL SITE, before any goal is seen.
+cmd: check-json main.mdk
+exit: 1
+diag-code: T-CONFLICTING-IMPL 8:8-8:12
+why-diag-code: `diag-code:`, NOT `diag:` — the WORDING IS NOT THE DEFECT, the REJECTION is.
+why-diag-code: The message ("Make them disjoint, or wrap one type in a newtype") is indeed
+why-diag-code: poor advice here — the spec's remedy is to ADD the more specific impl, which
+why-diag-code: is already present and does nothing — but a reword alone must NOT drain this
+why-diag-code: row: the program would still be wrongly rejected. Only exit 0 drains it, which
+why-diag-code: is exactly what moving to (c) produces. Per docs/ops/TESTING-DESIGN.md §4.5
+why-diag-code: code+range is the prescribed default; `diag:` is the deliberate exception.
+control: check-json control.mdk
+why-control: A COMPARABLE overlap — impl C Int vs impl C a — checks clean (exit 0) and runs
+why-control: to `1`, i.e. most-specific-wins correctly ranks the pair and picks impl C Int.
+why-control: That isolates the bug to the INCOMPARABLE-PAIR-RESCUED-BY-A-THIRD shape and
+why-control: rules out "overlap is broken", "⊑ is broken", or "C/Pair are broken". If the
+why-control: control breaks, overlap ranking itself regressed and this row's drain is a lie.
+why-note: ⚠️ DO NOT drain this row by deleting the third impl and observing a still-correct
+why-note: rejection. With only the first two impls the program is genuinely ambiguous at the
+why-note: goal and (c) rejects it TOO — the two-impl output is BYTE-IDENTICAL to this one.
+why-note: The third impl being a complete no-op to the checker IS the bug; a probe that
+why-note: removes it cannot see the defect at all.
+why-note: ⚠️ This is an OVER-rejection and it is SOUND — (a) implies (c), so nothing is
+why-note: accepted that the spec would reject. No silent wrongness. Hence S2, not S0.
+why-note: ⚠️ §6.1 flags this as an owner-visible CHOICE-POINT, so moving to (c) is a
+why-note: semantics change. If Val instead decides (a) is the language, the correct outcome
+why-note: is to amend §6.1 and DELETE this row — not to leave it pinned against the spec.
+why-note: A spec-conformant middle step also drains it: keep the pairwise sweep but DEMOTE
+why-note: it to a warning and add the per-goal unique-minimum check at each `inst`.
+why-note: `cohSubsumes` (compiler/types/typecheck.mdk:8745) computes ⊑ correctly and is
+why-note: already vector-aware — the defect is in its CALLER, not in ⊑.
