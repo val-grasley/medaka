@@ -16,15 +16,36 @@ import ir.core_ir.{
   CArm(..),
   CGuard(..),
 }
-import frontend.ast.{Lit(..)}
-import backend.trmc_analysis.{patVars, bindNames}
-import support.util.{contains, lookupAssoc, startsWith, fallthroughName}
+import frontend.ast.{Lit(..), Pat}
+import backend.trmc_analysis.{patVars, bindNames, bindName}
+import support.util.{
+  contains,
+  lookupAssoc,
+  startsWith,
+  fallthroughName,
+  dedup,
+  filterList,
+}
+import support.ordmap.{
+  OrdMap,
+  omEmpty,
+  omInsert,
+  omLookup,
+  omHasKey,
+  omFromNames,
+}
+import support.scc.{tarjanSCCs}
 
 -- ── eager free-var / strictness analysis ─────────────────────────────────────
--- free CVar names evaluated EAGERLY in `body`: like freeVars, but a `CLam` body is
--- NOT descended (its references are deferred to call time).  Bound names (`b`)
--- accumulate so a let/match-bound local is not mistaken for a global.  Used by the
--- value-binding init-order topo sort in both emitters.
+-- names referenced EAGERLY in `body`: like freeVars, but a `CLam` body is NOT
+-- descended (its references are deferred to call time).  Bound names (`b`)
+-- accumulate so a let/match-bound local is not mistaken for a global.  Yields the
+-- callee of an eager call regardless of head form — a `CVar` (unconstrained
+-- function or a value global) OR a `CDict name …` (a saturated call to a
+-- constrained top-level function: `+`/`<=`/… thread the callee's dicts through a
+-- `CDict` head).  A `CMethod` head is interface DISPATCH — deliberately NOT
+-- followed (see `eagerReachMap`; resolving it to impl bodies is #553/#561).  Used
+-- by the value-init-order topo sort (via `eagerReachMap`) in both emitters.
 export eagerVars : List String -> CExpr -> List String
 eagerVars _ (CLam _ _) = []
 eagerVars b (CVar x _) = if contains x b then [] else [x]
@@ -66,6 +87,9 @@ eagerVars b (CListSlice a lo hi _) = eagerVars b a
 eagerVars b (CSlice a lo hi _) = eagerVars b a
   ++ eagerVars b lo
   ++ eagerVars b hi
+-- a `CDict` head is a saturated call to the named top-level function — an eager
+-- callee edge (the routes it carries hold no CExpr, so nothing to descend).
+eagerVars b (CDict name _) = if contains name b then [] else [name]
 eagerVars _ _ = []
 
 eagerVarsList : List String -> List CExpr -> List String
@@ -109,6 +133,106 @@ eagerVarsBinds _ [] = []
 eagerVarsBinds b ((CBind _ [CClause [] rhs])::rest) = eagerVars b rhs
   ++ eagerVarsBinds b rest
 eagerVarsBinds b (_::rest) = eagerVarsBinds b rest
+
+-- ── eager-reachability closure (Stage B of #553) ─────────────────────────────
+-- The init-order topo sort needs, for each value global, the OTHER value globals
+-- it reads EAGERLY (at init time).  `eagerVars` alone gives only the ones a
+-- binding names DIRECTLY: `a = f ()` yields the callee `f`, never the globals
+-- `f`'s body reads.  So a value read HIDDEN behind a call is invisible to the
+-- sort, which emits `a` before its dependency and captures a still-zero cell —
+-- native prints a silent wrong value, wasm traps at instantiate (#553).
+--
+-- `eagerReachMap` closes that hole by following the eager call graph transitively.
+-- A call's callee is named directly in the IR — `CVar` for an unconstrained
+-- function, `CDict name …` for a saturated call to a CONSTRAINED top-level
+-- function (any use of `+`/`<=`/… routes its dicts through a `CDict` head).  Both
+-- are captured by `eagerVars` and followed here.  Only lambda bodies are NOT
+-- descended, so a reference reachable ONLY through a closure — the parser
+-- combinator ladder's mutual `do`-block refs — is correctly NOT an init-order edge
+-- and forges no false cycle.  Interface-method DISPATCH (`CMethod`) is NOT resolved
+-- to its impl bodies here: that residual (acceptance repro #4, `mk True`) and the
+-- genuine value cycle (repro #5, `x = x + 1`) are the bounded deviation #561 drains.
+--
+-- Cost: build a callee adjacency (one pass), CONDENSE strongly-connected components
+-- with `tarjanSCCs` (mutual recursion ⇒ one node, so the least fixpoint is total
+-- WITHOUT a visited-list — which is also what makes it byte-deterministic for C3b),
+-- then fold the SCC DAG once, in the reverse-topological order Tarjan emits (callees
+-- before callers).  Each reach set is restricted to value-global names, so it is
+-- bounded by the value-global count, never the far larger function count.
+
+-- names a binding references EAGERLY across ALL its clauses (params bound so a
+-- parameter never masquerades as a global; lambda bodies not descended), INCLUDING
+-- the direct callee of every eager call (`CVar`/`CDict` head — see `eagerVars`).
+bindEagerCallees : CBind -> List String
+bindEagerCallees (CBind _ clauses) = dedup (clauseEagerVars clauses)
+
+clauseEagerVars : List CClause -> List String
+clauseEagerVars [] = []
+clauseEagerVars ((CClause params body)::rest) = eagerVars (paramBound params) body
+  ++ clauseEagerVars rest
+
+paramBound : List Pat -> List String
+paramBound [] = []
+paramBound (p::rest) = patVars p ++ paramBound rest
+
+-- names of the nullary single-clause bindings — the value globals whose init
+-- order the sort decides; reach sets are restricted to these.
+valGlobalNames : List CBind -> List String
+valGlobalNames [] = []
+valGlobalNames ((CBind name [CClause [] _])::rest) = name :: valGlobalNames rest
+valGlobalNames (_::rest) = valGlobalNames rest
+
+-- eager call-graph adjacency, restricted to real top-level bind names so an edge
+-- to a constructor / not-emitted name never becomes a graph node.  Membership is
+-- tested against an OrdMap SET (`nameSet`), never a `List` — a `List` here would be
+-- O(V) per edge = O(V*E), the exact quadratic #553 warns against.
+eagerCalleesMap : OrdMap Unit -> List CBind -> OrdMap (List String)
+eagerCalleesMap _ [] = omEmpty
+eagerCalleesMap nameSet (b::rest) = omInsert
+  (bindName b)
+  (filterList (n => omHasKey n nameSet) (bindEagerCallees b))
+  (eagerCalleesMap nameSet rest)
+
+-- reach(name) = the value globals a binding eagerly reaches through calls,
+-- transitively.  Least fixpoint over the eager call graph, condensed by
+-- `tarjanSCCs` and folded in the order Tarjan emits (callees before callers), so
+-- every cross-SCC callee's reach is already computed when a caller SCC is folded.
+-- Members of one SCC share the SCC's reach set — the condensation, not a
+-- visited-list, is what makes the fixpoint well-defined (and deterministic).
+export eagerReachMap : List CBind -> OrdMap (List String)
+eagerReachMap binds =
+  let allNames = bindNames binds
+  let nameSet = omFromNames allNames omEmpty
+  let valSet = omFromNames (valGlobalNames binds) omEmpty
+  let adj = eagerCalleesMap nameSet binds
+  foldReachSCCs valSet adj (tarjanSCCs allNames adj) omEmpty
+
+-- reach(scc) = (its members' direct value-global callees) ∪ (⋃ reach(callee)).
+-- Successor SCCs are already folded and their reach is ⊆ valSet by induction, so
+-- the union stays ⊆ valSet — bounding every set to the value-global count.
+foldReachSCCs : OrdMap Unit -> OrdMap (List String) -> List (List String) -> OrdMap (List String) -> OrdMap (List String)
+foldReachSCCs _ _ [] acc = acc
+foldReachSCCs valSet adj (scc::rest) acc =
+  let direct = dedup (unionLookup scc adj)
+  let reached = dedup (filterList (n => omHasKey n valSet) direct ++ unionLookup direct acc)
+  foldReachSCCs valSet adj rest (insertReach scc reached acc)
+
+-- concat (default []) of the OrdMap lookups over a list of keys.
+unionLookup : List String -> OrdMap (List String) -> List String
+unionLookup [] _ = []
+unionLookup (n::rest) m = fromOption [] (omLookup n m) ++ unionLookup rest m
+
+insertReach : List String -> List String -> OrdMap (List String) -> OrdMap (List String)
+insertReach [] _ acc = acc
+insertReach (n::rest) reached acc =
+  insertReach rest reached (omInsert n reached acc)
+
+-- the value globals a value binding depends on EAGERLY, transitively through
+-- calls — the COMPLETE init-order edge set the topo sort consumes on both
+-- backends (replaces the old direct-only `eagerVars [] body`).
+export bindEagerReach : OrdMap (List String) -> CBind -> List String
+bindEagerReach rm (CBind name [CClause [] _]) = fromOption [] (omLookup name rm)
+bindEagerReach _ _ = []
 
 -- ── interface-method dispatch metadata (installed once per compile) ──────────
 -- method → (interface, declared-full-arity), from the program's `DInterface`

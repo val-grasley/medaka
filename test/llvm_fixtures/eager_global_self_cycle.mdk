@@ -1,0 +1,31 @@
+-- #553 / #561 — the GENUINE-VALUE-CYCLE residual of the eager-init sort, the ONE
+-- divergence #553 Stage B deliberately does NOT close (acceptance repro #5).
+--
+-- ⚠️ THIS FIXTURE IS WRONG ON PURPOSE, AND ITS GOLDEN ASSERTS THE BUG.
+-- `eager_global_self_cycle.eval.golden` records native's ACTUAL output (`1`). The
+-- RIGHT answer is a clean runtime error: `x` refers to itself during
+-- initialization, a non-productive cyclic value. eval — the reference engine that
+-- implements the DECIDED lazy-nullary semantics — raises `E-CYCLIC-VALUE` (exit 1)
+-- by black-holing the cell. BOTH backends instead EAGER-initialize `x`'s cell to 0,
+-- compute `0 + 1`, and print `1` at exit 0.
+--
+-- WHY STAGE B DOES NOT FIX IT. Stage B (the SCC-condensed eager-reachability
+-- closure, backend/emit_support.mdk) makes the topo sort follow calls, closing the
+-- call-hidden hole. But a topo sort has NO correct order for a genuine cycle: `x`
+-- depends on `x`. Only laziness has an answer — black-hole and raise — which is
+-- exactly what #561 (make top-level nullary bindings lazy on both backends) does.
+-- So this stays a bounded, spec-recorded deviation, ledgered as
+-- `emitter:shared-eager-init` in test/engine_divergence.txt and DRAINS when #561
+-- lands (both backends start raising E-CYCLIC-VALUE, native stops printing 1, this
+-- golden stops matching, and the ledger row promotes). Do NOT "fix" the golden to an
+-- error while #561 is open, and do NOT delete this fixture.
+--
+-- Measured on the shipping engines (2026-07-17); all three DIFFER, so the engines
+-- gate records this fixture `na:ne:na:na:ran:ran` (native != wasm):
+--   eval   -> runtime error [E-CYCLIC-VALUE], exit 1        (correct)
+--   native -> 1, exit 0                                     (a WRONG ANSWER, no diagnostic)
+--   wasm   -> instantiate trap "dereferencing a null pointer", exit 1, NO output (not 1)
+
+x = x + 1
+
+main = x
