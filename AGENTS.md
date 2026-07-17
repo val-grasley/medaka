@@ -557,6 +557,10 @@ narrative lives at the link.
   *there*; Read/Edit that bare path and you have silently changed the **main checkout**,
   which your worktree build never sees. If you slip: `cp` the edited files into the worktree,
   then `git -C <main> checkout -- <files>`.
+- **Every worktree shares ONE `.git`, so `origin/main`/`main` move under you** — a sibling's
+  `git fetch` advances the ref mid-task with no signal to you. Pin `BASE=$(git rev-parse HEAD)`
+  at the start of a task and diff/checkout against `$BASE`, never a moving ref. Full failure
+  modes + the pinned-`$BASE` recipe: `.claude/workstreams/HARNESS.md` (H-2).
 - **For layout questions** (legal indentation shapes, leading-op set, then/else, tabs,
   let…in wrapping), `docs/spec/LAYOUT-SEMANTICS.md` is ground truth. A lexer-vs-spec
   divergence is a lexer bug; a SYNTAX/PLAN-vs-spec divergence is a doc bug.

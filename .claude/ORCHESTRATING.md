@@ -504,7 +504,10 @@ Every delegated task prompt should contain, in order:
 2. **STEP 0 — sync + VERIFY BASE:** `git merge origin/main --no-edit` first (never bare `git merge
    main`), then `git merge-base --is-ancestor <tip-SHA> HEAD && echo BASE_OK || echo BASE_STALE` —
    must print `BASE_OK`, else STOP+report. (An agent once silently built Phase 5 on a base missing two
-   prior phases; a redo was needed.)
+   prior phases; a redo was needed.) **Then record `BASE=$(git rev-parse HEAD)` — the pinned branch
+   point.** Every downstream diff/checkout uses `$BASE`, never `origin/main`/`main`: this box shares one
+   `.git` across worktrees, so those refs advance under you the moment any sibling agent fetches, and a
+   moving ref is not a fixed point (#519).
 3. **Environment rules:** how to build (`make -C <worktree> medaka`), the no-`eval`/PATH quirks, the
    `perl -e 'alarm N; exec @ARGV'` timeout shim.
 4. **Context (verified facts):** the root cause + `file:line` pointers you already confirmed, and the
@@ -635,7 +638,10 @@ When two branches touch one subsystem:
   newly exposed). Both found in a 60-second hand-probe *after* the agents reported green. Ask: "what
   does this newly accept, and does it RUN *and* BUILD correctly across every instantiation (Int *and*
   Float)?" A clean fixpoint + green differentials do NOT cover behavior the corpus never had.
-- `git log main..<branch>` + `git diff --stat` — the commits exist and the surface matches the report.
+- `git log $BASE..<branch>` + `git diff --stat $BASE...<branch>` — the commits exist and the surface
+  matches the report. **Use the pinned `$BASE` from STEP 0, never `main`/`origin/main`**: every worktree
+  on this box shares one `.git`, so those refs move under a sibling's `git fetch` mid-task and a moving
+  ref is not a fixed point to diff against (#519).
 - **Pick the decisive check per change type.** Self-hosted emitter → the **fixpoint** (C3a/C3b): it
   recompiles the whole compiler and proves byte-for-byte self-reproduction. A code *transform* (TRMC) →
   an **IR-shape assertion** that it actually fired (grep the emitted body for *no* `call @mdk_<self>`):
@@ -811,7 +817,10 @@ an emitter-graph file does NOT invalidate the seed (emitted IR is identical); an
   *session-start* commit, missing every overnight landing. The catch was the orchestrator's own **`git
   diff --stat <main> <branch>`**: ~1400 spurious deletions and a recent fixture listed as *deleted*.
   **Always diff-stat the branch against current main before merging** — a surface that doesn't match the
-  agent's "small additive change" report means a stale base.
+  agent's "small additive change" report means a stale base. ⚠️ A shifted `origin/main` is ALSO a cause
+  of a spurious surface, not only a stale agent base — this box shares one `.git`, so `origin/main`
+  advances under a running diff the instant any sibling agent fetches. **The fix is the same either
+  way: diff against the pinned `$BASE` from STEP 0, never a moving ref** (#519, and see HARNESS.md).
 - **Stale-binary footguns.** (1) `make medaka`'s `find -newer` short-circuit can leave `./medaka` NOT
   carrying a lexer/compiler-graph change → `FORCE_EMITTER_REBUILD=1 make medaka` to verify one. (2) The
   `test/bin/*` oracles: `test/build_oracles.sh` **mtime-skips rebuilds**, so after a

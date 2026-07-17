@@ -64,8 +64,14 @@
 #   sh test/must_fail_census.sh            # halves 1+3, and half 2 as a 7-day DELTA
 #   sh test/must_fail_census.sh --all      # half 2 over the WHOLE backlog (deliberate sweep)
 #   MUST_FAIL_CENSUS_WINDOW_DAYS=14 sh test/must_fail_census.sh
-# Exit: 0 ran successfully (findings or not); 1 a finding needs a human (nightly files it);
-#       2 INFRA: no fixtures, no gh, or the API refused.
+# Exit: 0 ran successfully — ALWAYS, whether it found something or not. Read the
+#       `census-status: findings|clean` marker line in the output for the actual signal
+#       (nightly.yml greps it into a `findings` step output); 2 INFRA: no fixtures, no gh,
+#       or the API refused — the only real failure. (#593: findings used to exit 1, which
+#       made this script a permanent false-red gate failure under `make preflight` — any
+#       caller that derives a gate set from a changed must_fail_fixtures/ path and treats
+#       nonzero exit as failure, exactly what this script's own header already promised it
+#       would never do. The findings signal now lives ONLY in the marker line below.)
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -272,7 +278,14 @@ fi
 
 if [ "$findings" -gt 0 ]; then
   echo "census: findings above need a human. (Nightly FILES these; it does not fail.)"
-  exit 1
+  # #593: findings are a STATUS, not a gate failure — this script is advisory (see the
+  # header). The machine-readable signal moves to this marker line; nightly.yml greps it
+  # into a `findings` step output. Exit stays 0 like any other successful run so a
+  # preflight/CI caller that derives a gate set from a must_fail_fixtures/ change and
+  # treats nonzero as failure does not get a permanent false red.
+  echo "census-status: findings"
+  exit 0
 fi
 echo "census: no findings."
+echo "census-status: clean"
 exit 0

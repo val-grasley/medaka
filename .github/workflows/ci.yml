@@ -720,6 +720,27 @@ jobs:
             echo "has_work=false" >> "$GITHUB_OUTPUT"
             echo
             echo "▶ Nothing for this shard to do. Reporting SUCCESS — the check still reports, which is what keeps the PR mergeable."
+
+            # ── #570: make the no-op VISIBLE where humans/agents actually look ─────────
+            # The stdout line above is real, but it is buried in a log nobody opens for a
+            # green check. A "gates (${{ matrix.name }}) — pass" check on the PR's Checks
+            # UI is indistinguishable, by text alone, from a shard that ran every gate and
+            # they all passed — and that ambiguity already misled a reviewer into retiring
+            # a correct instruction on an S0 fix. Two surfaces people DO look at without
+            # opening the log: the annotation list next to the check, and the job summary.
+            # This does NOT change the conclusion (still success — see the comment on the
+            # job above for why it must be) — it only adds visibility.
+            echo "::warning title=Shard ran 0 gates::gates (${{ matrix.name }}) matched no gate for this diff and reported SUCCESS WITHOUT RUNNING. Real coverage for these gates runs in the merge queue (merge_group), not on this PR. 'green' here does NOT mean these gates ran."
+            {
+              echo "### ⚠️ gates (${{ matrix.name }}): ran 0 gates — coverage deferred to merge_group"
+              echo
+              echo "This shard's pattern matched no gate touched by this diff, so it reported"
+              echo "SUCCESS having run nothing (by design — see \`ci.yml\` around the \`plan\`"
+              echo "step). Real coverage for this shard's gates runs when this PR enters the"
+              echo "merge queue (\`merge_group\` event), where every shard runs its FULL pattern"
+              echo "unconditionally. Treat this check's green as \"did not block\", not \"ran and"
+              echo "passed\"."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "has_work=true" >> "$GITHUB_OUTPUT"
             echo "pats=$pats" >> "$GITHUB_OUTPUT"
