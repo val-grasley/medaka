@@ -102,7 +102,8 @@
 --     CIndex loads the length, bounds-checks (calls @mdk_oob() on failure), then
 --     GEPs to field (idx+1) dynamically.  CRangeArray and CSlice both emit an
 --     alloca-counter loop (the spike's first non-recursion loop): CRangeArray fills
---     i ↦ lo+i (tagged Int word); CSlice copies elements from the source array.
+--     i ↦ lo+i (tagged Int word); CSlice copies elements from the source array —
+--     after its own bounds check (@mdk_slice_oob; #550, see emitArraySlice).
 --   • slice 9 — LISTS (CList + CRangeList).  CList [e0…en] right-folds inline into
 --     Cons/Nil boxed cells (the same cells the slice-5b HCons/HNil match heads test,
 --     so construction and match agree).  CRangeList lo hi incl builds an ascending
@@ -9356,8 +9357,10 @@ scanStmtsRecords (_::rest) = scanStmtsRecords rest
 -- `loadTag` thus reads the raw element count; `loadField e w i` reads element i
 -- (at offset 8*(i+1)), exactly the ADT field convention.  Allocation reuses
 -- @mdk_alloc; element words are uniform i64 (tagged Ints for range elements).
--- BOUNDS CHECKS: OOB calls @mdk_oob() (noreturn; prints + exits, matching eval's
--- panic).  Fixtures are in-bounds so the check never fires in practice.
+-- BOUNDS CHECKS: an OOB index calls @mdk_oob(), an OOB slice @mdk_slice_oob(lo, hi)
+-- (both noreturn; print + exit, matching eval's panic).  CSlice's check is #550 — it
+-- was missing entirely, which made an over-range slice an out-of-bounds HEAP READ
+-- rather than a diagnostic; see emitArraySlice.
 -- LOOPS: CRangeArray and CSlice use an alloca-counter loop (the first non-recursion
 -- loop in the spike — avoids phi instructions and matches the alloca/store/load
 -- pattern the rest of the emitter uses for multi-path merges).
@@ -9511,7 +9514,27 @@ emitRangeArray e env lo hi incl =
   let _ = emit e "  \{w} = ptrtoint ptr \{p} to i64"
   (w, LTCon)
 
--- CSlice arr lo hi incl: compute new_len, alloc, copy elements with loop.
+-- CSlice arr lo hi incl: bounds-check, then compute new_len, alloc, copy with a loop.
+--
+-- #550: the bounds check is NOT optional and NOT a clamp.  Without it this emitted
+-- `new_len = end - lo` slots and copied `a[lo + i]` unchecked, so `[|1,2,3,4,5|].[2..99]`
+-- allocated 97 slots and READ 94 words PAST THE ARRAY, publishing raw heap words (live
+-- pointers among them) as ordinary Ints at exit 0 — while `run` raised E-SLICE-OOB.  The
+-- guard mirrors sliceArray (compiler/eval/eval.mdk): `lo < 0 || end > len || end - lo < 0`.
+-- All three disjuncts are load-bearing: `lo < 0` catches a read BEFORE the array, `end >
+-- len` a read past it, and `end - lo < 0` an inverted range (whose negative new_len would
+-- otherwise reach emitArrayDynAlloc).
+--
+-- Deliberately NOT a clamp: `arr.[lo..hi]` panicking is the documented contract that
+-- distinguishes it from stdlib `array.slice`, which clamps (stdlib/array.mdk).  Clamping
+-- here would silently merge the two and destroy the only bounds-checked slice in the
+-- language.
+--
+-- The check is `end` (exclusive) vs the length, so the INCLUSIVE form is guarded on its
+-- already-adjusted end_raw = hi+1 — i.e. the +1 happens BEFORE the compare, not after, so
+-- `[|1,2,3|].[0..=2]` (end 3 == len 3) is legal while `.[0..=3]` (end 4 > 3) aborts.
+-- mdk_slice_oob wants the INCLUSIVE upper bound for its message, so it is handed
+-- `end_raw - 1`, matching the interpreter's `hiX - 1` text in both forms.
 emitArraySlice : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> CExpr -> Bool -> (String, LTy)
 emitArraySlice e env a lo hi incl =
   let (arr_w, _) = emitExpr e env a
@@ -9526,6 +9549,27 @@ emitArraySlice e env a lo hi incl =
   else hi_raw
   let new_len = freshReg e
   let _ = emit e "  \{new_len} = sub i64 \{end_raw}, \{lo_raw}"
+  let arr_len = loadTag e arr_w
+  let s1 = freshReg e
+  let _ = emit e "  \{s1} = icmp slt i64 \{lo_raw}, 0"
+  let s2 = freshReg e
+  let _ = emit e "  \{s2} = icmp sgt i64 \{end_raw}, \{arr_len}"
+  let s3 = freshReg e
+  let _ = emit e "  \{s3} = icmp slt i64 \{new_len}, 0"
+  let s12 = freshReg e
+  let _ = emit e "  \{s12} = or i1 \{s1}, \{s2}"
+  let sbad = freshReg e
+  let _ = emit e "  \{sbad} = or i1 \{s12}, \{s3}"
+  let sn = intToString (freshLocal e)
+  let sBadL = "sloob" ++ sn
+  let sOkL = "sl_ok" ++ sn
+  let _ = emit e "  br i1 \{sbad}, label %\{sBadL}, label %\{sOkL}"
+  let _ = emit e (sBadL ++ ":")
+  let hi_incl = freshReg e
+  let _ = emit e "  \{hi_incl} = sub i64 \{end_raw}, 1"
+  let _ = emit e "  call void @mdk_slice_oob(i64 \{lo_raw}, i64 \{hi_incl})"
+  let _ = emit e "  unreachable"
+  let _ = emit e (sOkL ++ ":")
   let p = emitArrayDynAlloc e new_len
   let n = intToString (freshLocal e)
   let condL = "sl_cond" ++ n

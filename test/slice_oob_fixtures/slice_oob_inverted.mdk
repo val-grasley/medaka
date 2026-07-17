@@ -1,0 +1,4 @@
+-- #550: inverted range — both bounds are in range, but hi < lo, so the element count
+-- is NEGATIVE.  Caught only by the `end - lo < 0` disjunct; without it the negative
+-- length reaches the array allocator.
+main = println [|1, 2, 3|].[2..1]
