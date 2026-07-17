@@ -1,0 +1,59 @@
+-- #609 regression, ARG-POSITION leg (argImplDictRoutesForEncl).  The same defect as
+-- multiparam_impl_selection.mdk one leg over: `routeKey` selected the method's impl
+-- on the full param vector, but the SELECTED IMPL'S OWN `requires`-context routes
+-- were still chosen on the arg-0 mono alone.  `[mono]` length-mismatches a
+-- multi-param impl's `itys`, so entryHeadMatches fell back to arg-0, both siblings
+-- matched, entryCovers found them incomparable (they are genuinely disjoint, so
+-- declaration-time coherence never rejected them), and pickMostSpecificEntry took
+-- the FIRST-DECLARED.  DICT-SEMANTICS §6 C2: the impl dispatched to and the impl
+-- whose context is discharged must be the SAME impl; §6 C3: not a function of
+-- declaration order.
+--
+-- Goal `Ix (Box Int) Char` dispatches to the Char impl (1 require) but was routed
+-- the Bool impl's TWO requires-dicts, shifting every later argument — so `(Box x)`
+-- destructured a dict cell:
+--     runtime error [E-NONEXHAUSTIVE-MATCH]: non-exhaustive match
+-- on eval AND native.  Correct output is 2050 (bar 1 + 2000).
+--
+-- ⚠️ Why the requires must differ in COUNT, not just in interface: the dict cell is
+-- a TYPE tag (the emitted `@mdk_dc_0 = [1 x i64] [193460240]` is the `Int` tag, and
+-- is shared with println's dict), and the routes are built from the head subst — so
+-- two siblings whose requires range over the SAME tyvar `a` produce the SAME dict
+-- whichever one is picked, and the interface is re-chosen at the use site by a
+-- method-specific dispatcher (`@mdk_disp_bar_0_1`).  Probes with equal-arity
+-- requires printed the CORRECT answer and were false negatives.  Foo/Baz/Bar each
+-- need TWO impls for the same reason: a sole impl devirtualizes to a direct call and
+-- never consults the dict at all.
+data Box a = Box a
+
+interface Foo a where
+  foo : a -> Int
+impl Foo Int where
+  foo x = 7
+impl Foo Bool where
+  foo x = 8
+
+interface Baz a where
+  baz : a -> Int
+impl Baz Int where
+  baz x = 300
+impl Baz Bool where
+  baz x = 400
+
+interface Bar a where
+  bar : a -> Int
+impl Bar Int where
+  bar x = 50
+impl Bar Bool where
+  bar x = 60
+
+interface Ix c i where
+  ix : c -> i -> Int
+
+impl Ix (Box a) Bool requires Foo a, Baz a where
+  ix (Box x) i = foo x + baz x
+
+impl Ix (Box a) Char requires Bar a where
+  ix (Box x) i = bar x + 2000
+
+main = println (ix (Box 1) 'z')

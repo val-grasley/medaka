@@ -1,0 +1,15 @@
+-- #609 regression, §6 C3 half of multiparam_impl_specificity.mdk: the specific
+-- `Ix Int Bool` is declared FIRST.  Must still print 2 — min⊑ picks the specific
+-- impl regardless of declaration order.  Pre-fix this printed 2 while its sibling
+-- printed 1, which is precisely the order-dependence: first-match happened to
+-- agree with min⊑ in this order and disagree in the other.
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Bool where
+  ix a i = 2
+
+impl Ix Int a where
+  ix a i = 1
+
+main = println (ix 1 True)
