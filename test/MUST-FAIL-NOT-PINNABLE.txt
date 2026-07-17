@@ -60,3 +60,9 @@
 602  CODE HEALTH with no observable: parseBracketBlock and indentedBody have byte-identical bodies. Both are currently correct, so no program behaves differently and nothing can be pinned. The risk is future divergence, which by definition has no repro today. rule-duplicate-body (cross-file-only) is the right place for this ratchet, not this harness.
 
 603  a DOC defect: LAYOUT-SEMANTICS §12's conformance contract is lexer-scoped but reads as covering the parser, and §7.1's canEndExpr formula names a '?' token that has never existed. Neither changes what medaka does — the compiler is correct; the prose misdirects readers. No exit code to grade.
+
+647  a missing DOC SECTION — SYNTAX.md has no "reserved words" section enumerating illegal identifier spellings. There is no .mdk program whose behavior is wrong and no medaka exit code to grade; the defect is prose that is silent, not prose that lies about a running program. Fixable by adding a section; nothing for diff_compiler_must_fail.sh to observe.
+
+648  the defect is in the TEST HARNESS's own recapture instructions (test/capture_goldens.sh has no `check_json` row; CAPTURE=1 on diff_compiler_check_json.sh only rewrites the projects/ loop, not the single-file loop). The observable is which shell command a developer is told to run to regenerate a golden — not medaka's behavior on a fixture. Out of shape for a harness that grades `medaka <verb> <fixture>`.
+
+649  the defect is a LINT finding's location field pointing at the decl instead of the matched expression (exprRuleDeclL threads the decl-level Loc into every Finding regardless of hit depth). This harness's run_verb supports check/check-json/check-types/run/fmt-write only — no `lint` verb — so it structurally cannot grade `medaka lint`'s output, same shape as #590's missing `build` verb. Delete this line the day a `lint`/`lint-json` verb lands.

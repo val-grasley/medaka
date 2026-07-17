@@ -1,0 +1,18 @@
+issue: 645
+what: block/statement-level `let rec` (inside an expression body, e.g. the RHS of
+what: `main`) is a hard parse error whose message blames LAYOUT ("expected a dedent")
+what: with the caret on `let` — the same false-cause shape as #532/#591. Top-level
+what: `let rec fact = …` works fine; only block-level `let rec` fails.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 1:2-1:3 unexpected `let`; expected a dedent
+why-diag: THE MESSAGE IS THE DEFECT, not just the failure — it asserts indentation is
+why-diag: wrong when it is fine; the real cause is that statement-level `letKind` in
+why-diag: parser.mdk has no `TRec` arm (only top-level `letExprKind` does), so `rec`
+why-diag: falls into the generic pattern-binder path and the failure surfaces several
+why-diag: tokens later as a bogus dedent complaint.
+control: check-json control.mdk
+why-control: the SAME block-level `let`, with `rec` removed (and non-recursive body),
+why-control: checks clean (exit 0). That isolates the bug to the `rec` keyword at
+why-control: STATEMENT level specifically — not to block-level `let` in general, and
+why-control: not to the recursive call site.
