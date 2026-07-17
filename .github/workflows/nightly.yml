@@ -455,11 +455,20 @@ jobs:
             exit 1
           fi
 
-          echo "findings=$([ "$rc" = "1" ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
+          # #593: the census exits 0 on EITHER outcome now (findings or clean) — it is an
+          # advisory status script, not a gate, and a bare-nonzero-exit reading of it was
+          # falsely failing preflight/CI callers that derive a gate set from a changed
+          # must_fail_fixtures/ path. The findings signal lives in the `census-status:`
+          # marker line instead; grep that, not $rc.
+          if grep -q '^census-status: findings' /tmp/census.log; then
+            echo "findings=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+          fi
           {
             echo "## must-fail census"
             echo ""
-            echo "Exit $rc — \`0\`=no findings, \`1\`=findings filed."
+            echo "Exit $rc — see \`census-status:\` in the log below for findings/clean."
             echo ""
             echo '```'
             cat /tmp/census.log
