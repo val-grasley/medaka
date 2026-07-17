@@ -1,0 +1,19 @@
+-- #609 regression, DICT-SEMANTICS §6 C3 (order-independence): the SAME program as
+-- multiparam_impl_selection.mdk with the two impls DECLARED IN THE OPPOSITE ORDER.
+-- Both must print 200 — the goal `Ix Int Char` matches exactly one impl, and which
+-- impl a program uses may never be "a function of search order, declaration order".
+--
+-- Pre-fix this file printed 200 and its sibling printed 100 from identical
+-- semantics: the answer FOLLOWED THE DECLARATION ORDER.  The pair is the gate — a
+-- single fixture cannot see an order dependence, since either order alone looks
+-- like a consistent (if wrong) answer.
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Char where
+  ix a i = 200
+
+impl Ix Int Bool where
+  ix a i = 100
+
+main = println (ix 1 'x')

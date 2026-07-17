@@ -60,7 +60,7 @@ argDispatchOf : String -> Option Int
 argDispatchOfDecl : Decl -> List (String, Int)
 argDispatchOfMethod : List String -> IfaceMethod -> List (String, Int)
 argImplDictRoutesFor : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> String -> Mono -> List Route
-argImplDictRoutesForEncl : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> String -> String -> Mono -> List Route
+argImplDictRoutesForEncl : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> String -> String -> Mono -> List Mono -> List Route
 argImplReqRoutes : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> List (String, Mono) -> List Require -> Int -> List Route
 argImplRequiresRoutesRec : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> String -> String -> Mono -> List Route
 argImplRequiresRoutesRecD : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> String -> String -> Mono -> Int -> List Route
@@ -237,7 +237,7 @@ composeOp : Mono -> Mono -> Bool -> Mono
 computeMangledShadowMap : List Decl -> List (String, List Decl) -> List (String, String)
 concreteDomainScheme : String -> List (String, Scheme) -> Option Scheme
 concreteHeadVarIds : Mono -> List Int
-concreteReqMatchByIface : String -> Mono -> List Mono -> Option (List (String, Mono), List Require)
+concreteReqMatchByIface : String -> List Mono -> Option (List (String, Mono), List Require)
 consOp : Mono -> Mono -> Mono
 consSiteFn : String -> a -> Map String (List a) -> Map String (List a)
 constrainedSigArity : Decl -> List (String, List Int)
@@ -382,6 +382,7 @@ entailInst : Map String (List ImplEntry) -> String -> Mono -> String -> String -
 enterLevel : Unit -> Unit
 entryCovers : KeyEntry -> KeyEntry -> Bool
 entryCoversAllOthers : KeyEntry -> List KeyEntry -> Bool
+entryHeadMatches : Ty -> List Ty -> List Mono -> Bool
 entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
 envAlphaLets : TcEnv -> List (String, Expr)
 eqCompareOp : Mono -> Mono -> Mono
@@ -469,6 +470,7 @@ genRestricted : Bool -> Mono -> Scheme
 generalize : Mono -> Scheme
 generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> TcEnv
 globalCoherenceConflict : List (String, List Decl) -> Option String
+goalHeadCon : List Mono -> Option String
 groundMultiParamObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> Unit
 groundNumVars : List (String, List String, Ty, Mono, Option Loc) -> List Int -> Unit
 groundOneObligation : List Decl -> String -> List String -> Ty -> Mono -> Unit
@@ -682,8 +684,8 @@ keepBetterField : String -> Int -> Option (String, Int) -> Option (String, Int)
 keepGroupNames : Map String Unit -> List String -> List String
 keptConstraintIfaces : List (String, Mono) -> List String
 keyEntryOf : Decl -> List KeyEntry
-keyForSite : Map String (List KeyEntry) -> String -> Mono -> Option String
-keyForSiteByIface : Map String (List KeyEntry) -> String -> Mono -> Option String
+keyForSite : Map String (List KeyEntry) -> String -> List Mono -> Option String
+keyForSiteByIface : Map String (List KeyEntry) -> String -> List Mono -> Option String
 kindArgMono : List (String, Ref Effvar) -> List (String, Mono) -> Kind -> Ty -> Mono
 kpLcp : String -> String -> KP
 krowArgVarNames : List Kind -> List Ty -> List String
@@ -735,11 +737,12 @@ matchCol0Type : Mono -> Option String
 matchOneSided : (a -> b -> MStep c a b) -> (c -> c -> Bool) -> (b -> b -> Bool) -> List (a, b) -> List (c, b) -> Option (List (c, b))
 matchStep : Ty -> Mono -> MStep String Ty Mono
 matchTyMono : Ty -> Mono -> Option (List (String, Mono))
-matchedEntry : Map String (List KeyEntry) -> String -> Mono -> Option KeyEntry
-matchingEntries : Map String (List KeyEntry) -> String -> Mono -> List KeyEntry
-matchingEntriesByIface : Map String (List KeyEntry) -> String -> Mono -> List KeyEntry
-matchingEntriesByIfaceGo : List KeyEntry -> String -> Mono -> List KeyEntry
-matchingEntriesGo : List KeyEntry -> String -> Mono -> List KeyEntry
+matchTyMonos : List Ty -> List Mono -> Option (List (String, Mono))
+matchedEntry : Map String (List KeyEntry) -> String -> List Mono -> Option KeyEntry
+matchingEntries : Map String (List KeyEntry) -> String -> List Mono -> List KeyEntry
+matchingEntriesByIface : Map String (List KeyEntry) -> String -> List Mono -> List KeyEntry
+matchingEntriesByIfaceGo : List KeyEntry -> String -> List Mono -> List KeyEntry
+matchingEntriesGo : List KeyEntry -> String -> List Mono -> List KeyEntry
 maybeInferConstraint : List (String, Ty) -> String -> Scheme -> Unit
 maybeStandaloneValueMono : String -> Option Mono
 memberAliasEntry : String -> List ((String, String), List a) -> UseMember -> List (String, List a)
@@ -1006,7 +1009,7 @@ requiredMethodNames : List IfaceMethod -> List String
 resetCrossModuleState : Unit -> Unit
 resetState : Unit -> Unit
 resetTypeErrorsSticky : Unit -> Unit
-resolveArgStamp : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> Unit
+resolveArgStamp : Map String (List ImplEntry) -> Map String (List KeyEntry) -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> Unit
 resolveArgStamps : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List PendingEntry -> Unit
 resolveArithSite : Ref Route -> Mono -> Unit
 resolveArithSites : List (Ref Route, Mono) -> Unit
@@ -1073,7 +1076,7 @@ seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
 seedAndCheckSplit : List Decl -> List Decl -> List Decl -> List (String, Scheme)
 seedCheckRun : List Decl -> Unit
 seedEffectDomains : Unit -> Unit
-selectImplEntryByIface : Map String (List KeyEntry) -> String -> Mono -> Option KeyEntry
+selectImplEntryByIface : Map String (List KeyEntry) -> String -> List Mono -> Option KeyEntry
 selectReqImpl : Map String (List KeyEntry) -> Map String (List ImplEntry) -> String -> String -> Mono -> Option (Ty, List Require)
 selfBinding : String -> (String, String)
 setCardCap : Int
@@ -1181,15 +1184,15 @@ tyAppSpine : Ty -> (Ty, List Ty)
 tyConNamesInConstraint : Constraint -> List String
 tyConNamesInTy : Ty -> List String
 tyFirstLoc : Ty -> Option Loc
-tyHeadEq : Ty -> Ty -> Bool
+tyHeadEqV : List Ty -> List Ty -> Bool
 tyIsConcrete : Ty -> Bool
 tyMatchesAst : Ty -> Ty -> Bool
 tyOfMsg : Option String -> String
 tyStep : Ty -> Ty -> MStep String Ty Ty
-tyStrictlyMoreSpecific : Ty -> Ty -> Bool
+tyStrictlyMoreSpecificV : List Ty -> List Ty -> Bool
 tyStructEq : Ty -> Ty -> Bool
 tyStructEqList : List Ty -> List Ty -> Bool
-tySubsumes : Ty -> Ty -> Bool
+tySubsumesV : List Ty -> List Ty -> Bool
 tyVarArgNames : List Ty -> List String
 tyVarNames : Ty -> List String
 tyVarNamesWithConstraints : Ty -> List String

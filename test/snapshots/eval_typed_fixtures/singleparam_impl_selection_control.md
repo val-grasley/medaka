@@ -1,0 +1,27 @@
+# META
+source_lines=21
+stages=EVAL
+# SOURCE
+-- #609 CONTROL (must be unchanged by the fix): the single-param analogue of
+-- multiparam_impl_selection.mdk.  Two impls of a ONE-param interface, dispatch on
+-- the receiver.  This printed the correct 2 BEFORE the fix as well — which is what
+-- proves #609 was about the ARITY of the selection key, not about dispatch
+-- generally.
+--
+-- It is also the live n=1 canary for the vector rewrite.  The n=1 reduction is
+-- argued algebraically at tySubsumesV (a single-param impl's `itys` is exactly
+-- `[hty]`, and `zipL [g] [s] == [(g, s)]`, so tySubsumesV/matchTyMonos reduce to
+-- the removed tySubsumes/matchTyMono term for term); this pins it behaviourally
+-- too, so the argument cannot silently rot.
+interface Sz a where
+  szf : a -> Int
+
+impl Sz Int where
+  szf a = 1
+
+impl Sz Bool where
+  szf a = 2
+
+main = println (szf True)
+# EVAL
+2

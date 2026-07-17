@@ -137,8 +137,9 @@ no-stdlib rule bans `import list`/`string`/… *modules*, not the prelude). So
 **derive** these instances unless you have a **concrete** reason not to:
 
 - **Underivable** — the function is intentionally *not* full structural `==`:
-  head-only (`tyHeadEq` ignores type args), or over a non-AST type (`valueEq`
-  over runtime `Value`). Keep these hand-rolled; they're a different relation.
+  up-to-renaming (`tyHeadEqV` is mutual *subsumption*, so `Ix a i` and `Ix b j`
+  are "equal"), or over a non-AST type (`valueEq` over runtime `Value`). Keep
+  these hand-rolled; they're a different relation.
 - **Measured hot path** — a derived `==` dispatches through the `Eq` dict; a
   hand-rolled `litEq : Lit -> Lit -> Bool` is a direct monomorphic call. Only
   invoke this for a *profiled* hotspot (see `compiler/PERF-RESULTS.md`), not a
