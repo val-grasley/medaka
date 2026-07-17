@@ -4361,6 +4361,26 @@ IDENT "len"
 IDENT "p"
 IDENT "e"
 EQUAL
+MATCH
+IDENT "uniEscChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+UPPER "None"
+FAT_ARROW
+IDENT "lexErrorTok"
+IDENT "p"
+LPAREN
+IDENT "uniEscErr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+NEWLINE
+UPPER "Some"
+IDENT "c"
+FAT_ARROW
 IDENT "scanStr"
 IDENT "src"
 IDENT "len"
@@ -4376,11 +4396,11 @@ IDENT "id"
 LPAREN
 IDENT "acc"
 PLUSPLUS
-IDENT "uniEscStr"
-IDENT "src"
-IDENT "len"
-IDENT "p"
+IDENT "charToStr"
+IDENT "c"
 RPAREN
+NEWLINE
+DEDENT
 NEWLINE
 PIPE
 IDENT "otherwise"
@@ -4741,6 +4761,27 @@ IDENT "len"
 IDENT "p"
 IDENT "e"
 EQUAL
+MATCH
+IDENT "uniEscChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+UPPER "None"
+FAT_ARROW
+IDENT "lexErrorTok"
+IDENT "p"
+LPAREN
+IDENT "uniEscErr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+NEWLINE
+UPPER "Some"
+IDENT "c"
+FAT_ARROW
+INDENT
 IDENT "scanInterpCont"
 IDENT "src"
 IDENT "len"
@@ -4754,11 +4795,13 @@ IDENT "depth"
 LPAREN
 IDENT "acc"
 PLUSPLUS
-IDENT "uniEscStr"
-IDENT "src"
-IDENT "len"
-IDENT "p"
+IDENT "charToStr"
+IDENT "c"
 RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
 NEWLINE
 PIPE
 IDENT "otherwise"
@@ -5384,6 +5427,26 @@ IDENT "len"
 IDENT "p"
 IDENT "e"
 EQUAL
+MATCH
+IDENT "uniEscChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+UPPER "None"
+FAT_ARROW
+IDENT "lexErrorTok"
+IDENT "p"
+LPAREN
+IDENT "uniEscErr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+NEWLINE
+UPPER "Some"
+IDENT "c"
+FAT_ARROW
 IDENT "scanTriple"
 IDENT "src"
 IDENT "len"
@@ -5400,11 +5463,11 @@ IDENT "leadingNl"
 LPAREN
 IDENT "acc"
 PLUSPLUS
-IDENT "uniEscStr"
-IDENT "src"
-IDENT "len"
-IDENT "p"
+IDENT "charToStr"
+IDENT "c"
 RPAREN
+NEWLINE
+DEDENT
 NEWLINE
 PIPE
 IDENT "otherwise"
@@ -5877,6 +5940,26 @@ IDENT "len"
 IDENT "p"
 IDENT "e"
 EQUAL
+MATCH
+IDENT "uniEscChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+UPPER "None"
+FAT_ARROW
+IDENT "lexErrorTok"
+IDENT "p"
+LPAREN
+IDENT "uniEscErr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+NEWLINE
+UPPER "Some"
+IDENT "c"
+FAT_ARROW
 IDENT "scanInterpTripleCont"
 IDENT "src"
 IDENT "len"
@@ -5890,11 +5973,11 @@ IDENT "depth"
 LPAREN
 IDENT "acc"
 PLUSPLUS
-IDENT "uniEscStr"
-IDENT "src"
-IDENT "len"
-IDENT "p"
+IDENT "charToStr"
+IDENT "c"
 RPAREN
+NEWLINE
+DEDENT
 NEWLINE
 PIPE
 IDENT "otherwise"
@@ -6851,6 +6934,239 @@ RPAREN
 NEWLINE
 DEDENT
 NEWLINE
+IDENT "uniHexSigLen"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "uniHexSigLen"
+IDENT "src"
+IDENT "p"
+IDENT "endp"
+INDENT
+PIPE
+IDENT "p"
+GEQ
+IDENT "endp"
+EQUAL
+INT 0
+NEWLINE
+PIPE
+IDENT "at"
+IDENT "src"
+IDENT "p"
+EQ_EQ
+CHAR "0"
+EQUAL
+IDENT "uniHexSigLen"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 1
+RPAREN
+IDENT "endp"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "endp"
+MINUS
+IDENT "p"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "uniEscCode"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Option"
+UPPER "Int"
+NEWLINE
+IDENT "uniEscCode"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+INDENT
+LET
+IDENT "s"
+EQUAL
+IDENT "p"
+PLUS
+INT 3
+NEWLINE
+LET
+IDENT "he"
+EQUAL
+IDENT "uHexEnd"
+IDENT "src"
+IDENT "len"
+IDENT "s"
+NEWLINE
+IF
+IDENT "uniHexSigLen"
+IDENT "src"
+IDENT "s"
+IDENT "he"
+GT
+INT 6
+THEN
+UPPER "None"
+ELSE
+UPPER "Some"
+LPAREN
+IDENT "parseRadix"
+IDENT "src"
+IDENT "s"
+IDENT "he"
+INT 16
+INT 0
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "uniEscText"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "uniEscText"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+IDENT "substr"
+IDENT "src"
+IDENT "p"
+LPAREN
+IDENT "uHexEnd"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 3
+RPAREN
+PLUS
+INT 1
+RPAREN
+NEWLINE
+IDENT "uniEscChar"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Option"
+UPPER "Char"
+NEWLINE
+IDENT "uniEscChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+MATCH
+IDENT "uniEscCode"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+UPPER "None"
+FAT_ARROW
+UPPER "None"
+NEWLINE
+UPPER "Some"
+IDENT "cp"
+FAT_ARROW
+IDENT "charFromCode"
+IDENT "cp"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "uniIsSurrogate"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "uniIsSurrogate"
+IDENT "cp"
+EQUAL
+IDENT "cp"
+GEQ
+INT 55296
+AND
+IDENT "cp"
+LEQ
+INT 57343
+NEWLINE
+IDENT "uniEscErr"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "uniEscErr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+MATCH
+IDENT "uniEscCode"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+UPPER "Some"
+IDENT "cp"
+IF
+IDENT "uniIsSurrogate"
+IDENT "cp"
+FAT_ARROW
+INTERP_OPEN "unicode escape '"
+IDENT "uniEscText"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INTERP_END "' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own"
+NEWLINE
+UNDERSCORE
+FAT_ARROW
+INTERP_OPEN "unicode escape '"
+IDENT "uniEscText"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INTERP_END "' is out of range. A codepoint must be at most 10FFFF"
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "readCharUnicode"
 COLON
 UPPER "Array"
@@ -6874,6 +7190,26 @@ IDENT "p"
 IDENT "depth"
 IDENT "id"
 EQUAL
+MATCH
+IDENT "uniEscChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INDENT
+UPPER "None"
+FAT_ARROW
+IDENT "lexErrorTok"
+IDENT "p"
+LPAREN
+IDENT "uniEscErr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+NEWLINE
+UPPER "Some"
+IDENT "c"
+FAT_ARROW
 INDENT
 LET
 IDENT "he"
@@ -6887,33 +7223,12 @@ PLUS
 INT 3
 RPAREN
 NEWLINE
-LET
-IDENT "cp"
-EQUAL
-IDENT "parseRadix"
-IDENT "src"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-IDENT "he"
-INT 16
-INT 0
-NEWLINE
 UPPER "RTok"
 LPAREN
 UPPER "TChar"
 LPAREN
 IDENT "charToStr"
-LPAREN
-IDENT "fromOption"
-CHAR " "
-LPAREN
-IDENT "charFromCode"
-IDENT "cp"
-RPAREN
-RPAREN
+IDENT "c"
 RPAREN
 RPAREN
 IDENT "p"
@@ -6933,6 +7248,8 @@ INT 2
 RPAREN
 IDENT "depth"
 IDENT "id"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
@@ -7018,55 +7335,6 @@ INT 2
 RPAREN
 EQ_EQ
 CHAR "{"
-NEWLINE
-IDENT "uniEscStr"
-COLON
-UPPER "Array"
-UPPER "Char"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "String"
-NEWLINE
-IDENT "uniEscStr"
-IDENT "src"
-IDENT "len"
-IDENT "p"
-EQUAL
-INDENT
-IDENT "charToStr"
-LPAREN
-IDENT "fromOption"
-CHAR " "
-LPAREN
-IDENT "charFromCode"
-LPAREN
-IDENT "parseRadix"
-IDENT "src"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-LPAREN
-IDENT "uHexEnd"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-RPAREN
-INT 16
-INT 0
-RPAREN
-RPAREN
-RPAREN
-NEWLINE
-DEDENT
 NEWLINE
 IDENT "uniEscEnd"
 COLON

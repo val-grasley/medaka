@@ -1,0 +1,1 @@
+unicode escape '\u{D800}' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own

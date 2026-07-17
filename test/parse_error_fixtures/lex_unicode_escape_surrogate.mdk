@@ -1,0 +1,7 @@
+-- Lexer error: `\u{D800}` is a UTF-16 surrogate — one half of a surrogate pair,
+-- never a character on its own.  It is IN the 0..10FFFF range, so only the
+-- surrogate hole in `charFromCode`'s bound rejects it; the lexer used to discard
+-- that None and emit a SPACE (#567).  Not exotic: it is what pasting
+-- UTF-16-derived text, or hand-porting an escape from Java/JS, produces.
+-- Self-hosted reference: unicode escape '\u{D800}' is a UTF-16 surrogate...
+x = "a\u{D800}b"

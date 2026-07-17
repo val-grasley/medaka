@@ -167,6 +167,7 @@ kebab-case; never renumber (append only).
 | `L-UNTERMINATED-STRING` | unterminated string literal |
 | `L-UNTERMINATED-COMMENT` | unterminated block comment |
 | `L-BAD-ESCAPE` | invalid escape sequence |
+| `L-BAD-UNICODE-ESCAPE` | `\u{…}` escape that names no Unicode character — out of range (`> 10FFFF`), or a UTF-16 surrogate (`D800`–`DFFF`), which is never a scalar value. Covers **both** the value being out of range and the digit run being too long to parse exactly: `parseRadix` accumulates in a wrapping 63-bit `Int`, so `\u{8000000000000041}` (= 2^63+65) once wrapped back to `65` and silently lexed as `A` — a range check alone cannot see that, so the lexer rejects >6 significant hex digits before parsing. Both causes deliberately share one code (as `L-INT-OVERFLOW` does across its two stages): they are one user-facing defect — "this escape is not a character" — and the two messages share the `"unicode escape"` prefix that `parseErrCode` (`compiler/driver/diagnostics.mdk`) keys on, while still naming the specific cause in prose. Raised from all five `\u{…}` scan sites (char literal, plain/triple string, both interpolation continuations) |
 | `L-BAD-CHAR` | unexpected character |
 | `L-HS-LAMBDA` | stray `\` (Haskell lambda `\x -> e`; suggest `x => e`) |
 | `L-HS-DOLLAR` | stray `$` (Haskell low-precedence apply; suggest direct apply/parens/`\|>`) |
