@@ -7157,9 +7157,28 @@ emitIndexRef prog env d a i =
     ++ ["i32.or", "if"] ++ indent (wasmTrap "E-INDEX-OOB" "index out of bounds") ++ ["end"]
     ++ ["local.get " ++ arrL, "ref.as_non_null", "local.get " ++ idxL, "array.get $arr", "ref.as_non_null"]
 
--- CSlice arr lo hi incl: new array of (end-lo) slots, copy via array.copy.  end =
--- incl ? hi+1 : hi.  (No bounds clamping beyond non-negative count — mirrors the
--- native slice which assumes valid indices; an over-range copy traps in-engine.)
+-- CSlice arr lo hi incl: bounds-check, then new array of (end-lo) slots, copy via
+-- array.copy.  end = incl ? hi+1 : hi.
+--
+-- #550: this used to carry NO bounds check — the comment here read "an over-range copy
+-- traps in-engine", which was true but is not the contract: the trap is a RAW ENGINE
+-- trap, not the coded [E-SLICE-OOB] line `run` produces (sliceArray, eval.mdk).  So wasm
+-- was memory-safe but diagnosed wrong, while the LLVM backend (which the comment claimed
+-- to "mirror") had no check at all and read out of bounds.  Both are now guarded on the
+-- same predicate: `lo < 0 || end > len || end - lo < 0`.  Guarding explicitly rather than
+-- leaning on array.new/array.copy's own traps also keeps the two backends' ABORT
+-- CONDITION identical instead of merely coincidentally-both-fatal.
+--
+-- Message parity, and its one KNOWN LIMIT: the trap line is static bytes (wasmTrap
+-- streams them through $mdk_write_err_byte at emit time, no $str value and no data
+-- segment), so wasm reports the CODE but not the `[lo..hi]` numbers that eval and
+-- native's @mdk_slice_oob both print.  Printing them would need a decimal i64 formatter
+-- on the trap path, which does not exist here.  This is the same shape the tree already
+-- ships for E-INDEX-OOB (eval names the offending index; native's mdk_oob and wasm both
+-- say a bare "index out of bounds") — NOT ledgered as an engine divergence, because
+-- nothing compares stderr text across engines: diff_wasm*.sh diff stdout, and
+-- diff_compiler_engines.sh classifies any interpreter `runtime error [E-` as n/a.  The
+-- ABORT CONDITION — which is what soundness turns on — is identical on all three.
 emitSliceRef : Prog -> List String -> Int -> CExpr -> CExpr -> CExpr -> Bool -> List String
 emitSliceRef prog env d a lo hi incl =
   let sfx = intToString d
@@ -7171,7 +7190,19 @@ emitSliceRef prog env d a lo hi incl =
   let loI = emitRefExpr prog env d lo ++ ["ref.cast (ref i31)", "i31.get_s", "local.set " ++ loL]
   let hiI = emitRefExpr prog env d hi ++ ["ref.cast (ref i31)", "i31.get_s"]
   let adj = if incl then ["i32.const 1", "i32.add"] else []
-  arrI ++ loI ++ hiI ++ adj ++ ["local.get " ++ loL, "i32.sub", "local.set " ++ lenL]
+  -- `end` is live on the stack after adj; stash it in lenL, guard, then turn it into the
+  -- element count.  Ordering matters: the `end > len` compare needs `end`, and the
+  -- `len < 0` compare needs `end - lo`, so the two uses are sequenced through lenL.
+  let guardI = ["local.set " ++ lenL]
+    -- lo < 0
+    ++ ["local.get " ++ loL, "i32.const 0", "i32.lt_s"]
+    -- end > array.len src
+    ++ ["local.get " ++ lenL, "local.get " ++ srcL, "ref.as_non_null", "array.len", "i32.gt_s", "i32.or"]
+    -- (end - lo) < 0  (inverted range)
+    ++ ["local.get " ++ lenL, "local.get " ++ loL, "i32.sub", "i32.const 0", "i32.lt_s", "i32.or"]
+    ++ ["if"] ++ indent (wasmTrap "E-SLICE-OOB" "slice out of bounds") ++ ["end"]
+    ++ ["local.get " ++ lenL, "local.get " ++ loL, "i32.sub", "local.set " ++ lenL]
+  arrI ++ loI ++ hiI ++ adj ++ guardI
     ++ ["i32.const 0", "ref.i31", "local.get " ++ lenL, "array.new $arr", "local.set " ++ dstL]
     -- array.copy dst dstoff src srcoff len
     ++ ["local.get " ++ dstL, "ref.as_non_null", "i32.const 0", "local.get " ++ srcL, "ref.as_non_null", "local.get " ++ loL, "local.get " ++ lenL, "array.copy $arr $arr"]

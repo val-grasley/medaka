@@ -24,11 +24,21 @@ type-clean.
   path. **And read the count it prints back** — it will happily say `0 blessed`, and a stale golden
   shipped once because that number went unread.
 - **A ledger, never a skip-list.** A skip-list cannot notice an *accidental fix*, so it rots. **Every
-  exception entry must fail when the thing gets BETTER, too.**
+  exception entry must fail when the thing gets BETTER, too.** ⭐ The **tracker** was the last
+  un-drained ledger — six entries were already dead when it was re-derived on 2026-07-14, two of them
+  labelled *silent build miscompile*. `diff_compiler_must_fail.sh` is its expiry (#547).
 - **Measure allocation, not wall-clock**, for perf gates. GC bytes are deterministic — machine-independent
   and noise-free, which no timing gate can be on a shared runner.
 - **A gate must RUN where the bug lands.** A docs gate inside a gate shard is *skipped on docs-only PRs*
   — green forever, checking nothing. Ask **"where is this skipped?"** *before* you write it.
+- ⭐ **A REQUIRED CHECK MUST BE CAUSED BY THE DIFF IT GATES.** The one-line rule for gate placement,
+  and it settles the question every time. `soundness` hosts `diff_compiler_must_fail.sh` because **a
+  diff can fix a bug** — but must never host `must_fail_census.sh`, because **no diff can close an
+  issue**: blocking an innocent PR on repo state its diff never touched is the "not your break"
+  problem `.claude/HANDOFF.md` exists to mitigate. Repo-state checks go **nightly**; diff-caused
+  checks gate the PR. (Corollaries for anything reaching the network: a required check that calls an
+  API stops the whole repo merging on an outage, and it cannot run on a dev box with no `gh` auth —
+  where it would have to SKIP, and "this didn't run" must never look like "this passed".)
 
 ---
 
@@ -106,6 +116,8 @@ cannot reproduce.
 | `diff_compiler_perf_scaling.sh` | The O(n²) detector — grades **allocation** growth, not wall-clock |
 | `diff_compiler_capability_matrix.sh` | Every extern in `stdlib/runtime.mdk` vs what each engine implements. **Its absence let 37 externs drift for six weeks** |
 | `diff_compiler_shadow_semantics.sh` | Pins every shadow cell, **including the KNOWN-BAD ones** |
+| `diff_compiler_must_fail.sh` | **The TRACKER's self-drain** (#547). Each `test/must_fail_fixtures/*/` pins one OPEN issue's bug as still reproducing; a fix flips it RED and the message says to close the issue. A RED here is usually a GOOD failure. Runs as a named step in `soundness` — NOT a shard, because shards are narrowed on `pull_request` and the drain would only fire in the merge queue |
+| `must_fail_census.sh` (nightly) | **The other half of that ratchet** (#569) — the directions a gate structurally cannot see, because they need the GitHub API. Above all: **an issue is CLOSED but its fixture still REPRODUCES ⇒ the TRACKER is lying.** The fixture is a *measurement*; the issue state is an *assertion*. It **reports, never acts** (it cannot tell "closed in error" from "the fixture drifted"). Findings are FILED to one tracking issue; **infra failure fails the job.** Found #508 closed-but-live on its first run |
 
 **Stale oracles:** `diff_native_cli` and the bootstrap suites are especially stale-prone — force-rebuild
 before trusting a pass/fail from those.

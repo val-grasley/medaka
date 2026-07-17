@@ -1,0 +1,3 @@
+eq : Num a => a -> a
+eq x = x + 1
+main = println (eq 3)

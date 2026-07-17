@@ -92,7 +92,16 @@ Support files:
 weight-balanced ordered trees; `hash_map`/`hash_set` are mutable hash tables; `mut_array` is
 a growable vector (amortized-O(1) `push`); `json` is a recursive-descent parser/serializer;
 `byteparser`/`bytebuilder` are a binary parser-combinator library and its symmetric output
-builder. **Only `core.mdk` is auto-prelude** — import the rest by bare name (`import map`).
+builder. **Only `core.mdk` is auto-prelude.** For the rest, **an import must say what it
+binds**: `import map.{Map, get}` (selective — the common form), `import map.*` (everything
+exported), or `import map as M` → `M.get` (**values only** — an alias-qualified name in
+*type* position is a parse error, so import types by name). Combinations (`import m.{f} as
+A`, `import m.* as A`) are rejected with a diagnostic that names the fix.
+⚠️ **A bare `import map` binds NO names** — not values, not types, not `map.get` (qualified
+access exists *only* via `as`). But it is **not** a no-op: **any** import of a module brings
+that module's `impl`s into scope for dispatch, which is the whole job of the bare form (e.g.
+`stdlib/json.mdk`'s bare `import array` — without it, `map (+ 1) [|1,2,3|]` is *"No impl of
+Mappable for Array"*).
 `io.mdk` is the ergonomic layer over the `runtime.mdk` IO externs.
 
 ## 🚦 How work lands: `main` is PROTECTED — you cannot push to it
@@ -303,6 +312,7 @@ make docs-index                        # regenerate docs/README.md (GENERATED �
 | `test/diff_compiler_capability_matrix.sh` | Every extern in `stdlib/runtime.mdk` vs what each engine actually implements. Its absence let 37 externs drift for six weeks. Ledger: `test/CAPABILITY-EXCEPTIONS.txt` |
 | `test/diff_compiler_tmc_parity.sh` | Both backends TMC the same functions (needs `sh test/wasm/build_wasm_oracle.sh`) |
 | `test/bootstrap_*.sh` | Each native pipeline stage == interpreter output |
+| `test/diff_compiler_must_fail.sh` | **The MUST-FAIL suite — the TRACKER's self-drain.** Each `test/must_fail_fixtures/*/` asserts one OPEN issue's bug **still reproduces**; when a fix lands the fixture flips green and **FAILS the gate**, naming the issue to close. **A RED here is usually a GOOD failure, not your break.** Runs in `soundness`, not a shard |
 | `test/check_removed_constructs.sh` | Tree-wide scan for stale uses of removed constructs (~2-3 min, `JOBS=` knob) |
 
 **Stale oracles:** `diff_native_cli` and the bootstrap suites are especially stale-prone —
@@ -388,10 +398,15 @@ settles dispatch/arity/calling-convention questions that are pure speculation fr
 agent debugging a dict-routing S0 on 2026-07-16 called it the single highest-value tool in the
 investigation — it turned "I think the wrong impl is selected" into `call
 @mdk_impl_S__List_a___s` on the screen, which disproved the filed root cause outright.
-⚠️ **`./medaka_emitter <file>` is NOT the way to get IR** — given too few args it prints a usage
-message to **stderr**, but still exits **0** with **empty stdout** (issue #440). A harness that
-redirects stdout to a file, or discards/merges stderr the usual way (`2>/dev/null`), sees a silent
-no-op: empty IR + apparent success, not an empty program.
+⚠️ **`./medaka_emitter <file>` is still NOT the way to get IR** — its CLI is
+`<runtime.mdk> <core.mdk> <entry.mdk> [root ...]`, so a bare `./medaka_emitter <file>` is a usage
+error, not a build. It no longer LIES about it: every error path of the shared probe scaffolding
+now exits **1** with a stderr diagnostic (#440 — `failWith`,
+`compiler/entries/entry_support.mdk`), so
+`./medaka_emitter … > out.ll || die` fires. Until 2026-07-17 all of them exited **0** with **empty
+stdout**, which handed a redirecting harness an empty artifact + apparent success — the same for a
+**nonexistent input file** or a **real typecheck error**, not just a wrong arity. `medaka build
+--keep-ir` remains the supported route.
 
 **Playground e2e:** `playground/e2e/` is a Playwright harness driving a real browser against
 the built CM6 playground (`cd playground/e2e && ./run.sh`). Needs **node v24+** and a

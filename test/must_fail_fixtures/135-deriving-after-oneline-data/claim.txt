@@ -1,0 +1,10 @@
+issue: 135
+what: `deriving` on its own line is a parse error after a ONE-LINE data decl, but works
+what: after a multi-line one — and the error blames indentation.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 1:2-1:3 unexpected `deriving`. Indentation (column 2) doesn't match the enclosing block
+control: check-json control.mdk
+why-control: the MULTI-LINE data decl with a byte-identical `deriving (Eq)` line must stay
+why-control: green. This is the sharpest control available: the two files differ ONLY in
+why-control: whether the constructors are on one line, which IS the issue's claim.

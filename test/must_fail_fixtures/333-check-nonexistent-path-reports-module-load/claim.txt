@@ -1,0 +1,18 @@
+issue: 333
+what: `medaka check` on a NONEXISTENT file path reports R-MODULE-LOAD ("unknown module:
+what: no-such-file-here") instead of a file-not-found error. It treats a path as a module
+what: name, so a typo'd filename is diagnosed as a missing stdlib import.
+cmd: check-json no-such-file-here.mdk
+exit: 1
+diag-code: R-MODULE-LOAD 0:0-0:0
+control: check-json control.mdk
+why-fixture: there is deliberately NO main.mdk in this directory — the missing file IS the
+why-fixture: fixture. `cmd:` names a path that must not exist.
+why-control: an EXISTING, valid file must check clean, isolating the bug to the
+why-control: nonexistent-path case rather than to `check --json` being broken.
+why-diag-code: ⚠️ diag-code, NOT diag, and this row is WHY that verb exists. The real
+why-diag-code: message embeds the ENTIRE stdlib module list ("available modules: array,
+why-diag-code: async, base64, …"), so a full `diag:` pin would FALSELY DRAIN the day anyone
+why-diag-code: adds a stdlib module — an event with no connection to #333. The defect here
+why-diag-code: IS the code (R-MODULE-LOAD rather than file-not-found), so the code is
+why-diag-code: exactly what to pin.

@@ -1,0 +1,12 @@
+-- THE CONTROL for #550: every in-bounds slice, including the exact boundaries the
+-- guard must NOT reject.  If the bounds check is ever tightened into an off-by-one
+-- this goes red, which is the whole point: `[0..5]` (end == length) and `[0..=4]`
+-- (last index, inclusive) are LEGAL, and an empty slice at either end is legal too.
+main =
+  let a = [|1, 2, 3, 4, 5|]
+  let _ = println a.[1..3]
+  let _ = println a.[1..=3]
+  let _ = println a.[0..5]
+  let _ = println a.[0..=4]
+  let _ = println a.[2..2]
+  println a.[5..5]

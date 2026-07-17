@@ -1,0 +1,47 @@
+-- #518 (S0, silent wrongness): a Num literal consumed entirely inside an IMPL
+-- METHOD BODY never got PLAN.md #11's ambiguous-Num defaulting — that pass ran only
+-- at let-group boundaries, and an impl method body is not a let-group.  So the
+-- element var of `[1, 2]` below stayed UNBOUND and the route resolver saw the
+-- receiver as `List _a`, which matches only the GENERAL `impl S (List a)` and never
+-- the specific `impl S (List Int)`.
+--
+-- OBSERVED on the pre-fix binary (built at 0b9d0b16), on this exact source:
+--   check → exit 0 (silent)
+--   build → the binary printed 200      ← the GENERAL impl.  Should be 300.
+--   run   → panicked E-NOT-A-FUNCTION: applied non-function: 200
+-- i.e. `run` and `build` DISAGREED, and `build` was silently wrong.
+-- The typed Core IR route was `(CMethod "s" (RKey "S|(List a)|") (RNone) ())` — the
+-- general impl, and its `requires S a` routed to a null dict (the RNone), which is
+-- what `run` tripped over.  Post-fix it is `(CMethod "s" (RKey "S|(List Int)|") ())`.
+--
+-- The overlap here is deliberate and is a DECIDED FEATURE (DICT-SEMANTICS §3/§6:
+-- `⊑` is head-only, `inst` = min⊑, uniform resolution) — `impl S (List Int)` is
+-- strictly more specific than `impl S (List a)`, so 300 is ground truth, not
+-- whatever the binary happens to print.
+--
+-- The `main = println (s [1, 2])` control (the SAME goal at TOP level) was always
+-- correct at 300, because checkProgramSeeded's group defaulting grounded the var
+-- first.  That pair is what localised the bug to defaulting rather than to the
+-- min⊑ selector: with a String element type in the body (nothing to default), the
+-- impl body already resolved correctly pre-fix.
+data Option2 a = None2 | Some2 a
+
+interface S a where
+  s : a -> Int
+
+interface T a where
+  t : a -> Int
+
+impl S Int where
+  s _ = 100
+
+impl S (List a) requires S a where
+  s _ = 200
+
+impl S (List Int) where
+  s _ = 300
+
+impl T (Option2 Int) where
+  t _ = s [1, 2]
+
+main = println (t (Some2 5))

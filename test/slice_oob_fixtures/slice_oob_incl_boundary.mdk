@@ -1,0 +1,5 @@
+-- #550: the inclusive form ONE past the last legal index.  `[0..=2]` is legal on a
+-- 3-element array (end 3 == length); `[0..=3]` (end 4) is not.  Pins that the guard
+-- rejects at exactly the right side of that boundary — a guard that compared `hi`
+-- rather than `hi + 1` would wrongly accept this and read one word past the end.
+main = println [|1, 2, 3|].[0..=3]

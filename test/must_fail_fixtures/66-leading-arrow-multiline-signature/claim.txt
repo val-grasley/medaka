@@ -1,0 +1,12 @@
+issue: 66
+what: a leading `->` continuing a multi-line signature is rejected with a MISLEADING
+what: INDENTATION error ("Indentation (column 2) doesn't match the enclosing block").
+what: The layout is fine; `->` is simply not in the leading-operator set.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 1:2-1:3 unexpected `->`. Indentation (column 2) doesn't match the enclosing block
+control: check-json control.mdk
+why-control: the SAME signature on one line must stay green. That isolates the bug to the
+why-control: multi-line/leading-`->` form, not to `f : Int -> Int` in general.
+why-diag: the MESSAGE is the defect here (it blames indentation), so it is pinned in full
+why-diag: rather than with diag-code.

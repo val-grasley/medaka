@@ -1,5 +1,5 @@
 # META
-source_lines=14991
+source_lines=15078
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -7097,6 +7097,27 @@ anyIn xs ys = anyList (x => containsI x ys) xs
 -- default_ambiguous_num: a Num-constrained var (alone OR with another class) that is
 -- ambiguous is grounded to Int — the literal's `Num`/`fromInt` representation IS
 -- Int, so grounding keeps impl selection deterministic.
+--
+-- SCOPE (#518): "at a let-binding boundary" above is no longer the whole story — an
+-- IMPL METHOD BODY is ALSO a defaulting boundary (inferImplMethod), for the same
+-- reason a let-group is: it is a point past which an ambiguous Num var can never be
+-- determined, so leaving it unbound hands an UNGROUNDED RECEIVER to the route
+-- resolver, which then silently mis-selects an impl.  It is not a let-group, which is
+-- why it needed its own call rather than inheriting one.  It defaults strictly LESS
+-- than a let-group does — body-local vars only (defaultBodyLocalNum) — because an
+-- impl method's vars can ALSO be caller-determined via a method DICT, a channel with
+-- no let-group analogue.  This paragraph is the written scope extension; before #518
+-- the widening would have existed only as a judgment call in code.
+--
+-- ⚠️ KNOWN GAP (pre-existing, NOT closed here): monoArgUnboundIds below walks only
+-- the DOMAINS of the outermost arrow chain, so a var in RETURN position — or ANY var
+-- of a nullary method like `Monoid.empty : a` (a non-TFun type ⇒ this returns [] and
+-- protects nothing) — is invisible to defaultGroupNum's exclusion filter.  The two
+-- pre-existing call sites (processLetGroup, processSCC) inherit that blind spot.
+-- defaultBodyLocalNum sidesteps it at the impl-method site by testing membership in
+-- the WHOLE type instead.  Tracked as #563 (which also records why tightening the
+-- two let-group sites is NOT obviously safe: there, a return-only var frequently IS
+-- ambiguous and SHOULD ground — `let n = 1` — so this filter is not simply wrong).
 monoArgUnboundIds : Mono -> List Int
 monoArgUnboundIds t = match normalize t
   TFun a _ b => monoUnboundIds a ++ monoArgUnboundIds b
@@ -7135,6 +7156,41 @@ defaultGroupNum obls monos =
   let argIds = flatMap monoArgUnboundIds monos
   let candidates = dedupI (numConstrainedIds obls)
   groundNumVars obls (filterList (id => not (containsI id argIds)) candidates)
+
+-- #518: BODY-LOCAL defaulting — ground only the Num-constrained vars that appear
+-- NOWHERE in [memberMono].  Strictly narrower than defaultGroupNum, and the
+-- distinction is SOUNDNESS-CRITICAL at an impl-method body, which is why this is a
+-- separate primitive rather than a reuse.
+--
+-- defaultGroupNum's exclusion filter is monoArgUnboundIds, which walks ONLY the
+-- domains of the outermost arrow chain.  A var living in RETURN position — including
+-- nested inside a return application — is invisible to it and gets ZERO protection.
+-- At a let-group that is (mostly) benign: the binding generalizes, so a return-only
+-- var is usually ambiguous anyway.  At an IMPL METHOD BODY it is NOT, and the reason
+-- is dict-passing: an impl method's OWN method-level constraint var
+-- (`lift : Num b => a -> Box b`) is supplied by a DICT at the CALL SITE, so the
+-- caller genuinely chooses it (`q : Box Float; q = lift 3` ⇒ b↦Float).  Grounding it
+-- to Int here would permanently monomorphise a var the caller had already fixed —
+-- MEASURED: `MkBox 0.0` before, `E-PANIC: floatToString: not a Float` after, i.e.
+-- trading #518's S0 for a new one.  Return-position type params are exactly what
+-- typeclass dispatch concentrates, so this site's density of the triggering shape is
+-- far higher than a let-group's.
+--
+-- Membership in [memberMono] — arg position OR return position — therefore means
+-- "determined by the caller (via an argument, an annotation, or a method dict)" and
+-- is left alone.  #518's shape is the complement: the element var of `s [1, 2]` in
+-- `t _ = s [1, 2]` is consumed entirely inside the body and surfaces nowhere in
+-- `t : Option2 Int -> Int`, so nothing outside the body can ever determine it.  That
+-- var, and only that var, is what this grounds.
+--
+-- (Note the membership test is the INVERSE of defaultAmbiguousNum's, which requires
+-- the var to be IN the type — `containsI id inT` — and then excludes arg-reachable
+-- ones.  Neither existing primitive expresses "in the type at all", hence this one.)
+defaultBodyLocalNum : List (String, List String, Ty, Mono, Option Loc) -> Mono -> Unit
+defaultBodyLocalNum obls memberMono =
+  let inType = monoUnboundIds memberMono
+  let candidates = dedupI (numConstrainedIds obls)
+  groundNumVars obls (filterList (id => not (containsI id inType)) candidates)
 
 -- per-binding defaulting: run defaultAmbiguousNum on each member's placeholder mono
 defaultEachMember : List (String, List String, Ty, Mono, Option Loc) -> List (String, Mono) -> Unit
@@ -11835,6 +11891,10 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- compare so there was no collision; universal default specialization exposes it.
     let _ = setRef perRun.value.currentFn mname
     let _ = setRef perRun.value.currentImplBody True
+    -- #518: window this body's newly-added obligations, exactly as processLetGroup /
+    -- checkProgramSeeded do for a let-group, so the Num defaulting below is scoped to
+    -- THIS method and can never touch an already-generalized outer var.
+    let oblN0 = perRun.value.pendingImplObligationsN.value
     -- build the method type's tv map explicitly (instead of expectedMethodType,
     -- which hides it) so the impl method's OWN method-level constraint vars
     -- (`Thenable m => …`) can be registered into activeDictVars below.
@@ -11843,6 +11903,33 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     let expected = fromAstType (baseMap ++ extraMap) mty
     let actual = inferClauses env [(pats, body)]
     let _ = unify expected actual
+    -- #518 (S0, silent wrongness): PLAN.md #11 Num defaulting NEVER RAN over an impl
+    -- method body — this path is not a let-group, so nothing grounded its ambiguous
+    -- Num vars.  A literal consumed entirely inside the body (`t _ = s [1, 2]`) left
+    -- its element var UNBOUND, so the receiver the route resolver saw was `List _a`,
+    -- not `List Int` — and `List _a` matches only the GENERAL `impl S (List a)`, never
+    -- the specific `impl S (List Int)`.  The min⊑ selector was never at fault: with one
+    -- match there is nothing to select between.  It resolved to the general impl and
+    -- routed its `requires S a` to RNone (a null dict) — hence `build` silently printing
+    -- the general instance's answer and `run` panicking E-NOT-A-FUNCTION.
+    -- The same expression at TOP LEVEL was always correct precisely because
+    -- checkProgramSeeded's group defaulting grounded the var to Int first.
+    --
+    -- MUST run AFTER `unify expected actual` (so [expected] reflects the body's
+    -- aliasing) and defaults ONLY BODY-LOCAL vars — see defaultBodyLocalNum, which
+    -- explains at length why defaultGroupNum is the WRONG primitive HERE even though
+    -- it is what processLetGroup/processSCC use: its arg-position-only exclusion filter
+    -- leaves a method-level constraint var in RETURN position (`lift : Num b => a ->
+    -- Box b`) unprotected, and at an impl method body that var is dict-supplied by the
+    -- CALLER.  Using defaultGroupNum here measurably traded #518's S0 for a new one.
+    --
+    -- NOT paired with registerAmbiguousConstraints, unlike processLetGroup/processSCC:
+    -- that helper reads `currentLevel + 1` and documents itself as running POST-
+    -- exitLevel, but this function has no enterLevel/exitLevel at all, so the level it
+    -- would compute here is meaningless.  It is also orthogonal to #518 (oblDispatchMonos
+    -- returns [] for Num).  Tracked as #564.
+    let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+    let _ = defaultBodyLocalNum addedObls expected
     -- Eval-path method-dict threading (parity with inferDefaultMethod's
     -- registerMethodDictSlots): an impl method with its OWN method-level constraint
     -- (`wrap : Thenable m => … -> m (List b)`) whose body returns a constraint-var
@@ -16628,6 +16715,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "defaultAmbiguousNum" ((PVar "obls") (PVar "t")) (EBlock (DoLet false false (PVar "argIds") (EApp (EVar "monoArgUnboundIds") (EVar "t"))) (DoLet false false (PVar "inT") (EApp (EVar "monoUnboundIds") (EVar "t"))) (DoLet false false (PVar "candidates") (EApp (EVar "dedupI") (EApp (EVar "numConstrainedIds") (EVar "obls")))) (DoExpr (EApp (EApp (EVar "groundNumVars") (EVar "obls")) (EApp (EApp (EVar "filterList") (ELam ((PVar "id")) (EBinOp "&&" (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "inT")) (EApp (EVar "not") (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "argIds")))))) (EVar "candidates"))))))
 (DTypeSig false "defaultGroupNum" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "Unit"))))
 (DFunDef false "defaultGroupNum" ((PVar "obls") (PVar "monos")) (EBlock (DoLet false false (PVar "argIds") (EApp (EApp (EVar "flatMap") (EVar "monoArgUnboundIds")) (EVar "monos"))) (DoLet false false (PVar "candidates") (EApp (EVar "dedupI") (EApp (EVar "numConstrainedIds") (EVar "obls")))) (DoExpr (EApp (EApp (EVar "groundNumVars") (EVar "obls")) (EApp (EApp (EVar "filterList") (ELam ((PVar "id")) (EApp (EVar "not") (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "argIds"))))) (EVar "candidates"))))))
+(DTypeSig false "defaultBodyLocalNum" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyFun (TyCon "Mono") (TyCon "Unit"))))
+(DFunDef false "defaultBodyLocalNum" ((PVar "obls") (PVar "memberMono")) (EBlock (DoLet false false (PVar "inType") (EApp (EVar "monoUnboundIds") (EVar "memberMono"))) (DoLet false false (PVar "candidates") (EApp (EVar "dedupI") (EApp (EVar "numConstrainedIds") (EVar "obls")))) (DoExpr (EApp (EApp (EVar "groundNumVars") (EVar "obls")) (EApp (EApp (EVar "filterList") (ELam ((PVar "id")) (EApp (EVar "not") (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "inType"))))) (EVar "candidates"))))))
 (DTypeSig false "defaultEachMember" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))
 (DFunDef false "defaultEachMember" (PWild (PList)) (ELit LUnit))
 (DFunDef false "defaultEachMember" ((PVar "obls") (PCons (PTuple PWild (PVar "m")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "obls")) (EVar "m"))) (DoExpr (EApp (EApp (EVar "defaultEachMember") (EVar "obls")) (EVar "rest")))))
@@ -17830,7 +17919,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferImplMethods" (PWild PWild PWild PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "inferImplMethods" ((PVar "env") (PVar "allProg") (PVar "iface") (PVar "implTvMap") (PVar "headMonos") (PCons (PVar "m") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferImplMethod") (EVar "env")) (EVar "allProg")) (EVar "iface")) (EVar "implTvMap")) (EVar "headMonos")) (EVar "m"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferImplMethods") (EVar "env")) (EVar "allProg")) (EVar "iface")) (EVar "implTvMap")) (EVar "headMonos")) (EVar "rest")))))
 (DTypeSig false "inferImplMethod" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyCon "ImplMethod") (TyCon "Unit"))))))))
-(DFunDef false "inferImplMethod" ((PVar "env") (PVar "allProg") (PVar "iface") (PVar "implTvMap") (PVar "headMonos") (PCon "ImplMethod" (PVar "mname") (PVar "pats") (PVar "body"))) (EMatch (EApp (EApp (EApp (EVar "ifaceMethodTy") (EVar "allProg")) (EVar "iface")) (EVar "mname")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "ifaceParams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (EVar "mname"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "True"))) (DoLet false false (PVar "baseMap") (EApp (EApp (EVar "zipL") (EVar "ifaceParams")) (EVar "headMonos"))) (DoLet false false (PVar "extraMap") (EApp (EVar "freshTvMap") (EApp (EApp (EVar "removeAllS") (EVar "ifaceParams")) (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "mty")))))) (DoLet false false (PVar "expected") (EApp (EApp (EVar "fromAstType") (EBinOp "++" (EVar "baseMap") (EVar "extraMap"))) (EVar "mty"))) (DoLet false false (PVar "actual") (EApp (EApp (EVar "inferClauses") (EVar "env")) (EListLit (ETuple (EVar "pats") (EVar "body"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "expected")) (EVar "actual"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerImplMethodDicts") (EVar "mname")) (EVar "ifaceParams")) (EVar "mty")) (EVar "extraMap"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "False"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (ELit (LString ""))))))))
+(DFunDef false "inferImplMethod" ((PVar "env") (PVar "allProg") (PVar "iface") (PVar "implTvMap") (PVar "headMonos") (PCon "ImplMethod" (PVar "mname") (PVar "pats") (PVar "body"))) (EMatch (EApp (EApp (EApp (EVar "ifaceMethodTy") (EVar "allProg")) (EVar "iface")) (EVar "mname")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "ifaceParams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (EVar "mname"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "True"))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "baseMap") (EApp (EApp (EVar "zipL") (EVar "ifaceParams")) (EVar "headMonos"))) (DoLet false false (PVar "extraMap") (EApp (EVar "freshTvMap") (EApp (EApp (EVar "removeAllS") (EVar "ifaceParams")) (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "mty")))))) (DoLet false false (PVar "expected") (EApp (EApp (EVar "fromAstType") (EBinOp "++" (EVar "baseMap") (EVar "extraMap"))) (EVar "mty"))) (DoLet false false (PVar "actual") (EApp (EApp (EVar "inferClauses") (EVar "env")) (EListLit (ETuple (EVar "pats") (EVar "body"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "expected")) (EVar "actual"))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultBodyLocalNum") (EVar "addedObls")) (EVar "expected"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerImplMethodDicts") (EVar "mname")) (EVar "ifaceParams")) (EVar "mty")) (EVar "extraMap"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "False"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (ELit (LString ""))))))))
 (DTypeSig false "registerImplMethodDicts" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))))
 (DFunDef false "registerImplMethodDicts" ((PVar "mname") (PVar "ifaceParams") (PVar "mty") (PVar "tvMap")) (EApp (EApp (EApp (EApp (EVar "registerImplMethodDictsGo") (EVar "mname")) (ELit (LInt 0))) (EApp (EApp (EVar "methodLevelConstraintVarNames") (EVar "ifaceParams")) (EVar "mty"))) (EVar "tvMap")))
 (DTypeSig false "registerImplMethodDictsGo" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))))
@@ -20165,6 +20254,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "defaultAmbiguousNum" ((PVar "obls") (PVar "t")) (EBlock (DoLet false false (PVar "argIds") (EApp (EVar "monoArgUnboundIds") (EVar "t"))) (DoLet false false (PVar "inT") (EApp (EVar "monoUnboundIds") (EVar "t"))) (DoLet false false (PVar "candidates") (EApp (EVar "dedupI") (EApp (EVar "numConstrainedIds") (EVar "obls")))) (DoExpr (EApp (EApp (EVar "groundNumVars") (EVar "obls")) (EApp (EApp (EVar "filterList") (ELam ((PVar "id")) (EBinOp "&&" (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "inT")) (EApp (EVar "not") (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "argIds")))))) (EVar "candidates"))))))
 (DTypeSig false "defaultGroupNum" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyCon "Unit"))))
 (DFunDef false "defaultGroupNum" ((PVar "obls") (PVar "monos")) (EBlock (DoLet false false (PVar "argIds") (EApp (EApp (EDictApp "flatMap") (EVar "monoArgUnboundIds")) (EVar "monos"))) (DoLet false false (PVar "candidates") (EApp (EVar "dedupI") (EApp (EVar "numConstrainedIds") (EVar "obls")))) (DoExpr (EApp (EApp (EVar "groundNumVars") (EVar "obls")) (EApp (EApp (EVar "filterList") (ELam ((PVar "id")) (EApp (EVar "not") (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "argIds"))))) (EVar "candidates"))))))
+(DTypeSig false "defaultBodyLocalNum" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyFun (TyCon "Mono") (TyCon "Unit"))))
+(DFunDef false "defaultBodyLocalNum" ((PVar "obls") (PVar "memberMono")) (EBlock (DoLet false false (PVar "inType") (EApp (EVar "monoUnboundIds") (EVar "memberMono"))) (DoLet false false (PVar "candidates") (EApp (EVar "dedupI") (EApp (EVar "numConstrainedIds") (EVar "obls")))) (DoExpr (EApp (EApp (EVar "groundNumVars") (EVar "obls")) (EApp (EApp (EVar "filterList") (ELam ((PVar "id")) (EApp (EVar "not") (EApp (EApp (EVar "containsI") (EVar "id")) (EVar "inType"))))) (EVar "candidates"))))))
 (DTypeSig false "defaultEachMember" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Ty") (TyCon "Mono") (TyApp (TyCon "Option") (TyCon "Loc")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))
 (DFunDef false "defaultEachMember" (PWild (PList)) (ELit LUnit))
 (DFunDef false "defaultEachMember" ((PVar "obls") (PCons (PTuple PWild (PVar "m")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "obls")) (EVar "m"))) (DoExpr (EApp (EApp (EVar "defaultEachMember") (EVar "obls")) (EVar "rest")))))
@@ -21367,7 +21458,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferImplMethods" (PWild PWild PWild PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "inferImplMethods" ((PVar "env") (PVar "allProg") (PVar "iface") (PVar "implTvMap") (PVar "headMonos") (PCons (PVar "m") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferImplMethod") (EVar "env")) (EVar "allProg")) (EVar "iface")) (EVar "implTvMap")) (EVar "headMonos")) (EVar "m"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "inferImplMethods") (EVar "env")) (EVar "allProg")) (EVar "iface")) (EVar "implTvMap")) (EVar "headMonos")) (EVar "rest")))))
 (DTypeSig false "inferImplMethod" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyFun (TyApp (TyCon "List") (TyCon "Mono")) (TyFun (TyCon "ImplMethod") (TyCon "Unit"))))))))
-(DFunDef false "inferImplMethod" ((PVar "env") (PVar "allProg") (PVar "iface") (PVar "implTvMap") (PVar "headMonos") (PCon "ImplMethod" (PVar "mname") (PVar "pats") (PVar "body"))) (EMatch (EApp (EApp (EApp (EVar "ifaceMethodTy") (EVar "allProg")) (EVar "iface")) (EVar "mname")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "ifaceParams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (EVar "mname"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "True"))) (DoLet false false (PVar "baseMap") (EApp (EApp (EVar "zipL") (EVar "ifaceParams")) (EVar "headMonos"))) (DoLet false false (PVar "extraMap") (EApp (EVar "freshTvMap") (EApp (EApp (EVar "removeAllS") (EVar "ifaceParams")) (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "mty")))))) (DoLet false false (PVar "expected") (EApp (EApp (EVar "fromAstType") (EBinOp "++" (EVar "baseMap") (EVar "extraMap"))) (EVar "mty"))) (DoLet false false (PVar "actual") (EApp (EApp (EVar "inferClauses") (EVar "env")) (EListLit (ETuple (EVar "pats") (EVar "body"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "expected")) (EVar "actual"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerImplMethodDicts") (EVar "mname")) (EVar "ifaceParams")) (EVar "mty")) (EVar "extraMap"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "False"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (ELit (LString ""))))))))
+(DFunDef false "inferImplMethod" ((PVar "env") (PVar "allProg") (PVar "iface") (PVar "implTvMap") (PVar "headMonos") (PCon "ImplMethod" (PVar "mname") (PVar "pats") (PVar "body"))) (EMatch (EApp (EApp (EApp (EVar "ifaceMethodTy") (EVar "allProg")) (EVar "iface")) (EVar "mname")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "ifaceParams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (EVar "mname"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "True"))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "baseMap") (EApp (EApp (EVar "zipL") (EVar "ifaceParams")) (EVar "headMonos"))) (DoLet false false (PVar "extraMap") (EApp (EVar "freshTvMap") (EApp (EApp (EVar "removeAllS") (EVar "ifaceParams")) (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "mty")))))) (DoLet false false (PVar "expected") (EApp (EApp (EVar "fromAstType") (EBinOp "++" (EVar "baseMap") (EVar "extraMap"))) (EVar "mty"))) (DoLet false false (PVar "actual") (EApp (EApp (EVar "inferClauses") (EVar "env")) (EListLit (ETuple (EVar "pats") (EVar "body"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "expected")) (EVar "actual"))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultBodyLocalNum") (EVar "addedObls")) (EVar "expected"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerImplMethodDicts") (EVar "mname")) (EVar "ifaceParams")) (EVar "mty")) (EVar "extraMap"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentImplBody")) (EVar "False"))) (DoExpr (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "currentFn")) (ELit (LString ""))))))))
 (DTypeSig false "registerImplMethodDicts" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))))
 (DFunDef false "registerImplMethodDicts" ((PVar "mname") (PVar "ifaceParams") (PVar "mty") (PVar "tvMap")) (EApp (EApp (EApp (EApp (EVar "registerImplMethodDictsGo") (EVar "mname")) (ELit (LInt 0))) (EApp (EApp (EVar "methodLevelConstraintVarNames") (EVar "ifaceParams")) (EVar "mty"))) (EVar "tvMap")))
 (DTypeSig false "registerImplMethodDictsGo" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))))

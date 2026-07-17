@@ -1,0 +1,4 @@
+-- #556: the OCTAL spelling of the same overflow.  Pinned separately for the same
+-- reason as the binary fixture: octal's admissible digit count is 21.
+-- Self-hosted reference: integer literal too large for Int (max magnitude 2^62)
+x = 0o1777777777777777777777

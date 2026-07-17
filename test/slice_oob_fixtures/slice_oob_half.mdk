@@ -1,0 +1,4 @@
+-- #550: half-open `arr.[lo..hi]` past the end.  Pre-fix, `build` allocated `hi - lo`
+-- slots and copied `a[lo + i]` with NO bounds check, so this printed 97 elements read
+-- off the end of the heap and exited 0; `run` raised E-SLICE-OOB all along.
+main = println [|1, 2, 3, 4, 5|].[2..99]

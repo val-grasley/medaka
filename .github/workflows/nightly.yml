@@ -394,3 +394,112 @@ jobs:
           path: playground/e2e/screenshots/*.png
           if-no-files-found: warn
           retention-days: 14
+
+  # ── The must-fail CENSUS (#569) — the half of the ratchet a GATE cannot run. ────
+  #
+  # test/diff_compiler_must_fail.sh (in `soundness`) drains one direction: a fix lands,
+  # the pin stops holding, the gate goes RED. This job drains the directions that need
+  # the GitHub API — above all HALF 1: an issue is CLOSED but its fixture STILL
+  # REPRODUCES, i.e. THE TRACKER IS LYING. The fixture just ran against the binary; the
+  # issue state is a human assertion. When they disagree, the assertion is usually what
+  # is wrong. (That is not theory: on its first live run this found #508 closed-but-live
+  # — closed by a stray `fixed #508` in the prose of the very PR that ADDED the suite.
+  # See #583.)
+  #
+  # ⭐ WHY IT IS HERE AND NOT IN `soundness`: A REQUIRED CHECK MUST BE CAUSED BY THE DIFF
+  # IT GATES. `soundness` can host the must-fail GATE because a diff can fix a bug; it
+  # must never host this CENSUS, because NO DIFF CAN CLOSE AN ISSUE. Blocking an innocent
+  # PR on repo state its diff never touched is the "not your break" problem
+  # .claude/HANDOFF.md exists to mitigate. Also: soundness is required on every PR AND
+  # every merge-queue entry, so one API blip would stop the whole repo merging; every
+  # agent runs the gate locally with no `gh` auth, where it would have to SKIP ("this
+  # didn't run" looking like "this passed") or FAIL; and fork PRs get a restricted token.
+  #
+  # Findings are FILED, not failed — same contract as the fuzz-diff job above, and for
+  # the same reason: a finding here is news for a human, not a broken build. But an INFRA
+  # failure (zero fixtures read, no `gh`, the API refusing) DOES fail the job: a census
+  # that graded nothing must never look like a clean one. The script owns that
+  # distinction via its exit code (0 clean / 1 findings / 2 infra), so this job does not
+  # re-derive it.
+  #
+  # No compiler is needed: the census reads claim.txt files and the API, never `medaka`.
+  # (Whether each fixture still REPRODUCES is the gate's job, on every PR — the census
+  # asks the API what the tracker CLAIMS, and pairs it with the fact that the gate is
+  # green, which by construction means every pin still holds.)
+  must-fail-census:
+    name: "must_fail_census (tracker vs corpus; findings are FILED, not failed — #569)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Census the tracker against the must-fail corpus
+        id: census
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set +e
+          sh test/must_fail_census.sh > /tmp/census.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/census.log
+
+          # 2 = INFRA (no gh, no fixtures, API refused). That is a real job failure —
+          # a census that could not read its inputs has not reported "no findings".
+          if [ "$rc" = "2" ]; then
+            echo "::error::must_fail_census could not run (infra). This is NOT a clean census — see the log."
+            exit 1
+          fi
+
+          echo "findings=$([ "$rc" = "1" ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
+          {
+            echo "## must-fail census"
+            echo ""
+            echo "Exit $rc — \`0\`=no findings, \`1\`=findings filed."
+            echo ""
+            echo '```'
+            cat /tmp/census.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      # ONE tracking issue, updated — not one per night. Dedup by exact title match
+      # against open issues, exactly as the fuzz-diff job does.
+      - name: File or update the census tracking issue
+        if: steps.census.outputs.findings == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          TITLE="nightly must-fail census: tracker/corpus disagreements + pinning candidates"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BODY_FILE="$(mktemp)"
+          {
+            echo "Census on $(date -u +%Y-%m-%dT%H:%MZ). Run: $RUN_URL"
+            echo ""
+            echo "**A 🚨 row means the TRACKER disagrees with the BINARY** — an issue is CLOSED"
+            echo "while its fixture still reproduces the bug. The fixture is a measurement; the"
+            echo "issue state is an assertion. Judge which is wrong; do NOT assume the fixture is."
+            echo ""
+            echo "Pinning candidates are a DELTA, not a backlog, and they are FYI — most of the"
+            echo "tracker is legitimately un-pinnable. Nothing here is a task."
+            echo ""
+            echo '```'
+            cat /tmp/census.log
+            echo '```'
+          } > "$BODY_FILE"
+
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$BODY_FILE"
+            echo "updated existing tracking issue #$existing"
+          else
+            gh issue create --title "$TITLE" --label "ws:testing" --body-file "$BODY_FILE"
+            echo "opened a new tracking issue"
+          fi

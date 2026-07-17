@@ -1,0 +1,4 @@
+data Color = Red | Green
+  deriving (Eq)
+
+main = println (Red == Red)

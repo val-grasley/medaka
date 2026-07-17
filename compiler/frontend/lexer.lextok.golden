@@ -42,6 +42,10 @@ DOT_LBRACE
 IDENT "joinWith"
 COMMA
 IDENT "compareDecMag"
+COMMA
+IDENT "listLen"
+COMMA
+IDENT "anyList"
 RBRACE
 NEWLINE
 PUBLIC
@@ -3200,6 +3204,204 @@ DEDENT
 NEWLINE
 DEDENT
 NEWLINE
+IDENT "radixMaxLen"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "radixMaxLen"
+CHAR "x"
+EQUAL
+INT 16
+NEWLINE
+IDENT "radixMaxLen"
+CHAR "b"
+EQUAL
+INT 63
+NEWLINE
+IDENT "radixMaxLen"
+UNDERSCORE
+EQUAL
+INT 21
+NEWLINE
+IDENT "radixMaxLead"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "radixMaxLead"
+CHAR "b"
+EQUAL
+INT 1
+NEWLINE
+IDENT "radixMaxLead"
+UNDERSCORE
+EQUAL
+INT 4
+NEWLINE
+IDENT "sigRadixDigits"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "Char"
+NEWLINE
+IDENT "sigRadixDigits"
+IDENT "src"
+IDENT "p"
+IDENT "endp"
+INDENT
+PIPE
+IDENT "p"
+GEQ
+IDENT "endp"
+EQUAL
+LBRACKET
+RBRACKET
+NEWLINE
+PIPE
+IDENT "at"
+IDENT "src"
+IDENT "p"
+EQ_EQ
+CHAR "_"
+OR
+IDENT "at"
+IDENT "src"
+IDENT "p"
+EQ_EQ
+CHAR "0"
+EQUAL
+IDENT "sigRadixDigits"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 1
+RPAREN
+IDENT "endp"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "collectNoUs"
+IDENT "src"
+IDENT "p"
+IDENT "endp"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "radixMagOverflows"
+COLON
+UPPER "List"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "radixMagOverflows"
+LBRACKET
+RBRACKET
+UNDERSCORE
+UNDERSCORE
+EQUAL
+UPPER "False"
+NEWLINE
+IDENT "radixMagOverflows"
+LPAREN
+IDENT "d"
+CONS
+IDENT "rest"
+RPAREN
+IDENT "maxLen"
+IDENT "maxLead"
+EQUAL
+INDENT
+LET
+IDENT "n"
+EQUAL
+INT 1
+PLUS
+IDENT "listLen"
+IDENT "rest"
+NEWLINE
+IDENT "n"
+GT
+IDENT "maxLen"
+OR
+IDENT "n"
+EQ_EQ
+IDENT "maxLen"
+AND
+LPAREN
+IDENT "digitVal"
+IDENT "d"
+GT
+IDENT "maxLead"
+OR
+IDENT "digitVal"
+IDENT "d"
+EQ_EQ
+IDENT "maxLead"
+AND
+IDENT "anyList"
+LPAREN
+NEQ
+CHAR "0"
+RPAREN
+IDENT "rest"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "radixLitOverflows"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Char"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "radixLitOverflows"
+IDENT "src"
+IDENT "start"
+IDENT "endp"
+IDENT "k"
+EQUAL
+INDENT
+IDENT "radixMagOverflows"
+LPAREN
+IDENT "sigRadixDigits"
+IDENT "src"
+IDENT "start"
+IDENT "endp"
+RPAREN
+LPAREN
+IDENT "radixMaxLen"
+IDENT "k"
+RPAREN
+LPAREN
+IDENT "radixMaxLead"
+IDENT "k"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "scanRadix"
 COLON
 UPPER "Array"
@@ -3248,6 +3450,67 @@ INT 2
 RPAREN
 IDENT "k"
 NEWLINE
+IDENT "radixTok"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+IDENT "e"
+IDENT "k"
+IDENT "depth"
+IDENT "id"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "radixTok"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+NEWLINE
+IDENT "radixTok"
+IDENT "src"
+IDENT "len"
+IDENT "pos"
+IDENT "e"
+IDENT "k"
+IDENT "depth"
+IDENT "id"
+INDENT
+PIPE
+IDENT "radixLitOverflows"
+IDENT "src"
+LPAREN
+IDENT "pos"
+PLUS
+INT 2
+RPAREN
+IDENT "e"
+IDENT "k"
+EQUAL
+INDENT
+IDENT "lexErrorTok"
+IDENT "pos"
+STRING "integer literal too large for Int (max magnitude 2^62)"
+NEWLINE
+DEDENT
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
 UPPER "RTok"
 LPAREN
 UPPER "TInt"

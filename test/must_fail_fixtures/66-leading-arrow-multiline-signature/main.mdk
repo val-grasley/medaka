@@ -1,0 +1,4 @@
+f : Int
+  -> Int
+f x = x + 1
+main = println (f 1)

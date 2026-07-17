@@ -206,6 +206,24 @@ noreturn void mdk_oob(void) {
   exit(1);
 }
 
+/* Out-of-range `arr.[lo..hi]` / `arr.[lo..=hi]` (#550).  The emitted slice used to
+ * allocate `end - lo` slots and copy `a[lo + i]` with NO bounds check, so an
+ * over-range slice READ OFF THE END OF THE HEAP and surfaced whatever it found —
+ * including live pointers — as ordinary Ints, at exit 0.  `run` raised E-SLICE-OOB
+ * all along (sliceArray, compiler/eval/eval.mdk); only the native path was unchecked.
+ *
+ * `lo`/`hi_incl` are RAW (already >>1-untagged) i64s, and `hi_incl` is the INCLUSIVE
+ * upper bound (end - 1) so the text is byte-identical to the interpreter's
+ * `slice [\{lo}..\{hiX - 1}] out of bounds`.  Unlike mdk_oob (whose message carries no
+ * number, so it needs no args) exact parity with `run` is cheap here: this is an abort
+ * path, so the two extra argument words cost nothing on the hot path. */
+noreturn void mdk_slice_oob(long long lo, long long hi_incl) {
+  mdk_flush_run_stdout_on_abort();
+  fprintf(stderr, "runtime error [E-SLICE-OOB]: slice [%lld..%lld] out of bounds\n",
+          lo, hi_incl);
+  exit(1);
+}
+
 /* Print an Int.  Matches the tree-walker oracle: Eval.pp_value (VInt n) =
  * string_of_int n, then eval_probe adds a trailing newline. */
 void mdk_print_int(long long v) { printf("%lld\n", v); }

@@ -100,6 +100,11 @@ prevIsTrailingOp : Option Token -> Bool
 radixBase : Char -> Int
 radixEnd : Array Char -> Int -> Int -> Char -> Int
 radixKind : Char -> Bool
+radixLitOverflows : Array Char -> Int -> Int -> Char -> Bool
+radixMagOverflows : List Char -> Int -> Int -> Bool
+radixMaxLead : Char -> Int
+radixMaxLen : Char -> Int
+radixTok : Array Char -> Int -> Int -> Int -> Char -> Int -> Int -> List RawTok
 rawChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 rawToComments : Array Char -> List RawTok -> List Comment
 rawToCommentsGo : Array Char -> List RawTok -> Int -> Int -> Int -> List Comment
@@ -124,6 +129,7 @@ scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> Int -> String -> Char -> 
 scanTriple : Array Char -> Int -> Int -> Int -> Int -> Int -> Bool -> String -> List RawTok
 scanTripleEsc : Array Char -> Int -> Int -> Int -> Int -> Int -> Bool -> String -> Char -> List RawTok
 scanUpper : Array Char -> Int -> Int -> Int -> Int -> List RawTok
+sigRadixDigits : Array Char -> Int -> Int -> List Char
 singleOp : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 skipBlockComment : Array Char -> Int -> Int -> Int -> Int
 skipLineComment : Array Char -> Int -> Int -> Int

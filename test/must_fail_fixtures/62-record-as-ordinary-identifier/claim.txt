@@ -1,0 +1,12 @@
+issue: 62
+what: `record` cannot be used as an ordinary identifier — it trips the removal diagnostic
+what: for the REMOVED `record` keyword, whose own message admits "`record` is not a
+what: keyword" while still rejecting the program.
+cmd: check-json main.mdk
+exit: 1
+diag: P-PARSE 0:0-0:1 `record` is not a keyword — declare a record as `data X = { field : T, … }`
+control: check-json control.mdk
+why-control: `recrd` (not a removed keyword) must bind fine, isolating the bug to the WORD.
+why-scope: ⚠️ PIN `record` ONLY. Per the issue owner, `mut` and `function` STAY RESERVED
+why-scope: deliberately — a fixture for either would assert a NON-BUG and could never
+why-scope: drain. Only `record` is being freed.
