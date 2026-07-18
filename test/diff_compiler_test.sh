@@ -95,7 +95,8 @@ else
          $ROOT/test/compiler_test_fixtures/sum_dict.mdk \
          $ROOT/test/compiler_test_fixtures/mappable_not_foldable.mdk \
          $ROOT/test/compiler_test_fixtures/shadow_impl_tolist.mdk \
-         $ROOT/test/compiler_test_fixtures/blockquote_and_valid.mdk"
+         $ROOT/test/compiler_test_fixtures/blockquote_and_valid.mdk \
+         $ROOT/test/compiler_test_fixtures/doctest_typecheck_gate.mdk"
 fi
 
 if [ "${CAPTURE:-0}" = "1" ]; then
@@ -162,6 +163,20 @@ if [ "$list_code" -eq 0 ]; then
   pass=$((pass + 1)); printf 'ok   list.mdk exit code (0, all-passing suite)\n'
 else
   fail=$((fail + 1)); printf 'FAIL list.mdk exit code: expected 0 (all-passing), got %d\n' "$list_code"
+fi
+
+# GH #260 regression: a DOCTEST-bearing module whose type error lives in a
+# function no doctest exercises must EXIT NONZERO — `medaka test` type-checks the
+# module (the way `medaka check` does) before running any example.  It used to
+# print "1/1 passed" and exit 0 (test-green / check-dies).  The .test.golden is
+# empty because the located error is emitted on STDERR (errors-to-stderr, like a
+# read error); the discriminator here is the exit code.
+"$RUN" "$RUNTIME" "$CORE" "$ROOT/test/compiler_test_fixtures/doctest_typecheck_gate.mdk" "$ROOT/test/compiler_test_fixtures" >/dev/null 2>&1
+dtg_code=$?
+if [ "$dtg_code" -ne 0 ]; then
+  pass=$((pass + 1)); printf 'ok   doctest_typecheck_gate.mdk exit code (%d != 0, module does not typecheck)\n' "$dtg_code"
+else
+  fail=$((fail + 1)); printf 'FAIL doctest_typecheck_gate.mdk exit code: expected nonzero (#260, module does not typecheck), got 0\n'
 fi
 
 # `test "…" = <Expectation>` runner regression (Phase 127 restored 2026-07-11):
