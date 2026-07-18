@@ -393,10 +393,21 @@ for f in $changed; do
 
     # ── types ── (also the TYPES snapshot family: typecheck.mdk renders the
     #    `# TYPES` section of test/snapshots/typecheck{,_panic}_fixtures, #81 R5)
+    #
+    # diff_compiler_engines is included here too (#489): typecheck.mdk STAMPS the
+    # dispatch routes (impl keys, dict wiring) that all three engines consume at
+    # runtime, so a types/ bug can move cross-engine agreement WITHOUT touching any
+    # engine's own file. PR #460 was exactly this — a typecheck.mdk-only fix for a
+    # build-vs-run divergence — and `gates (engines)` ran 17s / 0 gates on it, because
+    # this arm did not derive it. diff_compiler_typecheck*/snapshot*/check*/eval_typed*
+    # compare against captured GOLDENS, which cannot see "eval and native now disagree
+    # with each other" — only "output changed from what was recorded". Only
+    # diff_compiler_engines asks the cross-engine question directly.
     compiler/types/*)
       add 'diff_compiler_typecheck*'; add 'diff_compiler_snapshot*'
       add 'diff_compiler_check*'; add 'diff_compiler_exhaust'
-      add 'diff_compiler_diagnostics'; add 'diff_compiler_eval_typed*' ;;
+      add 'diff_compiler_diagnostics'; add 'diff_compiler_eval_typed*'
+      add 'diff_compiler_engines' ;;
 
     # ── THE THREE ENGINES ─────────────────────────────────────────────────────
     #
@@ -409,19 +420,26 @@ for f in $changed; do
     #     wasm    -> compiler/backend/wasm_emit.mdk
     #
     # ...and compiler/ir/* is the Core IR lowering that FEEDS two of the three, so a
-    # change there moves what the differential compares just as directly.
+    # change there moves what the differential compares just as directly. compiler/
+    # types/* is a FOURTH owner, above, NOT listed in this trio — it doesn't execute
+    # any engine, it STAMPS what all three execute (the dispatch routes), which is why
+    # it needed its own explanation rather than fitting this "each engine has an arm"
+    # framing (#489). Treat this list as "known owners found so far", not exhaustive:
+    # compiler/frontend/desugar.mdk and compiler/ir/core_ir_lower.mdk are other
+    # route/shape-feeding candidates worth auditing the same way.
     #
-    # None of those arms derived it (#402). A WasmGC emitter change derived the llvm,
-    # core_ir and snapshot gates and NOT the gate whose entire job is to notice that the
-    # wasm engine now disagrees with the other two. It is the exclusion this file's own
-    # rule warns about — "when in doubt, run MORE" — and ci.yml's: "a gate wrongly
-    # INCLUDED costs CI minutes, which are free on a public repo. A gate wrongly
-    # EXCLUDED is a bug that reaches the queue."
+    # None of the three engine arms derived it (#402). A WasmGC emitter change derived
+    # the llvm, core_ir and snapshot gates and NOT the gate whose entire job is to
+    # notice that the wasm engine now disagrees with the other two. It is the
+    # exclusion this file's own rule warns about — "when in doubt, run MORE" — and
+    # ci.yml's: "a gate wrongly INCLUDED costs CI minutes, which are free on a public
+    # repo. A gate wrongly EXCLUDED is a bug that reaches the queue."
     #
     # The CI cost is close to nil: `engines` owns its runner alone, so it is wall-clock
-    # parallel with the shard a backend/eval/ir change is already paying for (backend is
-    # 5.3 min against engines' 5.8 min). Locally it costs nothing at all — LOCAL_SKIP
-    # drops it below the PREFLIGHT_DRY exit, which is the whole point of that block.
+    # parallel with the shard a types/backend/eval/ir change is already paying for
+    # (types is the actual critical-path shard; engines is not on it). Locally it
+    # costs nothing at all — LOCAL_SKIP drops it below the PREFLIGHT_DRY exit, which
+    # is the whole point of that block.
 
     # ── eval: also the in-language suite and the capability matrix ──
     # diff_compiler_snapshot* covers diff_compiler_snapshot_eval, whose `# EVAL`
