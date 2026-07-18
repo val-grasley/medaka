@@ -479,7 +479,7 @@ mapTyInExpr f (ELoc l e) =
 mapTyInExpr f (EDoOrigin l e) =
   let (e2, c) = mapTyInExpr f e
   (EDoOrigin l e2, c)
-mapTyInExpr _ (ENumLit n rf rr) = (ENumLit n rf rr, False)
+mapTyInExpr _ (ENumLit n rf rr lx) = (ENumLit n rf rr lx, False)
 
 mapExprsB : (Ty -> (Ty, Bool)) -> List Expr -> (List Expr, Bool)
 mapExprsB _ [] = ([], False)

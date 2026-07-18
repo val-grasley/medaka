@@ -398,7 +398,7 @@ recFieldSub cur env (Some p) = checkPat cur env p
 -- `!current_loc`, set by its `ELoc` arm).  `None` until the first ELoc.
 checkExpr : Option Loc -> Env -> List String -> Expr -> List ResError
 checkExpr _ _ _ (ELit _) = []
-checkExpr _ _ _ (ENumLit _ _ _) = []  -- PLAN.md #11: a literal, nothing to bind
+checkExpr _ _ _ (ENumLit _ _ _ _) = []  -- PLAN.md #11: a literal, nothing to bind
 checkExpr _ _ _ (EMethodRef _) = []
 checkExpr _ _ _ (EDictApp _) = []
 -- EVarAt/EMethodAt/EDictAt are elaborated nodes introduced by annotateProgram /
@@ -2550,7 +2550,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "recFieldSub" ((PVar "cur") (PVar "env") (PCon "Some" (PVar "p"))) (EApp (EApp (EApp (EVar "checkPat") (EVar "cur")) (EVar "env")) (EVar "p")))
 (DTypeSig false "checkExpr" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "ELit" PWild)) (EListLit))
-(DFunDef false "checkExpr" (PWild PWild PWild (PCon "ENumLit" PWild PWild PWild)) (EListLit))
+(DFunDef false "checkExpr" (PWild PWild PWild (PCon "ENumLit" PWild PWild PWild PWild)) (EListLit))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "EMethodRef" PWild)) (EListLit))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "EDictApp" PWild)) (EListLit))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "EVarAt" PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: EVarAt is introduced by annotateProgram after resolve"))))
@@ -3423,7 +3423,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "recFieldSub" ((PVar "cur") (PVar "env") (PCon "Some" (PVar "p"))) (EApp (EApp (EApp (EVar "checkPat") (EVar "cur")) (EVar "env")) (EVar "p")))
 (DTypeSig false "checkExpr" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "ELit" PWild)) (EListLit))
-(DFunDef false "checkExpr" (PWild PWild PWild (PCon "ENumLit" PWild PWild PWild)) (EListLit))
+(DFunDef false "checkExpr" (PWild PWild PWild (PCon "ENumLit" PWild PWild PWild PWild)) (EListLit))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "EMethodRef" PWild)) (EListLit))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "EDictApp" PWild)) (EListLit))
 (DFunDef false "checkExpr" (PWild PWild PWild (PCon "EVarAt" PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: EVarAt is introduced by annotateProgram after resolve"))))

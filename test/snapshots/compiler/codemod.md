@@ -483,7 +483,7 @@ mapTyInExpr f (ELoc l e) =
 mapTyInExpr f (EDoOrigin l e) =
   let (e2, c) = mapTyInExpr f e
   (EDoOrigin l e2, c)
-mapTyInExpr _ (ENumLit n rf rr) = (ENumLit n rf rr, False)
+mapTyInExpr _ (ENumLit n rf rr lx) = (ENumLit n rf rr lx, False)
 
 mapExprsB : (Ty -> (Ty, Bool)) -> List Expr -> (List Expr, Bool)
 mapExprsB _ [] = ([], False)
@@ -826,7 +826,7 @@ declEffectWarn _ _ = []
 (DFunDef false "mapTyInExpr" (PWild (PCon "EDictAt" (PVar "n") (PVar "r"))) (ETuple (EApp (EApp (EVar "EDictAt") (EVar "n")) (EVar "r")) (EVar "False")))
 (DFunDef false "mapTyInExpr" ((PVar "f") (PCon "ELoc" (PVar "l") (PVar "e"))) (EBlock (DoLet false false (PTuple (PVar "e2") (PVar "c")) (EApp (EApp (EVar "mapTyInExpr") (EVar "f")) (EVar "e"))) (DoExpr (ETuple (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "e2")) (EVar "c")))))
 (DFunDef false "mapTyInExpr" ((PVar "f") (PCon "EDoOrigin" (PVar "l") (PVar "e"))) (EBlock (DoLet false false (PTuple (PVar "e2") (PVar "c")) (EApp (EApp (EVar "mapTyInExpr") (EVar "f")) (EVar "e"))) (DoExpr (ETuple (EApp (EApp (EVar "EDoOrigin") (EVar "l")) (EVar "e2")) (EVar "c")))))
-(DFunDef false "mapTyInExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "rf") (PVar "rr"))) (ETuple (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "rf")) (EVar "rr")) (EVar "False")))
+(DFunDef false "mapTyInExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "rf") (PVar "rr") (PVar "lx"))) (ETuple (EApp (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "rf")) (EVar "rr")) (EVar "lx")) (EVar "False")))
 (DTypeSig false "mapExprsB" (TyFun (TyFun (TyCon "Ty") (TyTuple (TyCon "Ty") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyCon "Expr")) (TyTuple (TyApp (TyCon "List") (TyCon "Expr")) (TyCon "Bool")))))
 (DFunDef false "mapExprsB" (PWild (PList)) (ETuple (EListLit) (EVar "False")))
 (DFunDef false "mapExprsB" ((PVar "f") (PCons (PVar "e") (PVar "es"))) (EBlock (DoLet false false (PTuple (PVar "e2") (PVar "c1")) (EApp (EApp (EVar "mapTyInExpr") (EVar "f")) (EVar "e"))) (DoLet false false (PTuple (PVar "es2") (PVar "c2")) (EApp (EApp (EVar "mapExprsB") (EVar "f")) (EVar "es"))) (DoExpr (ETuple (EBinOp "::" (EVar "e2") (EVar "es2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
@@ -1047,7 +1047,7 @@ declEffectWarn _ _ = []
 (DFunDef false "mapTyInExpr" (PWild (PCon "EDictAt" (PVar "n") (PVar "r"))) (ETuple (EApp (EApp (EVar "EDictAt") (EVar "n")) (EVar "r")) (EVar "False")))
 (DFunDef false "mapTyInExpr" ((PVar "f") (PCon "ELoc" (PVar "l") (PVar "e"))) (EBlock (DoLet false false (PTuple (PVar "e2") (PVar "c")) (EApp (EApp (EVar "mapTyInExpr") (EVar "f")) (EVar "e"))) (DoExpr (ETuple (EApp (EApp (EVar "ELoc") (EVar "l")) (EVar "e2")) (EVar "c")))))
 (DFunDef false "mapTyInExpr" ((PVar "f") (PCon "EDoOrigin" (PVar "l") (PVar "e"))) (EBlock (DoLet false false (PTuple (PVar "e2") (PVar "c")) (EApp (EApp (EVar "mapTyInExpr") (EVar "f")) (EVar "e"))) (DoExpr (ETuple (EApp (EApp (EVar "EDoOrigin") (EVar "l")) (EVar "e2")) (EVar "c")))))
-(DFunDef false "mapTyInExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "rf") (PVar "rr"))) (ETuple (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "rf")) (EVar "rr")) (EVar "False")))
+(DFunDef false "mapTyInExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "rf") (PVar "rr") (PVar "lx"))) (ETuple (EApp (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "rf")) (EVar "rr")) (EVar "lx")) (EVar "False")))
 (DTypeSig false "mapExprsB" (TyFun (TyFun (TyCon "Ty") (TyTuple (TyCon "Ty") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyCon "Expr")) (TyTuple (TyApp (TyCon "List") (TyCon "Expr")) (TyCon "Bool")))))
 (DFunDef false "mapExprsB" (PWild (PList)) (ETuple (EListLit) (EVar "False")))
 (DFunDef false "mapExprsB" ((PVar "f") (PCons (PVar "e") (PVar "es"))) (EBlock (DoLet false false (PTuple (PVar "e2") (PVar "c1")) (EApp (EApp (EVar "mapTyInExpr") (EVar "f")) (EVar "e"))) (DoLet false false (PTuple (PVar "es2") (PVar "c2")) (EApp (EApp (EVar "mapExprsB") (EVar "f")) (EVar "es"))) (DoExpr (ETuple (EBinOp "::" (EVar "e2") (EVar "es2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))

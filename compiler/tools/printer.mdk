@@ -548,7 +548,7 @@ binopSpace op l r = if consTight op l r then Nil else text " "
 
 exprPrec : Expr -> Int
 exprPrec (ELit l) = if isNegLit l then precUnary else precAtom
-exprPrec (ENumLit n _ _) = if n < 0 then precUnary else precAtom
+exprPrec (ENumLit n _ _ _) = if n < 0 then precUnary else precAtom
 exprPrec (EVar _) = precAtom
 exprPrec (EMethodRef _) = precAtom
 exprPrec (EDictApp _) = precAtom
@@ -626,8 +626,11 @@ printExprRaw : Expr -> Doc
 printExprRaw (ELit l) = printLit l
 -- ENumLit (a `Num a` expression-position integer; desugar lowers it before
 -- eval/emit, but the formatter runs pre-desugar so it reaches the printer).
--- Renders as the bare integer, mirroring lib/printer.ml's `ENumLit (n,_,_)`.
-printExprRaw (ENumLit n _ _) = text (intToString n)
+-- Renders the ORIGINAL SOURCE LEXEME (#458) so the author's radix and separators
+-- survive `fmt` — `0xD800` stays `0xD800`, `1_000` keeps its underscore.  A
+-- synthesized literal (desugar/`exprToPat`) carries "" and falls back to the
+-- decimal value, unchanged from before.
+printExprRaw (ENumLit n _ _ lx) = text (if lx == "" then intToString n else lx)
 printExprRaw (EVar n) = text n
 printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n

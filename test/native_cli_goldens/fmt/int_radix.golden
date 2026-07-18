@@ -1,0 +1,22 @@
+-- #458: fmt must preserve the source radix and separators of integer literals in
+-- expression position (they used to be rewritten to decimal, destroying intent).
+mask : Int
+mask = 0xD800
+
+surrogateHi = 0xDFFF
+
+lowMasks = bitAnd 0xFF 0x0F
+
+flags = 0b1010
+
+perms = 0o755
+
+grouped = 1_000_000
+
+plainDecimal = 42
+
+negHex = -0xFF
+
+hexGrouped = 0xDE_AD_BE_EF
+
+main = println mask

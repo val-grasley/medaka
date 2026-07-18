@@ -1,5 +1,5 @@
 # META
-source_lines=1830
+source_lines=1833
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted pretty printer for Medaka — a port of lib/printer.ml, producing
@@ -552,7 +552,7 @@ binopSpace op l r = if consTight op l r then Nil else text " "
 
 exprPrec : Expr -> Int
 exprPrec (ELit l) = if isNegLit l then precUnary else precAtom
-exprPrec (ENumLit n _ _) = if n < 0 then precUnary else precAtom
+exprPrec (ENumLit n _ _ _) = if n < 0 then precUnary else precAtom
 exprPrec (EVar _) = precAtom
 exprPrec (EMethodRef _) = precAtom
 exprPrec (EDictApp _) = precAtom
@@ -630,8 +630,11 @@ printExprRaw : Expr -> Doc
 printExprRaw (ELit l) = printLit l
 -- ENumLit (a `Num a` expression-position integer; desugar lowers it before
 -- eval/emit, but the formatter runs pre-desugar so it reaches the printer).
--- Renders as the bare integer, mirroring lib/printer.ml's `ENumLit (n,_,_)`.
-printExprRaw (ENumLit n _ _) = text (intToString n)
+-- Renders the ORIGINAL SOURCE LEXEME (#458) so the author's radix and separators
+-- survive `fmt` — `0xD800` stays `0xD800`, `1_000` keeps its underscore.  A
+-- synthesized literal (desugar/`exprToPat`) carries "" and falls back to the
+-- decimal value, unchanged from before.
+printExprRaw (ENumLit n _ _ lx) = text (if lx == "" then intToString n else lx)
 printExprRaw (EVar n) = text n
 printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n
@@ -2042,7 +2045,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "binopSpace" ((PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EApp (EApp (EVar "consTight") (EVar "op")) (EVar "l")) (EVar "r")) (EVar "Nil") (EApp (EVar "text") (ELit (LString " ")))))
 (DTypeSig false "exprPrec" (TyFun (TyCon "Expr") (TyCon "Int")))
 (DFunDef false "exprPrec" ((PCon "ELit" (PVar "l"))) (EIf (EApp (EVar "isNegLit") (EVar "l")) (EVar "precUnary") (EVar "precAtom")))
-(DFunDef false "exprPrec" ((PCon "ENumLit" (PVar "n") PWild PWild)) (EIf (EBinOp "<" (EVar "n") (ELit (LInt 0))) (EVar "precUnary") (EVar "precAtom")))
+(DFunDef false "exprPrec" ((PCon "ENumLit" (PVar "n") PWild PWild PWild)) (EIf (EBinOp "<" (EVar "n") (ELit (LInt 0))) (EVar "precUnary") (EVar "precAtom")))
 (DFunDef false "exprPrec" ((PCon "EVar" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EMethodRef" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EDictApp" PWild)) (EVar "precAtom"))
@@ -2099,7 +2102,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printExpr" ((PVar "minPrec") (PVar "e")) (EBlock (DoLet false false (PVar "ep") (EApp (EVar "exprPrec") (EVar "e"))) (DoLet false false (PVar "d") (EApp (EVar "printExprRaw") (EVar "e"))) (DoExpr (EIf (EBinOp "<" (EVar "ep") (EVar "minPrec")) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "(")))) (EApp (EApp (EVar "Cat") (EVar "d")) (EApp (EVar "text") (ELit (LString ")"))))) (EVar "d")))))
 (DTypeSig false "printExprRaw" (TyFun (TyCon "Expr") (TyCon "Doc")))
 (DFunDef false "printExprRaw" ((PCon "ELit" (PVar "l"))) (EApp (EVar "printLit") (EVar "l")))
-(DFunDef false "printExprRaw" ((PCon "ENumLit" (PVar "n") PWild PWild)) (EApp (EVar "text") (EApp (EVar "intToString") (EVar "n"))))
+(DFunDef false "printExprRaw" ((PCon "ENumLit" (PVar "n") PWild PWild (PVar "lx"))) (EApp (EVar "text") (EIf (EBinOp "==" (EVar "lx") (ELit (LString ""))) (EApp (EVar "intToString") (EVar "n")) (EVar "lx"))))
 (DFunDef false "printExprRaw" ((PCon "EVar" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EMethodRef" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EDictApp" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
@@ -2702,7 +2705,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "binopSpace" ((PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EApp (EApp (EVar "consTight") (EVar "op")) (EVar "l")) (EVar "r")) (EVar "Nil") (EApp (EVar "text") (ELit (LString " ")))))
 (DTypeSig false "exprPrec" (TyFun (TyCon "Expr") (TyCon "Int")))
 (DFunDef false "exprPrec" ((PCon "ELit" (PVar "l"))) (EIf (EApp (EVar "isNegLit") (EVar "l")) (EVar "precUnary") (EVar "precAtom")))
-(DFunDef false "exprPrec" ((PCon "ENumLit" (PVar "n") PWild PWild)) (EIf (EBinOp "<" (EVar "n") (ELit (LInt 0))) (EVar "precUnary") (EVar "precAtom")))
+(DFunDef false "exprPrec" ((PCon "ENumLit" (PVar "n") PWild PWild PWild)) (EIf (EBinOp "<" (EVar "n") (ELit (LInt 0))) (EVar "precUnary") (EVar "precAtom")))
 (DFunDef false "exprPrec" ((PCon "EVar" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EMethodRef" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EDictApp" PWild)) (EVar "precAtom"))
@@ -2759,7 +2762,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printExpr" ((PVar "minPrec") (PVar "e")) (EBlock (DoLet false false (PVar "ep") (EApp (EVar "exprPrec") (EVar "e"))) (DoLet false false (PVar "d") (EApp (EVar "printExprRaw") (EVar "e"))) (DoExpr (EIf (EBinOp "<" (EVar "ep") (EVar "minPrec")) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "(")))) (EApp (EApp (EVar "Cat") (EVar "d")) (EApp (EVar "text") (ELit (LString ")"))))) (EVar "d")))))
 (DTypeSig false "printExprRaw" (TyFun (TyCon "Expr") (TyCon "Doc")))
 (DFunDef false "printExprRaw" ((PCon "ELit" (PVar "l"))) (EApp (EVar "printLit") (EVar "l")))
-(DFunDef false "printExprRaw" ((PCon "ENumLit" (PVar "n") PWild PWild)) (EApp (EVar "text") (EApp (EVar "intToString") (EVar "n"))))
+(DFunDef false "printExprRaw" ((PCon "ENumLit" (PVar "n") PWild PWild (PVar "lx"))) (EApp (EVar "text") (EIf (EBinOp "==" (EVar "lx") (ELit (LString ""))) (EApp (EVar "intToString") (EVar "n")) (EVar "lx"))))
 (DFunDef false "printExprRaw" ((PCon "EVar" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EMethodRef" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EDictApp" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
