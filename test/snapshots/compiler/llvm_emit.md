@@ -1,5 +1,5 @@
 # META
-source_lines=10311
+source_lines=10315
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -912,10 +912,14 @@ lazyGlobalMapRef : Ref (Option (OrdMap Unit))
 lazyGlobalMapRef = Ref None
 
 installLazyGlobalMap : List String -> Unit
+-- Intentional cross-file duplicate of installLazyGlobalMapW in wasm_emit.mdk (#561 PR-B); not consolidating (tiny install helper over a backend-local Ref / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 installLazyGlobalMap names =
   setRef lazyGlobalMapRef (Some (omFromNames names omEmpty))
 
 export isLazyGlobal : String -> Bool
+-- Intentional cross-file duplicate of isLazyGlobalW in wasm_emit.mdk (#561 PR-B); not consolidating (tiny query over a backend-local Ref / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isLazyGlobal x = match lazyGlobalMapRef.value
   Some m => omHasKey x m
   None => False
