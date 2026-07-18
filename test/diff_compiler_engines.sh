@@ -9,9 +9,10 @@
 #
 # …and, before this gate, no program in the tree was ever compared across all three.
 # The one two-way check that existed (diff_compiler_llvm.sh) diffs the native
-# binary's stdout against a `<fixture>.eval.golden` FILE — a frozen capture of the
-# interpreter, taken from the OCaml interpreter that was deleted 2026-06-26.  So a
-# bug that got captured became the *expected* answer for the backend too.  This gate
+# binary's stdout against a `<fixture>.native.golden` FILE (renamed from
+# `.eval.golden` by #559 — the name asserted an interpreter capture the file never
+# was; every regenerator since the OCaml interpreter was deleted 2026-06-26 replays
+# emit->clang->run, i.e. it IS native, comparing native against itself). This gate
 # removes that circularity: it runs all three engines LIVE on the same source and
 # diffs them against EACH OTHER.  No golden file mediates anything.
 #

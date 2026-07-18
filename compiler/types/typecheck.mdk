@@ -3609,7 +3609,7 @@ infer _ (ELit l) = litType l
 -- AND (when under `+`) in numArithOp is harmless: both unify the same var, both
 -- demand `Num`.  Without the prelude (bare-HM oracle, `ifaceRegistered` False)
 -- `fromInt` is unbound: fall back to a plain fresh var, dref stays RNone (⇒ Int).
-infer env (ENumLit n fref dref) = inferNumLit env n fref dref
+infer env (ENumLit n fref dref _) = inferNumLit env n fref dref
 infer env (EVar x) = inferVar env x
 infer env (EApp f x) = inferAppExpr env f x
 infer env (ELam pats body) = inferLam env pats body
@@ -5177,14 +5177,14 @@ monoIsFloat m = match normalize m
 
 isLitArg : Expr -> Bool
 isLitArg e = match unlocExpr e
-  ENumLit _ _ _ => True
+  ENumLit _ _ _ _ => True
   ELit _ => True
   _ => False
 
 -- does the LITERAL argument [e] fit the CONCRETE param type [pt]?
 argLitFits : Expr -> Mono -> Bool
 argLitFits e pt = match unlocExpr e
-  ENumLit _ _ _ => monoIsNumeric pt
+  ENumLit _ _ _ _ => monoIsNumeric pt
   ELit (LInt _) => monoIsNumeric pt
   ELit (LFloat _) => monoIsFloat pt
   ELit l => monoSameShape (litType l) pt
@@ -5193,7 +5193,7 @@ argLitFits e pt = match unlocExpr e
 -- render a literal argument back to its source text (for the swapped-call hint)
 renderLitArg : Expr -> Option String
 renderLitArg e = match unlocExpr e
-  ENumLit n _ _ => Some (intToString n)
+  ENumLit n _ _ _ => Some (intToString n)
   ELit (LInt n) => Some (intToString n)
   ELit (LFloat f) => Some (floatToString f)
   ELit (LString s) => Some ("\"" ++ s ++ "\"")
@@ -6374,7 +6374,7 @@ domainIsTupleOfArity ft n = match normalize ft
 renderCallArg : Expr -> Option String
 renderCallArg (ELoc _ e) = renderCallArg e
 renderCallArg (EAnnot e _) = renderCallArg e
-renderCallArg (ENumLit n _ _) = Some (intToString n)
+renderCallArg (ENumLit n _ _ _) = Some (intToString n)
 renderCallArg (ELit (LInt n)) = Some (intToString n)
 renderCallArg (ELit (LBool True)) = Some "True"
 renderCallArg (ELit (LBool False)) = Some "False"
@@ -10383,7 +10383,7 @@ rewriteBinopExpr (EBinOp op l r routeRef) = match routeRef.value
 -- [dref]'s route on its tag ref; impl-dicts/method-dicts refs are empty (`Num` has no
 -- element `requires`).  Done in the same mapProg walk that rewrites binops, so
 -- eval/lower never see ENumLit and eval_arith / the emitter get matching tags.
-rewriteBinopExpr (ENumLit n fref dref) = match fref.value
+rewriteBinopExpr (ENumLit n fref dref _) = match fref.value
   Some f => ELit (LFloat f)
   None => match dref.value
     RNone => ELit (LInt n)

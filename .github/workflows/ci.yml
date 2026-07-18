@@ -719,20 +719,36 @@ jobs:
           if [ -z "$pats" ]; then
             echo "has_work=false" >> "$GITHUB_OUTPUT"
             echo
-            echo "▶ Nothing for this shard to do. Reporting SUCCESS — the check still reports, which is what keeps the PR mergeable."
+            echo "▶ gates (${{ matrix.name }}) — no gates for this diff (runs FULL in merge_group). Reporting SUCCESS — the check still reports, which is what keeps the PR mergeable."
 
-            # ── #570: make the no-op VISIBLE where humans/agents actually look ─────────
+            # ── #570 + #450: make the no-op VISIBLE where humans/agents actually look ──
             # The stdout line above is real, but it is buried in a log nobody opens for a
             # green check. A "gates (${{ matrix.name }}) — pass" check on the PR's Checks
             # UI is indistinguishable, by text alone, from a shard that ran every gate and
             # they all passed — and that ambiguity already misled a reviewer into retiring
-            # a correct instruction on an S0 fix. Two surfaces people DO look at without
-            # opening the log: the annotation list next to the check, and the job summary.
-            # This does NOT change the conclusion (still success — see the comment on the
-            # job above for why it must be) — it only adds visibility.
-            echo "::warning title=Shard ran 0 gates::gates (${{ matrix.name }}) matched no gate for this diff and reported SUCCESS WITHOUT RUNNING. Real coverage for these gates runs in the merge queue (merge_group), not on this PR. 'green' here does NOT mean these gates ran."
+            # a correct instruction on an S0 fix (#570), then reappeared verbatim on #576's
+            # 7-shard no-op run (#450 comment) filed BEFORE #570 landed.
+            #
+            # #450's own analysis: the only sound fix is conclusion granularity
+            # (`neutral`/`skipped`), and THAT touches the merge-queue's required-status-
+            # check contract (a required check reporting non-success can block the queue)
+            # — unverified from a worktree with no live PR to test against, so it is
+            # deliberately NOT attempted here. Same reasoning rules out renaming the job
+            # itself: `name: gates (${{ matrix.name }})` above IS the required context the
+            # ruleset matches, so making it conditional would leave the "real" required
+            # context permanently "Expected" on every no-op run — the exact failure mode
+            # the big comment above the `plan` step already warns about, just triggered by
+            # a dynamic name instead of a skipped job.
+            #
+            # So: conclusion and context stay untouched. What moves is the WORDING at
+            # every surface a human/agent looks at WITHOUT opening a log line-by-line —
+            # the annotation title (shown inline in the PR's "Show all checks" panel) and
+            # the job summary heading — now phrased as the self-evident no-op line itself
+            # (`gates (X) — no gates for this diff (runs FULL in merge_group)`), not just a
+            # generic "ran 0 gates" label.
+            echo "::warning title=gates (${{ matrix.name }}) — no gates for this diff (runs FULL in merge_group)::gates (${{ matrix.name }}) matched no gate for this diff and reported SUCCESS WITHOUT RUNNING. Real coverage for these gates runs in the merge queue (merge_group), not on this PR. 'green' here does NOT mean these gates ran."
             {
-              echo "### ⚠️ gates (${{ matrix.name }}): ran 0 gates — coverage deferred to merge_group"
+              echo "### gates (${{ matrix.name }}) — no gates for this diff (runs FULL in merge_group)"
               echo
               echo "This shard's pattern matched no gate touched by this diff, so it reported"
               echo "SUCCESS having run nothing (by design — see \`ci.yml\` around the \`plan\`"
@@ -1077,6 +1093,23 @@ jobs:
       - name: Build medaka (cold bootstrap from seed)
         if: needs.detect.outputs.docs_only != 'true'
         run: make medaka
+
+      # ── Fingerprint mirror parity (#267) ────────────────────────────────────────
+      #
+      # test/build_native_medaka.sh's src_fingerprint_compiler() (shell/cat-based) and
+      # compiler/driver/medaka_cli.mdk's liveSourceFingerprint (perl-based) are TWO
+      # HAND-SYNCED REIMPLEMENTATIONS of the same hashing algorithm — one bakes
+      # -DMEDAKA_SRC_FP into ./medaka at build time, the other recomputes it live on
+      # every invocation and hard-fails a mismatch under MEDAKA_STRICT=1. #182's first
+      # attempt broke exactly this mirror and only human review (PR #263) caught it —
+      # no gate proved the two still agreed. This one does: it re-exercises the just-
+      # built ./medaka's own staleness self-check, under MEDAKA_STRICT=1, on the exact
+      # tree it was built from, and asserts it reports "not stale". Needs the binary
+      # `make medaka` just built + this same tree, so it lives right here, not in a new
+      # gate shard (see AGENTS.md "a gate must run where the bug lands").
+      - name: Fingerprint mirror must still agree (issue #267)
+        if: needs.detect.outputs.docs_only != 'true'
+        run: sh test/check_fingerprint_parity.sh
 
       # typecheck_compiler_source.sh exits 2 (SKIP) when its oracle is absent. In CI
       # a skip here is INDISTINGUISHABLE FROM A PASS — the precise bug this whole job

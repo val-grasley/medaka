@@ -23,8 +23,11 @@
 # in `--json` (the pre-#159 message-keyed side-channel dropped it for non-last
 # modules).  See the project-loop comment below.
 #
-# To regenerate the goldens: sh test/capture_goldens.sh check_json  (single-file),
-#   and  CAPTURE=1 sh test/diff_compiler_check_json.sh  (project fixtures).
+# To regenerate the goldens (both single-file AND project fixtures, in one run):
+#   CAPTURE=1 sh test/diff_compiler_check_json.sh
+# (There is no `sh test/capture_goldens.sh check_json` route — capture_goldens.sh
+# has no `check_json` ROWS entry; this gate owns its own CAPTURE=1 recapture for
+# both loops below, same as the project loop already did.)
 #
 # Usage:  sh test/diff_compiler_check_json.sh
 set -u
@@ -43,15 +46,29 @@ pass=0; fail=0
 for mdk in "$FIXDIR"/*.mdk; do
   name="$(basename "$mdk" .mdk)"
   golden="${mdk%.mdk}.check_json.golden"
-  if [ ! -f "$golden" ]; then
-    fail=$((fail+1)); printf 'FAIL %s (missing golden %s)\n' "$name" "$golden"; continue
-  fi
 
   # Run native; replace the absolute path with a stable placeholder.
   tmpout="$(mktemp)"
   perl -e 'alarm 60; exec @ARGV' "$NATIVE" check --json "$mdk" > "$tmpout" 2>&1
   native_out="$(sed "s|$mdk|<fixture>|g" "$tmpout")"
   rm -f "$tmpout"
+
+  if [ "${CAPTURE:-0}" = "1" ]; then
+    # #528: native_out is ./medaka's COMBINED stdout+stderr (2>&1). A stale
+    # binary prints the stale-binary warning to stderr, which would be baked
+    # into the committed golden at bless time (when nobody re-reads the bytes)
+    # and later surface as a mystery diff on a fresh binary. REFUSE, rebuild.
+    if mdk_is_stale "$native_out"; then
+      printf 'REFUSING to capture %s: ./medaka reports itself stale — run '\''make medaka'\'' and retry (else the stale-binary warning is baked into the golden). #528\n' "$name" >&2
+      exit 2
+    fi
+    printf '%s\n' "$native_out" > "$golden"
+    printf 'CAPTURE %s\n' "$golden"; continue
+  fi
+
+  if [ ! -f "$golden" ]; then
+    fail=$((fail+1)); printf 'FAIL %s (missing golden %s)\n' "$name" "$golden"; continue
+  fi
   ref_out="$(cat "$golden")"
 
   cls="$(mdk_classify_diff "$native_out" "$ref_out")"
@@ -98,6 +115,11 @@ if [ -d "$PROJDIR" ]; then
     native_out="$(sed -e "s|$d|<proj>/|g" -e "s|$rel_d|<proj>/|g" "$tmpout")"
     rm -f "$tmpout"
     if [ "${CAPTURE:-0}" = "1" ]; then
+      # #528: same stale-warning hazard as the single-file loop above — refuse.
+      if mdk_is_stale "$native_out"; then
+        printf 'REFUSING to capture %s: ./medaka reports itself stale — run '\''make medaka'\'' and retry (else the stale-binary warning is baked into the golden). #528\n' "$name" >&2
+        exit 2
+      fi
       printf '%s\n' "$native_out" > "$golden"
       printf 'CAPTURE %s\n' "$golden"; continue
     fi

@@ -1,0 +1,15 @@
+-- Regression for GH #260: a DOCTEST-bearing module whose type error lives in a
+-- function NO doctest exercises.  `medaka test` used to green-light it (the
+-- doctest driver elaborates but never surfaces the accumulated type errors) while
+-- `medaka check` rejected it — test-green / check-dies, the repo's #1 bug class
+-- inverted.  `medaka test` now type-checks the module the way `check` does and
+-- fails the whole run BEFORE running any example.  The golden is the located
+-- type error, not "1/1 passed".
+bad : Int -> String
+bad x = x + 1
+
+good : Int -> Int
+good x = x * 2
+
+-- > good 5
+-- 10

@@ -1937,7 +1937,7 @@ ifMaxMinFnReversed op
 isLiteralExpr : Expr -> Bool
 isLiteralExpr e = match unwrapLoc e
   ELit _ => True
-  ENumLit _ _ _ => True
+  ENumLit _ _ _ _ => True
   _ => False
 
 -- does `EIf cond t el` match the idiom?  Returns the prelude fn name plus the
@@ -2645,7 +2645,7 @@ isBoolLit e = isTrueLit e || isFalseLit e
 isIntLit : Int -> Expr -> Bool
 isIntLit k e = match unwrapLoc e
   ELit (LInt n) => n == k
-  ENumLit n _ _ => n == k
+  ENumLit n _ _ _ => n == k
   _ => False
 
 -- ── rule: concat-to-interp ────────────────────────────────────────────────────

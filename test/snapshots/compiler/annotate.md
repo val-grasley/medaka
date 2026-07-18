@@ -122,7 +122,7 @@ addrOfGo (frame::rest) n depth = match slotIn frame n 0
 -- ── annotateExpr (scope = framed lexical environment) ─────────────────────
 annotateExpr : List (List String) -> Expr -> Expr
 annotateExpr _ (ELit l) = ELit l
-annotateExpr _ (ENumLit n r d) = ENumLit n r d  -- PLAN.md #11: leaf, passthrough
+annotateExpr _ (ENumLit n r d lx) = ENumLit n r d lx  -- PLAN.md #11: leaf, passthrough
 annotateExpr _ (EMethodRef m) = EMethodRef m
 annotateExpr _ (EDictApp d) = EDictApp d
 annotateExpr _ (EMethodAt name r ir mr) = EMethodAt name r ir mr
@@ -340,7 +340,7 @@ annotateProgram prog = map annotateDecl prog
 (DFunDef false "addrOfGo" ((PCons (PVar "frame") (PVar "rest")) (PVar "n") (PVar "depth")) (EMatch (EApp (EApp (EApp (EVar "slotIn") (EVar "frame")) (EVar "n")) (ELit (LInt 0))) (arm (PCon "Some" (PVar "slot")) () (EApp (EApp (EVar "ALocal") (EVar "depth")) (EVar "slot"))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "addrOfGo") (EVar "rest")) (EVar "n")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))))))
 (DTypeSig false "annotateExpr" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "Expr") (TyCon "Expr"))))
 (DFunDef false "annotateExpr" (PWild (PCon "ELit" (PVar "l"))) (EApp (EVar "ELit") (EVar "l")))
-(DFunDef false "annotateExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "r") (PVar "d"))) (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "r")) (EVar "d")))
+(DFunDef false "annotateExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "r") (PVar "d") (PVar "lx"))) (EApp (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "r")) (EVar "d")) (EVar "lx")))
 (DFunDef false "annotateExpr" (PWild (PCon "EMethodRef" (PVar "m"))) (EApp (EVar "EMethodRef") (EVar "m")))
 (DFunDef false "annotateExpr" (PWild (PCon "EDictApp" (PVar "d"))) (EApp (EVar "EDictApp") (EVar "d")))
 (DFunDef false "annotateExpr" (PWild (PCon "EMethodAt" (PVar "name") (PVar "r") (PVar "ir") (PVar "mr"))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "name")) (EVar "r")) (EVar "ir")) (EVar "mr")))
@@ -468,7 +468,7 @@ annotateProgram prog = map annotateDecl prog
 (DFunDef false "addrOfGo" ((PCons (PVar "frame") (PVar "rest")) (PVar "n") (PVar "depth")) (EMatch (EApp (EApp (EApp (EVar "slotIn") (EVar "frame")) (EVar "n")) (ELit (LInt 0))) (arm (PCon "Some" (PVar "slot")) () (EApp (EApp (EVar "ALocal") (EVar "depth")) (EVar "slot"))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "addrOfGo") (EVar "rest")) (EVar "n")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))))))
 (DTypeSig false "annotateExpr" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "Expr") (TyCon "Expr"))))
 (DFunDef false "annotateExpr" (PWild (PCon "ELit" (PVar "l"))) (EApp (EVar "ELit") (EVar "l")))
-(DFunDef false "annotateExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "r") (PVar "d"))) (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "r")) (EVar "d")))
+(DFunDef false "annotateExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "r") (PVar "d") (PVar "lx"))) (EApp (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "r")) (EVar "d")) (EVar "lx")))
 (DFunDef false "annotateExpr" (PWild (PCon "EMethodRef" (PVar "m"))) (EApp (EVar "EMethodRef") (EVar "m")))
 (DFunDef false "annotateExpr" (PWild (PCon "EDictApp" (PVar "d"))) (EApp (EVar "EDictApp") (EVar "d")))
 (DFunDef false "annotateExpr" (PWild (PCon "EMethodAt" (PVar "name") (PVar "r") (PVar "ir") (PVar "mr"))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "name")) (EVar "r")) (EVar "ir")) (EVar "mr")))

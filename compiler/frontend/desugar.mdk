@@ -176,7 +176,7 @@ binOp op a b = EBinOp op a b (Ref RNone)
 -- an integer literal in EXPRESSION position.  `ENumLit`, never `ELit (LInt)` —
 -- that is the shape the parser emits and the only one dictPass rewrites away.
 intLit : Int -> Expr
-intLit n = ENumLit n (Ref None) (Ref RNone)
+intLit n = ENumLit n (Ref None) (Ref RNone) ""
 
 -- a derived impl head with the fixed pub / non-default / no-name shape;
 -- applyDeriveParams rewrites tys + reqs afterwards for the type's params.

@@ -1,5 +1,5 @@
 # META
-source_lines=1301
+source_lines=1303
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/snapshot.mdk — `medaka snapshot`, the in-process snapshot runner
@@ -1178,14 +1178,16 @@ settleVerdict root mode outDir sel path secs =
         Some prev => verdictExisting mode snapPath sel secs prev
 
 -- No snapshot on disk yet.
---   --check  a fixture with no expectation FAILS — never a silent pass.
+--   --check  a fixture with no expectation FAILS — never a silent pass.  It reports the
+--            resolved --out path and points at the family GATE, NOT at `--new`: a bare
+--            --check that misresolves --out must never prescribe a WRITING verb, or a
+--            regression gets blessed as correct (#512).
 --   --new    create it.  This is the ONLY path that creates a snapshot.
 --   --bless  REFUSE (lock 2).  A bless that can mint an expectation is a stage writing
 --            down its own output as correct; that single affordance is what would make
 --            the whole corpus worthless.
 verdictMissing : SnapMode -> String -> List String -> List RunSec -> <IO> String
-verdictMissing SnapCheck snapPath _ _ =
-  "FAIL no snapshot (\{snapPath}); run `medaka snapshot --new`"
+verdictMissing SnapCheck snapPath _ _ = "FAIL no snapshot at \{snapPath} — that is the resolved --out location, not the committed golden's. The goldens live under test/snapshots/<family>/; a bare --check cannot know which family a path belongs to, so it looks in the wrong place. Run the owning gate (e.g. `sh test/diff_compiler_snapshot_frontend.sh`), which routes --out for you, or pass --out <dir> yourself. (NOT --new — that WRITES a golden from the current output, blessing a possible regression as correct.)"
 verdictMissing SnapBless snapPath _ _ = "FAIL no snapshot (\{snapPath}); --bless never creates one — run `medaka snapshot --new` first"
 verdictMissing SnapNew snapPath sel secs = match writeSnap snapPath sel secs
   Err e => "ERROR cannot write \{snapPath}: \{e}"
@@ -1577,7 +1579,7 @@ mapUnit f (x::rest) =
 (DTypeSig false "settleVerdict" (TyFun (TyCon "String") (TyFun (TyCon "SnapMode") (TyFun (TyApp (TyCon "Option") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "RunSec")) (TyEffect ("IO") None (TyCon "String")))))))))
 (DFunDef false "settleVerdict" ((PVar "root") (PVar "mode") (PVar "outDir") (PVar "sel") (PVar "path") (PVar "secs")) (EMatch (EApp (EVar "badSections") (EVar "secs")) (arm (PCons (PVar "n") PWild) () (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL section ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString " contains a line matching the section-header grammar")))) (arm (PList) () (EBlock (DoLet false false (PVar "snapPath") (EApp (EApp (EApp (EVar "snapPathOf") (EVar "root")) (EVar "outDir")) (EVar "path"))) (DoExpr (EMatch (EApp (EVar "readOpt") (EVar "snapPath")) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "verdictMissing") (EVar "mode")) (EVar "snapPath")) (EVar "sel")) (EVar "secs"))) (arm (PCon "Some" (PVar "prev")) () (EApp (EApp (EApp (EApp (EApp (EVar "verdictExisting") (EVar "mode")) (EVar "snapPath")) (EVar "sel")) (EVar "secs")) (EVar "prev")))))))))
 (DTypeSig false "verdictMissing" (TyFun (TyCon "SnapMode") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "RunSec")) (TyEffect ("IO") None (TyCon "String")))))))
-(DFunDef false "verdictMissing" ((PCon "SnapCheck") (PVar "snapPath") PWild PWild) (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL no snapshot (")) (EApp (EVar "display") (EVar "snapPath"))) (ELit (LString "); run `medaka snapshot --new`"))))
+(DFunDef false "verdictMissing" ((PCon "SnapCheck") (PVar "snapPath") PWild PWild) (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL no snapshot at ")) (EApp (EVar "display") (EVar "snapPath"))) (ELit (LString " — that is the resolved --out location, not the committed golden's. The goldens live under test/snapshots/<family>/; a bare --check cannot know which family a path belongs to, so it looks in the wrong place. Run the owning gate (e.g. `sh test/diff_compiler_snapshot_frontend.sh`), which routes --out for you, or pass --out <dir> yourself. (NOT --new — that WRITES a golden from the current output, blessing a possible regression as correct.)"))))
 (DFunDef false "verdictMissing" ((PCon "SnapBless") (PVar "snapPath") PWild PWild) (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL no snapshot (")) (EApp (EVar "display") (EVar "snapPath"))) (ELit (LString "); --bless never creates one — run `medaka snapshot --new` first"))))
 (DFunDef false "verdictMissing" ((PCon "SnapNew") (PVar "snapPath") (PVar "sel") (PVar "secs")) (EMatch (EApp (EApp (EApp (EVar "writeSnap") (EVar "snapPath")) (EVar "sel")) (EVar "secs")) (arm (PCon "Err" (PVar "e")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "ERROR cannot write ")) (EApp (EVar "display") (EVar "snapPath"))) (ELit (LString ": "))) (EApp (EVar "display") (EVar "e"))) (ELit (LString "")))) (arm (PCon "Ok" PWild) () (EBinOp "++" (EBinOp "++" (ELit (LString "NEW ")) (EApp (EVar "display") (EVar "snapPath"))) (ELit (LString ""))))))
 (DTypeSig false "verdictExisting" (TyFun (TyCon "SnapMode") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "RunSec")) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "String"))))))))
@@ -1889,7 +1891,7 @@ mapUnit f (x::rest) =
 (DTypeSig false "settleVerdict" (TyFun (TyCon "String") (TyFun (TyCon "SnapMode") (TyFun (TyApp (TyCon "Option") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "RunSec")) (TyEffect ("IO") None (TyCon "String")))))))))
 (DFunDef false "settleVerdict" ((PVar "root") (PVar "mode") (PVar "outDir") (PVar "sel") (PVar "path") (PVar "secs")) (EMatch (EApp (EVar "badSections") (EVar "secs")) (arm (PCons (PVar "n") PWild) () (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL section ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString " contains a line matching the section-header grammar")))) (arm (PList) () (EBlock (DoLet false false (PVar "snapPath") (EApp (EApp (EApp (EVar "snapPathOf") (EVar "root")) (EVar "outDir")) (EVar "path"))) (DoExpr (EMatch (EApp (EVar "readOpt") (EVar "snapPath")) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "verdictMissing") (EVar "mode")) (EVar "snapPath")) (EVar "sel")) (EVar "secs"))) (arm (PCon "Some" (PVar "prev")) () (EApp (EApp (EApp (EApp (EApp (EVar "verdictExisting") (EVar "mode")) (EVar "snapPath")) (EVar "sel")) (EVar "secs")) (EVar "prev")))))))))
 (DTypeSig false "verdictMissing" (TyFun (TyCon "SnapMode") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "RunSec")) (TyEffect ("IO") None (TyCon "String")))))))
-(DFunDef false "verdictMissing" ((PCon "SnapCheck") (PVar "snapPath") PWild PWild) (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL no snapshot (")) (EApp (EMethodRef "display") (EVar "snapPath"))) (ELit (LString "); run `medaka snapshot --new`"))))
+(DFunDef false "verdictMissing" ((PCon "SnapCheck") (PVar "snapPath") PWild PWild) (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL no snapshot at ")) (EApp (EMethodRef "display") (EVar "snapPath"))) (ELit (LString " — that is the resolved --out location, not the committed golden's. The goldens live under test/snapshots/<family>/; a bare --check cannot know which family a path belongs to, so it looks in the wrong place. Run the owning gate (e.g. `sh test/diff_compiler_snapshot_frontend.sh`), which routes --out for you, or pass --out <dir> yourself. (NOT --new — that WRITES a golden from the current output, blessing a possible regression as correct.)"))))
 (DFunDef false "verdictMissing" ((PCon "SnapBless") (PVar "snapPath") PWild PWild) (EBinOp "++" (EBinOp "++" (ELit (LString "FAIL no snapshot (")) (EApp (EMethodRef "display") (EVar "snapPath"))) (ELit (LString "); --bless never creates one — run `medaka snapshot --new` first"))))
 (DFunDef false "verdictMissing" ((PCon "SnapNew") (PVar "snapPath") (PVar "sel") (PVar "secs")) (EMatch (EApp (EApp (EApp (EVar "writeSnap") (EVar "snapPath")) (EVar "sel")) (EVar "secs")) (arm (PCon "Err" (PVar "e")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "ERROR cannot write ")) (EApp (EMethodRef "display") (EVar "snapPath"))) (ELit (LString ": "))) (EApp (EMethodRef "display") (EVar "e"))) (ELit (LString "")))) (arm (PCon "Ok" PWild) () (EBinOp "++" (EBinOp "++" (ELit (LString "NEW ")) (EApp (EMethodRef "display") (EVar "snapPath"))) (ELit (LString ""))))))
 (DTypeSig false "verdictExisting" (TyFun (TyCon "SnapMode") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "RunSec")) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "String"))))))))

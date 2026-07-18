@@ -1,0 +1,2 @@
+-- #476 domain cell: acos is defined on [-1,1]; acos 2 is out of domain -> NaN.
+main = acos 2.0

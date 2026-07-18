@@ -302,7 +302,15 @@ public export data Expr =
   -- rewrites every `ENumLit` away, so eval/emit never see it.  sexp/astdump render
   -- it identically to `(ELit (LInt n))` so the OCaml↔compiler sexp diff is unchanged
   -- (the compiler AST node is new but renders to the same S-expression).
-  | ENumLit Int (Ref (Option Float)) (Ref Route)
+  --
+  -- The 4th field is the ORIGINAL SOURCE LEXEME of the literal (#458), carried
+  -- verbatim from the `TInt` token so `fmt`/the printer can reproduce the author's
+  -- radix and separators — `0xD800` stays `0xD800`, not `55296`; `1_000` keeps its
+  -- underscore.  A negative fused literal (`-0x…`, tight `f -0x…`) stores the sign
+  -- IN the lexeme.  Empty "" means synthesized (desugar, `exprToPat`) → the printer
+  -- falls back to `intToString`.  Ignored by every non-printing stage (sexp/eval/
+  -- typecheck/lower render from the value), so it does not perturb goldens or Eq.
+  | ENumLit Int (Ref (Option Float)) (Ref Route) String
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
 --

@@ -29,6 +29,12 @@
 # the compiler AST cannot produce — additive, not diffed.
 #
 # Usage: sh test/diff_compiler_lsp_b3.sh
+#   CAPTURE=1 sh test/diff_compiler_lsp_b3.sh   — re-mint b3_fmt.txt (cross-check
+#     vs `medaka fmt --stdout`, not self-referential) AND b3_sym_def_hl.ndjson
+#     (a raw native-LSP protocol dump with no independent cross-check — same
+#     "native canonical, human-reviewed at bless time" precedent as
+#     b4_compl_full.ndjson, which was already re-minted this way by hand on
+#     2026-06-27; see test/diff_compiler_lsp_b4.sh's own comment). #621
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # OCaml-free: drive the CANONICAL native LSP and diff vs committed goldens
@@ -41,6 +47,7 @@ GOLD="$ROOT/test/lsp_goldens"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 pass=0; fail=0
+CAPTURE="${CAPTURE:-0}"
 
 frame() {
   python3 - "$1" <<'PY'
@@ -66,7 +73,16 @@ drive_self() {
 
 # OCAML reference responses are committed goldens (captured by capture_goldens.sh
 # while OCaml was trusted).  $1 = golden basename under $GOLD.
+# CAPTURE=1: persist the just-computed native $TMP/self.json AS the golden
+# first (tautological — no independent oracle exists post-OCaml-removal, same
+# "native canonical" precedent as b4_compl_full.ndjson) — then load it back,
+# so the comparison immediately below trivially agrees with what was just
+# reviewed/committed.
 load_golden() {
+  if [ "$CAPTURE" = 1 ]; then
+    cp "$TMP/self.json" "$GOLD/$1"
+    printf 'CAPTURE %s\n' "$GOLD/$1" >&2
+  fi
   cp "$GOLD/$1" "$TMP/ocaml.json"
 }
 
@@ -203,6 +219,10 @@ check "documentHighlight full-range parity vs OCaml (textual, byte-identical)" "
 USRC='main   =   println    "hi"\n\n\n'
 USRC_JSON='main   =   println    \"hi\"\n\n\n'
 printf "$USRC" > "$TMP/unfmt.mdk"
+if [ "$CAPTURE" = 1 ]; then
+  MEDAKA_ROOT="$ROOT" perl -e 'alarm 60; exec @ARGV' -- "$MEDAKA" fmt --stdout "$TMP/unfmt.mdk" > "$GOLD/b3_fmt.txt" 2>/dev/null
+  printf 'CAPTURE %s\n' "$GOLD/b3_fmt.txt" >&2
+fi
 ORACLE_FMT="$(cat "$GOLD/b3_fmt.txt")"
 FMT='{"jsonrpc":"2.0","id":2,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///u.mdk"}}}'
 DIDOPEN_U='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///u.mdk","languageId":"medaka","version":1,"text":"'"$USRC_JSON"'"}}}'

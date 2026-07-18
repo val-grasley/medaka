@@ -200,35 +200,36 @@ make medaka          # WARM (./medaka_emitter present): 2-stage rebuild from cur
 **In a worktree:** the shell cwd resets between calls, so use
 `make -C /absolute/path/to/worktree medaka`. The `./medaka` binary lands in the worktree.
 
-**Borrowing an emitter to warm-start a fresh worktree is safe** (`cp <other-tree>/medaka_emitter .`
-then `make medaka`): `build_native_medaka.sh` fingerprints the `compiler/**/*.mdk` each
-emitter was built from into `.medaka_emitter.srcstamp` and rebuilds any emitter of unknown
-or mismatched provenance. (It used to decide this by **mtime**, which `cp` inverts — that
-is where the spurious "lagging seed" scares came from.)
+**Borrowing an emitter (`cp <other-tree>/medaka_emitter .` then `make medaka`) is SAFE, but it
+does NOT warm-start the build — say so plainly, since a prior wording sold it as a warm start
+and then stated the mechanism that defeats one in its own next clause.** `cp` copies the
+emitter binary but not the separate `.medaka_emitter.srcstamp` provenance stamp beside it, so
+`build_native_medaka.sh` always sees "provenance unknown" for a borrowed emitter and rebuilds
+it from current source anyway — **stages A and B run in the borrow path exactly as they do
+cold** (`test/build_native_medaka.sh:212-221`; the *"fresh bootstrap, or copied in from another
+tree"* branch covers both cases identically). **The only thing borrowing actually skips is the
+~31 s seed-bootstrap step** (measured: `time sh test/bootstrap_from_seed.sh` → `real
+0m31.003s`, exit 0). It used to decide staleness by **mtime**, which `cp` inverts — that is
+where the spurious "lagging seed" scares came from.
 
-> ### 🚨 …but if you are a WORKTREE-ISOLATED SUBAGENT, do NOT borrow it. Cold-bootstrap.
+> ### 🚨 If you are a WORKTREE-ISOLATED SUBAGENT, do NOT borrow it. Cold-bootstrap.
 >
-> The paragraph above is written for a human (or an orchestrator) working in their own checkout.
-> **For an isolated subagent it can cost you your whole session — and the failure is not reliable
-> enough to predict.** `cp <other-tree>/medaka_emitter .` *reads* from a tree that is not yours,
-> which can trip the auto-mode isolation classifier — and the denial is **stateful**: it carries
-> forward and blocks every later `make` you attempt, *including a clean cold-bootstrap entirely
-> inside your own worktree*. In the same 2026-07-16 session, one subagent tripped the classifier on
-> this exact `cp` and **never built again** (its stated reasons for the successive denials even
-> contradicted each other — "you are in another agent's worktree" → "bare `make` risks the shared
-> main checkout"), while another warm-started from a borrowed emitter with no issue.
-> **Don't gamble the session on a coin-flip to save 31 seconds.**
+> **For an isolated subagent, borrowing can cost you your whole session — and the failure is not
+> reliable enough to predict.** `cp <other-tree>/medaka_emitter .` *reads* from a tree that is not
+> yours, which can trip the auto-mode isolation classifier — and the denial is **stateful**: it
+> carries forward and blocks every later `make` you attempt, *including a clean cold-bootstrap
+> entirely inside your own worktree*. In the same 2026-07-16 session, one subagent tripped the
+> classifier on this exact `cp` and **never built again** (its stated reasons for the successive
+> denials even contradicted each other — "you are in another agent's worktree" → "bare `make`
+> risks the shared main checkout"), while another borrowed the emitter with no issue.
+> **Don't gamble the session on a coin-flip to save ~31 seconds — that is all borrowing buys
+> (see above).**
 >
 > **Just run `make -C <your-absolute-worktree-path> medaka`.** A fresh worktree has NO
 > `./medaka_emitter` and **that is FINE** — it cold-bootstraps from `compiler/seed/emitter.ll.gz`
-> and works. **The entire cost of not borrowing is ~31 s** — the seed bootstrap, and *only* that
-> (measured 2026-07-16: `time sh test/bootstrap_from_seed.sh` → `real 0m31.003s`, exit 0). This
-> line said **~4 s** until then, an ~8× understatement that propagated into new code verbatim.
-> It is NOT the ~1m52s of a full fresh `make medaka`: **stages A and B run in the borrow path
-> too**, because `cp` copies the emitter binary but not `.medaka_emitter.srcstamp`, so a borrowed
-> emitter is "provenance unknown" and is **rebuilt from source anyway**
-> (`test/build_native_medaka.sh:212-221` — *"fresh bootstrap, or copied in from another tree"* is
-> one branch). So borrowing buys **31 s**, not two minutes. **Never read from another tree; the
+> and works, at the same ~31 s cost either way. This paragraph's cost figure said **~4 s** until
+> 2026-07-16, an ~8× understatement that propagated into new code verbatim — re-derive it with
+> the `time` command above rather than trust a number here. **Never read from another tree; the
 > speedup is not worth the session.**
 
 **Environment.** opam/dune are NOT needed. The native build uses only **clang + Boehm GC**
@@ -259,6 +260,8 @@ spawned in `runtime/medaka_rt.c`, not a link flag — so it runs fine under Linu
 other 80 across six parallel hosted runners.
 
 ```sh
+PREFLIGHT_DRY=1 sh test/preflight.sh                 # ✅ FIRST STEP if unsure — derives the
+                                                      #    gate set for free: builds/runs nothing
 make preflight       # ✅ THE LOOP — derives the gate set from YOUR diff, and the oracle
                      #    set from those gates. Touching parser.mdk: 9 oracles, 11 gates.
 sh test/run_gates.sh 'diff_compiler_parse*'          # ✅ targeted, by name
@@ -275,11 +278,12 @@ risk running `test/diff_compiler_perf_scaling.sh` directly (measured 654-748 s, 
 it's one of the slowest gates in the tree and just as foreground-unsafe as a single blocking
 call. **Remedy: run either one detached/backgrounded and poll for completion, not in a single
 foreground turn** (`run_in_background` in this harness, not a blocking call). Before
-committing to a run that long, `PREFLIGHT_DRY=1 sh test/preflight.sh` (add
-`PREFLIGHT_CHANGED_FILE=<path-to-a-file-listing-changed-paths>` if you haven't touched the
-tree yet) prints the derived gate set for free — no build, no run. ⚠️ It does NOT surface a
-forced fixpoint — that decision fires *after* the DRY exit — so a short dry-run gate list does
-not by itself mean the real run will finish inside the ceiling. (#520, #540)
+committing to a run that long, reach for `PREFLIGHT_DRY=1` (fence above) — `test/preflight.sh`
+is the source of truth for it and its sibling `PREFLIGHT_CHANGED_FILE=<path-to-a-file-listing-
+changed-paths>` (hands preflight a changed-file list directly instead of deriving one from
+`git diff`). ⚠️ `PREFLIGHT_DRY` does NOT surface a forced fixpoint — that decision fires *after*
+the DRY exit — so a short dry-run gate list does not by itself mean the real run will finish
+inside the ceiling. (#520, #540)
 
 **This is a real cost, not an aesthetic preference.** Several agents share this box. One
 agent running the whole suite + a full oracle build takes the load average past 10 and
@@ -303,6 +307,14 @@ preflight would report green having run lexer + snapshot + doctests. So on those
   so — deliberately *not* a narrower subset, because a green that tested less than it
   appears to is the hazard this whole suite exists to prevent;
 - **preferred: push and let CI run it** across its parallel runners.
+
+⚠️ **`PREFLIGHT_NO_FULL` does NOT reach the `compiler/backend/*` fixpoint case above it in this
+section.** It only guards `full_suite` (the blast-radius path just described); a
+`compiler/backend/*` diff instead sets a separate `need_fixpoint` flag
+(`grep -n need_fixpoint test/preflight.sh`), which prints no banner and has no opt-out — the
+fixpoint runs unconditionally whether or not `PREFLIGHT_NO_FULL` is set. If the 10-minute
+ceiling above is what you're trying to dodge, background the run; `PREFLIGHT_NO_FULL` will not
+skip the fixpoint for you. (#520, #545)
 
 **Two agents were killed for obeying `make preflight` here** before it said any of this.
 If you took the loop at its word on a prelude change, that was the tooling's bug, not
@@ -338,7 +350,7 @@ make docs-index                        # regenerate docs/README.md (GENERATED �
 | `test/typecheck_compiler_source.sh` | Strict-typechecks the WHOLE compiler source. Run alongside the fixpoint for any compiler `.mdk` change — the bootstrap emit path does NOT gate on type errors, so an ill-typed compiler builds green without this. ⚠️ It (and `diff_compiler_selfproc.sh`) needs its slow oracle (`diagnostics_project_main`, `check_all_main`, …) BUILT FIRST in a fresh worktree — `FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>` — and REBUILT after every compiler-source edit; a missing/stale oracle exits 2, which reads like a skip, not a failure |
 | `test/diff_compiler_engines.sh` | **The 3-engine differential**: eval == native == wasm on the SAME programs. Found 4 bug classes on its first run. Ledger: `test/engine_divergence.txt` |
 | `test/diff_compiler_perf_scaling.sh` | **The O(n²) detector.** Inputs at N and 2N; grades the *allocation* growth ratio (linear ≈2.0×, quadratic ≈4.0×). Allocation, not wall-clock — GC bytes are deterministic, so it is machine-independent and noise-free |
-| `test/diff_compiler_capability_matrix.sh` | Every extern in `stdlib/runtime.mdk` vs what each engine actually implements. Its absence let 37 externs drift for six weeks. Ledger: `test/CAPABILITY-EXCEPTIONS.txt` |
+| `test/diff_compiler_capability_matrix.sh` | Every extern in `stdlib/runtime.mdk` vs what each engine actually implements (EXISTENCE). Its absence let 37 externs drift for six weeks. Ledger: `test/CAPABILITY-EXCEPTIONS.txt`. **Also (#476) the DOMAIN requirement:** every *pure* extern (no `<Cap>` annotation — derived, not hand-listed) must carry a verdict in `test/EXTERN-DOMAIN-LEDGER.txt` — `TOTAL` / `BOUNDARY` (edge cells pinned across all 3 engines) / `PENDING` (edge domain, cells owed, `#NNN`) / `EXEMPT`. A new pure extern with no row FAILS (self-drains). This is what would have caught the `floatToInt` 3-way edge divergence (#346) structurally |
 | `test/diff_compiler_tmc_parity.sh` | Both backends TMC the same functions (needs `sh test/wasm/build_wasm_oracle.sh`) |
 | `test/bootstrap_*.sh` | Each native pipeline stage == interpreter output |
 | `test/diff_compiler_must_fail.sh` | **The MUST-FAIL suite — the TRACKER's self-drain.** Each `test/must_fail_fixtures/*/` asserts one OPEN issue's bug **still reproduces**; when a fix lands the fixture flips green and **FAILS the gate**, naming the issue to close. **A RED here is usually a GOOD failure, not your break.** Runs in `soundness`, not a shard |

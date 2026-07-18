@@ -554,10 +554,12 @@ written) no program in the tree was ever compared across all three.** Measured t
 
 The two backends are validated on **essentially disjoint corpora**. And the one
 two-way check that does exist is not a live differential: `diff_compiler_llvm.sh`
-diffs native output against `<fixture>.eval.golden` — **a golden captured from eval**.
-So a bug in the interpreter that gets captured becomes the *expected answer* for the
-native backend too. The comparison is mediated by a frozen file rather than by running
-both engines, which is precisely the circularity §3.2 warns about, one level down.
+diffs native output against `<fixture>.native.golden` (renamed from the misleading
+`.eval.golden` by #559) — **a golden captured from native, comparing native against
+itself**. So a bug that gets captured becomes the *expected answer* for the native
+backend all over again. The comparison is mediated by a frozen file rather than by
+running both engines, which is precisely the circularity §3.2 warns about, one level
+down.
 
 Meanwhile the memory index lists **seven distinct `run ≠ build` bugs** — poly-Unit
 autoprint, string/list index slice, partial-method closure, comparison-operator dict,

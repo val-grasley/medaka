@@ -202,9 +202,14 @@ pass=0; fail=0; asserts=0
 #                         expected to ACCEPT with a specific, deterministic
 #                         value -- a check/build-agree-run-diverges split)
 #     BUILD_CRASH      -- KNOWN-BAD ledger: build exits 0 but the SHIPPED BINARY
-#                         crashes (non-zero exit) while run prints `value`
-#                         correctly. Pins BOTH the crash and run's value, so the
-#                         row self-drains (goes RED) the day the bug is fixed.
+#                         crashes with the SPECIFIC pinned signature (exit 139 /
+#                         SIGSEGV-SIGBUS, stderr `E-FATAL-SIGNAL`) while run
+#                         prints `value` correctly. Pins the crash SIGNATURE
+#                         (not merely "nonzero"), run's value, AND the
+#                         signature, so the row self-drains (goes RED) the day
+#                         the bug is fixed -- and ALSO goes RED, surfacing a
+#                         NEW bug instead of hiding it, if the binary starts
+#                         crashing for a DIFFERENT reason (#463).
 #     BUILD_NOTEQ_INT  -- build's stdout must be a bare integer (digits only)
 #                         that is NOT equal to `value` (used for a
 #                         non-deterministic garbage-pointer miscompile, where
@@ -341,15 +346,37 @@ printf '%s\n' "$TABLE" | while IFS='|' read -r entry label exp_check exp_run exp
       ;;
     BUILD_CRASH)
       # KNOWN-BAD ledger cell, NOT a skip: `build` exits 0 and ships a binary
-      # that CRASHES (non-zero exit), while `run` prints the correct `value`.
-      # Asserting BOTH halves is what makes this self-draining: the day the
-      # underlying bug is fixed the binary stops crashing, this row goes RED,
-      # and whoever fixed it MUST come here and re-pin the cell to ALL_EXACT.
-      # A `NONE` row would have silently absorbed the fix and taught nobody.
+      # that CRASHES with the SPECIFIC pinned signature -- exit 139 (the
+      # runtime's SIGSEGV/SIGBUS fault handler calls `_exit(139)` explicitly,
+      # runtime/medaka_rt.c's mdk_chain_previous -- deterministic on both
+      # Linux and macOS since it's an explicit exit code in our own C, not the
+      # shell's raw signal-death convention) AND stderr carries
+      # `E-FATAL-SIGNAL` -- while `run` prints the correct `value`.
+      #
+      # #463: an exit-code-only check (`bin_code != 0`) absorbs ANY future
+      # crash into "still correctly broken" as long as run's stdout still
+      # matches -- a SECOND, unrelated crash could hide in this cell forever.
+      # Pinning the exact code AND the stderr signature closes that: a crash
+      # for a DIFFERENT reason (different code, or 139 with different stderr,
+      # e.g. a stack overflow's E-STACK-OVERFLOW/134) now FAILS this row
+      # instead of being absorbed as "ok".
+      #
+      # Asserting the crash signature, run's value, AND (implicitly, via
+      # NO-CRASH-FIXED) the eventual fix is what makes this self-draining: the
+      # day the underlying bug is fixed the binary stops crashing, this row
+      # goes RED, and whoever fixed it MUST come here and re-pin the cell to
+      # ALL_EXACT. A `NONE` row would have silently absorbed the fix and
+      # taught nobody.
       if [ "$build_v" = 'ACCEPT' ]; then
         printf '%b\n' "$value" > "$TMP/$base.expected"
         if [ "$bin_code" -eq 0 ]; then
           value_v='NO-CRASH-FIXED'   # <-- the drain fired: re-pin this row
+          row_ok=0
+        elif [ "$bin_code" -ne 139 ]; then
+          value_v="WRONG-CRASH-CODE:$bin_code"   # crashed, but NOT the pinned way
+          row_ok=0
+        elif ! grep -q 'E-FATAL-SIGNAL' "$TMP/$base.build.runerr" 2>/dev/null; then
+          value_v='WRONG-CRASH-SIG'   # exit 139 but not our fault handler's signature
           row_ok=0
         elif cmp -s "$TMP/$base.run.out" "$TMP/$base.expected"; then
           value_v="ok(crash:$bin_code)"

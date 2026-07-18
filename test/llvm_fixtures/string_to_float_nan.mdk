@@ -1,0 +1,4 @@
+-- #476 domain cell: stringToFloat "nan" parses IEEE NaN -> Some nan; all three engines must agree on the render.
+main = match stringToFloat "nan"
+  Some f => f
+  None => 0.0 - 1.0

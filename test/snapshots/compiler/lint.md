@@ -1941,7 +1941,7 @@ ifMaxMinFnReversed op
 isLiteralExpr : Expr -> Bool
 isLiteralExpr e = match unwrapLoc e
   ELit _ => True
-  ENumLit _ _ _ => True
+  ENumLit _ _ _ _ => True
   _ => False
 
 -- does `EIf cond t el` match the idiom?  Returns the prelude fn name plus the
@@ -2649,7 +2649,7 @@ isBoolLit e = isTrueLit e || isFalseLit e
 isIntLit : Int -> Expr -> Bool
 isIntLit k e = match unwrapLoc e
   ELit (LInt n) => n == k
-  ENumLit n _ _ => n == k
+  ENumLit n _ _ _ => n == k
   _ => False
 
 -- ── rule: concat-to-interp ────────────────────────────────────────────────────
@@ -4502,7 +4502,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "ifMaxMinFnReversed" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "ifMaxMinFnReversed" ((PVar "op")) (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString ">"))) (EBinOp "==" (EVar "op") (ELit (LString ">=")))) (ELit (LString "min")) (EIf (EVar "otherwise") (ELit (LString "max")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "isLiteralExpr" (TyFun (TyCon "Expr") (TyCon "Bool")))
-(DFunDef false "isLiteralExpr" ((PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" PWild) () (EVar "True")) (arm (PCon "ENumLit" PWild PWild PWild) () (EVar "True")) (arm PWild () (EVar "False"))))
+(DFunDef false "isLiteralExpr" ((PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" PWild) () (EVar "True")) (arm (PCon "ENumLit" PWild PWild PWild PWild) () (EVar "True")) (arm PWild () (EVar "False"))))
 (DTypeSig false "ifMaxMinOf" (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Expr") (TyCon "Expr")))))))
 (DFunDef false "ifMaxMinOf" ((PVar "cond") (PVar "t") (PVar "el")) (EMatch (EApp (EVar "unwrapLoc") (EVar "cond")) (arm (PCon "EBinOp" (PVar "op") (PVar "a") (PVar "b") PWild) ((GBool (EApp (EVar "ifMaxMinCompareOp") (EVar "op")))) (EBlock (DoLet false false (PVar "aK") (EApp (EVar "exprSexp") (EVar "a"))) (DoLet false false (PVar "bK") (EApp (EVar "exprSexp") (EVar "b"))) (DoLet false false (PVar "tK") (EApp (EVar "exprSexp") (EVar "t"))) (DoLet false false (PVar "eK") (EApp (EVar "exprSexp") (EVar "el"))) (DoExpr (EIf (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "aK") (EVar "bK")) (EApp (EVar "isLiteralExpr") (EVar "a"))) (EApp (EVar "isLiteralExpr") (EVar "b"))) (EVar "None") (EIf (EBinOp "&&" (EBinOp "==" (EVar "tK") (EVar "aK")) (EBinOp "==" (EVar "eK") (EVar "bK"))) (EApp (EVar "Some") (ETuple (EApp (EVar "ifMaxMinFnNormal") (EVar "op")) (EVar "a") (EVar "b"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "tK") (EVar "bK")) (EBinOp "==" (EVar "eK") (EVar "aK"))) (EApp (EVar "Some") (ETuple (EApp (EVar "ifMaxMinFnReversed") (EVar "op")) (EVar "a") (EVar "b"))) (EVar "None"))))))) (arm PWild () (EVar "None"))))
 (DTypeSig false "ruleIfMaxMin" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Finding")))))))
@@ -4810,7 +4810,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "isBoolLit" (TyFun (TyCon "Expr") (TyCon "Bool")))
 (DFunDef false "isBoolLit" ((PVar "e")) (EBinOp "||" (EApp (EVar "isTrueLit") (EVar "e")) (EApp (EVar "isFalseLit") (EVar "e"))))
 (DTypeSig false "isIntLit" (TyFun (TyCon "Int") (TyFun (TyCon "Expr") (TyCon "Bool"))))
-(DFunDef false "isIntLit" ((PVar "k") (PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" (PCon "LInt" (PVar "n"))) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm (PCon "ENumLit" (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm PWild () (EVar "False"))))
+(DFunDef false "isIntLit" ((PVar "k") (PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" (PCon "LInt" (PVar "n"))) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm (PCon "ENumLit" (PVar "n") PWild PWild PWild) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm PWild () (EVar "False"))))
 (DTypeSig false "concatOperands" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "Expr"))))
 (DFunDef false "concatOperands" ((PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "EBinOp" (PLit (LString "++")) (PVar "l") (PVar "r") PWild) () (EBinOp "++" (EApp (EVar "concatOperands") (EVar "l")) (EListLit (EVar "r")))) (arm PWild () (EListLit (EVar "e")))))
 (DTypeSig false "strLitValueOf" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyCon "String"))))
@@ -5840,7 +5840,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "ifMaxMinFnReversed" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "ifMaxMinFnReversed" ((PVar "op")) (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString ">"))) (EBinOp "==" (EVar "op") (ELit (LString ">=")))) (ELit (LString "min")) (EIf (EVar "otherwise") (ELit (LString "max")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "isLiteralExpr" (TyFun (TyCon "Expr") (TyCon "Bool")))
-(DFunDef false "isLiteralExpr" ((PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" PWild) () (EVar "True")) (arm (PCon "ENumLit" PWild PWild PWild) () (EVar "True")) (arm PWild () (EVar "False"))))
+(DFunDef false "isLiteralExpr" ((PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" PWild) () (EVar "True")) (arm (PCon "ENumLit" PWild PWild PWild PWild) () (EVar "True")) (arm PWild () (EVar "False"))))
 (DTypeSig false "ifMaxMinOf" (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Expr") (TyCon "Expr")))))))
 (DFunDef false "ifMaxMinOf" ((PVar "cond") (PVar "t") (PVar "el")) (EMatch (EApp (EVar "unwrapLoc") (EVar "cond")) (arm (PCon "EBinOp" (PVar "op") (PVar "a") (PVar "b") PWild) ((GBool (EApp (EVar "ifMaxMinCompareOp") (EVar "op")))) (EBlock (DoLet false false (PVar "aK") (EApp (EVar "exprSexp") (EVar "a"))) (DoLet false false (PVar "bK") (EApp (EVar "exprSexp") (EVar "b"))) (DoLet false false (PVar "tK") (EApp (EVar "exprSexp") (EVar "t"))) (DoLet false false (PVar "eK") (EApp (EVar "exprSexp") (EVar "el"))) (DoExpr (EIf (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "aK") (EVar "bK")) (EApp (EVar "isLiteralExpr") (EVar "a"))) (EApp (EVar "isLiteralExpr") (EVar "b"))) (EVar "None") (EIf (EBinOp "&&" (EBinOp "==" (EVar "tK") (EVar "aK")) (EBinOp "==" (EVar "eK") (EVar "bK"))) (EApp (EVar "Some") (ETuple (EApp (EVar "ifMaxMinFnNormal") (EVar "op")) (EVar "a") (EVar "b"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "tK") (EVar "bK")) (EBinOp "==" (EVar "eK") (EVar "aK"))) (EApp (EVar "Some") (ETuple (EApp (EVar "ifMaxMinFnReversed") (EVar "op")) (EVar "a") (EVar "b"))) (EVar "None"))))))) (arm PWild () (EVar "None"))))
 (DTypeSig false "ruleIfMaxMin" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Positions") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Finding")))))))
@@ -6148,7 +6148,7 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "isBoolLit" (TyFun (TyCon "Expr") (TyCon "Bool")))
 (DFunDef false "isBoolLit" ((PVar "e")) (EBinOp "||" (EApp (EVar "isTrueLit") (EVar "e")) (EApp (EVar "isFalseLit") (EVar "e"))))
 (DTypeSig false "isIntLit" (TyFun (TyCon "Int") (TyFun (TyCon "Expr") (TyCon "Bool"))))
-(DFunDef false "isIntLit" ((PVar "k") (PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" (PCon "LInt" (PVar "n"))) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm (PCon "ENumLit" (PVar "n") PWild PWild) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm PWild () (EVar "False"))))
+(DFunDef false "isIntLit" ((PVar "k") (PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "ELit" (PCon "LInt" (PVar "n"))) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm (PCon "ENumLit" (PVar "n") PWild PWild PWild) () (EBinOp "==" (EVar "n") (EVar "k"))) (arm PWild () (EVar "False"))))
 (DTypeSig false "concatOperands" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "Expr"))))
 (DFunDef false "concatOperands" ((PVar "e")) (EMatch (EApp (EVar "unwrapLoc") (EVar "e")) (arm (PCon "EBinOp" (PLit (LString "++")) (PVar "l") (PVar "r") PWild) () (EBinOp "++" (EApp (EVar "concatOperands") (EVar "l")) (EListLit (EVar "r")))) (arm PWild () (EListLit (EVar "e")))))
 (DTypeSig false "strLitValueOf" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyCon "String"))))

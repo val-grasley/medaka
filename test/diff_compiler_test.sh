@@ -78,7 +78,9 @@ strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 if [ "$#" -gt 0 ]; then
   files="$*"
+  scoped=1
 else
+  scoped=0
   files="$ROOT/stdlib/core.mdk \
          $ROOT/stdlib/json.mdk \
          $ROOT/stdlib/toml.mdk \
@@ -93,7 +95,8 @@ else
          $ROOT/test/compiler_test_fixtures/sum_dict.mdk \
          $ROOT/test/compiler_test_fixtures/mappable_not_foldable.mdk \
          $ROOT/test/compiler_test_fixtures/shadow_impl_tolist.mdk \
-         $ROOT/test/compiler_test_fixtures/blockquote_and_valid.mdk"
+         $ROOT/test/compiler_test_fixtures/blockquote_and_valid.mdk \
+         $ROOT/test/compiler_test_fixtures/doctest_typecheck_gate.mdk"
 fi
 
 if [ "${CAPTURE:-0}" = "1" ]; then
@@ -133,6 +136,15 @@ for f in $files; do
   fi
 done
 
+# The fixed regression battery below (P0-6 exit-code check, mixed.mdk/list.mdk
+# exit codes, test_decls.mdk, hash_negative_hash.mdk) is unconditional coverage
+# for the no-arguments (CI) invocation only. When file args are given (a scoped
+# run — e.g. a pre-commit hook checking one staged file), skip it: none of
+# these fixtures were named, so a caller must never see a failure about a file
+# it never asked for (#537). Do NOT delete this battery — the P0-6 exit-code
+# regression it guards is real; it's just not part of a scoped run's contract.
+if [ "$scoped" -eq 0 ]; then
+
 # P0-6 regression: `medaka test` must exit nonzero iff any doctest/prop FAILED
 # or ERRORED (a printed "N passed, M failed" report used to always exit 0 —
 # a CI trap). test/bin/test_main is the native-built oracle for
@@ -151,6 +163,20 @@ if [ "$list_code" -eq 0 ]; then
   pass=$((pass + 1)); printf 'ok   list.mdk exit code (0, all-passing suite)\n'
 else
   fail=$((fail + 1)); printf 'FAIL list.mdk exit code: expected 0 (all-passing), got %d\n' "$list_code"
+fi
+
+# GH #260 regression: a DOCTEST-bearing module whose type error lives in a
+# function no doctest exercises must EXIT NONZERO — `medaka test` type-checks the
+# module (the way `medaka check` does) before running any example.  It used to
+# print "1/1 passed" and exit 0 (test-green / check-dies).  The .test.golden is
+# empty because the located error is emitted on STDERR (errors-to-stderr, like a
+# read error); the discriminator here is the exit code.
+"$RUN" "$RUNTIME" "$CORE" "$ROOT/test/compiler_test_fixtures/doctest_typecheck_gate.mdk" "$ROOT/test/compiler_test_fixtures" >/dev/null 2>&1
+dtg_code=$?
+if [ "$dtg_code" -ne 0 ]; then
+  pass=$((pass + 1)); printf 'ok   doctest_typecheck_gate.mdk exit code (%d != 0, module does not typecheck)\n' "$dtg_code"
+else
+  fail=$((fail + 1)); printf 'FAIL doctest_typecheck_gate.mdk exit code: expected nonzero (#260, module does not typecheck), got 0\n'
 fi
 
 # `test "…" = <Expectation>` runner regression (Phase 127 restored 2026-07-11):
@@ -204,6 +230,8 @@ if [ "$nh_out" = "$nh_expected" ]; then
 else
   fail=$((fail + 1)); printf 'FAIL hash_negative_hash.mdk report mismatch\n  --- expected ---\n%s\n  --- actual ---\n%s\n' "$nh_expected" "$nh_out"
 fi
+
+fi # scoped
 
 printf '\n%d matched, %d differing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

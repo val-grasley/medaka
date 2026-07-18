@@ -22,7 +22,7 @@
 
 import frontend.ast.{Decl}
 import ir.core_ir_lower.{lowerProgramEmit}
-import ir.core_ir_sexp.{cprogramToSexp}
+import ir.core_ir_sexp.{cprogramToSexp, setFaithfulRoutes}
 import ir.dce.{dceFilter}
 import entries.entry_support.{driveModules, runEmitWith}
 
@@ -36,4 +36,8 @@ emitTail : List Decl -> List Decl -> List (String, List Decl) -> <IO> Unit
 emitTail _ coreD modules2 =
   let allDecls0 = coreD ++ flatMap snd modules2
   let allDecls = dceFilter allDecls0
+  -- #686: this is the DEBUG probe, so ask routeSexp for the faithful nested-route
+  -- projection (RKey/RLocal element+impl dicts).  The golden path never calls this,
+  -- so the committed core_ir_sexp/snapshot corpus stays byte-identical.
+  let _ = setFaithfulRoutes True
   putStr (cprogramToSexp (lowerProgramEmit allDecls))

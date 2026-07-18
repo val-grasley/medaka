@@ -145,6 +145,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 if [ "$#" -gt 0 ]; then
+  full_run=0
   for a in "$@"; do
     case "$a" in
       "$ROOT"/*) rel="${a#"$ROOT"/}" ;;
@@ -154,6 +155,7 @@ if [ "$#" -gt 0 ]; then
     printf '%s\n' "$rel"
   done > "$WORK/files.txt"
 else
+  full_run=1
   (cd "$ROOT" && git ls-files '*.mdk') > "$WORK/files.txt"
 fi
 
@@ -174,12 +176,23 @@ findings=$((tier1 + tier2))
 #                                   its expected finding (deleted, or the
 #                                   diagnostic got accidentally fixed): FAIL.
 #                                   This is the direction a skip-list cannot see.
+#
+# "stale" is only meaningful against the WHOLE tracked tree: on a targeted
+# (file-args) run, every ledger entry whose fixture wasn't among the named
+# files would look "stale" even though it's untouched — a false failure about
+# a file the caller never named (#537's defect, same shape). So the stale
+# check runs ONLY on a full (no-arguments) scan; a targeted run still catches
+# real "unexpected" findings in the files it actually looked at.
 grep -E '^TIER1	|^TIER2	' "$WORK/all.txt" 2>/dev/null \
   | awk -F'\t' '{print $2"\t"$3}' | sort -u > "$WORK/actual.txt"
 awk -F'\t' '!/^[[:space:]]*#/ && NF>=2 && $1!="" {print $1"\t"$2}' "$LEDGER" \
   | sort -u > "$WORK/ledger.txt"
 comm -23 "$WORK/actual.txt" "$WORK/ledger.txt" > "$WORK/unexpected.txt"
-comm -13 "$WORK/actual.txt" "$WORK/ledger.txt" > "$WORK/stale.txt"
+if [ "$full_run" -eq 1 ]; then
+  comm -13 "$WORK/actual.txt" "$WORK/ledger.txt" > "$WORK/stale.txt"
+else
+  : > "$WORK/stale.txt"
+fi
 
 unexpected=$(wc -l < "$WORK/unexpected.txt" | tr -d ' ')
 stale=$(wc -l < "$WORK/stale.txt" | tr -d ' ')

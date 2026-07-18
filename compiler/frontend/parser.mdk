@@ -450,7 +450,7 @@ exprToPat (EVar x) = ctorOrVar x
 exprToPat (ELit l) = PLit l
 -- PLAN.md #11 §0.4: an integer in pattern (binding-LHS) position stays a
 -- monomorphic `Int` pattern; only EXPRESSION-position integers go polymorphic.
-exprToPat (ENumLit n _ _) = PLit (LInt n)
+exprToPat (ENumLit n _ _ _) = PLit (LInt n)
 exprToPat (ETuple es) = PTuple (map exprToPat es)
 exprToPat (EListLit es) = PList (map exprToPat es)
 exprToPat (EBinOp "::" a b _) = PCons (exprToPat a) (exprToPat b)
@@ -621,11 +621,11 @@ negUnary = do
   negUnaryFor t2
 
 negUnaryFor : Token -> Parser Expr
-negUnaryFor (TInt n)
+negUnaryFor (TInt n lx)
   | isIntMinLit n = located (do
     advance
     advance
-    pure (ENumLit n (Ref None) (Ref RNone)))
+    pure (ENumLit n (Ref None) (Ref RNone) ("-" ++ lx)))
 negUnaryFor _ = do
   advance
   e <- parseUnary
@@ -659,10 +659,10 @@ negLitArg False = do
   negLitArgFor t t2
 
 negLitArgFor : Token -> Token -> Parser Expr
-negLitArgFor TMinusTight (TInt n) = do
+negLitArgFor TMinusTight (TInt n lx) = do
   advance
   advance
-  pure (ENumLit (negate n) (Ref None) (Ref RNone))
+  pure (ENumLit (negate n) (Ref None) (Ref RNone) ("-" ++ lx))
 negLitArgFor TMinusTight (TFloat f) = do
   advance
   advance
@@ -673,7 +673,7 @@ negLitArgFor _ _ = failP "not a tight negative literal argument"
 -- not a negative argument)?  Strip the transparent ELoc wrapper first.
 headIsNumeric : Expr -> Bool
 headIsNumeric (ELoc _ e) = headIsNumeric e
-headIsNumeric (ENumLit _ _ _) = True
+headIsNumeric (ENumLit _ _ _ _) = True
 headIsNumeric (ELit (LInt _)) = True
 headIsNumeric (ELit (LFloat _)) = True
 headIsNumeric _ = False
@@ -775,8 +775,8 @@ parseAtomRaw : Parser Expr
 parseAtomRaw = do
   t <- peekP
   match t
-    TInt n if isIntMinLit n => fatalP intLitTooBigMsg
-    TInt n => emit (ENumLit n (Ref None) (Ref RNone))
+    TInt n _ if isIntMinLit n => fatalP intLitTooBigMsg
+    TInt n lx => emit (ENumLit n (Ref None) (Ref RNone) lx)
     TFloat f => emit (ELit (LFloat f))
     TString s => emit (ELit (LString s))
     TChar s => emit (ELit (LChar s))
@@ -1570,8 +1570,8 @@ parsePatAtom = do
   match t
     TIdent x => emit (PVar x)
     TUnderscore => emit PWild
-    TInt n if isIntMinLit n => fatalP intLitTooBigMsg
-    TInt n => intPatRest (LInt n)
+    TInt n _ if isIntMinLit n => fatalP intLitTooBigMsg
+    TInt n _ => intPatRest (LInt n)
     TMinus => negIntPat
     TMinusTight => negIntPat
     TFloat f => emit (PLit (LFloat f))
@@ -1621,7 +1621,7 @@ negIntPat = do
   advance
   t <- peekP
   match t
-    TInt n => negIntRng (LInt (negate n))
+    TInt n _ => negIntRng (LInt (negate n))
     _ => failP "expected integer after -"
 -- consume MINUS
 
@@ -1665,20 +1665,20 @@ intBound = do
   intBoundFor t
 
 intBoundFor : Token -> Parser Lit
-intBoundFor (TInt n)
+intBoundFor (TInt n _)
   | isIntMinLit n = fatalP intLitTooBigMsg
-intBoundFor (TInt n) = emit (LInt n)
+intBoundFor (TInt n _) = emit (LInt n)
 intBoundFor TMinus = do
   advance
   t <- peekP
   match t
-    TInt n => emit (LInt (negate n))
+    TInt n _ => emit (LInt (negate n))
     _ => failP "expected integer after - in range bound"
 intBoundFor TMinusTight = do
   advance
   t <- peekP
   match t
-    TInt n => emit (LInt (negate n))
+    TInt n _ => emit (LInt (negate n))
     _ => failP "expected integer after - in range bound"
 intBoundFor _ = failP "expected int range bound"
 

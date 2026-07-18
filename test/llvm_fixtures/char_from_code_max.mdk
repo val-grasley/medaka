@@ -1,0 +1,4 @@
+-- #476 domain cell: charFromCode at U+10FFFF (1114111), the MAX valid scalar -> Some (charCode = 1114111).
+main = match charFromCode 1114111
+  Some c => charCode c
+  None => 0 - 1

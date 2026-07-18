@@ -139,7 +139,6 @@ trap 'rm -rf "$WORK"' EXIT
 command -v git >/dev/null 2>&1 || { echo "FAIL: git not found"; exit 2; }
 command -v awk >/dev/null 2>&1 || { echo "FAIL: awk not found"; exit 2; }
 command -v grep >/dev/null 2>&1 || { echo "FAIL: grep not found"; exit 2; }
-command -v xargs >/dev/null 2>&1 || { echo "FAIL: xargs not found"; exit 2; }
 
 # ── 1. Enumerate the agent-facing doc corpus. ───────────────────────────────
 git ls-files 'AGENTS.md' '.claude/skills/*/SKILL.md' '.claude/workstreams/*.md' '.claude/ORCHESTRATING.md' \
@@ -261,15 +260,78 @@ if [ ! -s "$WORK/src_files.txt" ]; then
   echo "FAIL: found NO source files under compiler/*.mdk, stdlib/*.mdk, runtime/*.c (harness bug)"
   exit 1
 fi
-# NUL-separated for xargs -0: filenames-with-spaces safety (belt-and-braces —
-# this repo's compiler/stdlib/runtime source doesn't currently have any, but
-# the doc corpus taught us not to assume that tree-wide).
-tr '\n' '\0' < "$WORK/src_files.txt" > "$WORK/src_files.nul"
+
+# #620: a MENTION is not a DEFINITION — `grep -w` over the raw file matched a
+# symbol named only in a stale `--`/`{- -}`/`/* */` COMMENT just as happily as
+# a real definition, so a doc could cite a symbol deleted from code but still
+# named in a leftover comment and the gate would call it "resolved". Fix:
+# strip whole-line and whole-block comments out of the corpus BEFORE
+# resolving, so a comment-only mention no longer counts.
+#
+# Deliberately NARROW, not a full tokenizer — a `--`/`/*` that is itself part
+# of a string literal (`"--json"`, `hasFlag "--json"`, CLI flag help text —
+# both this repo's compiler and stdlib have plenty) must NOT be treated as a
+# comment opener, or a real definition sharing a line with such a string would
+# be silently dropped from the corpus and a LIVE symbol would false-positive
+# as dead. So this only ever drops a line whose comment SPANS THE WHOLE LINE:
+#   - a `.mdk` line is dropped if its trimmed text starts with `--`, or if it
+#     falls inside a `{- … -}` block that itself OPENED at the start of a
+#     trimmed line (this repo's own convention — every sampled docstring/
+#     header block opens and closes at line-start; verified against
+#     stdlib/core.mdk, compiler/frontend/lexer.mdk before relying on it)
+#   - a `runtime/*.c` line is dropped the same way for `//` and `/* … */`
+# A line with CODE before the comment marker (e.g. `foo x = bar x -- note`,
+# `cell[0] = -1; /* PAP sentinel header */`) is left completely untouched —
+# so a trailing same-line comment is not stripped. That is a real but narrow
+# gap (a symbol named ONLY in a trailing comment on an otherwise-live line
+# would still resolve) — accepted deliberately over risking a false-positive
+# on a live symbol; see #620 for the false-negative-vs-false-positive tradeoff.
+awk -v LISTFILE="$WORK/src_files.txt" '
+function ltrim(s) { sub(/^[ \t]+/, "", s); return s }
+
+BEGIN {
+  while ((getline fname < LISTFILE) > 0) {
+    isC = (fname ~ /\.c$/)
+    openTok  = isC ? "/*" : "{-"
+    closeTok = isC ? "*/" : "-}"
+    lineTok  = isC ? "//" : "--"
+    inBlock = 0
+    while ((getline line < fname) > 0) {
+      if (inBlock) {
+        idx = index(line, closeTok)
+        if (idx > 0) {
+          rest = substr(line, idx + length(closeTok))
+          rest = ltrim(rest)
+          if (rest != "") print rest
+          inBlock = 0
+        }
+        continue
+      }
+      trimmed = ltrim(line)
+      if (index(trimmed, lineTok) == 1) continue
+      if (index(trimmed, openTok) == 1) {
+        openIdx = index(line, openTok)
+        closeIdx = index(line, closeTok)
+        if (closeIdx > openIdx) {
+          rest = ltrim(substr(line, closeIdx + length(closeTok)))
+          if (rest != "") print rest
+        } else {
+          inBlock = 1
+        }
+        continue
+      }
+      print line
+    }
+    close(fname)
+  }
+}
+' > "$WORK/stripped_src.txt"
 
 is_resolved() {
-  # $1 = token. Word-matched, fixed-string, quiet: exits 0 iff some source
-  # file contains this exact identifier as a whole word.
-  xargs -0 grep -lqw -F -- "$1" < "$WORK/src_files.nul" 2>/dev/null
+  # $1 = token. Word-matched, fixed-string, quiet: exits 0 iff the
+  # COMMENT-STRIPPED source corpus contains this exact identifier as a whole
+  # word (see #620 header above the awk block for what "stripped" covers).
+  grep -qw -F -- "$1" "$WORK/stripped_src.txt" 2>/dev/null
 }
 
 # ── 4. Load the exceptions ledger. ──────────────────────────────────────────

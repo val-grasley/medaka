@@ -224,7 +224,8 @@ above Core IR; these laws are the wasm peers of EMITTER-SEMANTICS §2 (V1–V6).
   ✅ **GATED — `test/llvm_fixtures/eager_global_call_hidden.mdk`** (call-hidden) was
   ledgered `emitter:shared-eager-init` and **PROMOTED when #553 Stage B landed**: it now
   runs `eval==native==wasm` all `42`, its ledger row is deleted, and its
-  `.eval.golden` is re-blessed to `42`. The build-path lock is
+  `.native.golden` (named `.eval.golden` at the time, renamed by #559) is re-blessed
+  to `42`. The build-path lock is
   `test/build_diff_fixtures/eager_call_hidden.mdk` (golden `42`, prints `0` if Stage B is
   reverted). Its peer `eager_global_call_ordered.mdk` is the **control** — same program,
   `base` declared first, green on all three engines — which proves declaration order was

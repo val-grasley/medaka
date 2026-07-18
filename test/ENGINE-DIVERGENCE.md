@@ -31,9 +31,10 @@ the two backends were validated on essentially disjoint corpora:
 
 Worse, the one two-way check that existed was **not a live differential**.
 `test/diff_compiler_llvm.sh` diffs the native binary's stdout against
-`<fixture>.eval.golden` — a *frozen capture of the interpreter*, taken from the OCaml
-interpreter that was deleted on 2026-06-26. A bug that got captured became the
-**expected answer** for the backend too.
+`<fixture>.native.golden` (renamed from `.eval.golden` by #559) — every regenerator
+since the OCaml interpreter was deleted on 2026-06-26 replays emit→clang→run, so the
+golden **is** a frozen capture of native, comparing native against itself. A bug that
+got captured became the **expected answer** for the backend too.
 
 That circularity was not hypothetical. §3.1 below is a divergence that the frozen
 goldens actively concealed for months.
@@ -123,12 +124,13 @@ reference." That reasoning is sound **for prop generation**. But `setSeed`,
 **byte-identical across engines**. The shortcut leaked out of the scope it was
 justified in. It is not "unimplemented" — it is a local decision applied globally.
 
-**Why nothing caught it:** `test/llvm_fixtures/hash_int.eval.golden` contains
-`803958421` — the value **native** produces. The goldens were captured from the OCaml
-interpreter, which *did* honour the spec. So the LLVM gate compares native against a
-golden native agrees with, and no gate ever ran eval on these fixtures. The frozen
-golden was laundering the bug. This is the circularity of §1, caught on the first run
-of the new gate.
+**Why nothing caught it:** `test/llvm_fixtures/hash_int.native.golden` (then named
+`.eval.golden` — renamed by #559) contains `803958421` — the value **native** produces.
+The golden had been re-captured from native since the OCaml interpreter was removed,
+though the OCaml interpreter (which *did* honour the spec) was its original source.
+So the LLVM gate compares native against a golden native agrees with, and no gate ever
+ran eval on these fixtures. The frozen golden was laundering the bug. This is the
+circularity of §1, caught on the first run of the new gate.
 
 ### 3.2 `wasm:codegen-bug` — DISSOLVED (#383). Was 5 fixtures below; now 0 active rows.
 

@@ -121,7 +121,7 @@ exprSexp (ELit l) = node "ELit" [litSexp l]
 -- PLAN.md #11: render an `ENumLit` exactly as `(ELit (LInt n))` so the compiler
 -- sexp/astdump stays byte-identical to the OCaml side (whose astdump does the
 -- same) and the parse-fixture / OCaml↔compiler sexp diff gates keep passing.
-exprSexp (ENumLit n _ _) = node "ELit" [node "LInt" [intToString n]]
+exprSexp (ENumLit n _ _ _) = node "ELit" [node "LInt" [intToString n]]
 exprSexp (EVar x) = node "EVar" [escStr x]
 -- EVarAt/EMethodAt are elaborated nodes introduced by annotate/typecheck
 -- (post-resolve); programToSexp only ever serializes pre-annotate (desugared)

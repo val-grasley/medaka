@@ -42,7 +42,11 @@ import support.char.{
 import support.util.{joinWith, compareDecMag, listLen, anyList}
 
 public export data Token =
-  | TInt Int
+  -- TInt carries the parsed value AND the original source lexeme (#458): the raw
+  -- span text ("0xD800", "1_000", "0b1010") so the parser can hand the printer a
+  -- radix-faithful `ENumLit`.  `tokenToString`/token-dump goldens render only the
+  -- value, so the lexer diff goldens are unaffected.
+  | TInt Int String
   | TFloat Float
   | TString String
   | TChar String
@@ -141,7 +145,7 @@ deriving (Eq)
 -- Mirrors `lib/lexer.mll` `token_to_string`.  String-bearing tokens use
 -- `debugStringLit` (the `%S`-style quoted/escaped form); ints use `intToString`.
 export tokenToString : Token -> String
-tokenToString (TInt n) = "INT " ++ intToString n
+tokenToString (TInt n _) = "INT " ++ intToString n
 tokenToString (TFloat f) = "FLOAT " ++ floatToString f
 tokenToString (TString s) = "STRING " ++ debugStringLit s
 tokenToString (TChar s) = "CHAR " ++ debugStringLit s
@@ -244,7 +248,7 @@ tokenToString (TLexError s) = "LEX_ERROR " ++ debugStringLit s
 -- layout/synthetic tokens render as a plain phrase (`end of input`) since
 -- they have no surface spelling a user typed.
 export describeToken : Token -> String
-describeToken (TInt _) = "a number"
+describeToken (TInt _ _) = "a number"
 describeToken (TFloat _) = "a number"
 describeToken (TString _) = "a string"
 describeToken (TChar _) = "a character literal"
@@ -663,7 +667,7 @@ radixTok : Array Char -> Int -> Int -> Int -> Char -> Int -> Int -> List RawTok
 radixTok src len pos e k depth id
   | radixLitOverflows src (pos + 2) e k =
     lexErrorTok pos "integer literal too large for Int (max magnitude 2^62)"
-  | otherwise = RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0)) pos e :: scan src len e depth id
+  | otherwise = RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0) (substr src pos e)) pos e :: scan src len e depth id
 
 scanNumber : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanNumber src len pos depth id
@@ -701,8 +705,7 @@ numFinish src len pos e1 depth id
     floatTokEnd src len pos (expEnd src len e1) depth id
   | intLitOverflows src pos e1 =
     lexErrorTok pos "integer literal too large for Int (max magnitude 2^62)"
-  | otherwise =
-    RTok (TInt (parseIntFrom src pos e1 0)) pos e1 :: scan src len e1 depth id
+  | otherwise = RTok (TInt (parseIntFrom src pos e1 0) (substr src pos e1)) pos e1 :: scan src len e1 depth id
 
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTok src len pos e1 depth id =
@@ -1411,7 +1414,7 @@ isOpener _ = False
 canEndExpr : Token -> Bool
 canEndExpr (TIdent _) = True
 canEndExpr (TUpper _) = True
-canEndExpr (TInt _) = True
+canEndExpr (TInt _ _) = True
 canEndExpr (TFloat _) = True
 canEndExpr (TString _) = True
 canEndExpr (TChar _) = True
@@ -1473,7 +1476,7 @@ armsHerald opener _ = opener
 
 -- a token that can START an application-argument atom
 canStartAtom : Token -> Bool
-canStartAtom (TInt _) = True
+canStartAtom (TInt _ _) = True
 canStartAtom (TFloat _) = True
 canStartAtom (TString _) = True
 canStartAtom (TChar _) = True

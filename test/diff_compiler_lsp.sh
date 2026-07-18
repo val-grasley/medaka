@@ -32,7 +32,16 @@
 # through the lexer's layout pass (a cross-cutting lexer change deferred here);
 # the start — the position editors anchor a squiggle at — is exact.
 #
+# The three committed goldens this gate reads (check_clean/check_err/
+# check_project.json) are NOT raw LSP protocol dumps — they are `medaka check
+# --json` output on the SAME fixture, i.e. a cross-check against a DIFFERENT
+# native code path, not a self-referential capture. Despite predating OCaml
+# removal, they need no "live" session to re-mint: CAPTURE=1 sh
+# test/diff_compiler_lsp.sh regenerates all three from the current native
+# `./medaka check --json` (#621).
+#
 # Usage: sh test/diff_compiler_lsp.sh
+#   CAPTURE=1 sh test/diff_compiler_lsp.sh   — re-mint check_{clean,err,project}.json
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # OCaml-free: drive the CANONICAL native LSP (the shipped binary, same one Cursor
@@ -45,6 +54,24 @@ GOLD="$ROOT/test/lsp_goldens"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 pass=0; fail=0
+CAPTURE="${CAPTURE:-0}"
+
+# capture_or_load <golden-path> <fixture.mdk> : in CAPTURE mode, overwrite the
+# golden with `medaka check --json <fixture>` (cross-checks the check --json
+# code path, NOT a self-referential capture off the LSP server this gate
+# tests); either way, print the (possibly just-refreshed) golden's contents.
+# The fixture's absolute $TMP path is replaced by its bare basename (matching
+# the pre-existing goldens' convention) so a re-capture is byte-stable across
+# runs/machines instead of baking in a fresh mktemp path every time.
+capture_or_load() {
+  golden="$1"; fixture="$2"
+  if [ "$CAPTURE" = 1 ]; then
+    MEDAKA_ROOT="$ROOT" perl -e 'alarm 60; exec @ARGV' -- "$MEDAKA" check --json "$fixture" 2>/dev/null \
+      | sed "s|$fixture|$(basename "$fixture")|g" > "$golden"
+    printf 'CAPTURE %s\n' "$golden" >&2
+  fi
+  cat "$golden"
+}
 
 # Frame a JSON string as a Content-Length JSON-RPC packet (byte-accurate length).
 frame() {
@@ -119,7 +146,7 @@ check "initialize → jsonrpc result with textDocumentSync capability" "$?"
 # ── 2. didOpen a CLEAN file → empty diagnostics (matches check --json) ───────
 CLEAN='main = println "hi"\n'
 printf 'main = println "hi"\n' > "$TMP/clean.mdk"
-ORACLE_CLEAN="$(cat "$GOLD/check_clean.json")"
+ORACLE_CLEAN="$(capture_or_load "$GOLD/check_clean.json" "$TMP/clean.mdk")"
 drive_lsp \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///clean.mdk","text":"main = println \"hi\"\n"}}}' \
@@ -139,7 +166,7 @@ check "didOpen clean → publishDiagnostics [] (== check --json)" "$?"
 
 # ── 3. didOpen a TYPE-ERROR file → one Error diagnostic ─────────────────────
 printf 'main = 1 + "x"\n' > "$TMP/err.mdk"
-ORACLE_ERR="$(cat "$GOLD/check_err.json")"
+ORACLE_ERR="$(capture_or_load "$GOLD/check_err.json" "$TMP/err.mdk")"
 drive_lsp \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///err.mdk","text":"main = 1 + \"x\"\n"}}}' \
@@ -209,6 +236,14 @@ printf 'import lib_clean.{double}\n\nexport oops : Int\noops = double "no"\n' > 
 printf 'import lib_clean.{double}\nimport lib_bad.{oops}\n\nmain = println (double 21)\n' > "$PROJ/main_app.mdk"
 ENTRY_TXT="$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1]).read()))' "$PROJ/main_app.mdk")"
 # Oracle: medaka check --json over the same entry (the real analyze_project).
+# (Not routed through capture_or_load: a project has multiple files under
+# $PROJ, so ALL of them — not just the entry — need their absolute dir
+# stripped for a byte-stable golden.)
+if [ "$CAPTURE" = 1 ]; then
+  MEDAKA_ROOT="$ROOT" perl -e 'alarm 60; exec @ARGV' -- "$MEDAKA" check --json "$PROJ/main_app.mdk" 2>/dev/null \
+    | sed "s|$PROJ/||g" > "$GOLD/check_project.json"
+  printf 'CAPTURE %s\n' "$GOLD/check_project.json" >&2
+fi
 ORACLE_PROJ="$(cat "$GOLD/check_project.json")"
 drive_lsp \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \

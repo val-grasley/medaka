@@ -25,4 +25,3 @@ tup = (
 )
 
 main = println narrow
-

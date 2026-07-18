@@ -122,3 +122,17 @@ SYM	registerImpl	quoted as a symbol the Opus auditor INVENTED (0 hits) in ORCHES
 SYM	ppMonos	quoted as a symbol the Opus auditor INVENTED (0 hits; real: ppMonosShared) — must NOT resolve
 SYM	implEntry	quoted as a symbol the Opus auditor INVENTED (0 hits; real: the ImplEntry type / findImplEntry) — must NOT resolve
 SYM	registerRecord	quoted as a symbol the Opus auditor INVENTED (0 hits; real: registerRecordInfoKeyed) — must NOT resolve
+
+# ── #620 findings: mention-vs-definition tightening (2026-07-18) ────────────────────
+# check_agent_doc_symbols.sh used to resolve a token by MENTION (any occurrence,
+# including inside a `--`/`{- -}`/`/* */` comment). #620 made it require a definition —
+# the corpus is now comment-stripped before matching. That correctly surfaced these
+# names, which resolve ONLY inside stale source comments narrating a rename/removal —
+# same shape as the `checkGuardExhaust`/`TypeError`/`runST` entries above, not new
+# fabrications. (Every OTHER token the stricter check flagged was a genuine stale doc
+# citation and was FIXED to name the current real symbol, not excused here — see the
+# #620 PR.)
+SYM	singleParamIfaceMethod	COMPILER-SOUNDNESS.md deliberately quotes this WRONG, misnamed predicate as a cautionary tale about a name stating the opposite of what it did — #54 (2026-07-17) renamed it to singleTyparamIfaceMethod (which does resolve); the old name is narrated, not cited as live — must NOT resolve
+SYM	fallthroughLabelRef	WASM.md's "No `fallthroughLabelRef` sibling exists" is a deliberate NEGATIVE claim (wasm never had this Ref, which is why wasm never had the refutable-guard miscompile) — the token names a real LLVM-emit-only Ref that has SINCE been fully retired there too (replaced by the `ftL` plain parameter, #354), so it no longer resolves anywhere and never will unless the Ref pattern is reintroduced — must NOT resolve
+SYM	TTuple	AGENTS.md's "not a `TTuple` node" is a deliberate NEGATIVE claim mirroring the `TypeError` entry above — `Mono.TTuple` was an actual constructor, DELETED per compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md's own recommendation ("DELETE `Mono.TTuple`; pure `TApp` spine") — must NOT resolve
+SYM	__tupleN__	AGENTS.md's "`__tupleN__`-headed `TApp` spines" is a meta-syntactic placeholder for the family of tags the parser/typechecker actually construct dynamically as `"__tuple" ++ intToString n ++ "__"` (see `tupleHeadTag`/`tupleHeadTagTc`, both of which DO resolve as real functions) — `__tupleN__` with a literal `N` is never itself a source token, same shape as the already-excused `isXxxExtern` placeholder

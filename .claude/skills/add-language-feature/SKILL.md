@@ -72,7 +72,7 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
      downstream `typecheck`/`eval` arms** — leave a loud guard so a
      pipeline-ordering regression is caught instead of silently mis-evaluated.
    - **Errors from desugar.** Desugar is upstream of typecheck and cannot depend
-     on `Typecheck`. To report a user-facing error from a lowering, use the
+     on typecheck. To report a user-facing error from a lowering, use the
      diagnostics accumulator directly (see `compiler/driver/diagnostics.mdk`).
 7. **Eval** — `compiler/eval/eval.mdk`. Add evaluation for any node that
    survives desugaring. ⚠️ **This is where a construct ships half-done.** After
