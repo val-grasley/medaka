@@ -1,5 +1,5 @@
 # META
-source_lines=1589
+source_lines=1630
 stages=TYPES
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -1097,6 +1097,47 @@ export impl Index String Int Char where
     else
       arrayGetUnsafe i cs
 
+{- | Read-only slicing of a container `c` by an index range.  `sliceRange c lo hi
+   incl` yields the sub-container over indices `[lo, hi)` (exclusive, when `incl`
+   is `False`) or `[lo, hi]` (inclusive, when `incl` is `True`).  The surface sugar
+   `c.[lo..hi]` / `c.[lo..=hi]` desugars to a call here (#670), so the receiver is
+   constrained to a real container: `42.[0..1]` is a "no impl of Sliceable for Int"
+   type error rather than a wrong-container heap read. -}
+export interface Sliceable c where
+  sliceRange : c -> Int -> Int -> Bool -> c
+
+{- | `sliceRange arr lo hi incl` copies `arr`'s elements over the index range into
+   a fresh `Array`.  O(hi - lo).  Raises the coded `sliceError` (E-SLICE-OOB) when
+   the range runs outside `arr` -- unlike stdlib `Array.slice`, which clamps. -}
+export impl Sliceable (Array a) where
+  sliceRange arr lo hi incl =
+    let hiX = if incl then hi + 1 else hi
+    if lo < 0 || hiX > arrayLength arr || hiX - lo < 0 then
+      sliceError lo (hiX - 1)
+    else
+      arrayMakeWith (hiX - lo) (i => arrayGetUnsafe (lo + i) arr)
+
+{- | `sliceRange s lo hi incl` is the substring of `s` over the index range
+   (codepoints).  Out-of-range bounds are clamped by the underlying
+   `stringSlice`, matching stdlib `String.slice`. -}
+export impl Sliceable String where
+  sliceRange s lo hi incl = stringSlice lo (if incl then hi + 1 else hi) s
+
+{- | `sliceRange xs lo hi incl` is the sublist of `xs` over the index range.
+   O(hi) -- walks the cons chain.  Out-of-range bounds are CLAMPED (never panics),
+   matching the interpreter's list-slice contract. -}
+export impl Sliceable (List a) where
+  sliceRange xs lo hi incl = sliceListGo xs 0 lo (if incl then hi + 1 else hi)
+
+-- Cons-chain walk for `Sliceable (List a)`: keep heads whose running index is in
+-- `[lo, hi)`, stop at `hi` or end-of-list (clamps, mirror of eval's listSliceGo).
+sliceListGo : List a -> Int -> Int -> Int -> List a
+sliceListGo [] _ _ _ = []
+sliceListGo (x::xs) i lo hi
+  | i >= hi = []
+  | i >= lo = x :: sliceListGo xs (i + 1) lo hi
+  | otherwise = sliceListGo xs (i + 1) lo hi
+
 export impl Foldable List where
   fold _ acc [] = acc
   fold f acc (x::xs) = fold f (f acc x) xs
@@ -1635,6 +1676,7 @@ filter : (a -> Bool) -> b a -> b a
 fromEntries : List a -> b
 index : a -> b -> c
 setIndex : a -> b -> c -> a
+sliceRange : a -> Int -> Int -> Bool -> a
 traverse : (a -> b c) -> d a -> b (d c)
 sequence : a (b c) -> b (a c)
 arbitrary : Unit -> <Rand> a
@@ -1678,6 +1720,7 @@ filterThen : (Applicative b, Thenable b) => (a -> b Bool) -> List a -> b (List a
 forEach : (Applicative b, Thenable b) => List a -> (a -> b Unit) -> b Unit
 runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
 guard : (Alternative a, Applicative a) => Bool -> a Unit
+sliceListGo : List a -> Int -> Int -> Int -> List a
 any : Foldable b => (a -> Bool) -> b a -> Bool
 all : Foldable b => (a -> Bool) -> b a -> Bool
 find : Foldable b => (a -> Bool) -> b a -> Option a

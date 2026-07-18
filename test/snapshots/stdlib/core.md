@@ -1,5 +1,5 @@
 # META
-source_lines=1589
+source_lines=1630
 stages=DESUGAR,MARK
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -1097,6 +1097,47 @@ export impl Index String Int Char where
     else
       arrayGetUnsafe i cs
 
+{- | Read-only slicing of a container `c` by an index range.  `sliceRange c lo hi
+   incl` yields the sub-container over indices `[lo, hi)` (exclusive, when `incl`
+   is `False`) or `[lo, hi]` (inclusive, when `incl` is `True`).  The surface sugar
+   `c.[lo..hi]` / `c.[lo..=hi]` desugars to a call here (#670), so the receiver is
+   constrained to a real container: `42.[0..1]` is a "no impl of Sliceable for Int"
+   type error rather than a wrong-container heap read. -}
+export interface Sliceable c where
+  sliceRange : c -> Int -> Int -> Bool -> c
+
+{- | `sliceRange arr lo hi incl` copies `arr`'s elements over the index range into
+   a fresh `Array`.  O(hi - lo).  Raises the coded `sliceError` (E-SLICE-OOB) when
+   the range runs outside `arr` -- unlike stdlib `Array.slice`, which clamps. -}
+export impl Sliceable (Array a) where
+  sliceRange arr lo hi incl =
+    let hiX = if incl then hi + 1 else hi
+    if lo < 0 || hiX > arrayLength arr || hiX - lo < 0 then
+      sliceError lo (hiX - 1)
+    else
+      arrayMakeWith (hiX - lo) (i => arrayGetUnsafe (lo + i) arr)
+
+{- | `sliceRange s lo hi incl` is the substring of `s` over the index range
+   (codepoints).  Out-of-range bounds are clamped by the underlying
+   `stringSlice`, matching stdlib `String.slice`. -}
+export impl Sliceable String where
+  sliceRange s lo hi incl = stringSlice lo (if incl then hi + 1 else hi) s
+
+{- | `sliceRange xs lo hi incl` is the sublist of `xs` over the index range.
+   O(hi) -- walks the cons chain.  Out-of-range bounds are CLAMPED (never panics),
+   matching the interpreter's list-slice contract. -}
+export impl Sliceable (List a) where
+  sliceRange xs lo hi incl = sliceListGo xs 0 lo (if incl then hi + 1 else hi)
+
+-- Cons-chain walk for `Sliceable (List a)`: keep heads whose running index is in
+-- `[lo, hi)`, stop at `hi` or end-of-list (clamps, mirror of eval's listSliceGo).
+sliceListGo : List a -> Int -> Int -> Int -> List a
+sliceListGo [] _ _ _ = []
+sliceListGo (x::xs) i lo hi
+  | i >= hi = []
+  | i >= lo = x :: sliceListGo xs (i + 1) lo hi
+  | otherwise = sliceListGo xs (i + 1) lo hi
+
 export impl Foldable List where
   fold _ acc [] = acc
   fold f acc (x::xs) = fold f (f acc x) xs
@@ -1789,6 +1830,13 @@ prop "foldThen with Some agrees with a pure fold" (xs : List Int) = eq
 (DImpl true "IndexMut" ((TyApp (TyCon "Array") (TyVar "a")) (TyCon "Int") (TyVar "a")) () ((im "setIndex" ((PVar "arr") (PVar "i") (PVar "v")) (EIf (EBinOp "||" (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "arr")))) (EApp (EVar "indexError") (EBinOp "++" (EBinOp "++" (ELit (LString "index ")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString " out of bounds")))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "v")) (EVar "arr"))) (DoExpr (EVar "arr")))))))
 (DImpl true "Index" ((TyApp (TyCon "List") (TyVar "a")) (TyCon "Int") (TyVar "a")) () ((im "index" ((PList) PWild) (EApp (EVar "indexError") (ELit (LString "index out of bounds")))) (im "index" ((PCons (PVar "h") (PVar "t")) (PVar "i")) (EIf (EBinOp "<=" (EVar "i") (ELit (LInt 0))) (EVar "h") (EApp (EApp (EVar "index") (EVar "t")) (EBinOp "-" (EVar "i") (ELit (LInt 1))))))))
 (DImpl true "Index" ((TyCon "String") (TyCon "Int") (TyCon "Char")) () ((im "index" ((PVar "s") (PVar "i")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EIf (EBinOp "||" (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "cs")))) (EApp (EVar "indexError") (EBinOp "++" (EBinOp "++" (ELit (LString "index ")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString " out of bounds")))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs"))))))))
+(DInterface true false "Sliceable" ("c") () ((imethod "sliceRange" (TyFun (TyVar "c") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyVar "c"))))) None)))
+(DImpl true "Sliceable" ((TyApp (TyCon "Array") (TyVar "a"))) () ((im "sliceRange" ((PVar "arr") (PVar "lo") (PVar "hi") (PVar "incl")) (EBlock (DoLet false false (PVar "hiX") (EIf (EVar "incl") (EBinOp "+" (EVar "hi") (ELit (LInt 1))) (EVar "hi"))) (DoExpr (EIf (EBinOp "||" (EBinOp "||" (EBinOp "<" (EVar "lo") (ELit (LInt 0))) (EBinOp ">" (EVar "hiX") (EApp (EVar "arrayLength") (EVar "arr")))) (EBinOp "<" (EBinOp "-" (EVar "hiX") (EVar "lo")) (ELit (LInt 0)))) (EApp (EApp (EVar "sliceError") (EVar "lo")) (EBinOp "-" (EVar "hiX") (ELit (LInt 1)))) (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "hiX") (EVar "lo"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "lo") (EVar "i"))) (EVar "arr"))))))))))
+(DImpl true "Sliceable" ((TyCon "String")) () ((im "sliceRange" ((PVar "s") (PVar "lo") (PVar "hi") (PVar "incl")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "lo")) (EIf (EVar "incl") (EBinOp "+" (EVar "hi") (ELit (LInt 1))) (EVar "hi"))) (EVar "s")))))
+(DImpl true "Sliceable" ((TyApp (TyCon "List") (TyVar "a"))) () ((im "sliceRange" ((PVar "xs") (PVar "lo") (PVar "hi") (PVar "incl")) (EApp (EApp (EApp (EApp (EVar "sliceListGo") (EVar "xs")) (ELit (LInt 0))) (EVar "lo")) (EIf (EVar "incl") (EBinOp "+" (EVar "hi") (ELit (LInt 1))) (EVar "hi"))))))
+(DTypeSig false "sliceListGo" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "sliceListGo" ((PList) PWild PWild PWild) (EListLit))
+(DFunDef false "sliceListGo" ((PCons (PVar "x") (PVar "xs")) (PVar "i") (PVar "lo") (PVar "hi")) (EIf (EBinOp ">=" (EVar "i") (EVar "hi")) (EListLit) (EIf (EBinOp ">=" (EVar "i") (EVar "lo")) (EBinOp "::" (EVar "x") (EApp (EApp (EApp (EApp (EVar "sliceListGo") (EVar "xs")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "lo")) (EVar "hi"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "sliceListGo") (EVar "xs")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "lo")) (EVar "hi")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DImpl true "Foldable" ((TyCon "List")) () ((im "fold" (PWild (PVar "acc") (PList)) (EVar "acc")) (im "fold" ((PVar "f") (PVar "acc") (PCons (PVar "x") (PVar "xs"))) (EApp (EApp (EApp (EVar "fold") (EVar "f")) (EApp (EApp (EVar "f") (EVar "acc")) (EVar "x"))) (EVar "xs"))) (im "foldRight" (PWild (PVar "acc") (PList)) (EVar "acc")) (im "foldRight" ((PVar "f") (PVar "acc") (PCons (PVar "x") (PVar "xs"))) (EApp (EApp (EVar "f") (EVar "x")) (EApp (EApp (EApp (EVar "foldRight") (EVar "f")) (EVar "acc")) (EVar "xs")))) (im "toList" () (EVar "identity")) (im "isEmpty" ((PList)) (EVar "True")) (im "isEmpty" (PWild) (EVar "False")) (im "length" () (EApp (EApp (EVar "fold") (ELam ((PVar "acc") PWild) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))) (ELit (LInt 0)))) (im "foldMap" ((PVar "f")) (EApp (EApp (EVar "fold") (ELam ((PVar "acc") (PVar "x")) (EBinOp "++" (EVar "acc") (EApp (EVar "f") (EVar "x"))))) (EVar "empty")))))
 (DImpl true "Foldable" ((TyCon "Option")) () ((im "fold" (PWild (PVar "acc") (PCon "None")) (EVar "acc")) (im "fold" ((PVar "f") (PVar "acc") (PCon "Some" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "acc")) (EVar "x"))) (im "foldRight" (PWild (PVar "acc") (PCon "None")) (EVar "acc")) (im "foldRight" ((PVar "f") (PVar "acc") (PCon "Some" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "x")) (EVar "acc"))) (im "toList" ((PCon "None")) (EListLit)) (im "toList" ((PCon "Some" (PVar "x"))) (EListLit (EVar "x"))) (im "foldMap" ((PVar "f")) (EApp (EApp (EVar "fold") (ELam ((PVar "acc") (PVar "x")) (EBinOp "++" (EVar "acc") (EApp (EVar "f") (EVar "x"))))) (EVar "empty"))) (im "isEmpty" ((PVar "t")) (EMatch (EApp (EVar "toList") (EVar "t")) (arm (PList) () (EVar "True")) (arm PWild () (EVar "False")))) (im "length" ((PVar "t")) (EApp (EApp (EApp (EVar "fold") (ELam ((PVar "acc") PWild) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))) (ELit (LInt 0))) (EVar "t")))))
 (DImpl true "Foldable" ((TyApp (TyCon "Result") (TyVar "e"))) () ((im "fold" (PWild (PVar "acc") (PCon "Err" PWild)) (EVar "acc")) (im "fold" ((PVar "f") (PVar "acc") (PCon "Ok" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "acc")) (EVar "x"))) (im "foldRight" (PWild (PVar "acc") (PCon "Err" PWild)) (EVar "acc")) (im "foldRight" ((PVar "f") (PVar "acc") (PCon "Ok" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "x")) (EVar "acc"))) (im "toList" ((PCon "Err" PWild)) (EListLit)) (im "toList" ((PCon "Ok" (PVar "x"))) (EListLit (EVar "x"))) (im "foldMap" ((PVar "f")) (EApp (EApp (EVar "fold") (ELam ((PVar "acc") (PVar "x")) (EBinOp "++" (EVar "acc") (EApp (EVar "f") (EVar "x"))))) (EVar "empty"))) (im "isEmpty" ((PVar "t")) (EMatch (EApp (EVar "toList") (EVar "t")) (arm (PList) () (EVar "True")) (arm PWild () (EVar "False")))) (im "length" ((PVar "t")) (EApp (EApp (EApp (EVar "fold") (ELam ((PVar "acc") PWild) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))) (ELit (LInt 0))) (EVar "t")))))
@@ -2113,6 +2161,13 @@ prop "foldThen with Some agrees with a pure fold" (xs : List Int) = eq
 (DImpl true "IndexMut" ((TyApp (TyCon "Array") (TyVar "a")) (TyCon "Int") (TyVar "a")) () ((im "setIndex" ((PVar "arr") (PVar "i") (PVar "v")) (EIf (EBinOp "||" (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "arr")))) (EApp (EVar "indexError") (EBinOp "++" (EBinOp "++" (ELit (LString "index ")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString " out of bounds")))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "arraySetUnsafe") (EVar "i")) (EVar "v")) (EVar "arr"))) (DoExpr (EVar "arr")))))))
 (DImpl true "Index" ((TyApp (TyCon "List") (TyVar "a")) (TyCon "Int") (TyVar "a")) () ((im "index" ((PList) PWild) (EApp (EVar "indexError") (ELit (LString "index out of bounds")))) (im "index" ((PCons (PVar "h") (PVar "t")) (PVar "i")) (EIf (EBinOp "<=" (EVar "i") (ELit (LInt 0))) (EVar "h") (EApp (EApp (EMethodRef "index") (EVar "t")) (EBinOp "-" (EVar "i") (ELit (LInt 1))))))))
 (DImpl true "Index" ((TyCon "String") (TyCon "Int") (TyCon "Char")) () ((im "index" ((PVar "s") (PVar "i")) (EBlock (DoLet false false (PVar "cs") (EApp (EVar "stringToChars") (EVar "s"))) (DoExpr (EIf (EBinOp "||" (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "cs")))) (EApp (EVar "indexError") (EBinOp "++" (EBinOp "++" (ELit (LString "index ")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString " out of bounds")))) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "cs"))))))))
+(DInterface true false "Sliceable" ("c") () ((imethod "sliceRange" (TyFun (TyVar "c") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyVar "c"))))) None)))
+(DImpl true "Sliceable" ((TyApp (TyCon "Array") (TyVar "a"))) () ((im "sliceRange" ((PVar "arr") (PVar "lo") (PVar "hi") (PVar "incl")) (EBlock (DoLet false false (PVar "hiX") (EIf (EVar "incl") (EBinOp "+" (EVar "hi") (ELit (LInt 1))) (EVar "hi"))) (DoExpr (EIf (EBinOp "||" (EBinOp "||" (EBinOp "<" (EVar "lo") (ELit (LInt 0))) (EBinOp ">" (EVar "hiX") (EApp (EVar "arrayLength") (EVar "arr")))) (EBinOp "<" (EBinOp "-" (EVar "hiX") (EVar "lo")) (ELit (LInt 0)))) (EApp (EApp (EVar "sliceError") (EVar "lo")) (EBinOp "-" (EVar "hiX") (ELit (LInt 1)))) (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "hiX") (EVar "lo"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "lo") (EVar "i"))) (EVar "arr"))))))))))
+(DImpl true "Sliceable" ((TyCon "String")) () ((im "sliceRange" ((PVar "s") (PVar "lo") (PVar "hi") (PVar "incl")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "lo")) (EIf (EVar "incl") (EBinOp "+" (EVar "hi") (ELit (LInt 1))) (EVar "hi"))) (EVar "s")))))
+(DImpl true "Sliceable" ((TyApp (TyCon "List") (TyVar "a"))) () ((im "sliceRange" ((PVar "xs") (PVar "lo") (PVar "hi") (PVar "incl")) (EApp (EApp (EApp (EApp (EVar "sliceListGo") (EVar "xs")) (ELit (LInt 0))) (EVar "lo")) (EIf (EVar "incl") (EBinOp "+" (EVar "hi") (ELit (LInt 1))) (EVar "hi"))))))
+(DTypeSig false "sliceListGo" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyVar "a")))))))
+(DFunDef false "sliceListGo" ((PList) PWild PWild PWild) (EListLit))
+(DFunDef false "sliceListGo" ((PCons (PVar "x") (PVar "xs")) (PVar "i") (PVar "lo") (PVar "hi")) (EIf (EBinOp ">=" (EVar "i") (EVar "hi")) (EListLit) (EIf (EBinOp ">=" (EVar "i") (EVar "lo")) (EBinOp "::" (EVar "x") (EApp (EApp (EApp (EApp (EVar "sliceListGo") (EVar "xs")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "lo")) (EVar "hi"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "sliceListGo") (EVar "xs")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "lo")) (EVar "hi")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
 (DImpl true "Foldable" ((TyCon "List")) () ((im "fold" (PWild (PVar "acc") (PList)) (EVar "acc")) (im "fold" ((PVar "f") (PVar "acc") (PCons (PVar "x") (PVar "xs"))) (EApp (EApp (EApp (EMethodRef "fold") (EVar "f")) (EApp (EApp (EVar "f") (EVar "acc")) (EVar "x"))) (EVar "xs"))) (im "foldRight" (PWild (PVar "acc") (PList)) (EVar "acc")) (im "foldRight" ((PVar "f") (PVar "acc") (PCons (PVar "x") (PVar "xs"))) (EApp (EApp (EVar "f") (EVar "x")) (EApp (EApp (EApp (EMethodRef "foldRight") (EVar "f")) (EVar "acc")) (EVar "xs")))) (im "toList" () (EVar "identity")) (im "isEmpty" ((PList)) (EVar "True")) (im "isEmpty" (PWild) (EVar "False")) (im "length" () (EApp (EApp (EMethodRef "fold") (ELam ((PVar "acc") PWild) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))) (ELit (LInt 0)))) (im "foldMap" ((PVar "f")) (EApp (EApp (EMethodRef "fold") (ELam ((PVar "acc") (PVar "x")) (EBinOp "++" (EVar "acc") (EApp (EVar "f") (EVar "x"))))) (EMethodRef "empty")))))
 (DImpl true "Foldable" ((TyCon "Option")) () ((im "fold" (PWild (PVar "acc") (PCon "None")) (EVar "acc")) (im "fold" ((PVar "f") (PVar "acc") (PCon "Some" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "acc")) (EVar "x"))) (im "foldRight" (PWild (PVar "acc") (PCon "None")) (EVar "acc")) (im "foldRight" ((PVar "f") (PVar "acc") (PCon "Some" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "x")) (EVar "acc"))) (im "toList" ((PCon "None")) (EListLit)) (im "toList" ((PCon "Some" (PVar "x"))) (EListLit (EVar "x"))) (im "foldMap" ((PVar "f")) (EApp (EApp (EMethodRef "fold") (ELam ((PVar "acc") (PVar "x")) (EBinOp "++" (EVar "acc") (EApp (EVar "f") (EVar "x"))))) (EMethodRef "empty"))) (im "isEmpty" ((PVar "t")) (EMatch (EApp (EMethodRef "toList") (EVar "t")) (arm (PList) () (EVar "True")) (arm PWild () (EVar "False")))) (im "length" ((PVar "t")) (EApp (EApp (EApp (EMethodRef "fold") (ELam ((PVar "acc") PWild) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))) (ELit (LInt 0))) (EVar "t")))))
 (DImpl true "Foldable" ((TyApp (TyCon "Result") (TyVar "e"))) () ((im "fold" (PWild (PVar "acc") (PCon "Err" PWild)) (EVar "acc")) (im "fold" ((PVar "f") (PVar "acc") (PCon "Ok" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "acc")) (EVar "x"))) (im "foldRight" (PWild (PVar "acc") (PCon "Err" PWild)) (EVar "acc")) (im "foldRight" ((PVar "f") (PVar "acc") (PCon "Ok" (PVar "x"))) (EApp (EApp (EVar "f") (EVar "x")) (EVar "acc"))) (im "toList" ((PCon "Err" PWild)) (EListLit)) (im "toList" ((PCon "Ok" (PVar "x"))) (EListLit (EVar "x"))) (im "foldMap" ((PVar "f")) (EApp (EApp (EMethodRef "fold") (ELam ((PVar "acc") (PVar "x")) (EBinOp "++" (EVar "acc") (EApp (EVar "f") (EVar "x"))))) (EMethodRef "empty"))) (im "isEmpty" ((PVar "t")) (EMatch (EApp (EMethodRef "toList") (EVar "t")) (arm (PList) () (EVar "True")) (arm PWild () (EVar "False")))) (im "length" ((PVar "t")) (EApp (EApp (EApp (EMethodRef "fold") (ELam ((PVar "acc") PWild) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))) (ELit (LInt 0))) (EVar "t")))))

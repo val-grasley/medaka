@@ -1,5 +1,5 @@
 # META
-source_lines=258
+source_lines=267
 stages=DESUGAR,MARK
 # SOURCE
 -- Built-in extern declarations.
@@ -64,6 +64,15 @@ extern panic : String -> a
 -- backend already has for the built-in index paths (native @mdk_oob, wasm's
 -- E-INDEX-OOB trap) -- unlike `panic`, which is always coded E-PANIC.
 extern indexError : String -> a
+
+-- Coded-OOB abort for a container's own `Sliceable` impl to raise on an
+-- out-of-bounds slice range (#670).  Args are `(lo, hiIncl)` -- the original low
+-- bound and the INCLUSIVE upper bound (adjusted end - 1) -- so the message reads
+-- `slice [lo..hiIncl] out of bounds`, byte-identical to the interpreter's
+-- `sliceArray` abort.  Reuses the existing E-SLICE-OOB abort machinery every
+-- backend already has for the built-in slice path (native @mdk_slice_oob, wasm's
+-- E-SLICE-OOB trap) -- unlike `panic`, which is always coded E-PANIC.
+extern sliceError : Int -> Int -> a
 
 -- Internal `medaka run` plumbing ("run drops stdout on panic" fix). `run`'s
 -- tree-walking interpreter buffers a program's stdout in an in-language
@@ -287,6 +296,7 @@ extern stringToLower : String -> String
 (DExtern false "exit" (TyFun (TyCon "Int") (TyCon "Unit")))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "indexError" (TyFun (TyCon "String") (TyVar "a")))
+(DExtern false "sliceError" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyVar "a"))))
 (DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyCon "Unit")))
 (DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyCon "Unit")))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))
@@ -423,6 +433,7 @@ extern stringToLower : String -> String
 (DExtern false "exit" (TyFun (TyCon "Int") (TyCon "Unit")))
 (DExtern false "panic" (TyFun (TyCon "String") (TyVar "a")))
 (DExtern false "indexError" (TyFun (TyCon "String") (TyVar "a")))
+(DExtern false "sliceError" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyVar "a"))))
 (DExtern false "stashRunStdout" (TyFun (TyCon "String") (TyCon "Unit")))
 (DExtern false "enableRunStdoutFlush" (TyFun (TyCon "Unit") (TyCon "Unit")))
 (DExtern false "args" (TyFun (TyCon "Unit") (TyEffect ("Env") None (TyApp (TyCon "List") (TyCon "String")))))

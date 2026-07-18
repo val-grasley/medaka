@@ -1,2 +1,0 @@
-f xs = xs.[0..1]
-main = println (f 42)

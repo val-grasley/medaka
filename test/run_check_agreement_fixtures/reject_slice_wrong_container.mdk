@@ -1,0 +1,11 @@
+-- #670 (S0 run≠build memory fault): a range-slice `xs.[lo..hi]` (ESlice) carried
+-- NO Sliceable/Index constraint, so `check` ACCEPTED it on ANY receiver -- even an
+-- Int.  Native lowering routed it through the static "Array" type tag, so
+-- `42.[0..1]` compiled to an `inttoptr`+`loadTag` of the immediate 42 and read the
+-- never-mapped first page: `check` exit 0, `build`+exec SIGSEGV (exit 139), and a
+-- polymorphic slice on a String silently leaked heap bytes at exit 0.
+-- .expected = REJECT: `.[lo..hi]` now desugars to a `sliceRange` Sliceable-method
+-- call (#670), so a non-container receiver is unsatisfiable and check/run/build
+-- must all reject BY DIAGNOSTIC (`No impl of Sliceable for Int`), never by crash.
+f xs = xs.[0..1]
+main = println (f 42)

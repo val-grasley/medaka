@@ -3636,8 +3636,11 @@ infer env (EArrayLit es) = inferArrayLit env es
 infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
 -- EIndex is desugared to an `index` method call before typecheck (Phase #16b);
--- the built-in index-inference path is retired, so no `EIndex` arm here.
-infer env (ESlice arr lo hi _ r) = inferSlice env arr lo hi r
+-- the built-in index-inference path is retired, so no `EIndex` arm here.  ESlice
+-- is likewise desugared to a `sliceRange` method call before typecheck (#670), so
+-- no `ESlice` arm here -- a surviving one is a desugar-ordering bug and hits the
+-- loud "unsupported expression" catch-all, and a non-container receiver becomes a
+-- "no impl of Sliceable" constraint error via normal method dispatch.
 infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 -- ELoc is transparent: capture the span in `currentLoc` (so any type error
 -- recorded while inferring the wrapped expr is attributable to this position,
@@ -3668,21 +3671,9 @@ inferIntRange env lo hi container =
   let _ = unify (infer env hi) (TCon "Int")
   TApp container (TCon "Int")
 
--- receiver-kind discriminator stamped onto the ESlice Ref: lowering routes
--- "String" to CStringSlice; "List"/"Array" stay on the array path.
-indexKind : Mono -> String
-indexKind (TCon "String") = "String"
-indexKind (TApp (TCon "List") _) = "List"
-indexKind _ = "Array"
-
--- a.[lo..hi] : same container type as a
-inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> Mono
-inferSlice env arr lo hi r =
-  let _ = unify (infer env lo) (TCon "Int")
-  let _ = unify (infer env hi) (TCon "Int")
-  let at = infer env arr
-  let _ = setRef r (indexKind (normalize at))
-  at
+-- (ESlice's `inferSlice`/`indexKind` were retired with #670: `a.[lo..hi]` now
+-- desugars to a `sliceRange` method call before typecheck, so slicing infers
+-- through normal interface dispatch on `Sliceable`, not a bespoke arm here.)
 
 -- a method occurrence.  Return-position: record (routeRef, result mono) so
 -- resolveSites can stamp RKey/RDict.  D3a arg-position (name in

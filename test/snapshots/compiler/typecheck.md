@@ -1,5 +1,5 @@
 # META
-source_lines=15459
+source_lines=15450
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -3640,8 +3640,11 @@ infer env (EArrayLit es) = inferArrayLit env es
 infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
 -- EIndex is desugared to an `index` method call before typecheck (Phase #16b);
--- the built-in index-inference path is retired, so no `EIndex` arm here.
-infer env (ESlice arr lo hi _ r) = inferSlice env arr lo hi r
+-- the built-in index-inference path is retired, so no `EIndex` arm here.  ESlice
+-- is likewise desugared to a `sliceRange` method call before typecheck (#670), so
+-- no `ESlice` arm here -- a surviving one is a desugar-ordering bug and hits the
+-- loud "unsupported expression" catch-all, and a non-container receiver becomes a
+-- "no impl of Sliceable" constraint error via normal method dispatch.
 infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 -- ELoc is transparent: capture the span in `currentLoc` (so any type error
 -- recorded while inferring the wrapped expr is attributable to this position,
@@ -3672,21 +3675,9 @@ inferIntRange env lo hi container =
   let _ = unify (infer env hi) (TCon "Int")
   TApp container (TCon "Int")
 
--- receiver-kind discriminator stamped onto the ESlice Ref: lowering routes
--- "String" to CStringSlice; "List"/"Array" stay on the array path.
-indexKind : Mono -> String
-indexKind (TCon "String") = "String"
-indexKind (TApp (TCon "List") _) = "List"
-indexKind _ = "Array"
-
--- a.[lo..hi] : same container type as a
-inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> Mono
-inferSlice env arr lo hi r =
-  let _ = unify (infer env lo) (TCon "Int")
-  let _ = unify (infer env hi) (TCon "Int")
-  let at = infer env arr
-  let _ = setRef r (indexKind (normalize at))
-  at
+-- (ESlice's `inferSlice`/`indexKind` were retired with #670: `a.[lo..hi]` now
+-- desugars to a `sliceRange` method call before typecheck, so slicing infers
+-- through normal interface dispatch on `Sliceable`, not a bespoke arm here.)
 
 -- a method occurrence.  Return-position: record (routeRef, result mono) so
 -- resolveSites can stamp RKey/RDict.  D3a arg-position (name in
@@ -16310,7 +16301,6 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "infer" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EVar "inferArrayLit") (EVar "env")) (EVar "es")))
 (DFunDef false "infer" ((PVar "env") (PCon "ERangeList" (PVar "lo") (PVar "hi") PWild)) (EApp (EApp (EApp (EApp (EVar "inferIntRange") (EVar "env")) (EVar "lo")) (EVar "hi")) (EApp (EVar "TCon") (ELit (LString "List")))))
 (DFunDef false "infer" ((PVar "env") (PCon "ERangeArray" (PVar "lo") (PVar "hi") PWild)) (EApp (EApp (EApp (EApp (EVar "inferIntRange") (EVar "env")) (EVar "lo")) (EVar "hi")) (EApp (EVar "TCon") (ELit (LString "Array")))))
-(DFunDef false "infer" ((PVar "env") (PCon "ESlice" (PVar "arr") (PVar "lo") (PVar "hi") PWild (PVar "r"))) (EApp (EApp (EApp (EApp (EApp (EVar "inferSlice") (EVar "env")) (EVar "arr")) (EVar "lo")) (EVar "hi")) (EVar "r")))
 (DFunDef false "infer" ((PVar "env") (PCon "EHeadAnnot" (PVar "e") (PVar "ty"))) (EApp (EApp (EApp (EVar "inferHeadAnnot") (EVar "env")) (EVar "e")) (EVar "ty")))
 (DFunDef false "infer" ((PVar "env") (PCon "ELoc" (PVar "l") (PVar "e"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "currentLoc")) (EApp (EVar "Some") (EVar "l")))) (DoExpr (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e")))))
 (DFunDef false "infer" ((PVar "env") (PCon "EDoOrigin" (PVar "l") (PVar "e"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "currentDoOrigin")) (EApp (EVar "Some") (EVar "l")))) (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "currentDoOrigin")) (EVar "None"))) (DoExpr (EVar "t"))))
@@ -16319,12 +16309,6 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferArrayLit" ((PVar "env") (PVar "es")) (EBlock (DoLet false false (PVar "elem") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unifyAll") (EVar "elem")) (EApp (EApp (EVar "inferEach") (EVar "env")) (EVar "es")))) (DoExpr (EApp (EApp (EVar "TApp") (EApp (EVar "TCon") (ELit (LString "Array")))) (EVar "elem")))))
 (DTypeSig false "inferIntRange" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Mono") (TyCon "Mono"))))))
 (DFunDef false "inferIntRange" ((PVar "env") (PVar "lo") (PVar "hi") (PVar "container")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "lo"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "hi"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoExpr (EApp (EApp (EVar "TApp") (EVar "container")) (EApp (EVar "TCon") (ELit (LString "Int")))))))
-(DTypeSig false "indexKind" (TyFun (TyCon "Mono") (TyCon "String")))
-(DFunDef false "indexKind" ((PCon "TCon" (PLit (LString "String")))) (ELit (LString "String")))
-(DFunDef false "indexKind" ((PCon "TApp" (PCon "TCon" (PLit (LString "List"))) PWild)) (ELit (LString "List")))
-(DFunDef false "indexKind" (PWild) (ELit (LString "Array")))
-(DTypeSig false "inferSlice" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "Ref") (TyCon "String")) (TyCon "Mono")))))))
-(DFunDef false "inferSlice" ((PVar "env") (PVar "arr") (PVar "lo") (PVar "hi") (PVar "r")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "lo"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "hi"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoLet false false (PVar "at") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "arr"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "r")) (EApp (EVar "indexKind") (EApp (EVar "normalize") (EVar "at"))))) (DoExpr (EVar "at"))))
 (DTypeSig false "inferMethodAt" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyCon "Mono")))))))
 (DFunDef false "inferMethodAt" ((PVar "env") (PVar "name") (PVar "tagRef") (PVar "implRef") (PVar "methodRef")) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (EVar "name")) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (ELit (LString "unbound method: ")) (EVar "name")))) (arm (PCon "Some" (PVar "s")) () (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "recordMethodDicts") (EVar "name")) (EVar "methodRef")) (EApp (EVar "snd") (EVar "inst")))) (DoLet false false PWild (EApp (EApp (EVar "recordImplObligation") (EVar "name")) (EApp (EVar "fst") (EVar "inst")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordRLocalSite") (EVar "env")) (EVar "name")) (EVar "tagRef")) (EApp (EVar "fst") (EVar "inst")))) (DoLet false false (PVar "ret") (EMatch (EApp (EVar "argDispatchOf") (EVar "name")) (arm (PCon "Some" (PVar "idx")) () (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "recordArgStamp") (EVar "name")) (EVar "tagRef")) (EVar "implRef")) (EVar "idx")) (EApp (EVar "fst") (EVar "inst")))) (DoLet false false PWild (EApp (EApp (EApp (EVar "recordArgSiteFn") (EVar "name")) (EVar "idx")) (EApp (EVar "fst") (EVar "inst")))) (DoExpr (EApp (EVar "fst") (EVar "inst"))))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "recordSite") (EVar "name")) (EVar "tagRef")) (EVar "implRef")) (EApp (EVar "fst") (EVar "inst")))))) (DoExpr (EMatch (EApp (EVar "maybeStandaloneValueMono") (EVar "name")) (arm (PCon "Some" (PVar "m")) () (EVar "m")) (arm (PCon "None") () (EVar "ret"))))))))
 (DTypeSig false "recordRLocalSite" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyCon "Mono") (TyCon "Unit"))))))
@@ -19900,7 +19884,6 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "infer" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EVar "inferArrayLit") (EVar "env")) (EVar "es")))
 (DFunDef false "infer" ((PVar "env") (PCon "ERangeList" (PVar "lo") (PVar "hi") PWild)) (EApp (EApp (EApp (EApp (EVar "inferIntRange") (EVar "env")) (EVar "lo")) (EVar "hi")) (EApp (EVar "TCon") (ELit (LString "List")))))
 (DFunDef false "infer" ((PVar "env") (PCon "ERangeArray" (PVar "lo") (PVar "hi") PWild)) (EApp (EApp (EApp (EApp (EVar "inferIntRange") (EVar "env")) (EVar "lo")) (EVar "hi")) (EApp (EVar "TCon") (ELit (LString "Array")))))
-(DFunDef false "infer" ((PVar "env") (PCon "ESlice" (PVar "arr") (PVar "lo") (PVar "hi") PWild (PVar "r"))) (EApp (EApp (EApp (EApp (EApp (EVar "inferSlice") (EVar "env")) (EVar "arr")) (EVar "lo")) (EVar "hi")) (EVar "r")))
 (DFunDef false "infer" ((PVar "env") (PCon "EHeadAnnot" (PVar "e") (PVar "ty"))) (EApp (EApp (EApp (EVar "inferHeadAnnot") (EVar "env")) (EVar "e")) (EVar "ty")))
 (DFunDef false "infer" ((PVar "env") (PCon "ELoc" (PVar "l") (PVar "e"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "currentLoc")) (EApp (EVar "Some") (EVar "l")))) (DoExpr (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e")))))
 (DFunDef false "infer" ((PVar "env") (PCon "EDoOrigin" (PVar "l") (PVar "e"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "currentDoOrigin")) (EApp (EVar "Some") (EVar "l")))) (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "currentDoOrigin")) (EVar "None"))) (DoExpr (EVar "t"))))
@@ -19909,12 +19892,6 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferArrayLit" ((PVar "env") (PVar "es")) (EBlock (DoLet false false (PVar "elem") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "unifyAll") (EDictApp "elem")) (EApp (EApp (EVar "inferEach") (EVar "env")) (EVar "es")))) (DoExpr (EApp (EApp (EVar "TApp") (EApp (EVar "TCon") (ELit (LString "Array")))) (EDictApp "elem")))))
 (DTypeSig false "inferIntRange" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Mono") (TyCon "Mono"))))))
 (DFunDef false "inferIntRange" ((PVar "env") (PVar "lo") (PVar "hi") (PVar "container")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "lo"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "hi"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoExpr (EApp (EApp (EVar "TApp") (EVar "container")) (EApp (EVar "TCon") (ELit (LString "Int")))))))
-(DTypeSig false "indexKind" (TyFun (TyCon "Mono") (TyCon "String")))
-(DFunDef false "indexKind" ((PCon "TCon" (PLit (LString "String")))) (ELit (LString "String")))
-(DFunDef false "indexKind" ((PCon "TApp" (PCon "TCon" (PLit (LString "List"))) PWild)) (ELit (LString "List")))
-(DFunDef false "indexKind" (PWild) (ELit (LString "Array")))
-(DTypeSig false "inferSlice" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyFun (TyApp (TyCon "Ref") (TyCon "String")) (TyCon "Mono")))))))
-(DFunDef false "inferSlice" ((PVar "env") (PVar "arr") (PVar "lo") (PVar "hi") (PVar "r")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "lo"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "hi"))) (EApp (EVar "TCon") (ELit (LString "Int"))))) (DoLet false false (PVar "at") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "arr"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "r")) (EApp (EVar "indexKind") (EApp (EVar "normalize") (EVar "at"))))) (DoExpr (EVar "at"))))
 (DTypeSig false "inferMethodAt" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "Route"))) (TyCon "Mono")))))))
 (DFunDef false "inferMethodAt" ((PVar "env") (PVar "name") (PVar "tagRef") (PVar "implRef") (PVar "methodRef")) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (EVar "name")) (arm (PCon "None") () (EApp (EVar "panic") (EBinOp "++" (ELit (LString "unbound method: ")) (EVar "name")))) (arm (PCon "Some" (PVar "s")) () (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "recordMethodDicts") (EVar "name")) (EVar "methodRef")) (EApp (EVar "snd") (EVar "inst")))) (DoLet false false PWild (EApp (EApp (EVar "recordImplObligation") (EVar "name")) (EApp (EVar "fst") (EVar "inst")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordRLocalSite") (EVar "env")) (EVar "name")) (EVar "tagRef")) (EApp (EVar "fst") (EVar "inst")))) (DoLet false false (PVar "ret") (EMatch (EApp (EVar "argDispatchOf") (EVar "name")) (arm (PCon "Some" (PVar "idx")) () (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "recordArgStamp") (EVar "name")) (EVar "tagRef")) (EVar "implRef")) (EVar "idx")) (EApp (EVar "fst") (EVar "inst")))) (DoLet false false PWild (EApp (EApp (EApp (EVar "recordArgSiteFn") (EVar "name")) (EVar "idx")) (EApp (EVar "fst") (EVar "inst")))) (DoExpr (EApp (EVar "fst") (EVar "inst"))))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "recordSite") (EVar "name")) (EVar "tagRef")) (EVar "implRef")) (EApp (EVar "fst") (EVar "inst")))))) (DoExpr (EMatch (EApp (EVar "maybeStandaloneValueMono") (EVar "name")) (arm (PCon "Some" (PVar "m")) () (EVar "m")) (arm (PCon "None") () (EVar "ret"))))))))
 (DTypeSig false "recordRLocalSite" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Ref") (TyCon "Route")) (TyFun (TyCon "Mono") (TyCon "Unit"))))))

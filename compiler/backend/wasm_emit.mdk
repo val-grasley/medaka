@@ -1102,6 +1102,10 @@ isLeafExternW name = contains name [
   -- IndexMut impls call; lowers to the same fixed E-INDEX-OOB trap CIndex/CStringIndex
   -- already emit (message dropped, per the seam design).
   "indexError",
+  -- #670: `sliceError : Int -> Int -> a` -- the coded-OOB abort the Sliceable impl
+  -- raises; lowers to the same fixed E-SLICE-OOB trap the built-in slice path emits
+  -- (bound args dropped, matching indexError's seam design).
+  "sliceError",
   -- stage-A: bitwise / shift externs (Int -> Int -> Int).  Pure i64 ops over the
   -- box/unbox seam; no $str/$arr/$float dependencies.
   "bitAnd", "shiftLeft", "shiftRight",
@@ -1229,7 +1233,9 @@ externArityW name =
     -- floatRem (Float->Float->Float).
     "bitOr", "bitXor", "pow", "atan2", "hypot", "floatRem",
     -- stage-D: writeFileBytes : String -> Array Int -> Result String Unit (2-arg).
-    "writeFileBytes"] then 2
+    "writeFileBytes",
+    -- #670: sliceError (lo, hiIncl) -- the coded E-SLICE-OOB abort extern (2-arg).
+    "sliceError"] then 2
   else if contains name ["stringSlice", "arraySetUnsafe"] then 3
   -- stage-A: arrayBlit src srcOff dst dstOff len (5 args).
   else if name == "arrayBlit" then 5
@@ -5519,6 +5525,13 @@ emitLeafExternRef prog env d "indexError" [msg] =
   wasmTrap "E-INDEX-OOB" "index out of bounds"
 emitLeafExternRef prog env d "indexError" _ =
   gapL "wasm Index-16a: indexError takes exactly one argument"
+-- #670: `sliceError lo hiIncl` reuses the existing coded E-SLICE-OOB trap (the
+-- same fixed text the built-in slice path emits) -- both bound arguments are
+-- dropped, matching indexError and the native @mdk_slice_oob abort.
+emitLeafExternRef prog env d "sliceError" [lo, hi] =
+  wasmTrap "E-SLICE-OOB" "slice out of bounds"
+emitLeafExternRef prog env d "sliceError" _ =
+  gapL "wasm #670: sliceError takes exactly two arguments"
 -- stage-A: bitwise / shift externs (Int -> Int -> Int).  Args are (ref eq) boxed Ints;
 -- unbox both to i64 via $mdk_unbox_int, apply the i64 op, rebox via $mdk_box_int.
 -- shiftRight uses i64.shr_u (LOGICAL) — shiftRight is defined as logical in runtime/medaka_rt.c

@@ -206,6 +206,15 @@ rewriteSugar (EStringInterp parts) = interpToCore parts
 rewriteSugar (EBinOp ":=" lhs rhs _) = callBin "setRef" lhs rhs
 -- `a[i]` / `a.[i]` (read position) → `index a i` (Index interface dispatch).
 rewriteSugar (EIndex a i _) = callBin "index" a i
+-- `a.[lo..hi]` / `a.[lo..=hi]` (slice) → `sliceRange a lo hi incl` (Sliceable
+-- interface dispatch, #670).  The `incl` flag (`..=` inclusive, `..` exclusive)
+-- rides along as a Bool literal argument.  Routing through a constrained method
+-- makes a non-container receiver a check-time "no impl of Sliceable" error, where
+-- the old static-tag lowering read a String/Int/[] through the Array rep (an S0
+-- run≠build memory fault).  Pure surface sugar: no dedicated typecheck/eval/lower
+-- arm survives (they become dead — a stray post-desugar ESlice is a loud guard).
+rewriteSugar (ESlice a lo hi incl _) =
+  EApp (EApp (EApp (EApp (EVar "sliceRange") a) lo) hi) (ELit (LBool incl))
 rewriteSugar e = e
 
 -- ── Pass: rewrite_assign_index (`a[i] := v` → `setIndex a i v`) ───────────
