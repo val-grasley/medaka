@@ -1,0 +1,98 @@
+-- #530: the FIRST fixture of test/engine_fixtures/ — the prelude-bearing,
+-- ENGINES-ONLY corpus (eval == native == wasm, full prelude, no golden file).
+--
+-- WHY THIS CORPUS EXISTS.  #360 made the prelude's `Ord Float` IEEE-754
+-- **totalOrder**:  −NaN < −inf < … < −0.0 < +0.0 < … < +inf < +NaN.  That behaviour
+-- is verified byte-identical across eval / Core-IR / native / **wasm**, but only
+-- the first three were GATE-pinned: every corpus the 3-engine gate already
+-- consumed (llvm_fixtures{,_typed}, wasm/fixtures{,_typed}) is ALSO read by a
+-- PRELUDE-FREE probe gate (diff_compiler_llvm_typed{,_ir}, prelude_obj, …) that
+-- drives a bare probe over runtime.mdk only and would REDDEN on a prelude-bearing
+-- file.  So the wasm arm of Float totalOrder had no home in which to be pinned.
+-- This corpus is that home: it is wired into diff_compiler_engines.sh's CORPUS
+-- union and consumed by NOTHING prelude-free.  See #530 / #711.
+--
+-- ⚠️  PLATFORM-INDEPENDENT BY CONSTRUCTION.  A hardware NaN's SIGN BIT is
+-- target-dependent: x86's `0.0/0.0` is −NaN (sign set), ARM's is +NaN.  totalOrder
+-- sorts −NaN BELOW everything and +NaN ABOVE everything, so a NaN's absolute
+-- position is a PLATFORM FACT and must never be baked into a value.  Every NaN cell
+-- below states a totalOrder LAW RELATIVE to `nanLow`, which merely observes which
+-- end this platform's NaN landed at.  Every element of `main` is True on every
+-- conforming target — so the differential agrees AND an absolute value pin
+-- (test/engine_value_pins/engine/float_totalorder.pin) is platform-independent.
+
+-- A local insertion sort driven by the prelude's `compare` (stdlib's `sort` IS
+-- `sortBy compare`, so this comparator is the whole subject).
+insert : Float -> List Float -> List Float
+insert x [] = [x]
+insert x (y :: ys) = if compare x y == Gt then y :: insert x ys else x :: y :: ys
+
+sortF : List Float -> List Float
+sortF [] = []
+sortF (x :: xs) = insert x (sortF xs)
+
+nan = 0.0 / 0.0
+pinf = 1.0 / 0.0
+ninf = -1.0 / 0.0
+nzero = -1.0 * 0.0
+
+-- IEEE's only self-inequality: True exactly at NaN.
+isN : Float -> Bool
+isN x = x != x
+
+-- Which end totalOrder put THIS platform's NaN at (x86: True, arm: False).
+nanLow : Bool
+nanLow = compare nan 0.0 == Lt
+
+-- `main` is a VALUE (List Bool); all three engines auto-print it identically.
+-- Every element is True on every conforming target.
+main =
+  [ -- CONSISTENCY: `compare nan x` agrees for EVERY x — the transitivity break
+    -- #360 fixes.  Pre-fix every one of these was `Eq`.
+    (compare nan ninf == Lt) == nanLow,
+    (compare nan (-1.0) == Lt) == nanLow,
+    (compare nan nzero == Lt) == nanLow,
+    (compare nan 0.0 == Lt) == nanLow,
+    (compare nan 1.0 == Lt) == nanLow,
+    (compare nan pinf == Lt) == nanLow,
+    -- ANTISYMMETRY: swapping the operands flips the result, at every operand.
+    (compare ninf nan == Gt) == nanLow,
+    (compare pinf nan == Gt) == nanLow,
+    (compare 1.0 nan == Gt) == nanLow,
+    -- REFLEXIVITY at NaN (Eq deliberately disagrees: `nan == nan` is False).
+    compare nan nan == Eq,
+    -- totalOrder SPLITS the zeros: −0.0 < +0.0 …
+    compare nzero 0.0 == Lt,
+    compare 0.0 nzero == Gt,
+    -- … while `Eq` still calls them equal.  THE ACCEPTED #360 COST.
+    nzero == 0.0,
+    isN nan && not (nan == nan),
+    -- The ordered core is untouched.
+    compare ninf pinf == Lt,
+    compare 1.0 2.0 == Lt,
+    compare pinf ninf == Gt,
+    compare 1.0 1.0 == Eq,
+    -- min/max are TOTAL at NaN and agree with compare.
+    isN (min nan 1.0) == nanLow,
+    isN (max nan 1.0) == not nanLow,
+    isN (max nan 1.0) || max nan 1.0 == 1.0,
+    -- Sorting is DETERMINISTIC on NaN data: permuting the input gives ONE answer.
+    debug (sortF [3.0, nan, 1.0, nzero, 0.0, 2.0]) == debug (sortF [nan, 0.0, 2.0, nzero, 3.0, 1.0]),
+    debug (sortF [3.0, nan, 1.0]) == debug (sortF [1.0, nan, 3.0]),
+    -- THE #305/N5 TRIPWIRE.  `< <= > >=` at Float are primitive IEEE predicates,
+    -- ALL False at a NaN operand.  Ord's DEFAULTS derive them from `compare`, so if
+    -- `impl Ord Float` ever loses its relational overrides, totalOrder leaks in and
+    -- every `not` below flips.  (Stated as `not …` so each element stays True.)
+    not (nan < 1.0),
+    not (nan <= 1.0),
+    not (nan > 1.0),
+    not (nan >= 1.0),
+    not (1.0 < nan),
+    not (1.0 <= nan),
+    not (1.0 > nan),
+    not (1.0 >= nan),
+    not (nan < nan),
+    not (nan <= nan),
+    not (nan > nan),
+    not (nan >= nan)
+  ]

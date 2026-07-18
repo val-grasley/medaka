@@ -18,12 +18,17 @@
 #
 #   for each fixture f:   eval(f) == native(f) == wasm(f)
 #
-# Corpus: the UNION of ALL FOUR emitter corpora —
+# Corpus: the UNION of the four emitter corpora PLUS the engines-only corpus —
 #
 #   test/llvm_fixtures/               untyped, prelude-free
 #   test/llvm_fixtures_typed/         real prelude, TYPECHECKS
 #   test/wasm/fixtures/               untyped, prelude-free
 #   test/wasm/fixtures_typed/         real prelude, TYPECHECKS
+#   test/engine_fixtures/             real prelude, ENGINES-ONLY (#530) — consumed by
+#                                     NOTHING prelude-free, so it can host a
+#                                     prelude-dependent program the four above cannot
+#                                     (each of THOSE is also read by a prelude-free probe
+#                                     gate). Live differential only; optional value pin.
 #
 # (Corpus size is NOT hardcoded here on purpose — each directory's fixture count
 # drifts as fixtures are added, and a hand-maintained total rots the moment it
@@ -232,6 +237,7 @@ if [ "${1:-}" = "--one" ]; then
   # llvm_fixtures_typed (the glob needs a literal /llvm_fixtures/), but relying on
   # that is a trap for the next person to add a corpus — be explicit.
   case "$f" in
+    */engine_fixtures/*)     key="engine/$(basename "$f" .mdk)" ;;
     */llvm_fixtures_typed/*) key="llvmT/$(basename "$f" .mdk)" ;;
     */wasm/fixtures_typed/*) key="wasmT/$(basename "$f" .mdk)" ;;
     */llvm_fixtures/*)       key="llvm/$(basename "$f" .mdk)"  ;;
@@ -438,11 +444,19 @@ if MEDAKA_ROOT="$ROOT" MEDAKA_EMITTER="${MEDAKA_EMITTER:-}" \
 fi
 
 # All FOUR emitter corpora — the two untyped (prelude-free) and, since the wasm arm
-# moved onto the shipping CLI, the two TYPED ones as well.  See the header.
+# moved onto the shipping CLI, the two TYPED ones as well — PLUS test/engine_fixtures/
+# (#530): a prelude-bearing corpus consumed by NOTHING prelude-free, so it can hold a
+# prelude-dependent program (e.g. Float totalOrder) the four emitter corpora structurally
+# cannot (each of those is ALSO read by a prelude-FREE probe gate that would redden).
+# See the header and test/engine_fixtures/README.md.  It joins the LIVE differential
+# only — no golden, no signature capture; an engine_value_pins/engine/<name>.pin (below)
+# is the sole per-fixture pinned artifact and it holds the program's OUTPUT VALUE, which
+# moves only on a real semantic change, never on an inert prelude edit.
 CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk \
              "$ROOT"/test/llvm_fixtures_typed/*.mdk \
              "$ROOT"/test/wasm/fixtures/*.mdk \
-             "$ROOT"/test/wasm/fixtures_typed/*.mdk 2>/dev/null)"
+             "$ROOT"/test/wasm/fixtures_typed/*.mdk \
+             "$ROOT"/test/engine_fixtures/*.mdk 2>/dev/null)"
 [ -n "$CORPUS" ] || { echo "the fixture corpus is empty — the gate compared nothing"; exit 2; }
 n_dispatched="$(printf '%s\n' "$CORPUS" | wc -l | tr -d ' ')"
 
@@ -560,7 +574,7 @@ t3p=$(tier 5 pass); t3f=$(tier 5 fail); t3n=$(tier 5 na)
 
 echo
 echo "══════════════════════════════════════════════════════════════════════"
-echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm ∪ llvm_typed ∪ wasm ∪ wasm_typed)"
+echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm ∪ llvm_typed ∪ wasm ∪ wasm_typed ∪ engine)"
 echo "══════════════════════════════════════════════════════════════════════"
 printf ' T1  eval   == native   %4d agree  %3d differ  %3d n/a\n' "$t1p" "$t1f" "$t1n"
 if [ "$WASM_OK" = 1 ]; then
