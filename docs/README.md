@@ -99,7 +99,7 @@ What's in the standard library, what's planned, module-by-module status.
 | [`DISPATCH-GAPS-SCOPE.md`](../compiler/DISPATCH-GAPS-SCOPE.md) | DISPATCH-GAPS-SCOPE.md | IMPLEMENTED |
 | [`DISPATCH-INVENTORY.md`](../compiler/DISPATCH-INVENTORY.md) | DISPATCH-INVENTORY.md | PARTIAL |
 | [`DRIVER-COLLAPSE-PLAN.md`](../compiler/DRIVER-COLLAPSE-PLAN.md) | DRIVER-COLLAPSE-PLAN.md — collapse the dual single-file / multi-module drivers | IMPLEMENTED |
-| [`EAGER-INIT-DESIGN.md`](../compiler/EAGER-INIT-DESIGN.md) | EAGER-INIT-DESIGN — closing the shared eager-global init-order hole (#553, S0) | PARTIAL |
+| [`EAGER-INIT-DESIGN.md`](../compiler/EAGER-INIT-DESIGN.md) | EAGER-INIT-DESIGN — closing the shared eager-global init-order hole (#553, S0) | COMPLETE |
 | [`EMITTER-GAPS.md`](../compiler/EMITTER-GAPS.md) | EMITTER-GAPS.md | PARTIAL |
 | [`EQ-DISPATCH-DESIGN.md`](../compiler/EQ-DISPATCH-DESIGN.md) | `==`/`!=` → `Eq` Dispatch (Option A) — Design + Blast-Radius Census | OPEN |
 | [`ERROR-QUALITY.md`](../compiler/ERROR-QUALITY.md) | ERROR-QUALITY.md | IMPLEMENTED |
