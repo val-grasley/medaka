@@ -78,8 +78,15 @@ if [ "${1:-}" = "--one" ]; then
     elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
       msg="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
     else
-      self="$("$bin" 2>/dev/null)"; oracle="$("$DICTPP" "$RUNTIME" "$f" 2>/dev/null)"
-      if [ "$self" = "$oracle" ]; then
+      # #539: capture BOTH engines' exit status. Two crashes each yield ""
+      # (self == oracle == "") and would otherwise read as agreement and WRITE
+      # AN EMPTY GOLDEN — a poisoned reference enforced forever by this gate.
+      # A nonzero exit on either side is never agreement; SKIP, never write.
+      self="$("$bin" 2>/dev/null)"; self_rc=$?
+      oracle="$("$DICTPP" "$RUNTIME" "$f" 2>/dev/null)"; oracle_rc=$?
+      if [ "$self_rc" -ne 0 ] || [ "$oracle_rc" -ne 0 ]; then
+        msg="SKIP $name — engine exited nonzero (self=$self_rc oracle=$oracle_rc); golden NOT written (two crashes must not read as agreement, #539)"; st=1
+      elif [ "$self" = "$oracle" ]; then
         printf '%s\n' "$oracle" > "$golden"
         msg="captured $name ($oracle)"
       else
@@ -103,6 +110,14 @@ if [ "${1:-}" = "--one" ]; then
     elif ! "$CC" $GC_CFLAGS "$ll" "$RTOBJ" $GC_LIBS -lm -o "$bin" 2>"$WORKDIR/$name.cc.err"; then
       msg="$(printf 'FAIL %s (clang)\n%s' "$name" "$(cat "$WORKDIR/$name.cc.err")")"; st=1
     else
+      # #539 READ path: deliberately NOT exit-code-gated. This corpus contains a
+      # fixture that exits nonzero with empty stdout BY DESIGN and whose committed
+      # golden is (correctly) empty — eager_global_dispatch_hidden_cycle.mdk, the
+      # #561 E-CYCLIC-VALUE regression pin. The committed golden is the trusted
+      # reference, so a byte-exact match is the right check; a crash that produces
+      # empty stdout matching a non-empty golden already FAILs. The crash-vs-crash
+      # hazard #539 is really about is the golden-WRITING (CAPTURE) path above,
+      # where an untrusted empty golden could be minted from two crashes.
       ref="$(cat "$golden")"; self="$("$bin" 2>/dev/null)"
       if [ "$ref" = "$self" ]; then msg="ok   $name ($ref)"
       else msg="$(printf 'FAIL %s\n  ref : %s\n  self: %s' "$name" "$ref" "$self")"; st=1; fi

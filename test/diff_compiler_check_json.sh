@@ -54,6 +54,14 @@ for mdk in "$FIXDIR"/*.mdk; do
   rm -f "$tmpout"
 
   if [ "${CAPTURE:-0}" = "1" ]; then
+    # #528: native_out is ./medaka's COMBINED stdout+stderr (2>&1). A stale
+    # binary prints the stale-binary warning to stderr, which would be baked
+    # into the committed golden at bless time (when nobody re-reads the bytes)
+    # and later surface as a mystery diff on a fresh binary. REFUSE, rebuild.
+    if mdk_is_stale "$native_out"; then
+      printf 'REFUSING to capture %s: ./medaka reports itself stale — run '\''make medaka'\'' and retry (else the stale-binary warning is baked into the golden). #528\n' "$name" >&2
+      exit 2
+    fi
     printf '%s\n' "$native_out" > "$golden"
     printf 'CAPTURE %s\n' "$golden"; continue
   fi
@@ -107,6 +115,11 @@ if [ -d "$PROJDIR" ]; then
     native_out="$(sed -e "s|$d|<proj>/|g" -e "s|$rel_d|<proj>/|g" "$tmpout")"
     rm -f "$tmpout"
     if [ "${CAPTURE:-0}" = "1" ]; then
+      # #528: same stale-warning hazard as the single-file loop above — refuse.
+      if mdk_is_stale "$native_out"; then
+        printf 'REFUSING to capture %s: ./medaka reports itself stale — run '\''make medaka'\'' and retry (else the stale-binary warning is baked into the golden). #528\n' "$name" >&2
+        exit 2
+      fi
       printf '%s\n' "$native_out" > "$golden"
       printf 'CAPTURE %s\n' "$golden"; continue
     fi
