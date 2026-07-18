@@ -190,6 +190,7 @@ import support.util.{
   lookupAssoc,
   listLen,
   contains,
+  filterList,
   startsWith,
   fallthroughName,
 }
@@ -198,6 +199,7 @@ import support.ordmap.{
   OrdMap,
   omInsert,
   omLookup,
+  omHasKey,
   omFromNames,
   omFromPairs,
   omEmpty,
@@ -241,6 +243,7 @@ import backend.private_mangle.{hashName, safeChar}
 import backend.emit_support.{
   eagerReachMap,
   bindEagerReach,
+  lazyGlobalNames,
   methodIfaceTableRef,
   methodIfaceOf,
   methodArityOf,
@@ -893,6 +896,26 @@ knownFnMapRef = Ref None
 installKnownFnMap : List String -> Unit
 installKnownFnMap fns = setRef knownFnMapRef (Some (omFromNames fns omEmpty))
 
+-- ── #561 PR-A: lazy value-global set (installed once per program) ────────────
+-- The value globals emit_support.lazyGlobalNames classifies as LAZY (reaching an
+-- eager dispatch or a value cycle — no static init order): their reads lower to
+-- `call @mdk_force_<x>()` instead of a plain `load @mdk_g_<x>`, and each gets a
+-- `@mdk_force_<x>` define + an `@mdk_gs_<x>` state flag (0 UNFORCED / 1 FORCING /
+-- 2 FORCED).  Everything else stays on the byte-identical eager prologue.  Installed
+-- (even empty) at EVERY emitProgram entry so a prior program's set can never leak
+-- across a same-process re-emit — the same discipline as installKnownFnMap.
+lazyGlobalMapRef : Ref (Option (OrdMap Unit))
+lazyGlobalMapRef = Ref None
+
+installLazyGlobalMap : List String -> Unit
+installLazyGlobalMap names =
+  setRef lazyGlobalMapRef (Some (omFromNames names omEmpty))
+
+export isLazyGlobal : String -> Bool
+isLazyGlobal x = match lazyGlobalMapRef.value
+  Some m => omHasKey x m
+  None => False
+
 -- ctor-arity table index (ct field is set once at Emit construction, constant).
 ctorMapRef : Ref (Option (OrdMap Int))
 ctorMapRef = Ref None
@@ -1414,7 +1437,25 @@ lookupVarG : Emit -> List (String, (String, LTy)) -> String -> (String, LTy)
 lookupVarG e env x = match lookupAssoc x env
   Some (reg, LTFloatU) => (boxFloat e reg, LTFloat)
   Some vt => vt
-  None => match lookupAssoc x (globalsRegRef e).value
+  -- #561 PR-A: a LAZY value global (dispatch-reaching or cyclic) is forced on first
+  -- use — its read is `call @mdk_force_<x>()`, which memoises into @mdk_g_<x> and
+  -- black-holes a re-entrant force into E-CYCLIC-VALUE.  A LOCAL of the same name
+  -- still shadows (the env is checked first, above).
+  --
+  -- ⚠️ The returned LTy `LTInt` is a PLACEHOLDER, not a type claim: the forced word is a
+  -- uniform i64 (Int immediate / Bool immediate / boxed-Float-ptr-as-i64), and this call
+  -- site does not carry the global's real static type.  That is SOUND because no
+  -- type-sensitive consumer trusts THIS LTy — each recovers the real type from its OWN
+  -- typecheck-stamped tag: a Float arithmetic/print op from the CBinPrim/scalar tag
+  -- (scalarTagIsFloat), a bare value-main's print from main's inferred `mty`, a Bool
+  -- `if`/print from the scrutinee/return type.  Verified: LAZY Bool/Float/String globals
+  -- all print & compute == eval (fixtures eager_global_lazy_{bool,float,string}).  If a
+  -- future consumer WERE to key off this returned LTy, those fixtures would fail the gate.
+  None => if isLazyGlobal x then
+      let r = freshReg e
+      let _ = emit e "  \{r} = call i64 @mdk_force_\{x}()"
+      (r, LTInt)
+    else match lookupAssoc x (globalsRegRef e).value
     Some (True, ty) =>
       let r = freshReg e
       let _ = emit e "  \{r} = load i64, ptr @mdk_g_\{x}"
@@ -8584,6 +8625,17 @@ emitGlobalDecls e (b::rest) =
   else
     "@mdk_g_" ++ bindName b ++ " = global i64 0"
   let _ = emitGlobal e line
+  -- #561 PR-A: a LAZY global also carries a per-global state flag @mdk_gs_<name>
+  -- (0 UNFORCED / 1 FORCING / 2 FORCED).  The value cell stays a uniform i64.  In
+  -- the PRELUDE half the flag is external (defined by the program half's force fn,
+  -- alongside @mdk_g_*) and the force fn is declared so a prelude body can call it.
+  let _ = if isLazyGlobal (bindName b) then
+      if emitHalfRef.value == emitHalfPrelude then
+        let _ = emitGlobal e "@mdk_gs_\{bindName b} = external global i8"
+        emitGlobal e "declare i64 @mdk_force_\{bindName b}()"
+      else
+        emitGlobal e "@mdk_gs_\{bindName b} = global i8 0"
+    else ()
   emitGlobalDecls e rest
 
 -- ── function signature inference (slice 2b) ──────────────────────────────────
@@ -9910,6 +9962,10 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = setRef dictConstCacheRef []
   let _ = setRef dispCacheRef []
   let _ = installKnownFnMap (collectFns groups)
+  -- #561 PR-A: classify LAZY value globals (dispatch-reaching / cyclic) once per
+  -- program.  Reads of these lower to `call @mdk_force_<x>()`; every other global
+  -- stays on the byte-identical eager prologue.
+  let _ = installLazyGlobalMap (lazyGlobalNames groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
   let _ = installDefArityMap e (fnBinds groups)
@@ -9946,6 +10002,10 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   -- program half's `@mdk_program_main` is the one that defines and initialises
   -- every `@mdk_g_*` (the prelude's included).
   let _ = if emitHalfRef.value == emitHalfPrelude then () else emitProgramMain e groups
+  -- #561 PR-A: LAZY value globals' @mdk_force_<x> defines live with the init logic
+  -- (@mdk_program_main), i.e. the program/whole half; the prelude half only declares
+  -- them (emitGlobalDecls).  In whole mode with no lazy global this emits nothing.
+  let _ = if emitHalfRef.value == emitHalfPrelude then () else emitLazyForces e (valBinds groups)
   let _ = emitFns e (fnBinds groups)
   let _ = emitImpls e implEntries
   let _ = preludeIdSpaceGuard e
@@ -9959,7 +10019,12 @@ emitProgramMain e groups =
   let _ = emit e "define i32 @mdk_program_main(i32 %argc, ptr %argv) {"
   let _ = emit e "entry:"
   let _ = emit e "  call void @mdk_set_args(i32 %argc, ptr %argv)"
-  let _ = emitTopGlobals e (orderedValBinds groups (valBinds groups))
+  -- #561 PR-A: only SAFE (statically-orderable) value globals are eager-initialised
+  -- in this prologue — byte-identical to the pre-#561 emitter whenever no global is
+  -- lazy (the compiler's own case).  A SAFE global's whole eager reach is SAFE (the
+  -- taint is downward-closed over reads), so this prologue never calls a force fn.
+  -- LAZY globals are initialised on first use by their @mdk_force_<x> defines below.
+  let _ = emitTopGlobals e (orderedValBinds groups (safeValBinds (valBinds groups)))
   let (mv, mty) = emitExpr e [] (mainBody groups)
   -- A Unit-returning `main` produces output ONLY through explicit print calls (or
   -- a panic); never auto-print its `()` result.  Detected by the DECLARED return
@@ -10019,6 +10084,63 @@ emitTopGlobals e ((CBind name [CClause [] body])::rest) =
 emitTopGlobals _ ((CBind name _)::_) =
   panic
     ("llvm spike: top-level function '" ++ name ++ "' unsupported in slice 1 (value bindings only)")
+
+-- ── #561 PR-A: lazy value-global force functions ─────────────────────────────
+-- The SAFE (eager) value binds — those NOT classified lazy — kept on the byte-
+-- identical init prologue.  When no global is lazy this is the identity on valBinds.
+safeValBinds : List CBind -> List CBind
+safeValBinds bs = filterList (b => not (isLazyGlobal (bindName b))) bs
+
+-- the value binds classified LAZY — each emitted as an @mdk_force_<name> define.
+lazyValBinds : List CBind -> List CBind
+lazyValBinds bs = filterList (b => isLazyGlobal (bindName b)) bs
+
+-- emit an @mdk_force_<name> define for every LAZY value global (whole/program half
+-- only — the prelude half just declares them; see emitGlobalDecls).  A faithful
+-- transliteration of eval's forceMemo/blackholeCell (compiler/eval/eval.mdk):
+--   state 2 FORCED  -> return the memoised @mdk_g_<name>
+--   state 1 FORCING -> re-entered mid-init => E-CYCLIC-VALUE (the black-hole)
+--   state 0 UNFORCED-> mark FORCING, run the rhs, memoise the value, mark FORCED
+-- A read of another global inside the body lowers through lookupVarG exactly as
+-- anywhere else (a plain load for a SAFE dep — already eager-initialised by the
+-- prologue that ran first — or a nested @mdk_force_ for a LAZY dep).
+emitLazyForces : Emit -> List CBind -> Unit
+emitLazyForces e binds = emitLazyForcesGo e (lazyValBinds binds)
+
+emitLazyForcesGo : Emit -> List CBind -> Unit
+emitLazyForcesGo _ [] = ()
+emitLazyForcesGo e ((CBind name [CClause [] body])::rest) =
+  let _ = emitForceFn e name body
+  emitLazyForcesGo e rest
+emitLazyForcesGo e (_::rest) = emitLazyForcesGo e rest
+
+emitForceFn : Emit -> String -> CExpr -> Unit
+emitForceFn e name body =
+  -- module-scope name constant for the E-CYCLIC-VALUE message.
+  let nbytes = strBytes name
+  let nlen = lengthS nbytes
+  let gnid = ".gname." ++ name
+  let _ = emitGlobal e "@\{gnid} = private unnamed_addr constant [\{intToString (nlen + 1)} x i8] c\"\{escBytes nbytes}\\00\""
+  let _ = beginDefine e
+  let _ = emit e "define i64 @mdk_force_\{name}() {"
+  let _ = emit e "entry:"
+  let s = freshReg e
+  let _ = emit e "  \{s} = load i8, ptr @mdk_gs_\{name}"
+  let _ = emit e "  switch i8 \{s}, label %lz_unforced [ i8 2, label %lz_forced i8 1, label %lz_forcing ]"
+  let _ = emit e "lz_forced:"
+  let fv = freshReg e
+  let _ = emit e "  \{fv} = load i64, ptr @mdk_g_\{name}"
+  let _ = emit e "  ret i64 \{fv}"
+  let _ = emit e "lz_forcing:"
+  let _ = emit e "  call void @mdk_cyclic_value(ptr @\{gnid})"
+  let _ = emit e "  unreachable"
+  let _ = emit e "lz_unforced:"
+  let _ = emit e "  store i8 1, ptr @mdk_gs_\{name}"
+  let (v, _ty) = emitExpr e [] body
+  let _ = emit e "  store i64 \{v}, ptr @mdk_g_\{name}"
+  let _ = emit e "  store i8 2, ptr @mdk_gs_\{name}"
+  let _ = emit e "  ret i64 \{v}"
+  emit e "}"
 
 -- Hint from the driver: True when typecheck resolved main's inferred return type to
 -- Unit (e.g. via a polymorphic HOF whose result specialises to Unit with no explicit
@@ -10140,6 +10262,10 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = setRef dictConstCacheRef []
   let _ = setRef dispCacheRef []
   let _ = installKnownFnMap (collectFns groups)
+  -- #561 PR-A: the gap census emits every value bind ORDINARILY (eager load), so
+  -- install an EMPTY lazy set — this also RESETS any prior emitProgram's set so it
+  -- cannot leak into the census.
+  let _ = installLazyGlobalMap []
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
   let _ = installDefArityMap e (fnBinds groups)

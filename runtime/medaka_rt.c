@@ -224,6 +224,22 @@ noreturn void mdk_slice_oob(long long lo, long long hi_incl) {
   exit(1);
 }
 
+/* #561 PR-A: a top-level nullary value global that refers to itself during its own
+ * initialization (a non-productive cyclic value, e.g. `x = x + 1`, or a mutual
+ * `a = b; b = a`).  The native backend emits such globals LAZILY — forced on first
+ * use, with a per-global state flag (@mdk_gs_<name>) black-holed to state 1 while the
+ * body runs — and re-entering a still-forcing cell calls this, matching the reference
+ * engine (eval)'s forceMemo/blackholeCell E-CYCLIC-VALUE.  `name` is a static C string
+ * naming the offending binding.  Flushes buffered stdout on the abort path exactly as
+ * mdk_oob/mdk_slice_oob do (the "run drops stdout on panic" machinery). */
+noreturn void mdk_cyclic_value(const char* name) {
+  mdk_flush_run_stdout_on_abort();
+  fprintf(stderr,
+          "runtime error [E-CYCLIC-VALUE]: %s refers to itself during initialization (non-productive cyclic value)\n",
+          name);
+  exit(1);
+}
+
 /* Print an Int.  Matches the tree-walker oracle: Eval.pp_value (VInt n) =
  * string_of_int n, then eval_probe adds a trailing newline. */
 void mdk_print_int(long long v) { printf("%lld\n", v); }
