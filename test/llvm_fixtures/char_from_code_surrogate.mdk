@@ -1,0 +1,4 @@
+-- #476 domain cell: charFromCode on UTF-16 surrogate 0xD800 (55296), not a scalar value -> None (scalar -1).
+main = match charFromCode 55296
+  Some c => charCode c
+  None => 0 - 1

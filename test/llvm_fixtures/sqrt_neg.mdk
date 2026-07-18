@@ -1,0 +1,2 @@
+-- #476 domain cell: sqrt of a negative is outside the real domain -> NaN.
+main = sqrt -1.0

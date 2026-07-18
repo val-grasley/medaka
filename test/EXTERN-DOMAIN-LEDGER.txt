@@ -1,0 +1,173 @@
+# test/EXTERN-DOMAIN-LEDGER.txt — per-extern DOMAIN classification (issue #476)
+#
+# WHY THIS EXISTS
+#   diff_compiler_capability_matrix.sh proves each extern EXISTS on each engine.
+#   diff_compiler_engines.sh proves the three engines AGREE on the sampled corpus.
+#   Neither asks whether the engines agree at an extern's EDGE DOMAIN — the input
+#   region where a partial function returns None / NaN / +-inf / saturates / traps.
+#   floatToInt out of range was a three-way divergence (eval 0, native an ASLR
+#   pointer — an S0 infoleak, wasm a trap) that survived for months with every
+#   gate green, because NO fixture ever sampled the boundary (#346 / PR #473).
+#
+#   This ledger closes that hole STRUCTURALLY.  The gate DERIVES the set of
+#   value-comparable externs (every extern in stdlib/runtime.mdk whose signature
+#   carries NO capability annotation `<Cap>` — i.e. a pure, deterministic function
+#   of its arguments, the only kind the value-differential can compare) and
+#   REQUIRES each one to appear here exactly once with a domain verdict.  A new
+#   pure extern with no row FAILS the gate — the classification cannot be
+#   forgotten (self-draining, like CAPABILITY-EXCEPTIONS.txt).
+#
+# FORMAT  (tab-separated; '#'-prefixed and blank lines ignored)
+#   extern <TAB> class <TAB> detail
+#
+#   class ∈ TOTAL | BOUNDARY | PENDING | EXEMPT
+#
+#   TOTAL    <reason>
+#            Domain is total (or wraps/saturates by DESIGN): every input yields a
+#            well-defined, finite, comparable value with no None/NaN/inf/OOB edge.
+#            No boundary fixture required.  reason must say WHY it is total.
+#
+#   BOUNDARY <key[,key...]>  <reason>
+#            Partial / edge-heavy domain WITH boundary fixtures pinning the edge
+#            across all three engines.  Each <key> is a corpus/name pin key
+#            (llvm/<n>, llvmT/<n>, wasm/<n>, wasmT/<n>).  The gate verifies, for
+#            each key: the fixture .mdk exists, a matching .pin exists, and the
+#            fixture SOURCE names this extern (so the row cannot point at an
+#            unrelated cell).  The cross-engine value comparison itself is done by
+#            diff_compiler_engines.sh, which auto-discovers the fixture.
+#
+#   PENDING  #<issue>  <reason>
+#            Partial / edge-heavy domain whose boundary is NOT yet pinned.  A
+#            LEGAL, GREEN, but COUNTED state: the gate reports the PENDING roster
+#            every run, so the residual is visible and self-draining rather than
+#            silently absent.  Converting a PENDING row to BOUNDARY (author the
+#            cells) or TOTAL (prove it total) is the follow-up work #476 tracks.
+#            detail MUST begin with an issue reference (#NNN).
+#
+#   EXEMPT   <reason>
+#            Not a value-comparable function: aborting control flow, mutation,
+#            IO plumbing, or a compiler-internal sentinel.  There is no value to
+#            pin across engines.  reason must say which.
+#
+# HYGIENE the gate enforces (see diff_compiler_capability_matrix.sh §9):
+#   - every DERIVED-pure extern has exactly one row here (missing => FAIL);
+#   - no row names an unknown or non-pure (capability-annotated) extern;
+#   - no duplicate extern rows;
+#   - class is one of the four tokens;
+#   - BOUNDARY keys resolve to real fixture+pin and the fixture names the extern;
+#   - PENDING detail starts with #<issue>.
+#
+# ── BOUNDARY: edge-domain externs pinned across eval/native/wasm ──────────────
+# floatToInt: the founding case (#346/PR#473).  Nine cells already pin NaN/+-inf/
+# over/under/i64-clamp/neg-zero; two representative ones referenced here.
+floatToInt	BOUNDARY	llvm/float_to_int_nan,llvm/float_to_int_over,llvm/float_to_int_clamp_i64	#346: partial map Float->Int; NaN->0, over->intMaxBound, under->intMinBound, clamp to 63-bit Int (not i64) bounds
+# charFromCode: Int -> Option Char, None outside [0,0x10FFFF] and on surrogates.
+charFromCode	BOUNDARY	llvm/char_from_code_neg,llvm/char_from_code_over,llvm/char_from_code_surrogate,llvm/char_from_code_max	partial map to Unicode scalar values: <0 / >U+10FFFF / surrogate -> None; U+10FFFF -> Some
+# stringToFloat: String -> Option Float; None on unparseable, Some nan/inf on the IEEE keywords.
+stringToFloat	BOUNDARY	llvm/string_to_float_empty,llvm/string_to_float_nan,llvm/string_to_float_inf	partial parse: "" -> None; "nan"/"inf" -> Some nan/inf (render must agree across engines)
+# Real math externs whose domain excludes part of the reals.
+sqrt	BOUNDARY	llvm/sqrt_neg	sqrt of a negative is outside the real domain -> NaN
+log	BOUNDARY	llvm/log_zero,llvm/log_neg	log 0 -> -inf (pole); log of a negative -> NaN
+acos	BOUNDARY	llvm/acos_over	defined on [-1,1]; outside -> NaN
+asin	BOUNDARY	llvm/asin_under	defined on [-1,1]; outside -> NaN
+# intToFloat: total map, but the 63-bit Int extremes are the precision boundary.
+intToFloat	BOUNDARY	llvm/int_to_float_max,llvm/int_to_float_min	boundary at intMaxBound (2^62-1) / intMinBound (-2^62)
+#
+# ── PENDING: edge domain, boundary cells not yet authored (#476 residual) ─────
+# Float->Float that can emit NaN/+-inf/-0.0 at edge inputs (the render is the
+# known-fragile part — see the float-tostring/neg-zero divergence history).
+floatToString	PENDING	#476 renders NaN / +-inf / -0.0 -> known-fragile edge; pin a dedicated cell
+floor	PENDING	#476 NaN/+-inf pass through; -0.0 handling at the edge
+ceil	PENDING	#476 NaN/+-inf pass through; -0.0 handling at the edge
+round	PENDING	#476 NaN/+-inf pass through; half-way rounding + -0.0 at the edge
+trunc	PENDING	#476 NaN/+-inf pass through; -0.0 at the edge
+log2	PENDING	#476 sibling of log: 0 -> -inf, negative -> NaN
+log10	PENDING	#476 sibling of log: 0 -> -inf, negative -> NaN
+exp	PENDING	#476 overflows to +inf for large input
+cosh	PENDING	#476 overflows to +inf for large |input|
+sinh	PENDING	#476 overflows to +-inf for large |input|
+tan	PENDING	#476 near the poles (odd multiples of pi/2) the result blows up
+pow	PENDING	#476 0^negative -> +inf; negative^fractional -> NaN
+hypot	PENDING	#476 overflows to +inf near the Float max
+atan2	PENDING	#476 the (0,0) input and quadrant/sign edges
+floatRem	PENDING	#476 x rem 0 -> NaN; rem with +-inf operands
+intBitsToFloat	PENDING	#476 NaN / +-inf / -0.0 bit patterns reinterpret to fragile-render floats
+hashFloat	PENDING	#476 hashing NaN and -0.0 (must agree with +0.0) is an edge (cf #416 hash SIGSEGV class)
+# Bit shifts: shift amount >= 63/64 or negative is C-level UB (all three engines agree today, unpinned).
+shiftLeft	PENDING	#476 shift amount >= 64 or negative is the edge (UB in C; verify+pin before it drifts)
+shiftRight	PENDING	#476 shift amount >= 64 or negative is the edge (UB in C; verify+pin before it drifts)
+# Array / string / bytes with out-of-range or invalid-input domains.
+arrayGetUnsafe	PENDING	#476 out-of-bounds index is genuinely unsafe/UB — probe with care before pinning
+arraySetUnsafe	PENDING	#476 out-of-bounds index is genuinely unsafe/UB — probe with care before pinning
+arrayMake	PENDING	#476 negative / zero length is the edge
+arrayMakeWith	PENDING	#476 negative / zero length is the edge
+arrayBlit	PENDING	#476 out-of-range src/dst offsets and length
+bytesToFloat64	PENDING	#476 out-of-range byte offset into the Array Int
+stringSlice	PENDING	#476 out-of-range / inverted start/end indices
+stringFromUtf8Bytes	PENDING	#476 invalid / truncated UTF-8 byte sequences
+#
+# ── TOTAL: every input yields a well-defined finite comparable value ──────────
+# Nullary constants.
+pi	TOTAL	nullary constant
+e	TOTAL	nullary constant
+intMaxBound	TOTAL	nullary constant (2^62-1)
+intMinBound	TOTAL	nullary constant (-2^62)
+charMaxBound	TOTAL	nullary constant (U+10FFFF)
+charMinBound	TOTAL	nullary constant (U+0000)
+# Char: total over the whole Char domain.
+charCode	TOTAL	every Char has a scalar code point
+charIsAlpha	TOTAL	total predicate over Char
+charIsLower	TOTAL	total predicate over Char
+charIsUpper	TOTAL	total predicate over Char
+charIsPunct	TOTAL	total predicate over Char
+charIsSpace	TOTAL	total predicate over Char
+charToLower	TOTAL	total case map (identity where no mapping exists)
+charToUpper	TOTAL	total case map (identity where no mapping exists)
+charToStr	TOTAL	total: singleton string of the Char
+# Int / bit ops: total (Int wraps by design — decided_int_wraps_by_design).
+bitAnd	TOTAL	total bitwise op
+bitOr	TOTAL	total bitwise op
+bitXor	TOTAL	total bitwise op
+bitNot	TOTAL	total bitwise op
+intToString	TOTAL	total: decimal render of any Int (incl. intMinBound)
+# Hashes (except hashFloat): total over their domains.
+hashBool	TOTAL	total over Bool
+hashChar	TOTAL	total over Char
+hashInt	TOTAL	total over Int
+hashString	TOTAL	total over String (incl. "")
+# String ops with a total domain.
+stringLength	TOTAL	total: length of any String
+stringConcat	TOTAL	total: concatenation of any list of Strings
+stringCompare	TOTAL	total three-way compare of any two Strings
+stringIndexOf	TOTAL	total: Option Int, None when the needle is absent
+stringToLower	TOTAL	total case map
+stringToUpper	TOTAL	total case map
+stringToChars	TOTAL	total: decompose any String to its Chars
+stringFromChars	TOTAL	total: assemble a String from any Array Char
+stringToUtf8Bytes	TOTAL	total: UTF-8 encoding is defined for every String
+# Arrays: total over their whole-array operations.
+arrayLength	TOTAL	total: length of any Array
+arrayCopy	TOTAL	total: shallow copy of any Array
+arrayFromList	TOTAL	total: build an Array from any List
+arrayFill	TOTAL	total: overwrite every slot of the given Array
+# Float functions with a total real domain (bounded or finite everywhere).
+sin	TOTAL	total, bounded output [-1,1]
+cos	TOTAL	total, bounded output [-1,1]
+atan	TOTAL	total, bounded output (-pi/2, pi/2)
+tanh	TOTAL	total, bounded output (-1, 1)
+cbrt	TOTAL	total: real cube root is defined for every Float (incl. negatives)
+# Debug renderers: total.
+debugCharLit	TOTAL	total: source-literal render of any Char
+debugStringLit	TOTAL	total: source-literal render of any String
+# Bit<->Float reinterpretation that is total in the value it produces.
+floatToBytes64	TOTAL	total: IEEE-754 byte decomposition of any Float
+#
+# ── EXEMPT: not a value-comparable function ───────────────────────────────────
+Ref	EXEMPT	mutable-cell constructor — reference identity, not a comparable value
+setRef	EXEMPT	mutation, returns Unit
+panic	EXEMPT	aborting control flow, produces no value (returns bottom)
+indexError	EXEMPT	aborting control flow, produces no value (returns bottom)
+exit	EXEMPT	terminates the process, produces no comparable value
+__fallthrough__	EXEMPT	compiler-generated guard-fallthrough sentinel, never user-evaluated
+enableRunStdoutFlush	EXEMPT	IO plumbing (stdout flush control), returns Unit
+stashRunStdout	EXEMPT	IO plumbing (stdout capture), returns Unit

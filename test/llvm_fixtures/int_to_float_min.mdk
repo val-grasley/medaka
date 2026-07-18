@@ -1,0 +1,2 @@
+-- #476 domain cell: intToFloat at intMinBound (-2^62) — the bottom of the 63-bit Int domain.
+main = intToFloat -4611686018427387904

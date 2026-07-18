@@ -1,0 +1,2 @@
+-- #476 domain cell: log of a negative is outside the real domain -> NaN.
+main = log -1.0

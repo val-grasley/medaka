@@ -315,6 +315,119 @@ if [ -n "$FROZEN_ROWS" ]; then
   fi
 fi
 
+# ── 9. DOMAIN coverage — the edge-domain requirement (issue #476) ────────────
+# Steps 1-8 prove each extern EXISTS on each engine and (via diff_compiler_engines.sh)
+# that the engines AGREE on the sampled corpus.  Neither asks whether they agree at an
+# extern's EDGE DOMAIN — the input region where a partial function returns None / NaN /
+# +-inf / saturates / traps.  floatToInt out of range was a three-way divergence (eval 0,
+# native an ASLR pointer — S0 infoleak, wasm a trap) that survived for months with every
+# gate green because NO fixture sampled the boundary (#346/PR#473).
+#
+# This section makes the requirement STRUCTURAL.  It DERIVES the set of value-comparable
+# externs and requires each to carry a domain verdict in test/EXTERN-DOMAIN-LEDGER.txt.
+#
+# DERIVATION (no hand-list — a hand-list rots): an extern is value-comparable iff its
+# stdlib/runtime.mdk signature carries NO capability annotation `<Cap>` (`<Stdout>`,
+# `<Rand>`, `<Clock>`, `<FileRead ...>`, ...).  A capability-annotated extern is
+# effectful / nondeterministic (IO, RNG, clock, net) and CANNOT appear in the pure
+# value-differential corpus at all, so a domain fixture over it is meaningless.  The
+# pure set therefore == the only externs the edge requirement can bind, and it is read
+# straight off the signatures every run — a new pure extern is enrolled automatically.
+DOMLEDGER="$ROOT/test/EXTERN-DOMAIN-LEDGER.txt"
+if [ ! -f "$DOMLEDGER" ]; then
+  echo "FAIL: missing $DOMLEDGER (issue #476 domain ledger)."
+  FAIL=1
+else
+  # derived pure set: every extern whose signature has no <Cap> capability annotation.
+  grep -E '^extern [A-Za-z_][A-Za-z0-9_]* :' "$RUNTIME" | grep -vE '<[A-Z]' \
+    | awk '{print $2}' | sort -u > "$WORK/pure.txt"
+  N_PURE="$(wc -l < "$WORK/pure.txt" | tr -d ' ')"
+
+  # ledger rows (strip comments/blank).  Columns: extern <TAB> class <TAB> detail
+  grep -v '^[[:space:]]*#' "$DOMLEDGER" | grep -v '^[[:space:]]*$' > "$WORK/dom_rows.txt" || true
+
+  # corpus prefix -> (fixture dir, pin dir) for BOUNDARY key resolution.
+  fixdir_of() { case "$1" in
+      llvm)  echo "$ROOT/test/llvm_fixtures" ;;
+      llvmT) echo "$ROOT/test/llvm_fixtures_typed" ;;
+      wasm)  echo "$ROOT/test/wasm/fixtures" ;;
+      wasmT) echo "$ROOT/test/wasm/fixtures_typed" ;;
+      *)     echo "" ;;
+    esac ; }
+
+  : > "$WORK/dom_seen.txt"
+  while IFS="$(printf '\t')" read -r ext cls detail; do
+    [ -n "$ext" ] || continue
+    # every ledger row must name a real, DERIVED-PURE extern.
+    if ! grep -qFx "$ext" "$WORK/pure.txt"; then
+      if grep -qFx "$ext" "$WORK/all.txt"; then
+        echo "FAIL: EXTERN-DOMAIN-LEDGER.txt row '$ext' is NOT a pure/value extern (its runtime.mdk signature carries a <Cap> capability annotation — it is effectful and cannot be domain-tested). Remove the row."
+      else
+        echo "FAIL: EXTERN-DOMAIN-LEDGER.txt references unknown extern '$ext' (not declared in stdlib/runtime.mdk)."
+      fi
+      FAIL=1; continue
+    fi
+    echo "$ext" >> "$WORK/dom_seen.txt"
+    case "$cls" in
+      TOTAL|EXEMPT) : ;;
+      PENDING)
+        # detail must begin with an issue reference so the residual self-drains.
+        case "$detail" in
+          '#'[0-9]*) : ;;
+          *) echo "FAIL: EXTERN-DOMAIN-LEDGER.txt PENDING row '$ext' must begin its detail with an issue reference (#NNN); got: '$detail'"; FAIL=1 ;;
+        esac ;;
+      BOUNDARY)
+        # detail = <keys>  <reason>; keys is the first whitespace-delimited field.
+        keys="$(printf '%s' "$detail" | awk '{print $1}')"
+        if [ -z "$keys" ]; then
+          echo "FAIL: EXTERN-DOMAIN-LEDGER.txt BOUNDARY row '$ext' names no fixture keys."; FAIL=1
+        fi
+        OLDIFS="$IFS"; IFS=','
+        for key in $keys; do
+          IFS="$OLDIFS"
+          corpus="${key%%/*}"; name="${key#*/}"
+          fdir="$(fixdir_of "$corpus")"
+          if [ -z "$fdir" ]; then
+            echo "FAIL: EXTERN-DOMAIN-LEDGER.txt '$ext' BOUNDARY key '$key' has an unknown corpus prefix (want llvm/ llvmT/ wasm/ wasmT/)."; FAIL=1; continue
+          fi
+          fx="$fdir/$name.mdk"
+          pin="$ROOT/test/engine_value_pins/$corpus/$name.pin"
+          if [ ! -f "$fx" ]; then
+            echo "FAIL: EXTERN-DOMAIN-LEDGER.txt '$ext' BOUNDARY key '$key' -> missing fixture $fx."; FAIL=1; continue
+          fi
+          if [ ! -f "$pin" ]; then
+            echo "FAIL: EXTERN-DOMAIN-LEDGER.txt '$ext' BOUNDARY key '$key' -> fixture exists but no value pin $pin (a boundary cell must pin an absolute value across engines)."; FAIL=1
+          fi
+          # the fixture SOURCE must actually name the extern (row can't point at an unrelated cell).
+          if ! grep -qw "$ext" "$fx"; then
+            echo "FAIL: EXTERN-DOMAIN-LEDGER.txt '$ext' BOUNDARY key '$key' -> fixture $fx does not mention '$ext' (the cell does not exercise the extern it is filed under)."; FAIL=1
+          fi
+        done
+        IFS="$OLDIFS" ;;
+      *)
+        echo "FAIL: EXTERN-DOMAIN-LEDGER.txt row '$ext' has unknown class '$cls' (want TOTAL|BOUNDARY|PENDING|EXEMPT)."; FAIL=1 ;;
+    esac
+  done < "$WORK/dom_rows.txt"
+
+  # no duplicate extern rows.
+  DOM_DUPES="$(awk -F'\t' '!/^[[:space:]]*#/ && NF {print $1}' "$WORK/dom_rows.txt" | sort | uniq -d)"
+  if [ -n "$DOM_DUPES" ]; then
+    echo "FAIL: EXTERN-DOMAIN-LEDGER.txt has duplicate extern rows:"; printf '%s\n' "$DOM_DUPES" | sed 's/^/  /'; FAIL=1
+  fi
+
+  # COMPLETENESS (self-drain): every derived-pure extern must have exactly one row.
+  # A new pure extern with no verdict FAILS here — the classification cannot be forgotten.
+  sort -u "$WORK/dom_seen.txt" > "$WORK/dom_seen_u.txt"
+  MISSING_DOM="$(comm -23 "$WORK/pure.txt" "$WORK/dom_seen_u.txt")"
+  if [ -n "$MISSING_DOM" ]; then
+    echo "FAIL: these pure/value externs have NO row in test/EXTERN-DOMAIN-LEDGER.txt (issue #476)."
+    echo "      Classify each as TOTAL (total domain), BOUNDARY (edge domain + boundary cells),"
+    echo "      PENDING (edge domain, cells not yet authored, #NNN), or EXEMPT (not value-comparable):"
+    printf '%s\n' "$MISSING_DOM" | sed 's/^/  - /'
+    FAIL=1
+  fi
+fi
+
 # ── 8. report ────────────────────────────────────────────────────────────────
 n_interp_y="$(awk -F'\t' '$2=="interp" && $3=="Y"' "$WORK/matrix.txt" | wc -l | tr -d ' ')"
 n_llvm_y="$(awk -F'\t' '$2=="llvm" && $3=="Y"' "$WORK/matrix.txt" | wc -l | tr -d ' ')"
@@ -338,6 +451,18 @@ echo "implemented — interp: $n_interp_y/$N_ALL   llvm: $n_llvm_y/$N_ALL   wasm
 echo "exceptions on file, by engine + category:"
 awk -F'\t' '{print $2"\t"$3}' "$WORK/exc_rows.txt" | sort | uniq -c \
   | awk '{printf "  %-6s %-6s %-16s %s\n", "count="$1, $2, $3, ""}'
+
+# ── domain-coverage summary + PENDING roster (issue #476) ────────────────────
+if [ -f "$WORK/dom_rows.txt" ]; then
+  echo "domain ledger (test/EXTERN-DOMAIN-LEDGER.txt) over $N_PURE pure/value externs:"
+  awk -F'\t' '{print $2}' "$WORK/dom_rows.txt" | sort | uniq -c \
+    | awk '{printf "  %-9s %s\n", $2, "count="$1}'
+  n_pending="$(awk -F'\t' '$2=="PENDING"{print $1}' "$WORK/dom_rows.txt" | wc -l | tr -d ' ')"
+  if [ "$n_pending" -gt 0 ]; then
+    echo "  PENDING roster (edge domain, boundary cells not yet authored — the #476 residual):"
+    awk -F'\t' '$2=="PENDING"{print $1}' "$WORK/dom_rows.txt" | sort | tr '\n' ' ' | sed 's/^/    /; s/ $/\n/'
+  fi
+fi
 
 if [ "$BAD" = 1 ] || [ "$FAIL" = 1 ]; then
   echo
