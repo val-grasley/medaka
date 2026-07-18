@@ -41,6 +41,16 @@ for f in "$DIR"/*.mdk; do
   actual="$(cd "$ROOT" && "$BIN" run --json "$rel" 2>&1 1>/dev/null | strip_paths)"
 
   if [ "$capture_mode" = "1" ]; then
+    # #528: this path captures ./medaka's STDERR (2>&1 1>/dev/null). Editing any
+    # compiler/**/*.mdk makes the CLI print a stale-binary WARNING to stderr, and
+    # blessing is exactly the moment nobody re-reads the golden bytes — so that
+    # warning would be baked into the committed golden and later surface as a
+    # mystery diff on someone else's fresh binary. REFUSE (a warning printed
+    # during a bless is a warning nobody reads); rebuild and retry.
+    if mdk_is_stale "$actual"; then
+      printf 'REFUSING to capture %s: ./medaka reports itself stale — run '\''make medaka'\'' and retry (else the stale-binary warning is baked into the golden). #528\n' "$name" >&2
+      exit 2
+    fi
     printf '%s\n' "$actual" > "$golden"
     printf 'captured %s\n' "$name"
   else
