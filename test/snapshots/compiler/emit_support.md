@@ -1,5 +1,5 @@
 # META
-source_lines=364
+source_lines=549
 stages=DESUGAR,MARK
 # SOURCE
 -- BACKEND-NEUTRAL EMIT SUPPORT — helpers shared verbatim by BOTH the LLVM
@@ -238,6 +238,191 @@ export bindEagerReach : OrdMap (List String) -> CBind -> List String
 bindEagerReach rm (CBind name [CClause [] _]) = fromOption [] (omLookup name rm)
 bindEagerReach _ _ = []
 
+-- ── #561 PR-A: lazy-global classification (native fast-path predicate) ────────
+-- The topo sort (Stage B, above) makes eager init CORRECT wherever a static init
+-- order EXISTS.  Two residual cases have no static order, and the reference engine
+-- (eval) handles them by LAZINESS — a thunked cell forced on first use, black-holed
+-- while forcing so a cycle raises E-CYCLIC-VALUE (eval.mdk forceMemo/blackholeCell):
+--   * a value CYCLE — a nontrivial SCC, or a self-loop `x = x + 1` — for which no
+--     eager order exists at all (acceptance repro #5);
+--   * an interface-method DISPATCH (`CMethod`) reachable EAGERLY — the impl body it
+--     selects at run time can read an arbitrary later global the sort cannot see, so
+--     no purely-syntactic order is guaranteed correct (acceptance repro #4, `mk True`).
+-- `lazyGlobalNames` marks exactly the value globals that (transitively, over the same
+-- eager CVar/CDict call graph Stage B follows) reach either condition; the native
+-- backend emits those as forced-on-first-use `@mdk_force_<x>` cells and leaves every
+-- other value global on the byte-identical eager prologue (the FAST PATH).
+--
+-- ⚠️ CONSERVATIVE BY CONSTRUCTION — a wrongly-EAGER global is a silent miscompile
+-- (the exact #553 bug class), so any doubt resolves to LAZY: ANY eager `CMethod` in
+-- reach, or ANY cycle membership, taints the global.  The taint is downward-closed
+-- over reads (if `a` eagerly reads lazy `l`, `a` reaches `l`'s taint and is itself
+-- lazy), so a SAFE global's whole eager reach is SAFE — which is what lets the eager
+-- prologue run unchanged and never call a force function.
+--
+-- The taint is a least fixpoint over the SCC-condensed eager call graph, folded in
+-- the reverse-topological order tarjanSCCs emits (callees before callers) — the same
+-- shape as foldReachSCCs, and cycle-safe WITHOUT a visited list for the same reason.
+
+-- does `body` reach an interface-method DISPATCH (`CMethod`) head in EAGER position?
+-- The boolean twin of `eagerVars`: it descends exactly the eager subterms eagerVars
+-- does (a `CLam` body is deferred to call time, so NOT descended) and returns True
+-- the moment a `CMethod` is reached.  A `CDict` head is a NAMED callee eagerVars
+-- already follows as a graph edge, so it needs no taint here — its callee is tainted
+-- through the ordinary reach fold if the callee itself dispatches.
+eagerHasMethod : CExpr -> Bool
+eagerHasMethod (CLam _ _) = False
+eagerHasMethod (CMethod _ _ _ _) = True
+eagerHasMethod (CDict _ _) = False
+eagerHasMethod (CVar _ _) = False
+eagerHasMethod (CLit _) = False
+eagerHasMethod (CApp f a) = eagerHasMethod f || eagerHasMethod a
+eagerHasMethod (CLet _ _ e1 e2) = eagerHasMethod e1 || eagerHasMethod e2
+eagerHasMethod (CLetGroup binds body) = bindsHaveMethod binds
+  || eagerHasMethod body
+eagerHasMethod (CBlock stmts) = stmtsHaveMethod stmts
+eagerHasMethod (CIf c t f) = eagerHasMethod c
+  || eagerHasMethod t
+  || eagerHasMethod f
+eagerHasMethod (CBinPrim _ l r _) = eagerHasMethod l || eagerHasMethod r
+eagerHasMethod (CUnOp _ x) = eagerHasMethod x
+eagerHasMethod (CMatch scrut arms) = eagerHasMethod scrut || armsHaveMethod arms
+eagerHasMethod (CDecision scrut arms _) = eagerHasMethod scrut
+  || armsHaveMethod arms
+eagerHasMethod (CTuple es) = listHaveMethod es
+eagerHasMethod (CList es) = listHaveMethod es
+eagerHasMethod (CRangeList lo hi _) = eagerHasMethod lo || eagerHasMethod hi
+eagerHasMethod (CRangeArray lo hi _) = eagerHasMethod lo || eagerHasMethod hi
+eagerHasMethod (CRecord _ fields) = fieldsHaveMethod fields
+eagerHasMethod (CFieldAccess ex _ _) = eagerHasMethod ex
+eagerHasMethod (CRecordUpdate _ base updates) = eagerHasMethod base
+  || fieldsHaveMethod updates
+eagerHasMethod (CVariantUpdate _ base updates) = eagerHasMethod base
+  || fieldsHaveMethod updates
+eagerHasMethod (CArray es) = listHaveMethod es
+eagerHasMethod (CIndex a i) = eagerHasMethod a || eagerHasMethod i
+eagerHasMethod (CStringIndex a i) = eagerHasMethod a || eagerHasMethod i
+eagerHasMethod (CStringSlice a lo hi _) = eagerHasMethod a
+  || eagerHasMethod lo
+  || eagerHasMethod hi
+eagerHasMethod (CListIndex a i) = eagerHasMethod a || eagerHasMethod i
+eagerHasMethod (CListSlice a lo hi _) = eagerHasMethod a
+  || eagerHasMethod lo
+  || eagerHasMethod hi
+eagerHasMethod (CSlice a lo hi _) = eagerHasMethod a
+  || eagerHasMethod lo
+  || eagerHasMethod hi
+eagerHasMethod _ = False
+
+listHaveMethod : List CExpr -> Bool
+listHaveMethod [] = False
+listHaveMethod (e::rest) = eagerHasMethod e || listHaveMethod rest
+
+-- a let-group descends ONLY its nullary single-clause binds' rhss, exactly as
+-- eagerVarsBinds does — a nested function's body is deferred to its own call.
+bindsHaveMethod : List CBind -> Bool
+bindsHaveMethod [] = False
+bindsHaveMethod ((CBind _ [CClause [] rhs])::rest) = eagerHasMethod rhs
+  || bindsHaveMethod rest
+bindsHaveMethod (_::rest) = bindsHaveMethod rest
+
+stmtsHaveMethod : List CStmt -> Bool
+stmtsHaveMethod [] = False
+stmtsHaveMethod ((CSExpr ex)::rest) = eagerHasMethod ex || stmtsHaveMethod rest
+stmtsHaveMethod ((CSLet _ _ ex)::rest) = eagerHasMethod ex
+  || stmtsHaveMethod rest
+stmtsHaveMethod ((CSAssign _ ex)::rest) = eagerHasMethod ex
+  || stmtsHaveMethod rest
+stmtsHaveMethod (_::rest) = stmtsHaveMethod rest
+
+armsHaveMethod : List CArm -> Bool
+armsHaveMethod [] = False
+armsHaveMethod ((CArm _ gs body)::rest) = guardsHaveMethod gs
+  || eagerHasMethod body
+  || armsHaveMethod rest
+
+guardsHaveMethod : List CGuard -> Bool
+guardsHaveMethod [] = False
+guardsHaveMethod ((CGBool c)::rest) = eagerHasMethod c || guardsHaveMethod rest
+guardsHaveMethod ((CGBind _ e)::rest) = eagerHasMethod e
+  || guardsHaveMethod rest
+
+fieldsHaveMethod : List CField -> Bool
+fieldsHaveMethod [] = False
+fieldsHaveMethod ((CField _ ex)::rest) = eagerHasMethod ex
+  || fieldsHaveMethod rest
+
+-- a binding is DIRECTLY method-tainted if any of its clause bodies dispatches
+-- eagerly (a value global has one nullary clause; a helper fn may have several, and
+-- calling it eagerly runs the matched clause's body eagerly — so any clause taints).
+bindDirectMethod : CBind -> Bool
+bindDirectMethod (CBind _ clauses) = clausesHaveMethod clauses
+
+clausesHaveMethod : List CClause -> Bool
+clausesHaveMethod [] = False
+clausesHaveMethod ((CClause _ body)::rest) = eagerHasMethod body
+  || clausesHaveMethod rest
+
+-- the set of bind names that dispatch eagerly in their own body (the taint SOURCES,
+-- alongside cycle membership computed during the fold).
+methodTaintSet : List CBind -> OrdMap Unit
+methodTaintSet [] = omEmpty
+methodTaintSet (b::rest) =
+  let m = methodTaintSet rest
+  if bindDirectMethod b then omInsert (bindName b) () m else m
+
+lengthGt1 : List String -> Bool
+lengthGt1 (_::_::_) = True
+lengthGt1 _ = False
+
+anyKeyIn : List String -> OrdMap Unit -> Bool
+anyKeyIn [] _ = False
+anyKeyIn (n::rest) s = omHasKey n s || anyKeyIn rest s
+
+-- a name self-loops when its own eager callees include itself (`x = x + 1`); a
+-- singleton SCC does NOT record this on its own, so it is tested explicitly.
+selfLoops : String -> OrdMap (List String) -> Bool
+selfLoops n adj = contains n (fromOption [] (omLookup n adj))
+
+anySelfLoop : List String -> OrdMap (List String) -> Bool
+anySelfLoop [] _ = False
+anySelfLoop (n::rest) adj = selfLoops n adj || anySelfLoop rest adj
+
+-- callees of every member of an SCC, concatenated (for the successor-taint check).
+sccCallees : List String -> OrdMap (List String) -> List String
+sccCallees [] _ = []
+sccCallees (n::rest) adj = fromOption [] (omLookup n adj) ++ sccCallees rest adj
+
+insertAllKeys : List String -> OrdMap Unit -> OrdMap Unit
+insertAllKeys [] acc = acc
+insertAllKeys (n::rest) acc = insertAllKeys rest (omInsert n () acc)
+
+-- fold the SCC DAG in reverse-topological order (callees before callers), marking an
+-- SCC's members tainted when the SCC is a cycle (nontrivial, or a self-loop), OR a
+-- member dispatches eagerly (`methodSet`), OR a callee SCC is already tainted.
+foldTaintSCCs : OrdMap (List String) -> OrdMap Unit -> List (List String) -> OrdMap Unit -> OrdMap Unit
+foldTaintSCCs _ _ [] acc = acc
+foldTaintSCCs adj methodSet (scc::rest) acc =
+  let cyclic = lengthGt1 scc || anySelfLoop scc adj
+  let direct = anyKeyIn scc methodSet
+  let succ = anyKeyIn (sccCallees scc adj) acc
+  let acc2 = if cyclic || direct || succ then insertAllKeys scc acc else acc
+  foldTaintSCCs adj methodSet rest acc2
+
+-- the value globals that must be emitted LAZY on the native backend: those reaching
+-- an eager dispatch or a value cycle, transitively over the eager call graph.  Excludes
+-- `main` (the entry point, never an init-ordered global).  Empty for a program whose
+-- every value global is statically orderable — which is the compiler's own case, so
+-- the fast path keeps the self-compile IR byte-identical.
+export lazyGlobalNames : List CBind -> List String
+lazyGlobalNames binds =
+  let allNames = bindNames binds
+  let nameSet = omFromNames allNames omEmpty
+  let adj = eagerCalleesMap nameSet binds
+  let methodSet = methodTaintSet binds
+  let tainted = foldTaintSCCs adj methodSet (tarjanSCCs allNames adj) omEmpty
+  filterList (n => n != "main" && omHasKey n tainted) (valGlobalNames binds)
+
 -- ── interface-method dispatch metadata (installed once per compile) ──────────
 -- method → (interface, declared-full-arity), from the program's `DInterface`
 -- decls.  Populated by each backend's `installMethodIface` before emitProgram; an
@@ -455,6 +640,90 @@ rngBound _ = 0
 (DTypeSig true "bindEagerReach" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "CBind") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "bindEagerReach" ((PVar "rm") (PCon "CBind" (PVar "name") (PList (PCon "CClause" (PList) PWild)))) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "name")) (EVar "rm"))))
 (DFunDef false "bindEagerReach" (PWild PWild) (EListLit))
+(DTypeSig false "eagerHasMethod" (TyFun (TyCon "CExpr") (TyCon "Bool")))
+(DFunDef false "eagerHasMethod" ((PCon "CLam" PWild PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CMethod" PWild PWild PWild PWild)) (EVar "True"))
+(DFunDef false "eagerHasMethod" ((PCon "CDict" PWild PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CVar" PWild PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CLit" PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CApp" (PVar "f") (PVar "a"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "f")) (EApp (EVar "eagerHasMethod") (EVar "a"))))
+(DFunDef false "eagerHasMethod" ((PCon "CLet" PWild PWild (PVar "e1") (PVar "e2"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "e1")) (EApp (EVar "eagerHasMethod") (EVar "e2"))))
+(DFunDef false "eagerHasMethod" ((PCon "CLetGroup" (PVar "binds") (PVar "body"))) (EBinOp "||" (EApp (EVar "bindsHaveMethod") (EVar "binds")) (EApp (EVar "eagerHasMethod") (EVar "body"))))
+(DFunDef false "eagerHasMethod" ((PCon "CBlock" (PVar "stmts"))) (EApp (EVar "stmtsHaveMethod") (EVar "stmts")))
+(DFunDef false "eagerHasMethod" ((PCon "CIf" (PVar "c") (PVar "t") (PVar "f"))) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "c")) (EApp (EVar "eagerHasMethod") (EVar "t"))) (EApp (EVar "eagerHasMethod") (EVar "f"))))
+(DFunDef false "eagerHasMethod" ((PCon "CBinPrim" PWild (PVar "l") (PVar "r") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "l")) (EApp (EVar "eagerHasMethod") (EVar "r"))))
+(DFunDef false "eagerHasMethod" ((PCon "CUnOp" PWild (PVar "x"))) (EApp (EVar "eagerHasMethod") (EVar "x")))
+(DFunDef false "eagerHasMethod" ((PCon "CMatch" (PVar "scrut") (PVar "arms"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "scrut")) (EApp (EVar "armsHaveMethod") (EVar "arms"))))
+(DFunDef false "eagerHasMethod" ((PCon "CDecision" (PVar "scrut") (PVar "arms") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "scrut")) (EApp (EVar "armsHaveMethod") (EVar "arms"))))
+(DFunDef false "eagerHasMethod" ((PCon "CTuple" (PVar "es"))) (EApp (EVar "listHaveMethod") (EVar "es")))
+(DFunDef false "eagerHasMethod" ((PCon "CList" (PVar "es"))) (EApp (EVar "listHaveMethod") (EVar "es")))
+(DFunDef false "eagerHasMethod" ((PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "lo")) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "lo")) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CRecord" PWild (PVar "fields"))) (EApp (EVar "fieldsHaveMethod") (EVar "fields")))
+(DFunDef false "eagerHasMethod" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "eagerHasMethod") (EVar "ex")))
+(DFunDef false "eagerHasMethod" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "base")) (EApp (EVar "fieldsHaveMethod") (EVar "updates"))))
+(DFunDef false "eagerHasMethod" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "base")) (EApp (EVar "fieldsHaveMethod") (EVar "updates"))))
+(DFunDef false "eagerHasMethod" ((PCon "CArray" (PVar "es"))) (EApp (EVar "listHaveMethod") (EVar "es")))
+(DFunDef false "eagerHasMethod" ((PCon "CIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "i"))))
+(DFunDef false "eagerHasMethod" ((PCon "CStringIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "i"))))
+(DFunDef false "eagerHasMethod" ((PCon "CStringSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "lo"))) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CListIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "i"))))
+(DFunDef false "eagerHasMethod" ((PCon "CListSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "lo"))) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "lo"))) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" (PWild) (EVar "False"))
+(DTypeSig false "listHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyCon "Bool")))
+(DFunDef false "listHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "listHaveMethod" ((PCons (PVar "e") (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "e")) (EApp (EVar "listHaveMethod") (EVar "rest"))))
+(DTypeSig false "bindsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyCon "Bool")))
+(DFunDef false "bindsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "bindsHaveMethod" ((PCons (PCon "CBind" PWild (PList (PCon "CClause" (PList) (PVar "rhs")))) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "rhs")) (EApp (EVar "bindsHaveMethod") (EVar "rest"))))
+(DFunDef false "bindsHaveMethod" ((PCons PWild (PVar "rest"))) (EApp (EVar "bindsHaveMethod") (EVar "rest")))
+(DTypeSig false "stmtsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CStmt")) (TyCon "Bool")))
+(DFunDef false "stmtsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "stmtsHaveMethod" ((PCons (PCon "CSExpr" (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "stmtsHaveMethod") (EVar "rest"))))
+(DFunDef false "stmtsHaveMethod" ((PCons (PCon "CSLet" PWild PWild (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "stmtsHaveMethod") (EVar "rest"))))
+(DFunDef false "stmtsHaveMethod" ((PCons (PCon "CSAssign" PWild (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "stmtsHaveMethod") (EVar "rest"))))
+(DFunDef false "stmtsHaveMethod" ((PCons PWild (PVar "rest"))) (EApp (EVar "stmtsHaveMethod") (EVar "rest")))
+(DTypeSig false "armsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CArm")) (TyCon "Bool")))
+(DFunDef false "armsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "armsHaveMethod" ((PCons (PCon "CArm" PWild (PVar "gs") (PVar "body")) (PVar "rest"))) (EBinOp "||" (EBinOp "||" (EApp (EVar "guardsHaveMethod") (EVar "gs")) (EApp (EVar "eagerHasMethod") (EVar "body"))) (EApp (EVar "armsHaveMethod") (EVar "rest"))))
+(DTypeSig false "guardsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CGuard")) (TyCon "Bool")))
+(DFunDef false "guardsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "guardsHaveMethod" ((PCons (PCon "CGBool" (PVar "c")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "c")) (EApp (EVar "guardsHaveMethod") (EVar "rest"))))
+(DFunDef false "guardsHaveMethod" ((PCons (PCon "CGBind" PWild (PVar "e")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "e")) (EApp (EVar "guardsHaveMethod") (EVar "rest"))))
+(DTypeSig false "fieldsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyCon "Bool")))
+(DFunDef false "fieldsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "fieldsHaveMethod" ((PCons (PCon "CField" PWild (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "fieldsHaveMethod") (EVar "rest"))))
+(DTypeSig false "bindDirectMethod" (TyFun (TyCon "CBind") (TyCon "Bool")))
+(DFunDef false "bindDirectMethod" ((PCon "CBind" PWild (PVar "clauses"))) (EApp (EVar "clausesHaveMethod") (EVar "clauses")))
+(DTypeSig false "clausesHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CClause")) (TyCon "Bool")))
+(DFunDef false "clausesHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "clausesHaveMethod" ((PCons (PCon "CClause" PWild (PVar "body")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "body")) (EApp (EVar "clausesHaveMethod") (EVar "rest"))))
+(DTypeSig false "methodTaintSet" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "OrdMap") (TyCon "Unit"))))
+(DFunDef false "methodTaintSet" ((PList)) (EVar "omEmpty"))
+(DFunDef false "methodTaintSet" ((PCons (PVar "b") (PVar "rest"))) (EBlock (DoLet false false (PVar "m") (EApp (EVar "methodTaintSet") (EVar "rest"))) (DoExpr (EIf (EApp (EVar "bindDirectMethod") (EVar "b")) (EApp (EApp (EApp (EVar "omInsert") (EApp (EVar "bindName") (EVar "b"))) (ELit LUnit)) (EVar "m")) (EVar "m")))))
+(DTypeSig false "lengthGt1" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Bool")))
+(DFunDef false "lengthGt1" ((PCons PWild (PCons PWild PWild))) (EVar "True"))
+(DFunDef false "lengthGt1" (PWild) (EVar "False"))
+(DTypeSig false "anyKeyIn" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyCon "Bool"))))
+(DFunDef false "anyKeyIn" ((PList) PWild) (EVar "False"))
+(DFunDef false "anyKeyIn" ((PCons (PVar "n") (PVar "rest")) (PVar "s")) (EBinOp "||" (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "s")) (EApp (EApp (EVar "anyKeyIn") (EVar "rest")) (EVar "s"))))
+(DTypeSig false "selfLoops" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Bool"))))
+(DFunDef false "selfLoops" ((PVar "n") (PVar "adj")) (EApp (EApp (EVar "contains") (EVar "n")) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "adj")))))
+(DTypeSig false "anySelfLoop" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Bool"))))
+(DFunDef false "anySelfLoop" ((PList) PWild) (EVar "False"))
+(DFunDef false "anySelfLoop" ((PCons (PVar "n") (PVar "rest")) (PVar "adj")) (EBinOp "||" (EApp (EApp (EVar "selfLoops") (EVar "n")) (EVar "adj")) (EApp (EApp (EVar "anySelfLoop") (EVar "rest")) (EVar "adj"))))
+(DTypeSig false "sccCallees" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "sccCallees" ((PList) PWild) (EListLit))
+(DFunDef false "sccCallees" ((PCons (PVar "n") (PVar "rest")) (PVar "adj")) (EBinOp "++" (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "adj"))) (EApp (EApp (EVar "sccCallees") (EVar "rest")) (EVar "adj"))))
+(DTypeSig false "insertAllKeys" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "OrdMap") (TyCon "Unit")))))
+(DFunDef false "insertAllKeys" ((PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "insertAllKeys" ((PCons (PVar "n") (PVar "rest")) (PVar "acc")) (EApp (EApp (EVar "insertAllKeys") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (ELit LUnit)) (EVar "acc"))))
+(DTypeSig false "foldTaintSCCs" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "OrdMap") (TyCon "Unit")))))))
+(DFunDef false "foldTaintSCCs" (PWild PWild (PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "foldTaintSCCs" ((PVar "adj") (PVar "methodSet") (PCons (PVar "scc") (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "cyclic") (EBinOp "||" (EApp (EVar "lengthGt1") (EVar "scc")) (EApp (EApp (EVar "anySelfLoop") (EVar "scc")) (EVar "adj")))) (DoLet false false (PVar "direct") (EApp (EApp (EVar "anyKeyIn") (EVar "scc")) (EVar "methodSet"))) (DoLet false false (PVar "succ") (EApp (EApp (EVar "anyKeyIn") (EApp (EApp (EVar "sccCallees") (EVar "scc")) (EVar "adj"))) (EVar "acc"))) (DoLet false false (PVar "acc2") (EIf (EBinOp "||" (EBinOp "||" (EVar "cyclic") (EVar "direct")) (EVar "succ")) (EApp (EApp (EVar "insertAllKeys") (EVar "scc")) (EVar "acc")) (EVar "acc"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "foldTaintSCCs") (EVar "adj")) (EVar "methodSet")) (EVar "rest")) (EVar "acc2")))))
+(DTypeSig true "lazyGlobalNames" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "lazyGlobalNames" ((PVar "binds")) (EBlock (DoLet false false (PVar "allNames") (EApp (EVar "bindNames") (EVar "binds"))) (DoLet false false (PVar "nameSet") (EApp (EApp (EVar "omFromNames") (EVar "allNames")) (EVar "omEmpty"))) (DoLet false false (PVar "adj") (EApp (EApp (EVar "eagerCalleesMap") (EVar "nameSet")) (EVar "binds"))) (DoLet false false (PVar "methodSet") (EApp (EVar "methodTaintSet") (EVar "binds"))) (DoLet false false (PVar "tainted") (EApp (EApp (EApp (EApp (EVar "foldTaintSCCs") (EVar "adj")) (EVar "methodSet")) (EApp (EApp (EVar "tarjanSCCs") (EVar "allNames")) (EVar "adj"))) (EVar "omEmpty"))) (DoExpr (EApp (EApp (EVar "filterList") (ELam ((PVar "n")) (EBinOp "&&" (EBinOp "!=" (EVar "n") (ELit (LString "main"))) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "tainted"))))) (EApp (EVar "valGlobalNames") (EVar "binds"))))))
 (DTypeSig true "methodIfaceTableRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "methodIfaceTableRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyCon "String")))
@@ -578,6 +847,90 @@ rngBound _ = 0
 (DTypeSig true "bindEagerReach" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "CBind") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "bindEagerReach" ((PVar "rm") (PCon "CBind" (PVar "name") (PList (PCon "CClause" (PList) PWild)))) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "name")) (EVar "rm"))))
 (DFunDef false "bindEagerReach" (PWild PWild) (EListLit))
+(DTypeSig false "eagerHasMethod" (TyFun (TyCon "CExpr") (TyCon "Bool")))
+(DFunDef false "eagerHasMethod" ((PCon "CLam" PWild PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CMethod" PWild PWild PWild PWild)) (EVar "True"))
+(DFunDef false "eagerHasMethod" ((PCon "CDict" PWild PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CVar" PWild PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CLit" PWild)) (EVar "False"))
+(DFunDef false "eagerHasMethod" ((PCon "CApp" (PVar "f") (PVar "a"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "f")) (EApp (EVar "eagerHasMethod") (EVar "a"))))
+(DFunDef false "eagerHasMethod" ((PCon "CLet" PWild PWild (PVar "e1") (PVar "e2"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "e1")) (EApp (EVar "eagerHasMethod") (EVar "e2"))))
+(DFunDef false "eagerHasMethod" ((PCon "CLetGroup" (PVar "binds") (PVar "body"))) (EBinOp "||" (EApp (EVar "bindsHaveMethod") (EVar "binds")) (EApp (EVar "eagerHasMethod") (EVar "body"))))
+(DFunDef false "eagerHasMethod" ((PCon "CBlock" (PVar "stmts"))) (EApp (EVar "stmtsHaveMethod") (EVar "stmts")))
+(DFunDef false "eagerHasMethod" ((PCon "CIf" (PVar "c") (PVar "t") (PVar "f"))) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "c")) (EApp (EVar "eagerHasMethod") (EVar "t"))) (EApp (EVar "eagerHasMethod") (EVar "f"))))
+(DFunDef false "eagerHasMethod" ((PCon "CBinPrim" PWild (PVar "l") (PVar "r") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "l")) (EApp (EVar "eagerHasMethod") (EVar "r"))))
+(DFunDef false "eagerHasMethod" ((PCon "CUnOp" PWild (PVar "x"))) (EApp (EVar "eagerHasMethod") (EVar "x")))
+(DFunDef false "eagerHasMethod" ((PCon "CMatch" (PVar "scrut") (PVar "arms"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "scrut")) (EApp (EVar "armsHaveMethod") (EVar "arms"))))
+(DFunDef false "eagerHasMethod" ((PCon "CDecision" (PVar "scrut") (PVar "arms") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "scrut")) (EApp (EVar "armsHaveMethod") (EVar "arms"))))
+(DFunDef false "eagerHasMethod" ((PCon "CTuple" (PVar "es"))) (EApp (EVar "listHaveMethod") (EVar "es")))
+(DFunDef false "eagerHasMethod" ((PCon "CList" (PVar "es"))) (EApp (EVar "listHaveMethod") (EVar "es")))
+(DFunDef false "eagerHasMethod" ((PCon "CRangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "lo")) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CRangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "lo")) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CRecord" PWild (PVar "fields"))) (EApp (EVar "fieldsHaveMethod") (EVar "fields")))
+(DFunDef false "eagerHasMethod" ((PCon "CFieldAccess" (PVar "ex") PWild PWild)) (EApp (EVar "eagerHasMethod") (EVar "ex")))
+(DFunDef false "eagerHasMethod" ((PCon "CRecordUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "base")) (EApp (EVar "fieldsHaveMethod") (EVar "updates"))))
+(DFunDef false "eagerHasMethod" ((PCon "CVariantUpdate" PWild (PVar "base") (PVar "updates"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "base")) (EApp (EVar "fieldsHaveMethod") (EVar "updates"))))
+(DFunDef false "eagerHasMethod" ((PCon "CArray" (PVar "es"))) (EApp (EVar "listHaveMethod") (EVar "es")))
+(DFunDef false "eagerHasMethod" ((PCon "CIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "i"))))
+(DFunDef false "eagerHasMethod" ((PCon "CStringIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "i"))))
+(DFunDef false "eagerHasMethod" ((PCon "CStringSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "lo"))) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CListIndex" (PVar "a") (PVar "i"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "i"))))
+(DFunDef false "eagerHasMethod" ((PCon "CListSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "lo"))) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" ((PCon "CSlice" (PVar "a") (PVar "lo") (PVar "hi") PWild)) (EBinOp "||" (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "a")) (EApp (EVar "eagerHasMethod") (EVar "lo"))) (EApp (EVar "eagerHasMethod") (EVar "hi"))))
+(DFunDef false "eagerHasMethod" (PWild) (EVar "False"))
+(DTypeSig false "listHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CExpr")) (TyCon "Bool")))
+(DFunDef false "listHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "listHaveMethod" ((PCons (PVar "e") (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "e")) (EApp (EVar "listHaveMethod") (EVar "rest"))))
+(DTypeSig false "bindsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyCon "Bool")))
+(DFunDef false "bindsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "bindsHaveMethod" ((PCons (PCon "CBind" PWild (PList (PCon "CClause" (PList) (PVar "rhs")))) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "rhs")) (EApp (EVar "bindsHaveMethod") (EVar "rest"))))
+(DFunDef false "bindsHaveMethod" ((PCons PWild (PVar "rest"))) (EApp (EVar "bindsHaveMethod") (EVar "rest")))
+(DTypeSig false "stmtsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CStmt")) (TyCon "Bool")))
+(DFunDef false "stmtsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "stmtsHaveMethod" ((PCons (PCon "CSExpr" (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "stmtsHaveMethod") (EVar "rest"))))
+(DFunDef false "stmtsHaveMethod" ((PCons (PCon "CSLet" PWild PWild (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "stmtsHaveMethod") (EVar "rest"))))
+(DFunDef false "stmtsHaveMethod" ((PCons (PCon "CSAssign" PWild (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "stmtsHaveMethod") (EVar "rest"))))
+(DFunDef false "stmtsHaveMethod" ((PCons PWild (PVar "rest"))) (EApp (EVar "stmtsHaveMethod") (EVar "rest")))
+(DTypeSig false "armsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CArm")) (TyCon "Bool")))
+(DFunDef false "armsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "armsHaveMethod" ((PCons (PCon "CArm" PWild (PVar "gs") (PVar "body")) (PVar "rest"))) (EBinOp "||" (EBinOp "||" (EApp (EVar "guardsHaveMethod") (EVar "gs")) (EApp (EVar "eagerHasMethod") (EVar "body"))) (EApp (EVar "armsHaveMethod") (EVar "rest"))))
+(DTypeSig false "guardsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CGuard")) (TyCon "Bool")))
+(DFunDef false "guardsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "guardsHaveMethod" ((PCons (PCon "CGBool" (PVar "c")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "c")) (EApp (EVar "guardsHaveMethod") (EVar "rest"))))
+(DFunDef false "guardsHaveMethod" ((PCons (PCon "CGBind" PWild (PVar "e")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "e")) (EApp (EVar "guardsHaveMethod") (EVar "rest"))))
+(DTypeSig false "fieldsHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CField")) (TyCon "Bool")))
+(DFunDef false "fieldsHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "fieldsHaveMethod" ((PCons (PCon "CField" PWild (PVar "ex")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "ex")) (EApp (EVar "fieldsHaveMethod") (EVar "rest"))))
+(DTypeSig false "bindDirectMethod" (TyFun (TyCon "CBind") (TyCon "Bool")))
+(DFunDef false "bindDirectMethod" ((PCon "CBind" PWild (PVar "clauses"))) (EApp (EVar "clausesHaveMethod") (EVar "clauses")))
+(DTypeSig false "clausesHaveMethod" (TyFun (TyApp (TyCon "List") (TyCon "CClause")) (TyCon "Bool")))
+(DFunDef false "clausesHaveMethod" ((PList)) (EVar "False"))
+(DFunDef false "clausesHaveMethod" ((PCons (PCon "CClause" PWild (PVar "body")) (PVar "rest"))) (EBinOp "||" (EApp (EVar "eagerHasMethod") (EVar "body")) (EApp (EVar "clausesHaveMethod") (EVar "rest"))))
+(DTypeSig false "methodTaintSet" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "OrdMap") (TyCon "Unit"))))
+(DFunDef false "methodTaintSet" ((PList)) (EVar "omEmpty"))
+(DFunDef false "methodTaintSet" ((PCons (PVar "b") (PVar "rest"))) (EBlock (DoLet false false (PVar "m") (EApp (EVar "methodTaintSet") (EVar "rest"))) (DoExpr (EIf (EApp (EVar "bindDirectMethod") (EVar "b")) (EApp (EApp (EApp (EVar "omInsert") (EApp (EVar "bindName") (EVar "b"))) (ELit LUnit)) (EVar "m")) (EVar "m")))))
+(DTypeSig false "lengthGt1" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Bool")))
+(DFunDef false "lengthGt1" ((PCons PWild (PCons PWild PWild))) (EVar "True"))
+(DFunDef false "lengthGt1" (PWild) (EVar "False"))
+(DTypeSig false "anyKeyIn" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyCon "Bool"))))
+(DFunDef false "anyKeyIn" ((PList) PWild) (EVar "False"))
+(DFunDef false "anyKeyIn" ((PCons (PVar "n") (PVar "rest")) (PVar "s")) (EBinOp "||" (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "s")) (EApp (EApp (EVar "anyKeyIn") (EVar "rest")) (EVar "s"))))
+(DTypeSig false "selfLoops" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Bool"))))
+(DFunDef false "selfLoops" ((PVar "n") (PVar "adj")) (EApp (EApp (EVar "contains") (EVar "n")) (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "adj")))))
+(DTypeSig false "anySelfLoop" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Bool"))))
+(DFunDef false "anySelfLoop" ((PList) PWild) (EVar "False"))
+(DFunDef false "anySelfLoop" ((PCons (PVar "n") (PVar "rest")) (PVar "adj")) (EBinOp "||" (EApp (EApp (EVar "selfLoops") (EVar "n")) (EVar "adj")) (EApp (EApp (EVar "anySelfLoop") (EVar "rest")) (EVar "adj"))))
+(DTypeSig false "sccCallees" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "sccCallees" ((PList) PWild) (EListLit))
+(DFunDef false "sccCallees" ((PCons (PVar "n") (PVar "rest")) (PVar "adj")) (EBinOp "++" (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "adj"))) (EApp (EApp (EVar "sccCallees") (EVar "rest")) (EVar "adj"))))
+(DTypeSig false "insertAllKeys" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "OrdMap") (TyCon "Unit")))))
+(DFunDef false "insertAllKeys" ((PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "insertAllKeys" ((PCons (PVar "n") (PVar "rest")) (PVar "acc")) (EApp (EApp (EVar "insertAllKeys") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (ELit LUnit)) (EVar "acc"))))
+(DTypeSig false "foldTaintSCCs" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "OrdMap") (TyCon "Unit")))))))
+(DFunDef false "foldTaintSCCs" (PWild PWild (PList) (PVar "acc")) (EVar "acc"))
+(DFunDef false "foldTaintSCCs" ((PVar "adj") (PVar "methodSet") (PCons (PVar "scc") (PVar "rest")) (PVar "acc")) (EBlock (DoLet false false (PVar "cyclic") (EBinOp "||" (EApp (EVar "lengthGt1") (EVar "scc")) (EApp (EApp (EVar "anySelfLoop") (EVar "scc")) (EVar "adj")))) (DoLet false false (PVar "direct") (EApp (EApp (EVar "anyKeyIn") (EVar "scc")) (EVar "methodSet"))) (DoLet false false (PVar "succ") (EApp (EApp (EVar "anyKeyIn") (EApp (EApp (EVar "sccCallees") (EVar "scc")) (EVar "adj"))) (EVar "acc"))) (DoLet false false (PVar "acc2") (EIf (EBinOp "||" (EBinOp "||" (EVar "cyclic") (EVar "direct")) (EVar "succ")) (EApp (EApp (EVar "insertAllKeys") (EVar "scc")) (EVar "acc")) (EVar "acc"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "foldTaintSCCs") (EVar "adj")) (EVar "methodSet")) (EVar "rest")) (EVar "acc2")))))
+(DTypeSig true "lazyGlobalNames" (TyFun (TyApp (TyCon "List") (TyCon "CBind")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "lazyGlobalNames" ((PVar "binds")) (EBlock (DoLet false false (PVar "allNames") (EApp (EVar "bindNames") (EVar "binds"))) (DoLet false false (PVar "nameSet") (EApp (EApp (EVar "omFromNames") (EVar "allNames")) (EVar "omEmpty"))) (DoLet false false (PVar "adj") (EApp (EApp (EVar "eagerCalleesMap") (EVar "nameSet")) (EVar "binds"))) (DoLet false false (PVar "methodSet") (EApp (EVar "methodTaintSet") (EVar "binds"))) (DoLet false false (PVar "tainted") (EApp (EApp (EApp (EApp (EVar "foldTaintSCCs") (EVar "adj")) (EVar "methodSet")) (EApp (EApp (EVar "tarjanSCCs") (EVar "allNames")) (EVar "adj"))) (EVar "omEmpty"))) (DoExpr (EApp (EApp (EVar "filterList") (ELam ((PVar "n")) (EBinOp "&&" (EBinOp "!=" (EVar "n") (ELit (LString "main"))) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "tainted"))))) (EApp (EVar "valGlobalNames") (EVar "binds"))))))
 (DTypeSig true "methodIfaceTableRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "methodIfaceTableRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig true "methodIfaceOf" (TyFun (TyCon "String") (TyCon "String")))

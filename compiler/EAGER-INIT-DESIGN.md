@@ -743,3 +743,97 @@ as "#553 fixed".
   ledgerable **today** under the existing `emitter:shared-eager-init` category
   (`test/engine_divergence.txt:121`), no new taxonomy needed. It pins a divergence that is
   currently **completely ungated**.
+
+---
+
+## 10. #561 — LAZINESS (the terminal fix)
+
+**Status: PR-A SHIPPED (native, this change).** §5.1 rejected laziness for 0.1.0 on a *cost*
+argument (a forced/value-cache check on every global read). #561 keeps that concern honest with
+a **fast-path**: only the value globals that have **no static init order** go lazy; every other
+value global stays on the byte-identical eager prologue. This section records the mechanism, the
+SAFE/LAZY predicate, the native encoding, and the PR staging.
+
+### 10.1 The 3-state cell — a faithful transliteration of eval
+
+eval implements the DECIDED lazy-nullary semantics (`compiler/eval/eval.mdk`): `forceMemo`
+(`:550`) black-holes a cell (`blackholeCell` `:559`) while running its thunk, memoises the value,
+and a re-entrant force raises `E-CYCLIC-VALUE`. The native backend mirrors this **exactly** with a
+3-state flag per LAZY global:
+
+- value cell stays a uniform i64: `@mdk_g_x = global i64 0` (globals are NOT boxed — `0` is a
+  legal Int, so the state cannot ride the value word);
+- **separate** state flag `@mdk_gs_x = global i8 0` — `0` UNFORCED / `1` FORCING / `2` FORCED;
+- `define i64 @mdk_force_x()` switches on the flag:
+  - `2` FORCED → return the memoised `@mdk_g_x`;
+  - `1` FORCING → re-entered mid-init ⇒ `call void @mdk_cyclic_value(ptr @.gname.x)` (the
+    black-hole; `@mdk_cyclic_value` is a new emitter-emitted runtime primitive in
+    `runtime/medaka_rt.c`, beside `mdk_slice_oob` — flush stdout, print
+    `runtime error [E-CYCLIC-VALUE]: <name> refers to itself during initialization …`, exit 1);
+  - `0` UNFORCED → set FORCING, emit the rhs body via the ordinary `emitExpr`, store the value,
+    set FORCED, return.
+- a read of a LAZY global lowers to `call i64 @mdk_force_x()` instead of `load i64, @mdk_g_x`
+  (the split is at `lookupVarG`, `compiler/backend/llvm_emit.mdk`); a read of a SAFE global inside
+  a force body is a plain `load` (the SAFE dep is already eager-initialised — see 10.2).
+
+### 10.2 The SAFE/LAZY fast-path predicate (`emit_support.lazyGlobalNames`)
+
+Reusing the #553 Stage-B machinery (`eagerCalleesMap` + `tarjanSCCs`), a value global is **LAZY**
+iff, over the eager `CVar`/`CDict` call graph, it reaches EITHER:
+
+- an interface-method **DISPATCH** (`CMethod`) in eager position (`eagerHasMethod`) — the resolved
+  impl body can read an arbitrary later global the sort cannot see (repro #4); OR
+- a value **CYCLE** — a nontrivial SCC, or a self-loop `x = x + 1` (repro #5) — which has no eager
+  order at all.
+
+The taint is a least fixpoint over the SCC-condensed graph, folded in the reverse-topological
+order tarjanSCCs emits (callees before callers) — the same shape and the same cycle-safety as
+`foldReachSCCs`. **Everything else is SAFE and stays byte-identical eager.**
+
+**Why it is conservative-and-sound.** A wrongly-SAFE global is a silent miscompile (the #553 bug
+class), so any doubt resolves to LAZY. The taint is **downward-closed over reads**: if SAFE `a`
+eagerly read LAZY `l`, then `a` reaches `l`'s taint and would itself be LAZY — contradiction. So a
+SAFE global's entire eager reach is SAFE, which is exactly what lets the eager prologue (over the
+SAFE globals only, in the unchanged topo order) run to completion **without ever calling a force
+function**, and be byte-identical whenever the LAZY set is empty.
+
+### 10.3 ⚠️ Measured reality — the fast path is NOT free on the compiler
+
+The compiler's parser is written in point-free **`do`-block** style, and a `do` desugars to an
+eager `andThen` (`>>=`) — a `CMethod`. So **167 of the compiler's own value globals classify LAZY**
+(`parseExpr`, `skipNewlines`, `identNameP`, … the whole combinator ladder). They are all
+*false positives* in the sense that their resolved impl (`@mdk_impl_Parser_andThen`) reads no later
+global — but the conservative predicate cannot know that without resolving dispatch to impl bodies
+(the deferred F2 work). Consequences, all measured on this change:
+
+- **Correctness: intact.** Self-compile fixpoint **C3a YES / C3b YES**; the lazy-ified compiler
+  reproduces its own IR byte-for-byte and compiles every fixture correctly.
+- **Emitted IR: +~1.1%** (the force fns + state-flag decls).
+- **Self-compile emit wall-time: ~+3–5%** (min-of-k, interleaved: BASE 11.77 s vs WIP 12.16 s
+  emitting the CLI). Modest, and ~negligible against the clang-bound full `make medaka`. NOT a
+  perf S1, but NOT "flat" either — the fast-path premise "the compiler's globals are statically
+  orderable" is **false** because of pervasive monadic dispatch.
+- **The clean way to restore the fast path is F2** (Stage B following `CMethod` → resolved-impl
+  edges): a `CMethod` whose impl reaches no value global would then add no taint, dropping the LAZY
+  set to genuine cycles only (≈0 compiler globals). That is a strictly additive follow-up — the
+  3-state mechanism, the encoding, and the gates are untouched.
+
+### 10.4 Split-emit (#118) correctness
+
+In `MEDAKA_EMIT_HALF` split mode the PROGRAM half owns `@mdk_program_main` and defines every
+`@mdk_g_*`; the PRELUDE half only declares them. Force functions follow the same rule: **defined in
+the program/whole half** (with the init logic), **declared** in the prelude half (`declare i64
+@mdk_force_x()`), and `@mdk_gs_x` is `external` in the prelude half / defined in the program half —
+symmetric with `@mdk_g_x`. The lazy set is installed (even empty) at **every** `emitProgram` entry,
+so a prior program's classification can never leak across a same-process re-emit (the
+`installKnownFnMap` discipline; the native analogue of the reset-path stale-memo hazard).
+
+### 10.5 Staging
+
+- **PR-A (this change): NATIVE.** 3-state lazy globals + fast-path; drains the native arm of
+  `llvm/eager_global_self_cycle` (`na:ne…` → `na:eq…`) and adds
+  `llvmT/eager_global_dispatch_hidden` (repro #4, native 0 → 42).
+- **PR-B: WASM.** The same mechanism on `wasm_emit.mdk` (WasmGC has a native forced/value-cache
+  field per `WASMGC-DESIGN.md:249-252`). Fully drains the two ledger rows.
+- **PR-C: parity gate.** Assert both backends classify the same globals LAZY and raise
+  `E-CYCLIC-VALUE` on the same cycles (mirrors `diff_compiler_tmc_parity.sh`).

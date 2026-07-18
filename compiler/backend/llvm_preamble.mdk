@@ -21,6 +21,7 @@ preambleLines = [
   "declare i64 @__mdk_apply(i64, i64, ptr)",
   "declare void @mdk_oob() noreturn",
   "declare void @mdk_slice_oob(i64, i64) noreturn",
+  "declare void @mdk_cyclic_value(ptr) noreturn",
   "declare void @mdk_div_zero() noreturn",
   "declare void @mdk_mod_zero() noreturn",
   "declare void @mdk_nonexhaustive_match() noreturn",

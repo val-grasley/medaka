@@ -1,0 +1,35 @@
+-- #561 PR-A (native) — the DISPATCH-HIDDEN eager-init S0, now FIXED on the NATIVE
+-- backend and serving as a REGRESSION LOCK (acceptance repro #4).
+--
+-- `cell = mk True` reaches the later global `base` ONLY through interface-method
+-- dispatch: the topo sort (#553 Stage B) follows CVar/CDict callees but NOT a `CMethod`
+-- head, so it cannot see the `cell -> base` edge hidden inside the resolved impl body
+-- (`mk _ = base`). Pre-#561 native therefore emitted `cell` before `base`, reading
+-- `base`'s still-zero cell — native printed `0` at exit 0, a SILENT WRONG ANSWER.
+--
+-- #561 PR-A classifies any nullary global that reaches an eager `CMethod` as LAZY
+-- (backend/emit_support.mdk lazyGlobalNames — conservative: any dispatch in reach =>
+-- lazy). `cell` is emitted as @mdk_force_cell, forced on first use in `main`, AFTER the
+-- eager prologue has already initialised the SAFE global `base = 42`. So the dispatch
+-- runs against a live `base` and native now prints `42`, matching eval and the
+-- typed-ceval oracle.
+--
+-- This fixture lives in the TYPED corpus deliberately: the untyped llvm_fixtures/ probe
+-- (llvm_emit_main) is prelude-free and typecheck-free, so it never produces the `CMethod`
+-- that makes this bug exist. The typed probe (llvm_emit_typed_main) runs marker+typecheck
+-- and does.
+--
+-- Measured after PR-A (2026-07-18): eval 42, native 42 (FIXED — was 0). ⚠️ wasm is a
+-- PR-B gap (wasm_emit is unchanged, still eager) — its engines-gate arm is ledgered.
+
+interface Mk a where
+  mk : a -> Int
+
+impl Mk Bool where
+  mk _ = base
+
+cell = mk True
+
+base = 42
+
+main = cell

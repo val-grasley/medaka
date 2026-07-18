@@ -234,6 +234,191 @@ export bindEagerReach : OrdMap (List String) -> CBind -> List String
 bindEagerReach rm (CBind name [CClause [] _]) = fromOption [] (omLookup name rm)
 bindEagerReach _ _ = []
 
+-- ── #561 PR-A: lazy-global classification (native fast-path predicate) ────────
+-- The topo sort (Stage B, above) makes eager init CORRECT wherever a static init
+-- order EXISTS.  Two residual cases have no static order, and the reference engine
+-- (eval) handles them by LAZINESS — a thunked cell forced on first use, black-holed
+-- while forcing so a cycle raises E-CYCLIC-VALUE (eval.mdk forceMemo/blackholeCell):
+--   * a value CYCLE — a nontrivial SCC, or a self-loop `x = x + 1` — for which no
+--     eager order exists at all (acceptance repro #5);
+--   * an interface-method DISPATCH (`CMethod`) reachable EAGERLY — the impl body it
+--     selects at run time can read an arbitrary later global the sort cannot see, so
+--     no purely-syntactic order is guaranteed correct (acceptance repro #4, `mk True`).
+-- `lazyGlobalNames` marks exactly the value globals that (transitively, over the same
+-- eager CVar/CDict call graph Stage B follows) reach either condition; the native
+-- backend emits those as forced-on-first-use `@mdk_force_<x>` cells and leaves every
+-- other value global on the byte-identical eager prologue (the FAST PATH).
+--
+-- ⚠️ CONSERVATIVE BY CONSTRUCTION — a wrongly-EAGER global is a silent miscompile
+-- (the exact #553 bug class), so any doubt resolves to LAZY: ANY eager `CMethod` in
+-- reach, or ANY cycle membership, taints the global.  The taint is downward-closed
+-- over reads (if `a` eagerly reads lazy `l`, `a` reaches `l`'s taint and is itself
+-- lazy), so a SAFE global's whole eager reach is SAFE — which is what lets the eager
+-- prologue run unchanged and never call a force function.
+--
+-- The taint is a least fixpoint over the SCC-condensed eager call graph, folded in
+-- the reverse-topological order tarjanSCCs emits (callees before callers) — the same
+-- shape as foldReachSCCs, and cycle-safe WITHOUT a visited list for the same reason.
+
+-- does `body` reach an interface-method DISPATCH (`CMethod`) head in EAGER position?
+-- The boolean twin of `eagerVars`: it descends exactly the eager subterms eagerVars
+-- does (a `CLam` body is deferred to call time, so NOT descended) and returns True
+-- the moment a `CMethod` is reached.  A `CDict` head is a NAMED callee eagerVars
+-- already follows as a graph edge, so it needs no taint here — its callee is tainted
+-- through the ordinary reach fold if the callee itself dispatches.
+eagerHasMethod : CExpr -> Bool
+eagerHasMethod (CLam _ _) = False
+eagerHasMethod (CMethod _ _ _ _) = True
+eagerHasMethod (CDict _ _) = False
+eagerHasMethod (CVar _ _) = False
+eagerHasMethod (CLit _) = False
+eagerHasMethod (CApp f a) = eagerHasMethod f || eagerHasMethod a
+eagerHasMethod (CLet _ _ e1 e2) = eagerHasMethod e1 || eagerHasMethod e2
+eagerHasMethod (CLetGroup binds body) = bindsHaveMethod binds
+  || eagerHasMethod body
+eagerHasMethod (CBlock stmts) = stmtsHaveMethod stmts
+eagerHasMethod (CIf c t f) = eagerHasMethod c
+  || eagerHasMethod t
+  || eagerHasMethod f
+eagerHasMethod (CBinPrim _ l r _) = eagerHasMethod l || eagerHasMethod r
+eagerHasMethod (CUnOp _ x) = eagerHasMethod x
+eagerHasMethod (CMatch scrut arms) = eagerHasMethod scrut || armsHaveMethod arms
+eagerHasMethod (CDecision scrut arms _) = eagerHasMethod scrut
+  || armsHaveMethod arms
+eagerHasMethod (CTuple es) = listHaveMethod es
+eagerHasMethod (CList es) = listHaveMethod es
+eagerHasMethod (CRangeList lo hi _) = eagerHasMethod lo || eagerHasMethod hi
+eagerHasMethod (CRangeArray lo hi _) = eagerHasMethod lo || eagerHasMethod hi
+eagerHasMethod (CRecord _ fields) = fieldsHaveMethod fields
+eagerHasMethod (CFieldAccess ex _ _) = eagerHasMethod ex
+eagerHasMethod (CRecordUpdate _ base updates) = eagerHasMethod base
+  || fieldsHaveMethod updates
+eagerHasMethod (CVariantUpdate _ base updates) = eagerHasMethod base
+  || fieldsHaveMethod updates
+eagerHasMethod (CArray es) = listHaveMethod es
+eagerHasMethod (CIndex a i) = eagerHasMethod a || eagerHasMethod i
+eagerHasMethod (CStringIndex a i) = eagerHasMethod a || eagerHasMethod i
+eagerHasMethod (CStringSlice a lo hi _) = eagerHasMethod a
+  || eagerHasMethod lo
+  || eagerHasMethod hi
+eagerHasMethod (CListIndex a i) = eagerHasMethod a || eagerHasMethod i
+eagerHasMethod (CListSlice a lo hi _) = eagerHasMethod a
+  || eagerHasMethod lo
+  || eagerHasMethod hi
+eagerHasMethod (CSlice a lo hi _) = eagerHasMethod a
+  || eagerHasMethod lo
+  || eagerHasMethod hi
+eagerHasMethod _ = False
+
+listHaveMethod : List CExpr -> Bool
+listHaveMethod [] = False
+listHaveMethod (e::rest) = eagerHasMethod e || listHaveMethod rest
+
+-- a let-group descends ONLY its nullary single-clause binds' rhss, exactly as
+-- eagerVarsBinds does — a nested function's body is deferred to its own call.
+bindsHaveMethod : List CBind -> Bool
+bindsHaveMethod [] = False
+bindsHaveMethod ((CBind _ [CClause [] rhs])::rest) = eagerHasMethod rhs
+  || bindsHaveMethod rest
+bindsHaveMethod (_::rest) = bindsHaveMethod rest
+
+stmtsHaveMethod : List CStmt -> Bool
+stmtsHaveMethod [] = False
+stmtsHaveMethod ((CSExpr ex)::rest) = eagerHasMethod ex || stmtsHaveMethod rest
+stmtsHaveMethod ((CSLet _ _ ex)::rest) = eagerHasMethod ex
+  || stmtsHaveMethod rest
+stmtsHaveMethod ((CSAssign _ ex)::rest) = eagerHasMethod ex
+  || stmtsHaveMethod rest
+stmtsHaveMethod (_::rest) = stmtsHaveMethod rest
+
+armsHaveMethod : List CArm -> Bool
+armsHaveMethod [] = False
+armsHaveMethod ((CArm _ gs body)::rest) = guardsHaveMethod gs
+  || eagerHasMethod body
+  || armsHaveMethod rest
+
+guardsHaveMethod : List CGuard -> Bool
+guardsHaveMethod [] = False
+guardsHaveMethod ((CGBool c)::rest) = eagerHasMethod c || guardsHaveMethod rest
+guardsHaveMethod ((CGBind _ e)::rest) = eagerHasMethod e
+  || guardsHaveMethod rest
+
+fieldsHaveMethod : List CField -> Bool
+fieldsHaveMethod [] = False
+fieldsHaveMethod ((CField _ ex)::rest) = eagerHasMethod ex
+  || fieldsHaveMethod rest
+
+-- a binding is DIRECTLY method-tainted if any of its clause bodies dispatches
+-- eagerly (a value global has one nullary clause; a helper fn may have several, and
+-- calling it eagerly runs the matched clause's body eagerly — so any clause taints).
+bindDirectMethod : CBind -> Bool
+bindDirectMethod (CBind _ clauses) = clausesHaveMethod clauses
+
+clausesHaveMethod : List CClause -> Bool
+clausesHaveMethod [] = False
+clausesHaveMethod ((CClause _ body)::rest) = eagerHasMethod body
+  || clausesHaveMethod rest
+
+-- the set of bind names that dispatch eagerly in their own body (the taint SOURCES,
+-- alongside cycle membership computed during the fold).
+methodTaintSet : List CBind -> OrdMap Unit
+methodTaintSet [] = omEmpty
+methodTaintSet (b::rest) =
+  let m = methodTaintSet rest
+  if bindDirectMethod b then omInsert (bindName b) () m else m
+
+lengthGt1 : List String -> Bool
+lengthGt1 (_::_::_) = True
+lengthGt1 _ = False
+
+anyKeyIn : List String -> OrdMap Unit -> Bool
+anyKeyIn [] _ = False
+anyKeyIn (n::rest) s = omHasKey n s || anyKeyIn rest s
+
+-- a name self-loops when its own eager callees include itself (`x = x + 1`); a
+-- singleton SCC does NOT record this on its own, so it is tested explicitly.
+selfLoops : String -> OrdMap (List String) -> Bool
+selfLoops n adj = contains n (fromOption [] (omLookup n adj))
+
+anySelfLoop : List String -> OrdMap (List String) -> Bool
+anySelfLoop [] _ = False
+anySelfLoop (n::rest) adj = selfLoops n adj || anySelfLoop rest adj
+
+-- callees of every member of an SCC, concatenated (for the successor-taint check).
+sccCallees : List String -> OrdMap (List String) -> List String
+sccCallees [] _ = []
+sccCallees (n::rest) adj = fromOption [] (omLookup n adj) ++ sccCallees rest adj
+
+insertAllKeys : List String -> OrdMap Unit -> OrdMap Unit
+insertAllKeys [] acc = acc
+insertAllKeys (n::rest) acc = insertAllKeys rest (omInsert n () acc)
+
+-- fold the SCC DAG in reverse-topological order (callees before callers), marking an
+-- SCC's members tainted when the SCC is a cycle (nontrivial, or a self-loop), OR a
+-- member dispatches eagerly (`methodSet`), OR a callee SCC is already tainted.
+foldTaintSCCs : OrdMap (List String) -> OrdMap Unit -> List (List String) -> OrdMap Unit -> OrdMap Unit
+foldTaintSCCs _ _ [] acc = acc
+foldTaintSCCs adj methodSet (scc::rest) acc =
+  let cyclic = lengthGt1 scc || anySelfLoop scc adj
+  let direct = anyKeyIn scc methodSet
+  let succ = anyKeyIn (sccCallees scc adj) acc
+  let acc2 = if cyclic || direct || succ then insertAllKeys scc acc else acc
+  foldTaintSCCs adj methodSet rest acc2
+
+-- the value globals that must be emitted LAZY on the native backend: those reaching
+-- an eager dispatch or a value cycle, transitively over the eager call graph.  Excludes
+-- `main` (the entry point, never an init-ordered global).  Empty for a program whose
+-- every value global is statically orderable — which is the compiler's own case, so
+-- the fast path keeps the self-compile IR byte-identical.
+export lazyGlobalNames : List CBind -> List String
+lazyGlobalNames binds =
+  let allNames = bindNames binds
+  let nameSet = omFromNames allNames omEmpty
+  let adj = eagerCalleesMap nameSet binds
+  let methodSet = methodTaintSet binds
+  let tainted = foldTaintSCCs adj methodSet (tarjanSCCs allNames adj) omEmpty
+  filterList (n => n != "main" && omHasKey n tainted) (valGlobalNames binds)
+
 -- ── interface-method dispatch metadata (installed once per compile) ──────────
 -- method → (interface, declared-full-arity), from the program's `DInterface`
 -- decls.  Populated by each backend's `installMethodIface` before emitProgram; an
