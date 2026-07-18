@@ -296,14 +296,30 @@ a `VRecord`, never a `VCon` — `evalVariantUpdate` needed a matching `VRecord` 
 Both fixed in lockstep; `wasm/w7_variant_update` now agrees on all three engines and its
 `test/engine_divergence.txt` line was deleted (promoted).
 
-### 4.4 `eval:intended-abort` — 2 fixtures
+### 4.4 `eval:intended-abort` — 3 fixtures
 
-`llvm/abort_panic` (`E-PANIC: boom`) and `wasm/w7_array_oob` (`E-INDEX-OOB: index 9
-out of bounds`). These are the *program's own* intended aborts, not engine failures —
+`llvm/abort_panic` (`E-PANIC: boom`), `wasm/w7_array_oob` (`E-INDEX-OOB: index 9
+out of bounds`), and `llvm/eager_global_self_cycle` (`E-CYCLIC-VALUE`, #561 PR-A+PR-B).
+These are the *program's own* intended aborts, not engine failures —
 the gate's eval-arm classifier is deliberately conservative (any interpreter-level
 `E-*` counts as n/a, because today the interpreter has no `exit` primitive, so a
 nonzero exit is never a program-level exit). Ledgered explicitly rather than
 special-cased, so the conservatism is visible instead of hidden.
+
+`eager_global_self_cycle` (`x = x + 1`, a genuine non-productive value cycle)
+**migrated INTO this category** from `emitter:shared-eager-init` once #561 landed on both
+backends. Pre-fix, both backends mis-emitted the eager topo-sort (a value cycle has no
+static order); PR-A (native) and PR-B (wasm) now emit dispatch-reaching / cyclic nullary
+globals LAZILY (`emit_support.lazyGlobalNames` → native `@mdk_force_x`/`@mdk_gs_x`, wasm
+`$force_x`/`$gs_x` 3-state), so all three engines raise the SAME coded `[E-CYCLIC-VALUE]`.
+The category `emitter:shared-eager-init` asserts a shared-primitive defect where a backend
+is WRONG; post-PR-B neither is, so the correct claim is `eval:intended-abort`. The **four
+dispatch-reaching fixtures** in that family — `llvmT/eager_global_{dispatch_hidden,
+lazy_bool, lazy_float, lazy_string}` — return a real value (42 / 1 / 3.5 / hello world),
+so once PR-B fixed the wasm arm they became fully `eq:eq:eq` and were **promoted out of the
+ledger entirely** (deleted). `emitter:shared-eager-init` now has ZERO `eager_global_*`
+rows; the remaining `eager_global_{list,string}_slice` rows are `wasm:emitter-gap`
+(a lowering gap, unrelated).
 
 ### 4.5 `native:prelude-collision` — 7 fixtures
 

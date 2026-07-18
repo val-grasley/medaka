@@ -908,10 +908,14 @@ lazyGlobalMapRef : Ref (Option (OrdMap Unit))
 lazyGlobalMapRef = Ref None
 
 installLazyGlobalMap : List String -> Unit
+-- Intentional cross-file duplicate of installLazyGlobalMapW in wasm_emit.mdk (#561 PR-B); not consolidating (tiny install helper over a backend-local Ref / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 installLazyGlobalMap names =
   setRef lazyGlobalMapRef (Some (omFromNames names omEmpty))
 
 export isLazyGlobal : String -> Bool
+-- Intentional cross-file duplicate of isLazyGlobalW in wasm_emit.mdk (#561 PR-B); not consolidating (tiny query over a backend-local Ref / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
 isLazyGlobal x = match lazyGlobalMapRef.value
   Some m => omHasKey x m
   None => False

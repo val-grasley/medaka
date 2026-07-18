@@ -196,6 +196,7 @@ import support.ordmap.{
   omInsert,
   omLookup,
   omHasKey,
+  omFromNames,
   omFromPairs,
   omEmpty,
 }
@@ -236,6 +237,7 @@ import backend.private_mangle.{hashName, sanitizeId}
 import backend.emit_support.{
   eagerReachMap,
   bindEagerReach,
+  lazyGlobalNames,
   methodIfaceTableRef,
   methodArityOf,
   methodIfaceOf,
@@ -624,6 +626,30 @@ useEPutRef = Ref False
 useTrapImport : Ref Bool
 useTrapImport = Ref False
 
+-- #561 PR-B: the value globals emit_support.lazyGlobalNames classifies LAZY — those
+-- reaching an eager `CMethod` dispatch or a value cycle, so they have NO static init
+-- order.  Their reads lower to `call $force_<x>` (which memoises into $g_<x> and black-
+-- holes a re-entrant force into E-CYCLIC-VALUE) instead of the eager `global.get`; each
+-- gets a `$force_<x>` func + a `$gs_<x>` 3-state flag (0 UNFORCED / 1 FORCING / 2 FORCED).
+-- Everything else stays on the byte-identical eager `$__init` prologue.  Installed (even
+-- empty) at EVERY emitProgram entry so a prior program's set can never leak across a
+-- same-process re-emit — the native backend's installLazyGlobalMap discipline mirrored.
+lazyGlobalMapRef : Ref (Option (OrdMap Unit))
+lazyGlobalMapRef = Ref None
+
+installLazyGlobalMapW : List String -> Unit
+-- Intentional cross-file duplicate of installLazyGlobalMap in llvm_emit.mdk; not consolidating (tiny install helper over a backend-local Ref / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
+installLazyGlobalMapW names =
+  setRef lazyGlobalMapRef (Some (omFromNames names omEmpty))
+
+isLazyGlobalW : String -> Bool
+-- Intentional cross-file duplicate of isLazyGlobal in llvm_emit.mdk; not consolidating (tiny query over a backend-local Ref / divergent-by-design backend pair).
+-- lint-disable-next-line rule-duplicate-body
+isLazyGlobalW x = match lazyGlobalMapRef.value
+  Some m => omHasKey x m
+  None => False
+
 -- B5: the program contains a concrete-Int `/`/`%` → declare the i64 divisor-guard
 -- scratch local ($__divr<depth> in ref mode, $__sdivr in scalar mode).  Set by the
 -- pre-scan (noteW8Binop) so the local decl is present before the div-site emit.
@@ -882,6 +908,12 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
     || useCharClassRef.value || useIORef.value
   let typeNames = distinctTypeNames ctorTypes
   let _ = installCtorTablesW ctorArs ctorTypes
+  -- #561 PR-B: classify LAZY value globals (dispatch-reaching / cyclic) once per program
+  -- — the SAME emit_support.lazyGlobalNames the native backend uses, so both backends
+  -- classify identically.  Reads of these lower to `call $force_<x>`; every other global
+  -- stays on the byte-identical eager prologue.  Installed even when empty (the common
+  -- case) so a prior program's set never leaks across a same-process re-emit.
+  let _ = installLazyGlobalMapW (lazyGlobalNames groups)
   let prog = Prog ctorArs ctorTypes typeNames useRef fnNames valNames fnArs useClos impls
   if useRef then emitRefProgram prog groups
   else emitScalarProgram fnNames valNames groups
@@ -942,6 +974,9 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   -- force the ref path: the census measures the full (ref eq) emitter surface.
   let typeNames = distinctTypeNames ctorTypes
   let _ = installCtorTablesW ctorArs ctorTypes
+  -- #561 PR-B: the gap census emits every value bind ORDINARILY (eager set), so install
+  -- an EMPTY lazy set — this also RESETS any prior emitProgram's set so it cannot leak.
+  let _ = installLazyGlobalMapW []
   let prog = Prog ctorArs ctorTypes typeNames True fnNames valNames fnArs useClos impls
   let _ = resetGapsW ()
   let _ = enableGapRecordW ()
@@ -2186,12 +2221,20 @@ emitRefProgram prog groups =
   -- W8: the SplitMix64 seed lives in a mutable i64 global (emitted before the value globals).
   let rngGlobal = if useRngRef.value then rngStateGlobalLines else []
   let dispGlobals = flatMap wDispGlobalLines dispGroups
-  let globals = rngGlobal ++ dispGlobals ++ map oneGlobalRef valNames
+  -- #561 PR-B: a LAZY value global ALSO carries a per-global 3-state flag $gs_<name>
+  -- (0 UNFORCED / 1 FORCING / 2 FORCED); the value cell $g_<name> stays (ref null eq).
+  let lazyStateGlobals = map oneGlobalState (filterList isLazyGlobalW valNames)
+  let globals = rngGlobal ++ dispGlobals ++ map oneGlobalRef valNames ++ lazyStateGlobals
   -- emit user fns FIRST (this is what accumulates lifted lambdas into liftedFnsRef).
   let fns = flatMap (emitRefFnBind prog) (userFnBinds groups)
   -- W5: the typeclass impl functions ($mdk_impl_<tag>_<method>), emitted as ordinary
   -- (ref eq) functions the RKey direct call / RDict if-chain dispatch into.
   let implFns = emitImplFns prog
+  -- #561 PR-B: a `$force_<name>` func for every LAZY value global — the 3-state force
+  -- (memoise-or-black-hole) that its reads `call` instead of `global.get`.  Emitted
+  -- alongside initLines so its body-emit runs BEFORE the trapImport binding below reads
+  -- useTrapImport (an E-CYCLIC-VALUE trap sets it); mirrors the value-init emit order.
+  let forceFns = emitRefForceFns prog groups
   let initLines = emitRefInit prog groups
   -- layer-15: the synthesized interface-default defines ($mdk_default_<method>_<tag>),
   -- accumulated during fns/implFns/INIT body emission — a `filter` call may live in a
@@ -2268,7 +2311,7 @@ emitRefProgram prog groups =
             ++ stderrRt ++ rngRt ++ hashRt ++ hashStrRt
             ++ floatRemRt ++ floatRt ++ hashFloatRt ++ randomFloatRt ++ strSearchRt
             ++ strCodecRt ++ charFromCodeRt ++ charClassRt ++ ioHostRt ++ ioArgsRt ++ fileBytesRt ++ floatStrRt
-            ++ dataSegs ++ initLines ++ [")"])
+            ++ dataSegs ++ forceFns ++ initLines ++ [")"])
 
 -- the passive data segments for string literals — one `(data $strseg_N "…")` per
 -- literal OCCURRENCE (#383: no content-dedup, see the `useStrRef` section above for
@@ -2509,9 +2552,19 @@ findBindByName name (b::rest) =
 -- `backend.emit_support`, shared with the LLVM emitter; `bindEagerReach` above
 -- threads the reachability map into this backend's value-init topo sort.
 
+-- #561 PR-B: the (mut i32) 3-state flag for a LAZY value global (0 UNFORCED / 1 FORCING
+-- / 2 FORCED).  Peer of oneGlobalRef; the value cell $g_<name> stays (mut (ref null eq)).
+oneGlobalState : String -> String
+oneGlobalState n = "  (global $gs_" ++ gname n ++ " (mut i32) (i32.const 0))"
+
 emitRefInit : Prog -> List CBind -> List String
 emitRefInit prog groups =
-  let valBinds = topoSortValBinds groups (filterList isValBind groups)
+  -- #561 PR-B: only SAFE (statically-orderable) value globals are eager-initialised in
+  -- $__init — byte-identical to the pre-#561 emitter whenever no global is lazy.  A SAFE
+  -- global's whole eager reach is SAFE (the taint is downward-closed over reads), so this
+  -- prologue never calls a $force fn.  LAZY globals are initialised on first use by their
+  -- $force_<name> defines (emitRefForceFns); they are excluded from the eager set here.
+  let valBinds = filterList (b => not (isLazyGlobalW (bindName b))) (topoSortValBinds groups (filterList isValBind groups))
   let valInit = flatMap (emitRefValInit prog) valBinds
   let mainLines = emitRefMain prog groups
   let valLocals = flatMap collectBindLocals valBinds
@@ -2549,6 +2602,60 @@ emitRefValInit prog (CBind name [CClause [] body]) =
   let instrs = emitRefExpr prog [] 0 body
   indent instrs ++ ["    global.set $" ++ gname name]
 emitRefValInit _ _ = gapL "value binding must be a nullary clause"
+
+-- ── #561 PR-B: lazy value-global force functions ─────────────────────────────
+-- A `$force_<name>` func for every LAZY value global (dispatch-reaching / cyclic — see
+-- emit_support.lazyGlobalNames).  A faithful transliteration of the reference engine's
+-- forceMemo/blackholeCell (compiler/eval/eval.mdk) and the native @mdk_force_<x>:
+--   state 2 FORCED   -> return the memoised $g_<name>
+--   state 1 FORCING  -> re-entered mid-init => E-CYCLIC-VALUE (the black-hole), unreachable
+--   state 0 UNFORCED -> mark FORCING, run the rhs, memoise the value, mark FORCED, return
+-- The FORCING flag is set BEFORE the body runs (the black-hole ordering), so a re-entrant
+-- read `call $force_<name>` from inside the body hits state 1 and traps.  A read of another
+-- global inside the body lowers through emitVarRefPlain exactly as anywhere else (a plain
+-- `global.get` for a SAFE dep — already eager-set by $__init, which runs first — or a nested
+-- `call $force_` for a LAZY dep).  Result is a non-null (ref eq) via ref.as_non_null on the
+-- memoised cell, the same guarantee every eager global read carries.
+emitRefForceFns : Prog -> List CBind -> List String
+emitRefForceFns prog groups = flatMap
+  (emitRefForceFn prog)
+  (filterList (b => isLazyGlobalW (bindName b)) (filterList isValBind groups))
+
+emitRefForceFn : Prog -> CBind -> List String
+emitRefForceFn prog (CBind name [CClause [] body]) =
+  let g = gname name
+  let instrs = emitRefExpr prog [] 0 body
+  let bodyLocals = dedupKeep (collectExprLocals body)
+  let maxDepth = maxRefDepth body
+  let scratch = scratchLocals maxDepth
+  let localDecls = map (l => "  " ++ localDeclRef l) (bodyLocals ++ scratch)
+  let w7Decls = map ("  " ++ _) (w7LocalDecls maxDepth)
+  let cyclic = wasmTrap "E-CYCLIC-VALUE" (name ++ " refers to itself during initialization (non-productive cyclic value)")
+  let unforced = ["    i32.const 1", "    global.set $gs_" ++ g] ++ indent instrs ++ ["    local.set $__frcv", "    local.get $__frcv", "    global.set $" ++ g, "    i32.const 2", "    global.set $gs_" ++ g, "    local.get $__frcv", "    ref.as_non_null"]
+  [
+      "  (func $force_" ++ g ++ " (result (ref eq))",
+      "  (local $__frcv (ref null eq))",
+    ]
+    ++ localDecls
+    ++ w7Decls
+    ++ [
+      "    global.get $gs_" ++ g,
+      "    i32.const 2",
+      "    i32.eq",
+      "    if (result (ref eq))",
+      "    global.get $" ++ g,
+      "    ref.as_non_null",
+      "    else",
+      "    global.get $gs_" ++ g,
+      "    i32.const 1",
+      "    i32.eq",
+      "    if (result (ref eq))",
+    ]
+    ++ indent cyclic
+    ++ ["    else"]
+    ++ unforced
+    ++ ["    end", "    end", "  )"]
+emitRefForceFn _ _ = gapL "value binding must be a nullary clause"
 
 -- main: compute the body (a (ref eq)), then unbox to i32 and route to the print
 -- import by the body's STATIC kind (Int vs Bool — the only printable scalar mains
@@ -4457,6 +4564,11 @@ emitVarRef prog env d x = match emitFtSentinel x
 emitVarRefPlain : Prog -> List String -> Int -> String -> List String
 emitVarRefPlain prog env d x =
   if contains x env then ["local.get $" ++ gname x]
+  -- #561 PR-B: a LAZY value global (dispatch-reaching / cyclic) is forced on first use —
+  -- `call $force_<x>` memoises into $<x> and black-holes a re-entrant force into
+  -- E-CYCLIC-VALUE.  A LOCAL of the same name still shadows (env checked first, above).
+  -- The result is a non-null (ref eq), same as the eager `global.get; ref.as_non_null`.
+  else if contains x (progValNames prog) && isLazyGlobalW x then ["call $force_" ++ gname x]
   else if contains x (progValNames prog) then ["global.get $" ++ gname x, "ref.as_non_null"]
   -- the Bool constructors used as VALUES (e.g. an `eq` impl body `… = True`) are
   -- i31 immediates 1/0 — the same rep as `emitLitRef (LBool _)`, so `if` reads them
