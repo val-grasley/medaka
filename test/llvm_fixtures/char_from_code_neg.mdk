@@ -1,0 +1,4 @@
+-- #476 domain cell: charFromCode below 0 is outside the Unicode scalar range -> None (scalar -1).
+main = match charFromCode -1
+  Some c => charCode c
+  None => 0 - 1

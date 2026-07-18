@@ -1,0 +1,2 @@
+-- #476 domain cell: log 0 is the pole -> -inf.
+main = log 0.0

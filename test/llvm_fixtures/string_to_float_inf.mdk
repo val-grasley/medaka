@@ -1,0 +1,4 @@
+-- #476 domain cell: stringToFloat "inf" parses IEEE +infinity -> Some inf.
+main = match stringToFloat "inf"
+  Some f => f
+  None => 0.0 - 1.0

@@ -1,0 +1,4 @@
+-- #476 domain cell: charFromCode above U+10FFFF (1114112 = 0x110000) -> None (scalar -1).
+main = match charFromCode 1114112
+  Some c => charCode c
+  None => 0 - 1

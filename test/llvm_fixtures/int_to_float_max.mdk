@@ -1,0 +1,2 @@
+-- #476 domain cell: intToFloat at intMaxBound (2^62-1) — the top of the 63-bit Int domain.
+main = intToFloat 4611686018427387903

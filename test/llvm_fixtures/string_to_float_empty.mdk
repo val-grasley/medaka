@@ -1,0 +1,4 @@
+-- #476 domain cell: stringToFloat on the empty string parses nothing -> None (scalar -1.0).
+main = match stringToFloat ""
+  Some f => f
+  None => 0.0 - 1.0
