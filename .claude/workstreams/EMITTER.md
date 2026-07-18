@@ -33,7 +33,7 @@ to it, in gate-verified steps (DAG in #362).
 | Family | Members |
 |---|---|
 | Type recovery ×2 | `typeOf`/`callRetTy`/`paramUseTy`/`inferSigs` (pure twin) ∥ every `emitExpr` arm's inline `(String, LTy)` recovery (#353 — the file admits the twinning at the `typeOf` header) |
-| Float-ness heuristics ×5 | `staticIsFloat` · two-pass `inferSigs` (mutates `sigs`!) · `bodyFloatRet`/`closureRetTyRef` · the `RScalar` stamp (the done-right model) · `mainKind` auto-print (#353) |
+| Float-ness heuristics ×5 | `staticIsFloat` · two-pass `inferSigs` (mutates `sigs`!) · `bodyFloatRet`/`closureRetTyRef` · the `RScalar` stamp (the done-right model) · `mainTypeIsFloat` auto-print hint (#353) |
 | Cell allocators ×6 | `emitCtorAlloc` ∥ `emitClosureAlloc` ∥ `emitClosureAllocPatch` ∥ dict cell ∥ atomic Float box ∥ TRMC cons cell (#356 — `$tuple`/`$ref` were already unified; the rest were not) |
 | Call emission ×16 | `emitApp`/`emitExternApplied`/`emitIndirect`/`emitImplCall*`/`emitOverApp`/`emitApplyAny`/`emitApplyRuntime`/`emitPap*`/`emitDictApp*`/`emitCtorApp`/`emitMethodDispatch*`/`emitTrmcTailCall` |
 | Extern dispatch ladders ×5 | `emitFileExtern`/`emitNumExtern`/`emitNetExtern`/`emitUnicodeExtern`/io+str siblings — the five biggest fns in the file (#358) |
@@ -85,11 +85,13 @@ when the fix changes what a backend accepts.
 
 ### 7. Emission-state Refs: the miscompile shape is write-then-read-across-paths
 The refutable-guard miscompile came from a jump target in a module Ref that another emission path
-nulled. Its fix (`labelFallthrough`, node-carried) covers the sentinel half only —
-`fallthroughLabelRef` still carries the CTFail target with save+NULL discipline in three emitters
-(#354). Do not add new write-then-read Refs; carry the decision on the node (wasm threads the
-label as an argument — the reference design). Install-once tables (`returnsSelfTableRef` family)
-have no per-program reset (#357) — do not add siblings to that lifecycle.
+nulled. Its fix (`labelFallthrough`, node-carried) covers the sentinel half; the CTFail half was
+ALSO converted since — `ftL` is now a plain parameter threaded through `emitTree`, not a module
+Ref (#354; see the "PLAIN PARAMETER, not ambient state" comment at its signature). Do not add new
+write-then-read Refs; carry the decision on the node/parameter (wasm threads the label as an
+argument — the reference design, which LLVM emit now matches for both halves). Install-once tables
+(`returnsSelfTableRef` family) have no per-program reset (#357) — do not add siblings to that
+lifecycle.
 
 ### 8. Probes: `main` must be a zero-arg Unit value, and `do` is monadic
 `main () = …` is a silent no-op; `medaka run` rejects non-Unit value-mains with a diagnostic

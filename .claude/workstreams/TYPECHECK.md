@@ -39,10 +39,10 @@ documents, in gate-verified steps.
 | Orchestration bodies | `checkProgramSeededSplit` ∥ `checkModuleFullImpl` (#80) |
 | Final-check tails ×5 | `checkToLines` / `checkToLinesWithRuntime` / `checkErrorsWithRuntime` / `checkProgramDiags` / `checkModuleFullDiags` (#152) |
 | Module fold loops ×4 | ✅ LANDED (#151): unified into one `foldModules` (worker + isLast-aware collector) — the four drivers are now thin worker/collector pairs (`cmCheckWorker`/`cmDiagsWorker`/`cmEntryWorker`+`cmEntryCollect`/`elabWorker`); the three `check*` preambles share `checkModulesPreamble` |
-| Impl resolution ×6 | `resolveSite`, `resolveOpSite` (the #145-unified binop/unop resolver), `routeOfMono`/`routeOfMonoTop`/`routeOfMonoEncl`, `findImplEntry`, arg-position mirrors (#156) |
+| Impl resolution ×6 | `resolveSite`, `resolveOpSite` (the #145-unified binop/unop resolver), `routeOf` (already unifies what were three separate routeOfMono/routeOfMonoTop/routeOfMonoEncl arms), `findImplEntry`, arg-position mirrors (#156) |
 | Structural matchers ×4 | `cohOverlap`'s unifier, `cohSubsumes`, `tySubsumesV`, `matchTyMono` (#156 stage 1) |
 | Operator seams ×4 | LANDED #146 → collapsed to `recordIfaceObligation`/`ifaceRegistered` (the 12 clones `record{Num,Eq,Ord,Semigroup}Obligation` + `*IfaceRegistered` guards + `*Entry` predicates are retired). LANDED #147 → `methodIfaceParamsRef` is now an `OrdMap` keyed by method name + a cached `registeredIfacesRef` iface-name set; `ifaceRegistered` is `omHasKey` (the old ifaceEntryMatches full-scan predicate is retired) |
-| Binop/unop twins ×4 pairs | ✅ LANDED (#145): collapsed into one `isBinop`-flagged set — `resolveOpSites`/`resolveOpSite`/`opDictVarOf`/`stampOpRoute` |
+| Binop/unop twins ×4 pairs | ✅ LANDED (#145): collapsed into one `isBinop`-flagged set — `resolveOpSites`/`resolveOpSite`/`opDictVarOf`/`stampOpRouteVal` (a later extraction pulled the pure Route-returning core out of the original stampOpRoute into stampOpRouteVal) |
 
 ---
 
