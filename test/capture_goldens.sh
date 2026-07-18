@@ -79,7 +79,7 @@ case "${1:-}" in
   --frozen)
     FROZEN_TAG="${2:-}"
     [ -n "$FROZEN_TAG" ] || {
-      echo "usage: sh test/capture_goldens.sh --frozen <fmt|printer|boot_typecheck|selfproc_legA|llvm_eval|build_construct>"
+      echo "usage: sh test/capture_goldens.sh --frozen <fmt|printer|boot_typecheck|selfproc_legA|llvm_eval|build_construct|native_cli>"
       exit 2
     }
     ;;
@@ -230,8 +230,146 @@ if [ -n "$FROZEN_TAG" ]; then
       fwrote="$wrote"
       [ "$fwrote" -gt 0 ] || { echo "wrote 0 goldens — no fixtures found under test/construct_fixtures/"; exit 2; }
       ;;
+    native_cli)
+      # test/native_cli_goldens/{check,fmt,new,run,test,build,lsp} — mirrors
+      # test/diff_native_cli.sh's own per-subtest producers EXACTLY (same
+      # MEDAKA_ROOT + perl-alarm bound() invocation, same strip_unit, same
+      # sort/sed), so a regenerated golden is BY CONSTRUCTION the gate's
+      # "actual" side — no second implementation to drift (#621). Needs only
+      # $MAIN (a fresh `make medaka`); build/ additionally needs
+      # $MEDAKA_EMITTER + clang + libgc and lsp/ needs python3 — both are
+      # SKIPPED (noted, not fatal) if missing, mirroring the gate's own
+      # build_skip fallback rather than refusing the whole regen.
+      [ -x "$MAIN" ] || { echo "missing $MAIN — run: make medaka"; exit 2; }
+      NCGOLD="$ROOT/test/native_cli_goldens"
+      NCFIX="$ROOT/test/native_cli_fixtures"
+      NCEMITTER="${MEDAKA_EMITTER:-$ROOT/medaka_emitter}"
+      ncbound() { perl -e 'alarm 120; exec @ARGV' "$@"; }
+      nc_strip_unit() { sed '${/^0$/d;}'; }
+
+      # ── check/ ──────────────────────────────────────────────────────────
+      for f in "$ROOT"/test/diff_fixtures/*.mdk; do
+        [ -f "$f" ] || continue
+        n="$(basename "$f" .mdk)"
+        MEDAKA_ROOT="$ROOT" ncbound "$MAIN" check --types "$f" 2>/dev/null \
+          | nc_strip_unit | LC_ALL=C sort > "$NCGOLD/check/$n.golden"
+        fwrote=$((fwrote+1))
+      done
+
+      # ── fmt/ ────────────────────────────────────────────────────────────
+      for f in "$ROOT"/test/fmt_fixtures/*.mdk; do
+        [ -f "$f" ] || continue
+        n="$(basename "$f" .mdk)"
+        MEDAKA_ROOT="$ROOT" ncbound "$MAIN" fmt --stdout "$f" 2>/dev/null \
+          | nc_strip_unit > "$NCGOLD/fmt/$n.golden"
+        fwrote=$((fwrote+1))
+      done
+
+      # ── new/ ────────────────────────────────────────────────────────────
+      NCTMP="$(mktemp -d)"
+      ( cd "$NCTMP" && MEDAKA_ROOT="$ROOT" ncbound "$MAIN" new proj >/dev/null 2>&1 )
+      if [ -d "$NCTMP/proj" ]; then
+        rm -rf "$NCGOLD/new/proj"
+        mkdir -p "$NCGOLD/new"
+        cp -R "$NCTMP/proj" "$NCGOLD/new/proj"
+        fwrote=$((fwrote+1))
+      else
+        echo "  SKIP new/proj (native \`new\` produced no tree)"
+      fi
+      rm -rf "$NCTMP"
+
+      # ── run/ ────────────────────────────────────────────────────────────
+      for base in hello arith recur adt listsum strcat; do
+        f="$NCFIX/run/$base.mdk"
+        [ -f "$f" ] || continue
+        MEDAKA_ROOT="$ROOT" ncbound "$MAIN" run "$f" 2>/dev/null \
+          | nc_strip_unit > "$NCGOLD/run/$base.golden"
+        fwrote=$((fwrote+1))
+      done
+
+      # ── test/ ───────────────────────────────────────────────────────────
+      for base in doc prop nodoc; do
+        f="$NCFIX/test/$base.mdk"
+        [ -f "$f" ] || continue
+        MEDAKA_ROOT="$ROOT" ncbound "$MAIN" test "$f" 2>/dev/null \
+          | sed "s#$ROOT/##g" | nc_strip_unit > "$NCGOLD/test/$base.golden"
+        fwrote=$((fwrote+1))
+      done
+      if [ -d "$NCFIX/test_dir" ]; then
+        MEDAKA_ROOT="$ROOT" ncbound "$MAIN" test "$NCFIX/test_dir" 2>/dev/null \
+          | sed "s#$ROOT/##g" | nc_strip_unit > "$NCGOLD/test/dir.golden"
+        fwrote=$((fwrote+1))
+      fi
+
+      # ── build/ (native emit host; needs emitter + clang + libgc) ─────────
+      build_ok=1
+      command -v "${CC:-clang}" >/dev/null 2>&1 || build_ok=0
+      [ -x "$NCEMITTER" ] || build_ok=0
+      if [ "$build_ok" = 1 ]; then
+        NCBTMP="$(mktemp -d)"
+        for base in hello arith recur adt listsum strcat; do
+          f="$NCFIX/run/$base.mdk"
+          [ -f "$f" ] || continue
+          ( export MEDAKA_ROOT="$ROOT"; export MEDAKA_EMITTER="$NCEMITTER"
+            ncbound "$MAIN" build "$f" -o "$NCBTMP/nat_$base" ) >/dev/null 2>&1
+          if [ -x "$NCBTMP/nat_$base" ]; then
+            "$NCBTMP/nat_$base" > "$NCGOLD/build/$base.golden" 2>/dev/null
+            fwrote=$((fwrote+1))
+          else
+            echo "  SKIP build/$base (native build failed)"
+          fi
+        done
+        rm -rf "$NCBTMP"
+      else
+        echo "  SKIP build/* (no clang/libgc or missing $NCEMITTER)"
+      fi
+
+      # ── lsp/session.ndjson — scripted stdin session (NOT a "live" session;
+      # mirrors diff_native_cli.sh's own lframe/ldecode driver EXACTLY) ─────
+      if command -v python3 >/dev/null 2>&1; then
+        NCLTMP="$(mktemp -d)"
+        nc_lframe() { python3 - "$1" <<'PY'
+import sys
+b=sys.argv[1].encode("utf-8")
+sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n"%len(b)); sys.stdout.buffer.write(b)
+PY
+        }
+        nc_ldecode() { python3 - "$1" <<'PY'
+import sys,re,json,os
+data=open(sys.argv[1],"rb").read()
+def stab(o):
+    if isinstance(o,dict): return {k:stab(v) for k,v in o.items()}
+    if isinstance(o,list): return [stab(x) for x in o]
+    if isinstance(o,str) and o.startswith("file://"): return "file:///"+os.path.basename(o)
+    return o
+for p in re.split(rb"Content-Length: \d+\r\n", data):
+    s=p.decode("utf-8","replace"); i=s.find("{")
+    if i<0: continue
+    s=s[i:].strip()
+    try: obj,_=json.JSONDecoder().raw_decode(s)
+    except Exception: continue
+    print(json.dumps(stab(obj),sort_keys=True))
+PY
+        }
+        : > "$NCLTMP/lsp_in.bin"
+        LSRC='greet x = x + 1\nmain = println (greet 41)\n'
+        for m in \
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' \
+          '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lsp_sess.mdk","languageId":"medaka","version":1,"text":"'"$LSRC"'"}}}' \
+          '{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///lsp_sess.mdk"}}}' \
+          '{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///lsp_sess.mdk"},"position":{"line":0,"character":1}}}' \
+          '{"jsonrpc":"2.0","method":"exit","params":{}}'; do nc_lframe "$m" >> "$NCLTMP/lsp_in.bin"; done
+        MEDAKA_ROOT="$ROOT" ncbound "$MAIN" lsp < "$NCLTMP/lsp_in.bin" > "$NCLTMP/lsp_out.bin" 2>/dev/null
+        nc_ldecode "$NCLTMP/lsp_out.bin" > "$NCGOLD/lsp/session.ndjson"
+        fwrote=$((fwrote+1))
+        rm -rf "$NCLTMP"
+      else
+        echo "  SKIP lsp/session.ndjson (no python3)"
+      fi
+      [ "$fwrote" -gt 0 ] || { echo "wrote 0 goldens — check test/native_cli_fixtures/ and test/diff_fixtures/ exist"; exit 2; }
+      ;;
     *)
-      echo "unknown --frozen tag: $FROZEN_TAG (expected fmt|printer|boot_typecheck|selfproc_legA|llvm_eval|build_construct)"
+      echo "unknown --frozen tag: $FROZEN_TAG (expected fmt|printer|boot_typecheck|selfproc_legA|llvm_eval|build_construct|native_cli)"
       exit 2 ;;
   esac
   status=$?
@@ -292,8 +430,9 @@ oracle_eval_typed() {
 # FROZEN families omitted (eval/eval_prelude/eval_list/positions_dump/comment_dump/
 # tc_probe/diag_analyze — OCaml dev/ probes, no native equivalent;
 # fmt — requires test/bin/fmt_main which needs a fresh
-# native build; eval_typed_modules/build_*/test/new/native_cli — require an
-# up-to-date native binary to reproduce committed goldens).
+# native build; eval_typed_modules/build_*/test/new — require an up-to-date
+# native binary to reproduce committed goldens; native_cli — see the
+# `--frozen native_cli` tag instead (§2d below), which IS wired).
 ROWS="
 $ROOT/test/eval_dict_fixtures/*.mdk::eval_dict::eval.golden
 $ROOT/test/eval_typed_fixtures/*.mdk::eval_typed::eval.golden
@@ -581,31 +720,63 @@ if want repl; then
   fi
 fi
 
-# ── §2c `lsp` goldens — SKIPPED (REROOT-PLAN STOP guardrail) ──────────────────
-# lsp: `medaka build compiler/entries/lsp_main.mdk` fails the native G1 typecheck
-#   gate (compiler/driver/medaka_cli.mdk typecheckGate uses roots
-#   [inputDir, stdlib] — missing `compiler` — so tools.lsp's transitive imports
-#   don't resolve; check_all_main with explicit [compiler, stdlib] roots typechecks
-#   lsp_main cleanly).  No native lsp host binary can be built → the 3 lsp gates
-#   cannot be re-rooted onto a native host.  Gates left on the OCaml oracle.
+# ── §2c `lsp` goldens — HISTORICAL, SUPERSEDED ────────────────────────────────
+# This block described an EARLIER state (`medaka build
+# compiler/entries/lsp_main.mdk` failing the native G1 typecheck gate, so no
+# native lsp host binary could be built and the 3 lsp gates stayed on the
+# OCaml oracle). That is no longer true: `./medaka lsp` builds and runs
+# natively, and diff_compiler_lsp{,_b3,_b4}.sh are OCaml-free today (see the
+# "self-hosted LSP differential goldens" block below for the current, WIRED
+# re-mint path — #621).
 
-# ── §2d native-CLI goldens : FROZEN ────────────────────────────────────────────
-# native_cli_goldens/ (check/fmt/run/test/build/lsp) were captured by earlier
-# capture runs.  Re-capture after Phase 3 rebuild to refresh all subsections:
-#   check/  — FROZEN: check_main.mdk calls args() (native-only extern)
-#   fmt/    — FROZEN: requires current native binary
-#   run/    — FROZEN: requires current native binary
-#   test/   — FROZEN: requires current native binary
-#   build/  — FROZEN: requires current native binary
-#   lsp/    — FROZEN: requires current native lsp session output
+# ── §2d native-CLI goldens : opt-in FROZEN tag (WIRED, #621) ──────────────────
+# native_cli_goldens/{check,fmt,new,run,test,build,lsp} — re-mint ALL
+# subsections in one command:
+#
+#   sh test/capture_goldens.sh --frozen native_cli
+#
+# (see the `native_cli)` arm of the FROZEN_TAG case above for what each
+# subsection actually runs — it mirrors test/diff_native_cli.sh's own
+# producers EXACTLY, so a regenerated golden is BY CONSTRUCTION that gate's
+# "actual" side).  `--frozen`-gated, not a bare-`want` row, for the same
+# "must not churn a plain run" reason fmt/llvm_eval/build_construct already
+# are.  Needs only $MAIN (a fresh `make medaka`); build/ additionally needs
+# $MEDAKA_EMITTER + clang + libgc, and lsp/ needs python3 — both SKIP (noted,
+# not fatal) rather than abort the whole regen if absent.
+#
+# Historical note: the previous text here said every subsection was FROZEN
+# with no re-mint path except a fresh Phase-3 rebuild — that was accurate
+# before this tag existed, but `check --types | strip_unit | sort` (etc.) was
+# always mechanical to reproduce; the only missing piece was the driver.
 
-# ── self-hosted LSP differential goldens : FROZEN ────────────────────────────
-# lsp_goldens/ were captured from the OCaml reference server + `check --json`.
-# The native `./medaka lsp` is canonical but re-capture requires a live LSP
-# session; committed goldens in test/lsp_goldens/ remain valid for
-# diff_compiler_lsp{,_b3,_b4}.sh gates (OCaml-free; they drive native lsp vs
-# these committed goldens).  Re-mint by running `sh test/capture_goldens.sh lsp`
-# with an up-to-date native binary if LSP responses change.
+# ── self-hosted LSP differential goldens : re-mint path WIRED (#621) ─────────
+# lsp_goldens/ were originally captured from the OCaml reference server +
+# `check --json`. `sh test/capture_goldens.sh lsp` was NEVER a real route — `lsp`
+# is not a ROWS tag — and "re-capture requires a live LSP session" was stale:
+# every one of these gates already drives the CANONICAL native `./medaka lsp`
+# through fully scripted stdin frames (no human/editor session involved), so
+# each gate now carries its own CAPTURE=1 re-mint, mirroring the check_json
+# project loop's precedent (a gate owns the recapture of the goldens it alone
+# consumes, rather than a ROWS entry here):
+#
+#   CAPTURE=1 sh test/diff_compiler_lsp.sh       — check_{clean,err,project}.json
+#                                                   (cross-check vs `check --json`
+#                                                   on the same fixture — NOT
+#                                                   self-referential)
+#   CAPTURE=1 sh test/diff_compiler_lsp_b3.sh    — b3_fmt.txt (cross-check vs
+#                                                   `fmt --stdout`) AND
+#                                                   b3_sym_def_hl.ndjson (raw
+#                                                   protocol dump — tautological
+#                                                   self-capture, human-reviewed
+#                                                   at bless time)
+#   CAPTURE=1 sh test/diff_compiler_lsp_b4.sh    — all 5 b4_*.ndjson (same
+#                                                   tautological-capture class
+#                                                   as b3_sym_def_hl.ndjson;
+#                                                   b4_compl_full.ndjson was
+#                                                   already re-minted this way
+#                                                   by hand on 2026-06-27)
+#
+# Needs only an up-to-date native `./medaka` — no OCaml, no live session.
 
 echo
 # A run that examined/wrote NOTHING must never look like a pass. This is how an

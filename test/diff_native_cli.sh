@@ -3,8 +3,10 @@
 # (REROOT-PLAN §2d).  compiler/driver/medaka_cli.mdk, native-compiled to ./medaka,
 # must reproduce committed goldens for check / fmt / new / repl / run / test / build.
 #
-# Per subtest the OCaml oracle leg is replaced by a committed golden captured NOW
-# from the OCaml reference (sh test/capture_goldens.sh native_cli); the native leg
+# Per subtest the OCaml oracle leg is replaced by a committed golden (originally
+# captured from the OCaml reference, now re-minted from native — OCaml-free).
+# Re-mint ALL subsections in one command: `sh test/capture_goldens.sh --frozen
+# native_cli` (#621 — mirrors this gate's own producers exactly). The native leg
 # stays `./medaka <subcmd>`.  Goldens live under test/native_cli_goldens/{check,fmt,
 # new,run,test,build} + the inline fixtures are committed under
 # test/native_cli_fixtures/{run,test}.
@@ -177,7 +179,7 @@ PY
     diff "$LSP_GOLDEN" "$TMP/lsp_out.ndjson" | head -8 | sed 's/^/  /'
   fi
 else
-  printf 'skip lsp/session (golden missing — run sh test/capture_goldens.sh native_cli)\n'
+  printf 'skip lsp/session (golden missing — run sh test/capture_goldens.sh --frozen native_cli)\n'
 fi
 
 # ── run ───────────────────────────────────────────────────────────────────────

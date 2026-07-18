@@ -11,4 +11,3 @@ import support.util.{
 import frontend.ast.{Lit, Ty}
 
 main = println 0
-

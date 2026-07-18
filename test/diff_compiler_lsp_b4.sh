@@ -24,6 +24,12 @@
 # bare `{}` the self-host tolerates), so we send one to both.
 #
 # Usage: sh test/diff_compiler_lsp_b4.sh
+#   CAPTURE=1 sh test/diff_compiler_lsp_b4.sh   — re-mint all 5 b4_*.ndjson
+#     goldens from the current native `medaka lsp` (#621).  Each is a raw
+#     protocol dump with no independent cross-check, so this is tautological
+#     (self vs self) by construction — the same "native canonical,
+#     human-reviewed at bless time" precedent already used for
+#     b4_compl_full.ndjson (re-minted by hand on 2026-06-27, see below).
 
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,6 +42,7 @@ GOLD="$ROOT/test/lsp_goldens"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 pass=0; fail=0
+CAPTURE="${CAPTURE:-0}"
 
 frame() {
   python3 - "$1" <<'PY'
@@ -64,6 +71,10 @@ drive_self() {
 # snapshot predated prelude growth (Traversable's traverse/sequence, etc.) and OCaml
 # is removed, so native is the reference for the full-env set.
 load_golden() {
+  if [ "$CAPTURE" = 1 ]; then
+    cp "$TMP/self.json" "$GOLD/$1"
+    printf 'CAPTURE %s\n' "$GOLD/$1" >&2
+  fi
   cp "$GOLD/$1" "$TMP/ocaml.json"
 }
 
