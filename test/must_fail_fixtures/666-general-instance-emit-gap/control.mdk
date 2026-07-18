@@ -1,0 +1,7 @@
+interface Sz a where
+  sz : a -> Int
+
+impl Sz Int where
+  sz x = 1
+
+main = println (sz (5 : Int))

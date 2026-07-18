@@ -1,0 +1,20 @@
+issue: 670
+what: The range-slice `xs.[lo..hi]` carries NO Sliceable/Index constraint, so it typechecks
+what: on any receiver. Native lowering dispatches on a STATIC type tag whose catch-all is
+what: Array, while run dispatches on the RUNTIME value. When the receiver's static type is
+what: an unresolved type variable (any polymorphic `xs.[lo..hi]`), the built binary reads a
+what: String's heap object THROUGH the Array representation. run prints `h` (68 0a); the
+what: built binary publishes 5 leaked heap bytes (00 00 00 00 00 0a), exit 0 — a silent
+what: wrong value AND an uncontrolled foreign-memory read (heap disclosure).
+cmd: build-run main.mdk
+exit: 0
+stdout-bytes: \0000\0000\0000\0000\0000\012
+control: build-run control.mdk
+why-control: control.mdk slices a GROUNDED Array (`[|104, 105|].[0..1]`) — the receiver type
+why-control: is known, so the static-tag dispatch is correct and it prints `[|104|]` (exit
+why-control: 0) in both engines. The SINGLE distinguishing feature is whether the receiver
+why-control: is polymorphic/ungrounded. Fixing #670 (add a Sliceable constraint) makes main
+why-control: build print `h` (68 0a) — DRAINING this row — while the control stays green.
+why-symptom-b: The issue's Symptom B (`f 42` / `f ([] : List Int)` -> SIGSEGV, exit 139) is
+why-symptom-b: the same root cause. Only ONE fixture per issue is allowed, and Symptom A is
+why-symptom-b: the sharper pin: an S0 heap disclosure with EXACT bytes, vs a bare crash code.

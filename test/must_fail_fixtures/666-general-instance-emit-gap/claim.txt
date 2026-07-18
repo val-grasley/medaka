@@ -1,0 +1,20 @@
+issue: 666
+what: A general instance (`impl Sz a`, head is a bare type variable) is accepted by check
+what: and executed by run, but the native emitter cannot emit a call that dispatches to it
+what: at a concrete receiver type: `medaka build` exits 1 with an internal gap-panic
+what: ("no impl of method 'sz' for type 'Int'") and produces NO binary.
+cmd: build main.mdk
+exit: 1
+control: build control.mdk
+why-control: control.mdk swaps the general `impl Sz a` for a CONCRETE `impl Sz Int` — the
+why-control: ONLY difference — and MUST build (exit 0). That isolates the defect to
+why-control: type-variable-head dispatch: the emit machinery works, only the general
+why-control: instance has no per-receiver dispatch-table entry. If the concrete build
+why-control: breaks too, the ENVIRONMENT broke, not #666.
+why-no-observable: exit 1 is pinned; the build's message is NOT, deliberately. Its two lines
+why-no-observable: are `error: emitter failed compiling <ABSOLUTE PATH>` (path varies per
+why-no-observable: checkout) and `runtime error [E-PANIC]: no impl of method 'sz' for type
+why-no-observable: 'Int' (slice 6)` — the `(slice N)` register index is a volatile emitter
+why-no-observable: internal (the issue's own diagnostic-quality note flags it). Pinning
+why-no-observable: either whole line would risk a FALSE DRAIN on an unrelated emitter edit.
+why-no-observable: exit 1 + the concrete-impl control is the robust discriminator.

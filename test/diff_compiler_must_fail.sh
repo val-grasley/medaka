@@ -120,6 +120,25 @@ FIXDIR="$ROOT/test/must_fail_fixtures"
 [ -d "$FIXDIR" ] || { echo "missing fixture dir: $FIXDIR"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found (needed to render check --json)"; exit 2; }
 
+# ── THE clang GUARD (build / build-run verbs only). ────────────────────────────
+#
+# The build and build-run verbs invoke `medaka build`, which shells out to clang — the
+# ONLY verbs here that need a native toolchain. If any SELECTED fixture uses one and clang
+# is absent, this gate FAILS LOUDLY (exit 2, infra error), exactly like the missing-binary
+# and missing-python3 guards above. A SKIP THAT EXITS 0 IS THE SILENT-GREEN THIS SUITE
+# EXISTS TO PREVENT (#590): every wasm gate exited 0 "skipping" for months because
+# wasm-tools was missing, and nobody noticed the coverage had evaporated. `soundness` —
+# where this suite runs — always has clang.
+if grep -lE '^(cmd|control):[[:space:]]*build(-run)?[[:space:]]' "$FIXDIR"/*/claim.txt >/dev/null 2>&1; then
+  command -v clang >/dev/null 2>&1 || {
+    echo "clang not found, but a fixture uses the build/build-run verb (it needs a real native compile)."
+    echo "This is an INFRA ERROR, not a skip: a must-fail suite that silently skipped a build"
+    echo "fixture would report GREEN having never checked it — the exact silent-green this suite"
+    echo "exists to prevent. Install clang (soundness, where this runs, has it)."
+    exit 2
+  }
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -151,6 +170,36 @@ claim_has() { grep -q "^$2:" "$1"; }
 # run_verb <verb> <fixture-dir> <file> <outfile>  -> exit code
 # fmt-write mutates its input, so it runs against a COPY: a gate must never edit the
 # corpus it is grading.
+#
+# THE VERBS, and WHAT EACH GRADES (its exit code + what lands in <outfile>):
+#   check / check-json / check-types  — `medaka check [flag]`: the diagnostics path. Grades
+#                                       medaka's exit + stdout.
+#   run                               — `medaka run`: the tree-walking interpreter. Grades
+#                                       its exit + stdout.
+#   fmt-write                         — `medaka fmt --write` on a COPY; grades exit + the
+#                                       rewritten bytes (file-after).
+#   build                             — `medaka build` ITSELF: grades the EMITTER's exit +
+#                                       its combined stdout+stderr. For bugs where a valid
+#                                       program REFUSES to build (exit 1, no binary) — e.g.
+#                                       #666, #671. This is the ONLY verb that grades a
+#                                       build FAILURE as the pinned observation.
+#   build-run                         — builds the program to a per-process temp binary,
+#                                       then EXECUTES it and grades the BINARY's exit +
+#                                       stdout. For bugs where build SUCCEEDS but the binary
+#                                       crashes or prints the wrong thing (the run≠build
+#                                       class — #670, #672). The graded exit is the
+#                                       BINARY's, never `medaka build`'s. If `medaka build`
+#                                       itself fails here the fixture is MALFORMED for this
+#                                       verb (you cannot run a binary that did not build) —
+#                                       run_verb returns 126 with an explanation, a HARD
+#                                       error, NEVER silently gradeable as a wrong-binary
+#                                       observation.
+#
+# build / build-run need clang; the guard above fails loudly (exit 2) if it is absent.
+# The binary goes to "$_out.bin" — "$_out" is "$TMP/<name>.out" (main) or "$TMP/<name>.ctl"
+# (control), both inside the per-run mktemp -d, so no two fixtures ever share an -o basename.
+# ⚠️ Keying the -o path on anything but a per-process dir is a documented trap that produced
+# a stable-looking WRONG binary 19/20 times — do NOT.
 run_verb() {
   _verb="$1"; _dir="$2"; _file="$3"; _out="$4"
   case "$_verb" in
@@ -158,6 +207,26 @@ run_verb() {
     check-json)  bound "$MEDAKA" check --json  "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
     check-types) bound "$MEDAKA" check --types "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
     run)        bound "$MEDAKA" run        "$_dir/$_file" >"$_out" 2>"$_out.err"; return $? ;;
+    build)
+      # Grade `medaka build` itself: its exit code AND its combined stdout+stderr (the
+      # emitter's own failure output IS the pinned observation).
+      bound "$MEDAKA" build "$_dir/$_file" -o "$_out.bin" >"$_out" 2>&1; return $? ;;
+    build-run)
+      # Two-phase: build, then run the produced binary and grade THAT.
+      bound "$MEDAKA" build "$_dir/$_file" -o "$_out.bin" >"$_out.buildlog" 2>&1; _brc=$?
+      if [ "$_brc" -ne 0 ]; then
+        # A build failure under build-run is NOT the pinned observation — it is a malformed
+        # fixture (a wrong-binary claim on a program that produced no binary). Surface it as
+        # a hard error with a distinctive exit (126, "command cannot execute"), so it can
+        # never masquerade as the binary's own exit code.
+        { echo "build-run MALFORMED: 'medaka build' itself failed (exit $_brc) — cannot run a"
+          echo "binary that did not build. This verb grades the EXECUTED binary; if build"
+          echo "fails, use the 'build' verb to pin the build failure instead."
+          cat "$_out.buildlog"
+        } >"$_out"
+        return 126
+      fi
+      bound "$_out.bin" >"$_out" 2>"$_out.err"; return $? ;;
     fmt-write)
       _work="$TMP/fmtwork"; rm -rf "$_work"; mkdir -p "$_work"
       cp "$_dir/$_file" "$_work/$_file"

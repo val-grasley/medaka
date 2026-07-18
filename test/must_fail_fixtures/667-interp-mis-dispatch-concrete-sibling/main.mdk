@@ -1,0 +1,13 @@
+interface Sz a where
+  sz : a -> Int
+
+impl Sz Int where
+  sz x = 111
+
+impl Sz a where
+  sz x = 999
+
+useSz : Sz a => a -> Int
+useSz x = sz x
+
+main = println (useSz True)
