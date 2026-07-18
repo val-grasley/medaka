@@ -3641,10 +3641,10 @@ infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
 -- EIndex is desugared to an `index` method call before typecheck (Phase #16b);
 -- the built-in index-inference path is retired, so no `EIndex` arm here.  ESlice
--- is likewise desugared to a `sliceRange` method call before typecheck (#670), so
+-- is likewise desugared to a `slice` method call before typecheck (#670), so
 -- no `ESlice` arm here -- a surviving one is a desugar-ordering bug and hits the
 -- loud "unsupported expression" catch-all, and a non-container receiver becomes a
--- "no impl of Sliceable" constraint error via normal method dispatch.
+-- "no impl of Slice" constraint error via normal method dispatch.
 infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 -- ELoc is transparent: capture the span in `currentLoc` (so any type error
 -- recorded while inferring the wrapped expr is attributable to this position,
@@ -3676,8 +3676,8 @@ inferIntRange env lo hi container =
   TApp container (TCon "Int")
 
 -- (ESlice's `inferSlice`/`indexKind` were retired with #670: `a.[lo..hi]` now
--- desugars to a `sliceRange` method call before typecheck, so slicing infers
--- through normal interface dispatch on `Sliceable`, not a bespoke arm here.)
+-- desugars to a `slice` method call before typecheck, so slicing infers
+-- through normal interface dispatch on `Slice`, not a bespoke arm here.)
 
 -- a method occurrence.  Return-position: record (routeRef, result mono) so
 -- resolveSites can stamp RKey/RDict.  D3a arg-position (name in

@@ -420,7 +420,7 @@ NEWLINE
 DEDENT
 NEWLINE
 EXPORT
-IDENT "slice"
+IDENT "sliceClamped"
 COLON
 UPPER "Int"
 ARROW
@@ -432,7 +432,7 @@ ARROW
 UPPER "Array"
 IDENT "a"
 NEWLINE
-IDENT "slice"
+IDENT "sliceClamped"
 IDENT "lo"
 IDENT "hi"
 IDENT "arr"
@@ -507,7 +507,7 @@ IDENT "take"
 IDENT "n"
 IDENT "arr"
 EQUAL
-IDENT "slice"
+IDENT "sliceClamped"
 INT 0
 IDENT "n"
 IDENT "arr"
@@ -527,7 +527,7 @@ IDENT "drop"
 IDENT "n"
 IDENT "arr"
 EQUAL
-IDENT "slice"
+IDENT "sliceClamped"
 IDENT "n"
 LPAREN
 IDENT "arrayLength"

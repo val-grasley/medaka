@@ -17,7 +17,7 @@ stages=DESUGAR,MARK
 -- `stringCompare`/`stringLength`) — over a `List Char` of cons cells.  Three
 -- tiers, fastest first:
 --   1. operate on the String directly (no char materialization): `take`/`drop`/
---      `slice`, `startsWith`/`endsWith` (slice + `==`), `concat`/`join`/`repeat`,
+--      `sliceClamped`, `startsWith`/`endsWith` (slice + `==`), `concat`/`join`/`repeat`,
 --      and substring search via the host `stringIndexOf` — `indexOf`, and
 --      `contains`/`split`/`replace*` derived from it;
 --   2. decode once to `Array Char`, scan by index, rebuild via `stringFromChars`
@@ -525,10 +525,10 @@ replaceAllGo oldLen old new s = match indexOf old s
 {- | Substring `[lo, hi)` by codepoint, clamped to the string bounds (never
    panics; use `s.[lo..hi]` to panic on OOB instead).
 
-   > slice 1 4 "hello"
+   > sliceClamped 1 4 "hello"
    "ell" -}
-export slice : Int -> Int -> String -> String
-slice lo hi s = stringSlice lo hi s
+export sliceClamped : Int -> Int -> String -> String
+sliceClamped lo hi s = stringSlice lo hi s
 
 {- | First `n` codepoints (fewer if shorter).
 
@@ -779,8 +779,8 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DFunDef false "replaceAll" ((PVar "old") (PVar "new") (PVar "s")) (EIf (EBinOp "==" (EVar "old") (ELit (LString ""))) (EVar "s") (EApp (EApp (EApp (EApp (EVar "replaceAllGo") (EApp (EVar "stringLength") (EVar "old"))) (EVar "old")) (EVar "new")) (EVar "s"))))
 (DTypeSig false "replaceAllGo" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))))
 (DFunDef false "replaceAllGo" ((PVar "oldLen") (PVar "old") (PVar "new") (PVar "s")) (EMatch (EApp (EApp (EVar "indexOf") (EVar "old")) (EVar "s")) (arm (PCon "None") () (EVar "s")) (arm (PCon "Some" (PVar "i")) () (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EVar "i")) (EVar "s")) (EVar "new")) (EApp (EApp (EApp (EApp (EVar "replaceAllGo") (EVar "oldLen")) (EVar "old")) (EVar "new")) (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "+" (EVar "i") (EVar "oldLen"))) (EApp (EVar "stringLength") (EVar "s"))) (EVar "s")))))))
-(DTypeSig true "slice" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String")))))
-(DFunDef false "slice" ((PVar "lo") (PVar "hi") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "lo")) (EVar "hi")) (EVar "s")))
+(DTypeSig true "sliceClamped" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String")))))
+(DFunDef false "sliceClamped" ((PVar "lo") (PVar "hi") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "lo")) (EVar "hi")) (EVar "s")))
 (DTypeSig true "take" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "take" ((PVar "n") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EVar "n")) (EVar "s")))
 (DTypeSig true "drop" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String"))))
@@ -933,8 +933,8 @@ half k = if k <= 1 then 0 else 1 + half (k - 2)
 (DFunDef false "replaceAll" ((PVar "old") (PVar "new") (PVar "s")) (EIf (EBinOp "==" (EVar "old") (ELit (LString ""))) (EVar "s") (EApp (EApp (EApp (EApp (EVar "replaceAllGo") (EApp (EVar "stringLength") (EVar "old"))) (EVar "old")) (EVar "new")) (EVar "s"))))
 (DTypeSig false "replaceAllGo" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))))
 (DFunDef false "replaceAllGo" ((PVar "oldLen") (PVar "old") (PVar "new") (PVar "s")) (EMatch (EApp (EApp (EVar "indexOf") (EVar "old")) (EVar "s")) (arm (PCon "None") () (EVar "s")) (arm (PCon "Some" (PVar "i")) () (EBinOp "++" (EBinOp "++" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EVar "i")) (EVar "s")) (EVar "new")) (EApp (EApp (EApp (EApp (EVar "replaceAllGo") (EVar "oldLen")) (EVar "old")) (EVar "new")) (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "+" (EVar "i") (EVar "oldLen"))) (EApp (EVar "stringLength") (EVar "s"))) (EVar "s")))))))
-(DTypeSig true "slice" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String")))))
-(DFunDef false "slice" ((PVar "lo") (PVar "hi") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "lo")) (EVar "hi")) (EVar "s")))
+(DTypeSig true "sliceClamped" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String")))))
+(DFunDef false "sliceClamped" ((PVar "lo") (PVar "hi") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (EVar "lo")) (EVar "hi")) (EVar "s")))
 (DTypeSig true "take" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "take" ((PVar "n") (PVar "s")) (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EVar "n")) (EVar "s")))
 (DTypeSig true "drop" (TyFun (TyCon "Int") (TyFun (TyCon "String") (TyCon "String"))))

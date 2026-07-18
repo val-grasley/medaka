@@ -1132,7 +1132,7 @@ eval env (EHeadAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts
 -- EIndex is desugared to an `index` method call before eval (Phase #16b); the
 -- built-in index path is retired, so no `EIndex` arm here.  ESlice is likewise
--- desugared to a `sliceRange` method call before eval (#670); a surviving ESlice
+-- desugared to a `slice` method call before eval (#670); a surviving ESlice
 -- is a desugar-ordering bug and hits the loud catch-all below, so no arm here.
 eval env (ERangeList lo hi incl) =
   evalRange (eval env lo) (eval env hi) incl rangeListMk
@@ -2616,7 +2616,7 @@ pStringSlice : Value e -> Value e -> Value e -> <e> Value e
 pStringSlice (VInt lo) (VInt hi) (VString s) = VString (stringSlice lo hi s)
 pStringSlice _ _ _ = panic "stringSlice: bad operands"
 
--- sliceError (lo, hiIncl): the coded E-SLICE-OOB abort the Sliceable impl raises;
+-- sliceError (lo, hiIncl): the coded E-SLICE-OOB abort the Slice impl raises;
 -- prints `slice [lo..hiIncl] out of bounds`, byte-identical to sliceArray's abort.
 pSliceError : Value e -> Value e -> <e> Value e
 pSliceError (VInt lo) (VInt hi) =

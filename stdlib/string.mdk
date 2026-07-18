@@ -13,7 +13,7 @@
 -- `stringCompare`/`stringLength`) — over a `List Char` of cons cells.  Three
 -- tiers, fastest first:
 --   1. operate on the String directly (no char materialization): `take`/`drop`/
---      `slice`, `startsWith`/`endsWith` (slice + `==`), `concat`/`join`/`repeat`,
+--      `sliceClamped`, `startsWith`/`endsWith` (slice + `==`), `concat`/`join`/`repeat`,
 --      and substring search via the host `stringIndexOf` — `indexOf`, and
 --      `contains`/`split`/`replace*` derived from it;
 --   2. decode once to `Array Char`, scan by index, rebuild via `stringFromChars`
@@ -521,10 +521,10 @@ replaceAllGo oldLen old new s = match indexOf old s
 {- | Substring `[lo, hi)` by codepoint, clamped to the string bounds (never
    panics; use `s.[lo..hi]` to panic on OOB instead).
 
-   > slice 1 4 "hello"
+   > sliceClamped 1 4 "hello"
    "ell" -}
-export slice : Int -> Int -> String -> String
-slice lo hi s = stringSlice lo hi s
+export sliceClamped : Int -> Int -> String -> String
+sliceClamped lo hi s = stringSlice lo hi s
 
 {- | First `n` codepoints (fewer if shorter).
 

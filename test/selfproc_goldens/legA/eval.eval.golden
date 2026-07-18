@@ -320,6 +320,7 @@ pSin : Value a -> Value a
 pSinh : Value a -> Value a
 pSleepMs : Value a -> Value a
 pSleepMsIO : Value a -> <Clock> Value a
+pSliceError : Value a -> Value a -> Value a
 pSqrt : Value a -> Value a
 pStashRunStdout : Value a -> Value a
 pStatFile : Value a -> <FileRead> Value a

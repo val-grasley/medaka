@@ -1102,7 +1102,7 @@ isLeafExternW name = contains name [
   -- IndexMut impls call; lowers to the same fixed E-INDEX-OOB trap CIndex/CStringIndex
   -- already emit (message dropped, per the seam design).
   "indexError",
-  -- #670: `sliceError : Int -> Int -> a` -- the coded-OOB abort the Sliceable impl
+  -- #670: `sliceError : Int -> Int -> a` -- the coded-OOB abort the Slice impl
   -- raises; lowers to the same fixed E-SLICE-OOB trap the built-in slice path emits
   -- (bound args dropped, matching indexError's seam design).
   "sliceError",

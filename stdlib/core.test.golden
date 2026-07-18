@@ -40,31 +40,31 @@ running doctests in stdlib/core.mdk
   ok   stdlib/core.mdk:989: mapSecond (y => y * 2) (3, 4)
   ok   stdlib/core.mdk:1005: isEmpty (None : Option Int)
   ok   stdlib/core.mdk:1007: length (Some 5)
-  ok   stdlib/core.mdk:1178: traverse (x => if x > 0 then Some x else None) [1, 2, 3]
-  ok   stdlib/core.mdk:1180: traverse (x => if x > 0 then Some x else None) [1, -2, 3]
-  ok   stdlib/core.mdk:1182: traverse (x => if x > 0 then Some (x + 1) else None) (Some 5)
-  ok   stdlib/core.mdk:1184: traverse (x => if x > 0 then Ok x else Err x) [1, 2, 3]
-  ok   stdlib/core.mdk:1186: traverse (x => if x > 0 then Ok x else Err x) [1, -2, 3]
-  ok   stdlib/core.mdk:1188: sequence [Some 1, Some 2, Some 3]
-  ok   stdlib/core.mdk:1190: sequence [Some 1, None, Some 3]
-  ok   stdlib/core.mdk:1192: sequence [Ok 1, Ok 2, Ok 3]
-  ok   stdlib/core.mdk:1194: sequence [Ok 1, Err 99, Ok 3]
-  ok   stdlib/core.mdk:1241: any (x => x > 2) [1, 2, 3]
-  ok   stdlib/core.mdk:1243: any (x => x > 10) [1, 2, 3]
-  ok   stdlib/core.mdk:1251: all (x => x > 0) [1, 2, 3]
-  ok   stdlib/core.mdk:1253: all (x => x > 0) []
-  ok   stdlib/core.mdk:1298: maximum [3, 1, 2]
-  ok   stdlib/core.mdk:1300: maximum ([] : List Int)
-  ok   stdlib/core.mdk:1310: minimum [3, 1, 2]
-  ok   stdlib/core.mdk:1322: filter (x => x > 2) [1, 2, 3, 4]
-  ok   stdlib/core.mdk:1370: fromOption 0 (Some 42)
-  ok   stdlib/core.mdk:1372: fromOption 0 None
-  ok   stdlib/core.mdk:1421: fst (1, 2)
-  ok   stdlib/core.mdk:1427: snd ("a", True)
-  ok   stdlib/core.mdk:1445: on compare fst (1, 9) (2, 8)
-  ok   stdlib/core.mdk:1453: curry fst 1 2
-  ok   stdlib/core.mdk:1461: uncurry (a b => a + b) (3, 4)
-  ok   stdlib/core.mdk:1469: discard (Some 5)
+  ok   stdlib/core.mdk:1177: traverse (x => if x > 0 then Some x else None) [1, 2, 3]
+  ok   stdlib/core.mdk:1179: traverse (x => if x > 0 then Some x else None) [1, -2, 3]
+  ok   stdlib/core.mdk:1181: traverse (x => if x > 0 then Some (x + 1) else None) (Some 5)
+  ok   stdlib/core.mdk:1183: traverse (x => if x > 0 then Ok x else Err x) [1, 2, 3]
+  ok   stdlib/core.mdk:1185: traverse (x => if x > 0 then Ok x else Err x) [1, -2, 3]
+  ok   stdlib/core.mdk:1187: sequence [Some 1, Some 2, Some 3]
+  ok   stdlib/core.mdk:1189: sequence [Some 1, None, Some 3]
+  ok   stdlib/core.mdk:1191: sequence [Ok 1, Ok 2, Ok 3]
+  ok   stdlib/core.mdk:1193: sequence [Ok 1, Err 99, Ok 3]
+  ok   stdlib/core.mdk:1240: any (x => x > 2) [1, 2, 3]
+  ok   stdlib/core.mdk:1242: any (x => x > 10) [1, 2, 3]
+  ok   stdlib/core.mdk:1250: all (x => x > 0) [1, 2, 3]
+  ok   stdlib/core.mdk:1252: all (x => x > 0) []
+  ok   stdlib/core.mdk:1297: maximum [3, 1, 2]
+  ok   stdlib/core.mdk:1299: maximum ([] : List Int)
+  ok   stdlib/core.mdk:1309: minimum [3, 1, 2]
+  ok   stdlib/core.mdk:1321: filter (x => x > 2) [1, 2, 3, 4]
+  ok   stdlib/core.mdk:1369: fromOption 0 (Some 42)
+  ok   stdlib/core.mdk:1371: fromOption 0 None
+  ok   stdlib/core.mdk:1420: fst (1, 2)
+  ok   stdlib/core.mdk:1426: snd ("a", True)
+  ok   stdlib/core.mdk:1444: on compare fst (1, 9) (2, 8)
+  ok   stdlib/core.mdk:1452: curry fst 1 2
+  ok   stdlib/core.mdk:1460: uncurry (a b => a + b) (3, 4)
+  ok   stdlib/core.mdk:1468: discard (Some 5)
 
 stdlib/core.mdk: 66/66 passed
 Testing "neq is the negation of eq" ... OK (100 tests)

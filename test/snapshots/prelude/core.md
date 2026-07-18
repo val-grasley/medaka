@@ -1,5 +1,5 @@
 # META
-source_lines=1630
+source_lines=1629
 stages=TYPES
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -1097,39 +1097,38 @@ export impl Index String Int Char where
     else
       arrayGetUnsafe i cs
 
-{- | Read-only slicing of a container `c` by an index range.  `sliceRange c lo hi
-   incl` yields the sub-container over indices `[lo, hi)` (exclusive, when `incl`
-   is `False`) or `[lo, hi]` (inclusive, when `incl` is `True`).  The surface sugar
-   `c.[lo..hi]` / `c.[lo..=hi]` desugars to a call here (#670), so the receiver is
-   constrained to a real container: `42.[0..1]` is a "no impl of Sliceable for Int"
-   type error rather than a wrong-container heap read. -}
-export interface Sliceable c where
-  sliceRange : c -> Int -> Int -> Bool -> c
+{- | Read-only slicing of a container `c` by a half-open index range.  `slice c lo
+   hi` yields the sub-container over indices `[lo, hi)`.  The surface sugar
+   `c.[lo..hi]` / `c.[lo..=hi]` desugars to a call here (#670; the inclusive `..=`
+   form normalizes to `slice c lo (hi + 1)` in desugar), so the receiver is
+   constrained to a real container: `42.[0..1]` is a "no impl of Slice for Int"
+   type error rather than a wrong-container heap read.  Parallels `Index`. -}
+export interface Slice c where
+  slice : c -> Int -> Int -> c
 
-{- | `sliceRange arr lo hi incl` copies `arr`'s elements over the index range into
-   a fresh `Array`.  O(hi - lo).  Raises the coded `sliceError` (E-SLICE-OOB) when
-   the range runs outside `arr` -- unlike stdlib `Array.slice`, which clamps. -}
-export impl Sliceable (Array a) where
-  sliceRange arr lo hi incl =
-    let hiX = if incl then hi + 1 else hi
-    if lo < 0 || hiX > arrayLength arr || hiX - lo < 0 then
-      sliceError lo (hiX - 1)
+{- | `slice arr lo hi` copies `arr`'s elements over `[lo, hi)` into a fresh
+   `Array`.  O(hi - lo).  Raises the coded `sliceError` (E-SLICE-OOB) when the
+   range runs outside `arr` -- unlike stdlib `Array.sliceClamped`, which clamps. -}
+export impl Slice (Array a) where
+  slice arr lo hi =
+    if lo < 0 || hi > arrayLength arr || hi - lo < 0 then
+      sliceError lo (hi - 1)
     else
-      arrayMakeWith (hiX - lo) (i => arrayGetUnsafe (lo + i) arr)
+      arrayMakeWith (hi - lo) (i => arrayGetUnsafe (lo + i) arr)
 
-{- | `sliceRange s lo hi incl` is the substring of `s` over the index range
-   (codepoints).  Out-of-range bounds are clamped by the underlying
-   `stringSlice`, matching stdlib `String.slice`. -}
-export impl Sliceable String where
-  sliceRange s lo hi incl = stringSlice lo (if incl then hi + 1 else hi) s
+{- | `slice s lo hi` is the substring of `s` over `[lo, hi)` (codepoints).
+   Out-of-range bounds are clamped by the underlying `stringSlice`, matching
+   stdlib `String.sliceClamped`. -}
+export impl Slice String where
+  slice s lo hi = stringSlice lo hi s
 
-{- | `sliceRange xs lo hi incl` is the sublist of `xs` over the index range.
-   O(hi) -- walks the cons chain.  Out-of-range bounds are CLAMPED (never panics),
-   matching the interpreter's list-slice contract. -}
-export impl Sliceable (List a) where
-  sliceRange xs lo hi incl = sliceListGo xs 0 lo (if incl then hi + 1 else hi)
+{- | `slice xs lo hi` is the sublist of `xs` over `[lo, hi)`.  O(hi) -- walks the
+   cons chain.  Out-of-range bounds are CLAMPED (never panics), matching the
+   interpreter's list-slice contract. -}
+export impl Slice (List a) where
+  slice xs lo hi = sliceListGo xs 0 lo hi
 
--- Cons-chain walk for `Sliceable (List a)`: keep heads whose running index is in
+-- Cons-chain walk for `Slice (List a)`: keep heads whose running index is in
 -- `[lo, hi)`, stop at `hi` or end-of-list (clamps, mirror of eval's listSliceGo).
 sliceListGo : List a -> Int -> Int -> Int -> List a
 sliceListGo [] _ _ _ = []
@@ -1676,7 +1675,7 @@ filter : (a -> Bool) -> b a -> b a
 fromEntries : List a -> b
 index : a -> b -> c
 setIndex : a -> b -> c -> a
-sliceRange : a -> Int -> Int -> Bool -> a
+slice : a -> Int -> Int -> a
 traverse : (a -> b c) -> d a -> b (d c)
 sequence : a (b c) -> b (a c)
 arbitrary : Unit -> <Rand> a
