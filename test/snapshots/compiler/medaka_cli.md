@@ -1,5 +1,5 @@
 # META
-source_lines=2307
+source_lines=2337
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/medaka_cli.mdk — the native `medaka` CLI dispatcher (Phase C
@@ -2177,10 +2177,30 @@ dirGo2 path i =
 -- ── repl ──────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `repl` arm (Repl.run) + repl_main.mdk: read
 -- MEDAKA_ROOT/stdlib/{runtime,core}.mdk, init the session, then run the
--- interactive REPL loop.  Any extra args are silently ignored (consistent with
--- the OCaml driver, which also ignores extra args after "repl").
+-- interactive REPL loop.
+--
+-- Usage text for `medaka repl --help` / `-h` — mirrors lspUsageLine's shape
+-- (#321), adapted to describe the interactive session instead of a stdio
+-- protocol server.
+replUsageLine : String
+replUsageLine = stringConcat
+  [
+    "medaka repl — Start the interactive REPL\n",
+    "\n",
+    "Usage:\n",
+    "  medaka repl     Start an interactive session that reads expressions\n",
+    "                 from stdin, evaluates them, and prints results until\n",
+    "                 stdin closes (EOF) or you enter :quit.\n",
+  ]
+
+-- #657: argv used to be discarded (`runReplCmd _ = ...`), so `--help`/`-h`/any
+-- bogus arg silently fell into the interactive read loop — which blocks on
+-- stdin forever if stdin is an open terminal, the same shape as the bug
+-- fixed in runLspCmd (#321), runMcpCmd (#299), and runNewCmd (#582). Blocking
+-- on stdin with NO args is correct (that's the actual REPL); only an
+-- explicit/unknown arg needs handling before the loop starts.
 runReplCmd : List String -> <IO> Unit
-runReplCmd _ =
+runReplCmd [] =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
@@ -2197,6 +2217,16 @@ runReplCmd _ =
         let preludeDecls = desugar (parse csrc)
         let _ = initSession runtimeDecls preludeDecls
         replLoop ()
+runReplCmd ("--help"::_) =
+  let _ = putStrLn replUsageLine
+  exit 0
+runReplCmd ("-h"::_) =
+  let _ = putStrLn replUsageLine
+  exit 0
+runReplCmd (bad::_) =
+  let _ = ePutStrLn ("medaka repl: unknown option '" ++ bad ++ "'")
+  let _ = ePutStrLn replUsageLine
+  exit 1
 
 -- ── lsp ───────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `lsp` arm (Lsp_server.run) + lsp_main.mdk: read
@@ -2626,8 +2656,13 @@ runMcpServerFromEnv _ =
 (DTypeSig false "dirGo2" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyCon "String"))))
 (DFunDef false "dirGo2" ((PVar "path") (PLit (LInt 0))) (ELit (LString ".")))
 (DFunDef false "dirGo2" ((PVar "path") (PVar "i")) (EIf (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "i")) (EVar "path")) (ELit (LString "/"))) (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "path")) (EApp (EApp (EVar "dirGo2") (EVar "path")) (EBinOp "-" (EVar "i") (ELit (LInt 1))))))
+(DTypeSig false "replUsageLine" (TyCon "String"))
+(DFunDef false "replUsageLine" () (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka repl — Start the interactive REPL\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka repl     Start an interactive session that reads expressions\n")) (ELit (LString "                 from stdin, evaluates them, and prints results until\n")) (ELit (LString "                 stdin closes (EOF) or you enter :quit.\n")))))
 (DTypeSig false "runReplCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
-(DFunDef false "runReplCmd" (PWild) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "rtPath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/runtime.mdk")))) (DoLet false false (PVar "corePath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/core.mdk")))) (DoExpr (EMatch (EApp (EVar "readPreludeFile") (EVar "rtPath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "corePath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "csrc")) () (EBlock (DoLet false false (PVar "runtimeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (DoLet false false (PVar "preludeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (DoLet false false PWild (EApp (EApp (EVar "initSession") (EVar "runtimeDecls")) (EVar "preludeDecls"))) (DoExpr (EApp (EVar "replLoop") (ELit LUnit)))))))))))
+(DFunDef false "runReplCmd" ((PList)) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "rtPath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/runtime.mdk")))) (DoLet false false (PVar "corePath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/core.mdk")))) (DoExpr (EMatch (EApp (EVar "readPreludeFile") (EVar "rtPath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "corePath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "csrc")) () (EBlock (DoLet false false (PVar "runtimeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (DoLet false false (PVar "preludeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (DoLet false false PWild (EApp (EApp (EVar "initSession") (EVar "runtimeDecls")) (EVar "preludeDecls"))) (DoExpr (EApp (EVar "replLoop") (ELit LUnit)))))))))))
+(DFunDef false "runReplCmd" ((PCons (PLit (LString "--help")) PWild)) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EVar "replUsageLine"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 0))))))
+(DFunDef false "runReplCmd" ((PCons (PLit (LString "-h")) PWild)) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EVar "replUsageLine"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 0))))))
+(DFunDef false "runReplCmd" ((PCons (PVar "bad") PWild)) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "medaka repl: unknown option '")) (EVar "bad")) (ELit (LString "'"))))) (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "replUsageLine"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))))
 (DTypeSig false "lspUsageLine" (TyCon "String"))
 (DFunDef false "lspUsageLine" () (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka lsp — Run the Language Server Protocol server over stdio\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka lsp     Start the server; it reads JSON-RPC requests from stdin\n")) (ELit (LString "                 and writes responses to stdout until stdin closes (EOF).\n")) (ELit (LString "                 This is the normal, correct behavior for an LSP stdio\n")) (ELit (LString "                 server — it is not supposed to be interactive.\n")))))
 (DTypeSig false "runLspCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
@@ -2963,8 +2998,13 @@ runMcpServerFromEnv _ =
 (DTypeSig false "dirGo2" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyCon "String"))))
 (DFunDef false "dirGo2" ((PVar "path") (PLit (LInt 0))) (ELit (LString ".")))
 (DFunDef false "dirGo2" ((PVar "path") (PVar "i")) (EIf (EBinOp "==" (EApp (EApp (EApp (EVar "stringSlice") (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "i")) (EVar "path")) (ELit (LString "/"))) (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EVar "path")) (EApp (EApp (EVar "dirGo2") (EVar "path")) (EBinOp "-" (EVar "i") (ELit (LInt 1))))))
+(DTypeSig false "replUsageLine" (TyCon "String"))
+(DFunDef false "replUsageLine" () (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka repl — Start the interactive REPL\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka repl     Start an interactive session that reads expressions\n")) (ELit (LString "                 from stdin, evaluates them, and prints results until\n")) (ELit (LString "                 stdin closes (EOF) or you enter :quit.\n")))))
 (DTypeSig false "runReplCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))
-(DFunDef false "runReplCmd" (PWild) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "rtPath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/runtime.mdk")))) (DoLet false false (PVar "corePath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/core.mdk")))) (DoExpr (EMatch (EApp (EVar "readPreludeFile") (EVar "rtPath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "corePath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "csrc")) () (EBlock (DoLet false false (PVar "runtimeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (DoLet false false (PVar "preludeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (DoLet false false PWild (EApp (EApp (EVar "initSession") (EVar "runtimeDecls")) (EVar "preludeDecls"))) (DoExpr (EApp (EVar "replLoop") (ELit LUnit)))))))))))
+(DFunDef false "runReplCmd" ((PList)) (EBlock (DoLet false false (PVar "root") (EApp (EApp (EVar "envOr") (ELit (LString "MEDAKA_ROOT"))) (EVar "defaultMedakaRoot"))) (DoLet false false (PVar "rtPath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/runtime.mdk")))) (DoLet false false (PVar "corePath") (EBinOp "++" (EVar "root") (ELit (LString "/stdlib/core.mdk")))) (DoExpr (EMatch (EApp (EVar "readPreludeFile") (EVar "rtPath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "corePath")) (arm (PCon "Err" (PVar "msg")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "msg"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1)))))) (arm (PCon "Ok" (PVar "csrc")) () (EBlock (DoLet false false (PVar "runtimeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (DoLet false false (PVar "preludeDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (DoLet false false PWild (EApp (EApp (EVar "initSession") (EVar "runtimeDecls")) (EVar "preludeDecls"))) (DoExpr (EApp (EVar "replLoop") (ELit LUnit)))))))))))
+(DFunDef false "runReplCmd" ((PCons (PLit (LString "--help")) PWild)) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EVar "replUsageLine"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 0))))))
+(DFunDef false "runReplCmd" ((PCons (PLit (LString "-h")) PWild)) (EBlock (DoLet false false PWild (EApp (EVar "putStrLn") (EVar "replUsageLine"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 0))))))
+(DFunDef false "runReplCmd" ((PCons (PVar "bad") PWild)) (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (ELit (LString "medaka repl: unknown option '")) (EVar "bad")) (ELit (LString "'"))))) (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "replUsageLine"))) (DoExpr (EApp (EVar "exit") (ELit (LInt 1))))))
 (DTypeSig false "lspUsageLine" (TyCon "String"))
 (DFunDef false "lspUsageLine" () (EApp (EVar "stringConcat") (EListLit (ELit (LString "medaka lsp — Run the Language Server Protocol server over stdio\n")) (ELit (LString "\n")) (ELit (LString "Usage:\n")) (ELit (LString "  medaka lsp     Start the server; it reads JSON-RPC requests from stdin\n")) (ELit (LString "                 and writes responses to stdout until stdin closes (EOF).\n")) (ELit (LString "                 This is the normal, correct behavior for an LSP stdio\n")) (ELit (LString "                 server — it is not supposed to be interactive.\n")))))
 (DTypeSig false "runLspCmd" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))

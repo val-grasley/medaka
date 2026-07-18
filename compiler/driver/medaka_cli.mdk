@@ -2173,10 +2173,30 @@ dirGo2 path i =
 -- ── repl ──────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `repl` arm (Repl.run) + repl_main.mdk: read
 -- MEDAKA_ROOT/stdlib/{runtime,core}.mdk, init the session, then run the
--- interactive REPL loop.  Any extra args are silently ignored (consistent with
--- the OCaml driver, which also ignores extra args after "repl").
+-- interactive REPL loop.
+--
+-- Usage text for `medaka repl --help` / `-h` — mirrors lspUsageLine's shape
+-- (#321), adapted to describe the interactive session instead of a stdio
+-- protocol server.
+replUsageLine : String
+replUsageLine = stringConcat
+  [
+    "medaka repl — Start the interactive REPL\n",
+    "\n",
+    "Usage:\n",
+    "  medaka repl     Start an interactive session that reads expressions\n",
+    "                 from stdin, evaluates them, and prints results until\n",
+    "                 stdin closes (EOF) or you enter :quit.\n",
+  ]
+
+-- #657: argv used to be discarded (`runReplCmd _ = ...`), so `--help`/`-h`/any
+-- bogus arg silently fell into the interactive read loop — which blocks on
+-- stdin forever if stdin is an open terminal, the same shape as the bug
+-- fixed in runLspCmd (#321), runMcpCmd (#299), and runNewCmd (#582). Blocking
+-- on stdin with NO args is correct (that's the actual REPL); only an
+-- explicit/unknown arg needs handling before the loop starts.
 runReplCmd : List String -> <IO> Unit
-runReplCmd _ =
+runReplCmd [] =
   let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
@@ -2193,6 +2213,16 @@ runReplCmd _ =
         let preludeDecls = desugar (parse csrc)
         let _ = initSession runtimeDecls preludeDecls
         replLoop ()
+runReplCmd ("--help"::_) =
+  let _ = putStrLn replUsageLine
+  exit 0
+runReplCmd ("-h"::_) =
+  let _ = putStrLn replUsageLine
+  exit 0
+runReplCmd (bad::_) =
+  let _ = ePutStrLn ("medaka repl: unknown option '" ++ bad ++ "'")
+  let _ = ePutStrLn replUsageLine
+  exit 1
 
 -- ── lsp ───────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `lsp` arm (Lsp_server.run) + lsp_main.mdk: read
