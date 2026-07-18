@@ -1094,6 +1094,23 @@ jobs:
         if: needs.detect.outputs.docs_only != 'true'
         run: make medaka
 
+      # ── Fingerprint mirror parity (#267) ────────────────────────────────────────
+      #
+      # test/build_native_medaka.sh's src_fingerprint_compiler() (shell/cat-based) and
+      # compiler/driver/medaka_cli.mdk's liveSourceFingerprint (perl-based) are TWO
+      # HAND-SYNCED REIMPLEMENTATIONS of the same hashing algorithm — one bakes
+      # -DMEDAKA_SRC_FP into ./medaka at build time, the other recomputes it live on
+      # every invocation and hard-fails a mismatch under MEDAKA_STRICT=1. #182's first
+      # attempt broke exactly this mirror and only human review (PR #263) caught it —
+      # no gate proved the two still agreed. This one does: it re-exercises the just-
+      # built ./medaka's own staleness self-check, under MEDAKA_STRICT=1, on the exact
+      # tree it was built from, and asserts it reports "not stale". Needs the binary
+      # `make medaka` just built + this same tree, so it lives right here, not in a new
+      # gate shard (see AGENTS.md "a gate must run where the bug lands").
+      - name: Fingerprint mirror must still agree (issue #267)
+        if: needs.detect.outputs.docs_only != 'true'
+        run: sh test/check_fingerprint_parity.sh
+
       # typecheck_compiler_source.sh exits 2 (SKIP) when its oracle is absent. In CI
       # a skip here is INDISTINGUISHABLE FROM A PASS — the precise bug this whole job
       # exists to close — so build the oracle first and assert on the PASS line, not
