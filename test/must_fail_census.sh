@@ -5,7 +5,7 @@
 # stops holding, the gate goes RED and says to close the issue. This script drains the
 # directions the GATE STRUCTURALLY CANNOT SEE, because they need the GitHub API:
 #
-#   HALF 1  an issue is CLOSED but its fixture STILL REPRODUCES  -> the TRACKER is lying
+#   HALF 1  PINNED-BUT-CLOSED: an issue is CLOSED but its fixture still pins it  -> TRACKER lies
 #   HALF 2  a new open+verified issue has no fixture             -> a pinning candidate
 #   HALF 3  a NOT-PINNABLE ledger entry's issue is CLOSED        -> a stale exemption
 #
@@ -131,8 +131,14 @@ echo "Findings are reported for a human to judge. This script never reopens, clo
 echo "or deletes anything."
 echo
 
-# ══ HALF 1: issue CLOSED but the fixture still reproduces ═════════════════════
-echo "── issues CLOSED whose fixture still pins a LIVE bug ────────────────────"
+# ══ HALF 1: PINNED-BUT-CLOSED — issue CLOSED but the fixture still pins it ════
+#
+# This is the network-tolerant home of the PINNED-BUT-CLOSED verdict (#581): the fourth
+# verdict beside the GATE's REPRO / DRAINED / CONTROL-BROKE. The gate cannot emit it — it
+# is offline and cannot read issue state (see diff_compiler_must_fail.sh's REPRO comment).
+# The gate proves each fixture still REPRODUCES on every PR; this census proves the tracker
+# still agrees. When they disagree — pin says BROKEN, tracker says FIXED — one is wrong.
+echo "── PINNED-BUT-CLOSED: issues CLOSED whose fixture still pins a LIVE bug ──"
 h1=0
 while IFS="$(printf '\t')" read -r n dir; do
   state="$(gh issue view "$n" --json state -q .state 2>/dev/null)" || state=""
@@ -145,10 +151,10 @@ while IFS="$(printf '\t')" read -r n dir; do
   fi
   if [ "$state" = "CLOSED" ]; then
     what="$(sed -n 's/^what:[[:space:]]*//p' "$FIXDIR/$dir/claim.txt" | head -1)"
-    echo "  🚨 #$n is CLOSED, but its fixture still REPRODUCES the bug."
+    echo "  🚨 PINNED-BUT-CLOSED  #$n — the pin says BROKEN, the tracker says FIXED. One is wrong."
     echo "      fixture: test/must_fail_fixtures/$dir/"
     echo "      pins:    $what"
-    echo "      The fixture RAN against the binary; the issue state is an assertion."
+    echo "      The gate re-runs this fixture against the binary on every PR; issue state is an assertion."
     echo "      Judge which is wrong — do NOT assume the fixture is:"
     echo "        * closed in error / as a dupe / a reverted fix  -> REOPEN #$n"
     echo "        * the fixture drifted onto a different bug      -> fix the fixture"

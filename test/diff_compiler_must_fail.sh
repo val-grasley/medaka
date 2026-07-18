@@ -515,7 +515,20 @@ for dir in "$FIXDIR"/*/; do
 
   if [ -z "$fail" ]; then
     repro=$((repro+1))
-    printf 'REPRO      %-46s (issue #%s still open, still broken)\n' "$name" "$issue"
+    # ── REPRO asserts ONLY WHAT IT CHECKED: the pin still reproduces (STILL BROKEN). ──
+    #
+    # It does NOT — and CANNOT — assert the issue is "still open". This gate is OFFLINE by
+    # design: it runs on every dev box via `make gates`/preflight (no `gh` auth) and on fork
+    # PRs (restricted token), so it has no GitHub API and no way to know the tracker's state.
+    # This line USED to print "(issue #N still open, still broken)" — and "still open" was
+    # PROSE IT NEVER CHECKED (#581). A live S0 (#567) was closed 2s after its pin merged, and
+    # the gate kept asserting "still open" for a bug the tracker said did not exist. A pinned
+    # fixture whose issue has been CLOSED is the PINNED-BUT-CLOSED contradiction; reconciling
+    # it needs issue state, so it lives in test/must_fail_census.sh (nightly, has the API,
+    # fails LOUD on an API blip and never silently). Putting a network read in THIS required
+    # merge gate would make it fail OPEN on an api.github.com outage and block every merge —
+    # worse than no check, and the exact failure mode the rest of this suite refuses to have.
+    printf 'REPRO      %-46s (#%s: pin still reproduces — issue OPEN/CLOSED not checked here; see must_fail_census.sh)\n' "$name" "$issue"
   else
     drained=$((drained+1))
     printf 'DRAINED    %-46s (issue #%s)\n' "$name" "$issue"
