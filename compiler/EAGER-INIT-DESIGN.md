@@ -1,8 +1,7 @@
 # EAGER-INIT-DESIGN — closing the shared eager-global init-order hole (#553, S0)
 
-**Status:** PARTIAL — **Stage A SHIPPED** (this PR): `eagerVars` is structurally complete, closing divergences #2 (slice bounds) and #3 (guards) on BOTH backends, byte-identical IR, fixpoint C3a/C3b YES. **Stage B (the reachability closure) is NOT implemented** — #1, #4 and #5 remain open; punch-list in §Stage B. The deviation from the decided lazy-nullary invariant is recorded and drains via #561. Design pass 2026-07-17; Stage A landed 2026-07-17.
-**Binary probed:** `./medaka` + `./medaka_emitter` in this worktree (at `2bacfd08`).
-**Spec law:** `docs/spec/WASM-SEMANTICS.md` **WP10** (✗ CONFIRMED BROKEN) + its §4 row.
+**Status:** COMPLETE — the shared eager-init hole (#553) and the decided lazy-nullary invariant (#561) are both **CLOSED**. #553 Stage A (`eagerVars` structural completeness) + Stage B (the SCC-condensed reachability closure) shipped, closing the call-hidden divergences on both backends; #561 then made top-level nullary globals genuinely LAZY — native (PR-A, #659) and wasm (PR-B, #661) — with the eager fast-path preserving the byte-identical hot path, and a cycle-shape regression corpus (PR-C, #662). eval == native == wasm on cycles and dispatch-reaching globals. See §10 for the terminal (#561) design. Residual perf refinement: #660 (F2). Design pass 2026-07-17; #561 arc closed 2026-07-18.
+**Spec law:** `docs/spec/WASM-SEMANTICS.md` **WP10** (now RESOLVED — both backends lazy) + its §4 row.
 
 ---
 
