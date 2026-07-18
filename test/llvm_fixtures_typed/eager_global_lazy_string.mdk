@@ -1,0 +1,19 @@
+-- #561 PR-A regression lock — a LAZY global of NON-Int type (String) in CONCAT.
+--
+-- `cell = mkS 0` is dispatch-reaching, so #561 PR-A emits it LAZILY; the LAZY read
+-- returns a PLACEHOLDER LTy `LTInt` (llvm_emit.mdk lookupVarG). This fixture proves that
+-- is HARMLESS for a String: `++` is a String-typed op regardless of the operand's read
+-- LTy. eval==native==`hello world`. If a future consumer keyed off the lazy read's LTy,
+-- this fails.
+
+interface MkS a where
+  mkS : a -> String
+
+impl MkS Int where
+  mkS _ = base
+
+cell = mkS 0
+
+base = "hello"
+
+main = cell ++ " world"

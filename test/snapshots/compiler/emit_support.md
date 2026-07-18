@@ -1,5 +1,5 @@
 # META
-source_lines=549
+source_lines=556
 stages=DESUGAR,MARK
 # SOURCE
 -- BACKEND-NEUTRAL EMIT SUPPORT — helpers shared verbatim by BOTH the LLVM
@@ -411,9 +411,16 @@ foldTaintSCCs adj methodSet (scc::rest) acc =
 
 -- the value globals that must be emitted LAZY on the native backend: those reaching
 -- an eager dispatch or a value cycle, transitively over the eager call graph.  Excludes
--- `main` (the entry point, never an init-ordered global).  Empty for a program whose
--- every value global is statically orderable — which is the compiler's own case, so
--- the fast path keeps the self-compile IR byte-identical.
+-- `main` (the entry point, never an init-ordered global).  EMPTY for a program whose
+-- every value global is statically orderable — the fast path then keeps that program's
+-- emitted IR byte-identical (measured: a typical prelude-bearing user program has ZERO
+-- lazy globals).  ⚠️ NOT so for the COMPILER itself: its parser is point-free `do`-block
+-- style, and a `do` desugars to an eager `andThen` (`>>=`) CMethod, so ~167 of the
+-- compiler's own value globals classify LAZY (conservative false positives — their
+-- resolved impl reads no later global).  That is CORRECT and fixpoint-stable but costs
+-- ~+1.1% self-compile IR / ~+3-5% emit wall-time; the fast path is NOT free on the
+-- compiler.  See EAGER-INIT-DESIGN.md §10.3, and F2 (follow CMethod -> resolved-impl
+-- edges) for the strictly-additive follow-up that would drop the set to genuine cycles.
 export lazyGlobalNames : List CBind -> List String
 lazyGlobalNames binds =
   let allNames = bindNames binds

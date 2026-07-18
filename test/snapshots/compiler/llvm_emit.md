@@ -1,5 +1,5 @@
 # META
-source_lines=10301
+source_lines=10311
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -1444,7 +1444,17 @@ lookupVarG e env x = match lookupAssoc x env
   -- #561 PR-A: a LAZY value global (dispatch-reaching or cyclic) is forced on first
   -- use — its read is `call @mdk_force_<x>()`, which memoises into @mdk_g_<x> and
   -- black-holes a re-entrant force into E-CYCLIC-VALUE.  A LOCAL of the same name
-  -- still shadows (the env is checked first, above).  Uniform i64 word, LTInt.
+  -- still shadows (the env is checked first, above).
+  --
+  -- ⚠️ The returned LTy `LTInt` is a PLACEHOLDER, not a type claim: the forced word is a
+  -- uniform i64 (Int immediate / Bool immediate / boxed-Float-ptr-as-i64), and this call
+  -- site does not carry the global's real static type.  That is SOUND because no
+  -- type-sensitive consumer trusts THIS LTy — each recovers the real type from its OWN
+  -- typecheck-stamped tag: a Float arithmetic/print op from the CBinPrim/scalar tag
+  -- (scalarTagIsFloat), a bare value-main's print from main's inferred `mty`, a Bool
+  -- `if`/print from the scrutinee/return type.  Verified: LAZY Bool/Float/String globals
+  -- all print & compute == eval (fixtures eager_global_lazy_{bool,float,string}).  If a
+  -- future consumer WERE to key off this returned LTy, those fixtures would fail the gate.
   None => if isLazyGlobal x then
       let r = freshReg e
       let _ = emit e "  \{r} = call i64 @mdk_force_\{x}()"

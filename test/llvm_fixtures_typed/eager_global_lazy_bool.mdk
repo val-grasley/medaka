@@ -1,0 +1,26 @@
+-- #561 PR-A regression lock — a LAZY global of NON-Int type (Bool), consumed by `if`.
+--
+-- `cell = mkB 0` reaches the later global `flag` only through interface-method dispatch,
+-- so #561 PR-A emits `cell` LAZILY (backend/emit_support.mdk lazyGlobalNames). The LAZY
+-- read `call @mdk_force_cell()` returns a PLACEHOLDER LTy `LTInt` (llvm_emit.mdk
+-- lookupVarG) — this fixture proves that is HARMLESS for a Bool: `if cell` forces the
+-- lazy cell and branches on the i64 tag word (True=3/False=1), independent of the read's
+-- LTy. eval==native==`1`. If a future consumer keyed off the lazy read's LTy, this fails.
+-- Corpus had ZERO non-Int LAZY fixtures before this (both prior ones were Int).
+--
+-- (Consumed by `if` rather than bare `main = cell` because the typed-ceval ORACLE renders
+-- a bare Bool `true`/`false` while native's `impl Display Bool` renders `True`/`False` —
+-- a pre-existing oracle-vs-native rendering difference unrelated to laziness. The `if`
+-- form yields an Int, which both render identically, while still exercising the lazy Bool.)
+
+interface MkB a where
+  mkB : a -> Bool
+
+impl MkB Int where
+  mkB _ = flag
+
+cell = mkB 0
+
+flag = True
+
+main = if cell then 1 else 0
