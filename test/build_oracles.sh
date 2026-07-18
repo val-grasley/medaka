@@ -76,7 +76,8 @@ fi
 #   eval_run_main     — diff_compiler_eval_run.sh        (=== EVAL === goldens)
 #   eval_run_batch    — diff_compiler_eval_run_batch.sh  (=== EVAL === goldens)
 #   core_ir_run_main  — diff_compiler_core_ir_run.sh     (=== EVAL === goldens)
-#   ── Phase 2 §2a value gates (eval / core-ir / llvm), goldens = .eval.golden ──
+#   ── Phase 2 §2a value gates (eval / core-ir / llvm), goldens = .eval.golden
+#      (llvm's own goldens are .native.golden as of #559 — see below) ──
 #   eval_main             — diff_compiler_eval.sh
 #   eval_prelude_main     — diff_compiler_eval_prelude.sh + diff_compiler_eval_list.sh
 #   eval_prelude_batch    — diff_compiler_eval_prelude_batch.sh
@@ -98,7 +99,7 @@ fi
 #   core_ir_typed_main    — diff_compiler_core_ir_typed.sh
 #   core_ir_roundtrip_main — diff_compiler_core_ir_roundtrip.sh
 #   core_ir_modules_main  — diff_compiler_core_ir_modules.sh
-#   llvm_emit_main        — diff_compiler_llvm.sh        (emit → clang → run vs golden)
+#   llvm_emit_main        — diff_compiler_llvm.sh        (emit → clang → run vs .native.golden)
 #   llvm_emit_typed_main  — diff_compiler_llvm_typed.sh
 #   core_ir_dict_pp_main  — diff_compiler_llvm_typed.sh CAPTURE=1 (#485): the typed
 #                           Core-IR tree-walker oracle the gate's .eval.golden files

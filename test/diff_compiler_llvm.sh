@@ -5,7 +5,7 @@
 # out to clang (no llc/opt, no C++ bindings) — against the committed value golden.
 #
 # For each prelude-free fixture in test/llvm_fixtures/:
-#   1. ref  = test/llvm_fixtures/<name>.eval.golden   (the program VALUE — IR is
+#   1. ref  = test/llvm_fixtures/<name>.native.golden   (the program VALUE — IR is
 #             symbol-renaming-volatile, but the program's runtime stdout is stable,
 #             see MEMORY "Diff gates compare OUTPUT not IR").
 #             REGENERATE WITH: sh test/capture_goldens.sh --frozen llvm_eval
@@ -20,7 +20,9 @@
 #
 # OCaml-free (REROOT-PLAN.md Phase 2): the emitter runs as the pre-compiled native
 # binary test/bin/llvm_emit_main (built by test/build_oracles.sh) instead of
-# `main.exe run`; the reference is the committed .eval.golden.
+# `main.exe run`; the reference is the committed .native.golden (renamed from
+# .eval.golden by #559 — the name was never eval, only ever native, and had
+# drifted since the OCaml eval oracle was removed).
 #
 # Usage:  sh test/diff_compiler_llvm.sh
 # Exit:   0 if every fixture's native stdout matches the golden; 2 if the build is
@@ -40,7 +42,7 @@ CC="${CC:-clang}"
 if [ "${1:-}" = "--one" ]; then
   f="$2"
   name="$(basename "$f")"
-  golden="${f%.mdk}.eval.golden"
+  golden="${f%.mdk}.native.golden"
   ll="$WORKDIR/$name.ll"; bin="$WORKDIR/$name.bin"
   st=0; out=""
   # Emit to a raw temp file and check $EMITBIN's OWN exit status directly

@@ -22,8 +22,9 @@
 #   test/eval_fixtures/*.mdk  (20)   eval engine value oracle
 #
 # ⚠️ test/llvm_fixtures/*.mdk is NOT a driver-table row and never runs under a bare
-# `capture_goldens.sh` — its `.eval.golden`s are the emitted program's RUNTIME
-# STDOUT, so regenerating one means emit -> clang -> link -> RUN, not a stage dump.
+# `capture_goldens.sh` — its `.native.golden`s (renamed from `.eval.golden` by #559)
+# are the emitted program's RUNTIME STDOUT, so regenerating one means emit -> clang
+# -> link -> RUN, not a stage dump.
 # (A `test/llvm_fixtures/*.mdk (180)` row was advertised here for months after it was
 # deleted in 6869cc8d, so the documented "capture a golden" recipe silently did
 # NOTHING for the one corpus you add an emitter fixture to.)  It now has a real,
@@ -154,7 +155,7 @@ if [ -n "$FROZEN_TAG" ]; then
     boot_typecheck)
       regen_frozen typecheck_main boot_typecheck.golden "" "$ROOT/test/typecheck_fixtures/*.mdk" ;;
     llvm_eval)
-      # test/llvm_fixtures/*.eval.golden — the emitted program's RUNTIME STDOUT.
+      # test/llvm_fixtures/*.native.golden — the emitted program's RUNTIME STDOUT.
       #
       # Unlike every other frozen family this is not a stage dump, so regen_frozen
       # cannot express it: the golden only exists after emit -> clang -> link -> RUN.
@@ -201,7 +202,7 @@ if [ -n "$FROZEN_TAG" ]; then
         fi
         # The fixture's own exit status is part of its behaviour (abort_*/panic
         # fixtures exit non-zero AFTER printing); capture stdout regardless.
-        "$LW/$n.bin" > "${f%.mdk}.eval.golden" 2>/dev/null
+        "$LW/$n.bin" > "${f%.mdk}.native.golden" 2>/dev/null
         fwrote=$((fwrote+1))
       done
       rm -rf "$LW"; trap - EXIT
