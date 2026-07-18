@@ -575,13 +575,14 @@ the question: one DID, and its filename is why nobody read it.**
 - **Change:** `emit_support.mdk` `:59` (`CStringSlice` → descend `lo`/`hi`) and `:75`
   (`eagerVarsArms` → descend guards). Optionally F4(a).
 - **Fixtures (new, mirroring the existing pair's shape exactly):**
-  - **AS BUILT (Stage A):** `test/llvm_fixtures_typed/eager_global_string_slice.mdk` (§1.2) —
-    the *typed* corpus, NOT `llvm_fixtures/`: that corpus's probe is prelude-free and cannot
-    do `CStringSlice` at all, so it silently gives the wrong answer. The typed corpus also
-    compares native against an eval oracle and refuses to capture on mismatch.
-  - **AS BUILT (Stage A):** `test/llvm_fixtures/eager_global_guard.mdk` (§1.3)
-    + `test/llvm_fixtures_typed/eager_global_list_slice.mdk` (the control that proved
-    `CListSlice` descends its bounds while `CStringSlice` did not)
+  - **AS BUILT (Stage A):** `test/llvm_fixtures/eager_global_guard.mdk` (§1.3) — the
+    guard-chain control, still live.
+  - **AS BUILT (Stage A), since REMOVED by #670:** the `eager_global_string_slice` /
+    `eager_global_list_slice` typed fixtures gated Stage A's `CStringSlice`/`CListSlice`
+    bounds-descent (the *typed* corpus, since `llvm_fixtures/`'s probe is prelude-free and
+    cannot do `CStringSlice`). #670 made slice a `Slice` prelude method whose impls call
+    `stringSlice`/`arrayGetUnsafe`, so those Core IR nodes are unreachable and the fixtures
+    were retired — dead-code removal tracked in #700.
   - **Precedent to copy verbatim:** `test/llvm_fixtures/eager_global_call_hidden.mdk` +
     `eager_global_call_ordered.mdk`, ledgered `emitter:shared-eager-init` at
     `test/engine_divergence.txt:121`. **The category already exists** (added 2026-07-16 for #553)
