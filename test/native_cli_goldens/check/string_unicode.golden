@@ -110,6 +110,8 @@ setIndex : a -> b -> c -> a
 shout : String
 shrink : a -> List a
 signum : a -> a
+slice : a -> Int -> Int -> a
+sliceListGo : List a -> Int -> Int -> Int -> List a
 snd : (a, b) -> b
 sub : a -> a -> a
 sum : (Foldable a, Num b) => a b -> b

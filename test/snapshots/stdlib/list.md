@@ -1,5 +1,5 @@
 # META
-source_lines=953
+source_lines=954
 stages=DESUGAR,MARK
 # SOURCE
 -- list.mdk — operations on List a
@@ -336,7 +336,7 @@ mapAccumR f s (x::xs) =
 
 -- Positional edits
 --
--- All three clamp rather than panic, matching `slice`/`take`: an index outside
+-- All three clamp rather than panic, matching `sliceClamped`/`take`: an index outside
 -- the list is a no-op (`insertAt` clamps to the nearer end).
 
 {- | Insert `x` so that it lands at index `i`, shifting the rest right.
@@ -475,12 +475,13 @@ splitAt n (xs@(x::rest))
   | n <= 0 = ([], xs)
   | otherwise = let (a, b) = splitAt (n - 1) rest in (x::a, b)
 
-{- | `slice lo hi xs` — the elements at indices `[lo, hi)`.
+{- | `sliceClamped lo hi xs` — the elements at indices `[lo, hi)`.  Clamps (never
+   panics); use `xs.[lo..hi]` (the `Slice` interface) for the panicking form.
 
-   > slice 1 3 [10, 20, 30, 40]
+   > sliceClamped 1 3 [10, 20, 30, 40]
    [20, 30] -}
-export slice : Int -> Int -> List a -> List a
-slice lo hi xs = drop lo (take hi xs)
+export sliceClamped : Int -> Int -> List a -> List a
+sliceClamped lo hi xs = drop lo (take hi xs)
 
 {- | Split into consecutive groups of `n` (the last group may be shorter).
    Empty when `n <= 0`.
@@ -1057,8 +1058,8 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DTypeSig true "splitAt" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "splitAt" (PWild (PList)) (ETuple (EListLit) (EListLit)))
 (DFunDef false "splitAt" ((PVar "n") (PAs "xs" (PCons (PVar "x") (PVar "rest")))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (ETuple (EListLit) (EVar "xs")) (EIf (EVar "otherwise") (ELet false (PTuple (PVar "a") (PVar "b")) (EApp (EApp (EVar "splitAt") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "rest")) (ETuple (EBinOp "::" (EVar "x") (EVar "a")) (EVar "b"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "slice" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
-(DFunDef false "slice" ((PVar "lo") (PVar "hi") (PVar "xs")) (EApp (EApp (EVar "drop") (EVar "lo")) (EApp (EApp (EVar "take") (EVar "hi")) (EVar "xs"))))
+(DTypeSig true "sliceClamped" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "sliceClamped" ((PVar "lo") (PVar "hi") (PVar "xs")) (EApp (EApp (EVar "drop") (EVar "lo")) (EApp (EApp (EVar "take") (EVar "hi")) (EVar "xs"))))
 (DTypeSig true "chunks" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "chunks" (PWild (PList)) (EListLit))
 (DFunDef false "chunks" ((PVar "n") (PAs "xs" (PCons PWild PWild))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "take") (EVar "n")) (EVar "xs")) (EApp (EApp (EVar "chunks") (EVar "n")) (EApp (EApp (EVar "drop") (EVar "n")) (EVar "xs")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -1297,8 +1298,8 @@ prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
 (DTypeSig true "splitAt" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyTuple (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "splitAt" (PWild (PList)) (ETuple (EListLit) (EListLit)))
 (DFunDef false "splitAt" ((PVar "n") (PAs "xs" (PCons (PVar "x") (PVar "rest")))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (ETuple (EListLit) (EVar "xs")) (EIf (EVar "otherwise") (ELet false (PTuple (PVar "a") (PVar "b")) (EApp (EApp (EVar "splitAt") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "rest")) (ETuple (EBinOp "::" (EVar "x") (EVar "a")) (EVar "b"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig true "slice" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
-(DFunDef false "slice" ((PVar "lo") (PVar "hi") (PVar "xs")) (EApp (EApp (EVar "drop") (EVar "lo")) (EApp (EApp (EVar "take") (EVar "hi")) (EVar "xs"))))
+(DTypeSig true "sliceClamped" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyVar "a"))))))
+(DFunDef false "sliceClamped" ((PVar "lo") (PVar "hi") (PVar "xs")) (EApp (EApp (EVar "drop") (EVar "lo")) (EApp (EApp (EVar "take") (EVar "hi")) (EVar "xs"))))
 (DTypeSig true "chunks" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyVar "a"))))))
 (DFunDef false "chunks" (PWild (PList)) (EListLit))
 (DFunDef false "chunks" ((PVar "n") (PAs "xs" (PCons PWild PWild))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EBinOp "::" (EApp (EApp (EVar "take") (EVar "n")) (EVar "xs")) (EApp (EApp (EVar "chunks") (EVar "n")) (EApp (EApp (EVar "drop") (EVar "n")) (EVar "xs")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))

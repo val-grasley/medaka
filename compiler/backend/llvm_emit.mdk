@@ -1832,7 +1832,7 @@ emitIoExtern _ _ name _ = gapE ("unsupported IO extern " ++ name)
 -- auto-print emitted downstream is dead code.  Return ("1", LTUnit) so
 -- emitPrint sees LTUnit (safe) rather than LTCon/LTClosure (compile panic).
 isAbortExtern : String -> Bool
-isAbortExtern name = contains name ["panic", "exit", "indexError"]
+isAbortExtern name = contains name ["panic", "exit", "indexError", "sliceError"]
 
 emitAbortExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> (String, LTy)
 emitAbortExtern e env name args = match emitArgs e env args
@@ -1848,7 +1848,17 @@ emitAbortExtern e env name args = match emitArgs e env args
       let cname = if name == "panic" then "panic" else "exit"
       let _ = emit e "  call void @mdk_\{cname}(i64 \{a})"
       ("1", LTUnit)
-  _ => panic ("llvm spike: emitAbortExtern: " ++ name ++ " takes exactly one argument (slice 4)")
+  [a, b] =>
+    if name == "sliceError" then
+      -- sliceError (lo, hiIncl) reuses the existing coded E-SLICE-OOB abort
+      -- (@mdk_slice_oob), which prints `slice [lo..hiIncl] out of bounds`.  Both
+      -- args are RAW i64s there, so untag the tagged-Int operands first.
+      let lo_raw = untagInt e a
+      let hi_raw = untagInt e b
+      let _ = emit e "  call void @mdk_slice_oob(i64 \{lo_raw}, i64 \{hi_raw})"
+      ("1", LTUnit)
+    else panic ("llvm spike: emitAbortExtern: " ++ name ++ " takes two arguments (slice 4b)")
+  _ => panic ("llvm spike: emitAbortExtern: " ++ name ++ " bad arity (slice 4)")
 
 -- array intrinsics (native extern catalog slice 6).
 -- pure-inline: no C helper; all three reuse loadTag/loadFieldDyn/storeFieldDyn.

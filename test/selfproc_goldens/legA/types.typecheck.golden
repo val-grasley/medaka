@@ -565,7 +565,6 @@ importedBindings : UsePath -> Option (List (String, String))
 importerShadowDomain : String -> Option Mono
 importerShadowOnEmitPath : String -> Ref Route -> Bool
 importerStandaloneValueScheme : String -> Option Mono
-indexKind : Mono -> String
 indexOfId : Int -> List Int -> Option Int
 indexOfIdGo : Int -> Int -> List Int -> Option Int
 indexOfInt : Int -> List Int -> Int
@@ -651,7 +650,6 @@ inferRecordUpdateWith : TcEnv -> String -> Expr -> List FieldAssign -> RecordInf
 inferRequiresImpl : TcEnv -> List Decl -> List String -> String -> List Ty -> List Require -> List ImplMethod -> Unit
 inferShadowApp : TcEnv -> String -> List (Ref Route) -> Expr -> Expr -> Mono
 inferShadowAppHead : TcEnv -> Expr -> Mono
-inferSlice : TcEnv -> Expr -> Expr -> Expr -> Ref String -> Mono
 inferStmt : TcEnv -> DoStmt -> TcEnv
 inferTestBodies : TcEnv -> List Decl -> Unit
 inferUnop : String -> Mono -> Mono

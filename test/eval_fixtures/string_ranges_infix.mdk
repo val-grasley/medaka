@@ -1,4 +1,7 @@
--- codepoint string indexing/slicing, int + char range patterns, backtick infix
+-- codepoint string indexing, int + char range patterns.
+-- Slice sugar `.[lo..hi]` moved OUT with #670 (now a prelude `Slice.slice` method the
+-- prelude-free eval probe cannot dispatch); slice coverage: core.mdk doctests +
+-- diff_compiler_slice_oob + diff_wasm_modules.
 sub x y = x - y
 classify n = match n
   0..9 => "low"
@@ -11,8 +14,6 @@ kind c = match c
   _ => "sym"
 main =
   ( arrayGetUnsafe 0 (stringToChars "hello")
-  , "hello".[1..3]
-  , "hello".[1..=3]
   , arrayGetUnsafe 1 (stringToChars "héllo")
   , classify 3
   , classify 42

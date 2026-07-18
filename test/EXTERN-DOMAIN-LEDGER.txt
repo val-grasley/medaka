@@ -167,6 +167,7 @@ Ref	EXEMPT	mutable-cell constructor — reference identity, not a comparable val
 setRef	EXEMPT	mutation, returns Unit
 panic	EXEMPT	aborting control flow, produces no value (returns bottom)
 indexError	EXEMPT	aborting control flow, produces no value (returns bottom)
+sliceError	EXEMPT	aborting control flow, produces no value (returns bottom)
 exit	EXEMPT	terminates the process, produces no comparable value
 __fallthrough__	EXEMPT	compiler-generated guard-fallthrough sentinel, never user-evaluated
 enableRunStdoutFlush	EXEMPT	IO plumbing (stdout flush control), returns Unit

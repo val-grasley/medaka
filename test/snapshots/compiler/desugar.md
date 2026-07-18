@@ -1,5 +1,5 @@
 # META
-source_lines=1014
+source_lines=1025
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted desugar stage — Stage 1 port of `lib/desugar.ml`.  Lowers surface
@@ -210,6 +210,17 @@ rewriteSugar (EStringInterp parts) = interpToCore parts
 rewriteSugar (EBinOp ":=" lhs rhs _) = callBin "setRef" lhs rhs
 -- `a[i]` / `a.[i]` (read position) → `index a i` (Index interface dispatch).
 rewriteSugar (EIndex a i _) = callBin "index" a i
+-- `a.[lo..hi]` / `a.[lo..=hi]` (slice) → `slice a lo hi'` (Slice interface
+-- dispatch, #670), half-open: the inclusive `..=` form normalizes here to
+-- `slice a lo (hi + 1)` so the method itself stays a plain 3-arg `[lo, hi)`
+-- (parallels `index`).  Routing through a constrained method makes a non-container
+-- receiver a check-time "no impl of Slice" error, where the old static-tag
+-- lowering read a String/Int/[] through the Array rep (an S0 run≠build memory
+-- fault).  Pure surface sugar: no dedicated typecheck/eval/lower arm survives
+-- (they become dead — a stray post-desugar ESlice is a loud guard).
+rewriteSugar (ESlice a lo hi incl _) =
+  let hiEx = if incl then binOp "+" hi (intLit 1) else hi
+  EApp (EApp (EApp (EVar "slice") a) lo) hiEx
 rewriteSugar e = e
 
 -- ── Pass: rewrite_assign_index (`a[i] := v` → `setIndex a i v`) ───────────
@@ -1111,6 +1122,7 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "rewriteSugar" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "interpToCore") (EVar "parts")))
 (DFunDef false "rewriteSugar" ((PCon "EBinOp" (PLit (LString ":=")) (PVar "lhs") (PVar "rhs") PWild)) (EApp (EApp (EApp (EVar "callBin") (ELit (LString "setRef"))) (EVar "lhs")) (EVar "rhs")))
 (DFunDef false "rewriteSugar" ((PCon "EIndex" (PVar "a") (PVar "i") PWild)) (EApp (EApp (EApp (EVar "callBin") (ELit (LString "index"))) (EVar "a")) (EVar "i")))
+(DFunDef false "rewriteSugar" ((PCon "ESlice" (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl") PWild)) (EBlock (DoLet false false (PVar "hiEx") (EIf (EVar "incl") (EApp (EApp (EApp (EVar "binOp") (ELit (LString "+"))) (EVar "hi")) (EApp (EVar "intLit") (ELit (LInt 1)))) (EVar "hi"))) (DoExpr (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "slice")))) (EVar "a"))) (EVar "lo"))) (EVar "hiEx")))))
 (DFunDef false "rewriteSugar" ((PVar "e")) (EVar "e"))
 (DTypeSig false "rewriteAssignIndex" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "rewriteAssignIndex" ((PCon "EBinOp" (PLit (LString ":=")) (PVar "lhs") (PVar "v") (PVar "r"))) (EApp (EApp (EApp (EApp (EVar "assignIndexLhs") (EApp (EVar "stripLocE") (EVar "lhs"))) (EVar "lhs")) (EVar "v")) (EVar "r")))
@@ -1530,6 +1542,7 @@ desugar prog = qualifyAliasRefs prog
 (DFunDef false "rewriteSugar" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "interpToCore") (EVar "parts")))
 (DFunDef false "rewriteSugar" ((PCon "EBinOp" (PLit (LString ":=")) (PVar "lhs") (PVar "rhs") PWild)) (EApp (EApp (EApp (EVar "callBin") (ELit (LString "setRef"))) (EVar "lhs")) (EVar "rhs")))
 (DFunDef false "rewriteSugar" ((PCon "EIndex" (PVar "a") (PVar "i") PWild)) (EApp (EApp (EApp (EVar "callBin") (ELit (LString "index"))) (EVar "a")) (EVar "i")))
+(DFunDef false "rewriteSugar" ((PCon "ESlice" (PVar "a") (PVar "lo") (PVar "hi") (PVar "incl") PWild)) (EBlock (DoLet false false (PVar "hiEx") (EIf (EVar "incl") (EApp (EApp (EApp (EVar "binOp") (ELit (LString "+"))) (EVar "hi")) (EApp (EVar "intLit") (ELit (LInt 1)))) (EVar "hi"))) (DoExpr (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EVar") (ELit (LString "slice")))) (EVar "a"))) (EVar "lo"))) (EVar "hiEx")))))
 (DFunDef false "rewriteSugar" ((PVar "e")) (EVar "e"))
 (DTypeSig false "rewriteAssignIndex" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "rewriteAssignIndex" ((PCon "EBinOp" (PLit (LString ":=")) (PVar "lhs") (PVar "v") (PVar "r"))) (EApp (EApp (EApp (EApp (EVar "assignIndexLhs") (EApp (EVar "stripLocE") (EVar "lhs"))) (EVar "lhs")) (EVar "v")) (EVar "r")))

@@ -248,6 +248,15 @@ ARROW
 IDENT "a"
 NEWLINE
 EXTERN
+IDENT "sliceError"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+IDENT "a"
+NEWLINE
+EXTERN
 IDENT "stashRunStdout"
 COLON
 UPPER "String"
@@ -286,6 +295,16 @@ UPPER "String"
 NEWLINE
 EXTERN
 IDENT "executablePath"
+COLON
+UPPER "Unit"
+ARROW
+LT
+UPPER "Env"
+GT
+UPPER "String"
+NEWLINE
+EXTERN
+IDENT "buildFingerprint"
 COLON
 UPPER "Unit"
 ARROW

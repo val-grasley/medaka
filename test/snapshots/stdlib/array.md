@@ -155,14 +155,14 @@ reverse arr =
   let n = arrayLength arr
   arrayMakeWith n (i => arrayGetUnsafe (n - 1 - i) arr)
 
-{- | `slice lo hi arr` — half-open `[lo, hi)`.  Clamps to the array bounds:
+{- | `sliceClamped lo hi arr` — half-open `[lo, hi)`.  Clamps to the array bounds:
    a request outside `[0, length arr]` is silently truncated, never panics.
-   Use `arr[lo..hi]` if you want OOB to panic instead.
+   Use `arr.[lo..hi]` (the `Slice` interface) if you want OOB to panic instead.
 
-   > toList (slice 1 3 (fromList [1, 2, 3, 4, 5]))
+   > toList (sliceClamped 1 3 (fromList [1, 2, 3, 4, 5]))
    [2, 3] -}
-export slice : Int -> Int -> Array a -> Array a
-slice lo hi arr =
+export sliceClamped : Int -> Int -> Array a -> Array a
+sliceClamped lo hi arr =
   let n = arrayLength arr
   let lo' = if lo < 0 then 0 else min lo n
   let hi' = if hi < lo' then lo' else min hi n
@@ -173,14 +173,14 @@ slice lo hi arr =
    > toList (take 2 (fromList [1, 2, 3, 4]))
    [1, 2] -}
 export take : Int -> Array a -> Array a
-take n arr = slice 0 n arr
+take n arr = sliceClamped 0 n arr
 
 {- | All but the first `n` elements.
 
    > toList (drop 2 (fromList [1, 2, 3, 4]))
    [3, 4] -}
 export drop : Int -> Array a -> Array a
-drop n arr = slice n (arrayLength arr) arr
+drop n arr = sliceClamped n (arrayLength arr) arr
 
 -- `append` comes from `impl Semigroup (Array a)` (also the `++` operator).
 
@@ -548,12 +548,12 @@ prop "makeWith element at index 0" (n : Int) =
 (DFunDef false "toListGo" ((PVar "arr") (PVar "i") (PVar "acc")) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EVar "acc") (EApp (EApp (EApp (EVar "toListGo") (EVar "arr")) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")) (EVar "acc")))))
 (DTypeSig true "reverse" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "reverse" ((PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EVar "n")) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "-" (EBinOp "-" (EVar "n") (ELit (LInt 1))) (EVar "i"))) (EVar "arr")))))))
-(DTypeSig true "slice" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))))
-(DFunDef false "slice" ((PVar "lo") (PVar "hi") (PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoLet false false (PVar "lo'") (EIf (EBinOp "<" (EVar "lo") (ELit (LInt 0))) (ELit (LInt 0)) (EApp (EApp (EVar "min") (EVar "lo")) (EVar "n")))) (DoLet false false (PVar "hi'") (EIf (EBinOp "<" (EVar "hi") (EVar "lo'")) (EVar "lo'") (EApp (EApp (EVar "min") (EVar "hi")) (EVar "n")))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "hi'") (EVar "lo'"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "lo'") (EVar "i"))) (EVar "arr")))))))
+(DTypeSig true "sliceClamped" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))))
+(DFunDef false "sliceClamped" ((PVar "lo") (PVar "hi") (PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoLet false false (PVar "lo'") (EIf (EBinOp "<" (EVar "lo") (ELit (LInt 0))) (ELit (LInt 0)) (EApp (EApp (EVar "min") (EVar "lo")) (EVar "n")))) (DoLet false false (PVar "hi'") (EIf (EBinOp "<" (EVar "hi") (EVar "lo'")) (EVar "lo'") (EApp (EApp (EVar "min") (EVar "hi")) (EVar "n")))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "hi'") (EVar "lo'"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "lo'") (EVar "i"))) (EVar "arr")))))))
 (DTypeSig true "take" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
-(DFunDef false "take" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "slice") (ELit (LInt 0))) (EVar "n")) (EVar "arr")))
+(DFunDef false "take" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "sliceClamped") (ELit (LInt 0))) (EVar "n")) (EVar "arr")))
 (DTypeSig true "drop" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
-(DFunDef false "drop" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "slice") (EVar "n")) (EApp (EVar "arrayLength") (EVar "arr"))) (EVar "arr")))
+(DFunDef false "drop" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "sliceClamped") (EVar "n")) (EApp (EVar "arrayLength") (EVar "arr"))) (EVar "arr")))
 (DTypeSig true "concat" (TyFun (TyApp (TyCon "Array") (TyApp (TyCon "Array") (TyVar "a"))) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "concat" ((PVar "arrs")) (EBlock (DoLet false false (PVar "outer") (EApp (EVar "arrayLength") (EVar "arrs"))) (DoLet false false (PVar "total") (EApp (EApp (EApp (EApp (EVar "concatTotal") (EVar "arrs")) (ELit (LInt 0))) (ELit (LInt 0))) (EVar "outer"))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EVar "total")) (ELam ((PVar "i")) (EApp (EApp (EApp (EApp (EVar "concatLookup") (EVar "arrs")) (EVar "i")) (ELit (LInt 0))) (EVar "outer")))))))
 (DTypeSig false "concatTotal" (TyFun (TyApp (TyCon "Array") (TyApp (TyCon "Array") (TyVar "a"))) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))))
@@ -652,12 +652,12 @@ prop "makeWith element at index 0" (n : Int) =
 (DFunDef false "toListGo" ((PVar "arr") (PVar "i") (PVar "acc")) (EIf (EBinOp "<" (EVar "i") (ELit (LInt 0))) (EVar "acc") (EApp (EApp (EApp (EVar "toListGo") (EVar "arr")) (EBinOp "-" (EVar "i") (ELit (LInt 1)))) (EBinOp "::" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr")) (EVar "acc")))))
 (DTypeSig true "reverse" (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "reverse" ((PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EVar "n")) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "-" (EBinOp "-" (EVar "n") (ELit (LInt 1))) (EVar "i"))) (EVar "arr")))))))
-(DTypeSig true "slice" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))))
-(DFunDef false "slice" ((PVar "lo") (PVar "hi") (PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoLet false false (PVar "lo'") (EIf (EBinOp "<" (EVar "lo") (ELit (LInt 0))) (ELit (LInt 0)) (EApp (EApp (EMethodRef "min") (EVar "lo")) (EVar "n")))) (DoLet false false (PVar "hi'") (EIf (EBinOp "<" (EVar "hi") (EVar "lo'")) (EVar "lo'") (EApp (EApp (EMethodRef "min") (EVar "hi")) (EVar "n")))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "hi'") (EVar "lo'"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "lo'") (EVar "i"))) (EVar "arr")))))))
+(DTypeSig true "sliceClamped" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a"))))))
+(DFunDef false "sliceClamped" ((PVar "lo") (PVar "hi") (PVar "arr")) (EBlock (DoLet false false (PVar "n") (EApp (EVar "arrayLength") (EVar "arr"))) (DoLet false false (PVar "lo'") (EIf (EBinOp "<" (EVar "lo") (ELit (LInt 0))) (ELit (LInt 0)) (EApp (EApp (EMethodRef "min") (EVar "lo")) (EVar "n")))) (DoLet false false (PVar "hi'") (EIf (EBinOp "<" (EVar "hi") (EVar "lo'")) (EVar "lo'") (EApp (EApp (EMethodRef "min") (EVar "hi")) (EVar "n")))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EBinOp "-" (EVar "hi'") (EVar "lo'"))) (ELam ((PVar "i")) (EApp (EApp (EVar "arrayGetUnsafe") (EBinOp "+" (EVar "lo'") (EVar "i"))) (EVar "arr")))))))
 (DTypeSig true "take" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
-(DFunDef false "take" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "slice") (ELit (LInt 0))) (EVar "n")) (EVar "arr")))
+(DFunDef false "take" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "sliceClamped") (ELit (LInt 0))) (EVar "n")) (EVar "arr")))
 (DTypeSig true "drop" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Array") (TyVar "a")) (TyApp (TyCon "Array") (TyVar "a")))))
-(DFunDef false "drop" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "slice") (EVar "n")) (EApp (EVar "arrayLength") (EVar "arr"))) (EVar "arr")))
+(DFunDef false "drop" ((PVar "n") (PVar "arr")) (EApp (EApp (EApp (EVar "sliceClamped") (EVar "n")) (EApp (EVar "arrayLength") (EVar "arr"))) (EVar "arr")))
 (DTypeSig true "concat" (TyFun (TyApp (TyCon "Array") (TyApp (TyCon "Array") (TyVar "a"))) (TyApp (TyCon "Array") (TyVar "a"))))
 (DFunDef false "concat" ((PVar "arrs")) (EBlock (DoLet false false (PVar "outer") (EApp (EVar "arrayLength") (EVar "arrs"))) (DoLet false false (PVar "total") (EApp (EApp (EApp (EApp (EVar "concatTotal") (EVar "arrs")) (ELit (LInt 0))) (ELit (LInt 0))) (EVar "outer"))) (DoExpr (EApp (EApp (EVar "arrayMakeWith") (EVar "total")) (ELam ((PVar "i")) (EApp (EApp (EApp (EApp (EVar "concatLookup") (EVar "arrs")) (EVar "i")) (ELit (LInt 0))) (EVar "outer")))))))
 (DTypeSig false "concatTotal" (TyFun (TyApp (TyCon "Array") (TyApp (TyCon "Array") (TyVar "a"))) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int"))))))

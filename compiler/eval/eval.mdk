@@ -1131,9 +1131,9 @@ eval env (EAnnot e _) = eval env e
 eval env (EHeadAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts
 -- EIndex is desugared to an `index` method call before eval (Phase #16b); the
--- built-in index path is retired, so no `EIndex` arm here.
-eval env (ESlice arr lo hi incl _) =
-  evalSlice (eval env arr) (eval env lo) (eval env hi) incl
+-- built-in index path is retired, so no `EIndex` arm here.  ESlice is likewise
+-- desugared to a `slice` method call before eval (#670); a surviving ESlice
+-- is a desugar-ordering bug and hits the loud catch-all below, so no arm here.
 eval env (ERangeList lo hi incl) =
   evalRange (eval env lo) (eval env hi) incl rangeListMk
 eval env (ERangeArray lo hi incl) =
@@ -2308,6 +2308,7 @@ externBindings _ = [
   ("enableRunStdoutFlush", prim1M pEnableRunStdoutFlush),
   ("panic", prim1 pPanic),
   ("indexError", prim1 (s => runtimePanic "E-INDEX-OOB" (unString s))),
+  ("sliceError", prim2 pSliceError),
   ("debugStringLit", prim1 pDebugStringLit),
   ("debugCharLit", prim1 pDebugCharLit),
   ("stringToFloat", prim1 pStringToFloat),
@@ -2614,6 +2615,15 @@ pStringIndexOf _ _ = panic "stringIndexOf: not Strings"
 pStringSlice : Value e -> Value e -> Value e -> <e> Value e
 pStringSlice (VInt lo) (VInt hi) (VString s) = VString (stringSlice lo hi s)
 pStringSlice _ _ _ = panic "stringSlice: bad operands"
+
+-- sliceError (lo, hiIncl): the coded E-SLICE-OOB abort the Slice impl raises;
+-- prints `slice [lo..hiIncl] out of bounds`, byte-identical to sliceArray's abort.
+pSliceError : Value e -> Value e -> <e> Value e
+pSliceError (VInt lo) (VInt hi) =
+  runtimePanic
+    "E-SLICE-OOB"
+    "slice [\{intToString lo}..\{intToString hi}] out of bounds"
+pSliceError _ _ = panic "sliceError: bad operands"
 
 pArrayLength : Value e -> <e> Value e
 pArrayLength (VArray a) = VInt (arrayLength a)

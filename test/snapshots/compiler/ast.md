@@ -1,5 +1,5 @@
 # META
-source_lines=427
+source_lines=430
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka AST — mirror of lib/ast.ml's surface (pre-desugar) nodes,
@@ -191,12 +191,15 @@ public export data Expr =
   | EArrayLit (List Expr)
   | ERangeList Expr Expr Bool
   | ERangeArray Expr Expr Bool
-  -- index/slice sugar.  The trailing `Ref String` is a receiver-kind discriminator
-  -- ("Array" by default, "String" stamped by typecheck's inferIndexElem/inferSlice).
-  -- Lowering reads it to route a String receiver to CStringIndex/CStringSlice (the
-  -- String runtime rep is NOT an i64-cell array), mirroring how the interpreter's
-  -- evalIndex dispatches on the runtime value tag.  Same Ref-stamp idiom as
-  -- EBinOp's `Ref Route`; sexp/printer ignore the ref.
+  -- index/slice sugar.  `a.[lo..hi]` / `a.[lo..=hi]`; the trailing `Bool` is the
+  -- inclusive flag.  The trailing `Ref String` is now VESTIGIAL: ESlice is
+  -- desugared to a `slice` method call (the `Slice` interface, #670) BEFORE
+  -- resolve/typecheck/lower, so nothing stamps or reads the ref any more (the old
+  -- `inferSlice`/`indexKind` typecheck arm and the static-tag `CStringSlice`/
+  -- `CListSlice`/`CSlice` lowering are dead — tracked for removal in #700).  The
+  -- field is kept only so the node's AST/printer shape is unchanged and
+  -- `.[lo..hi]` round-trips; sexp/printer ignore the ref.  (`EIndex`'s ref is
+  -- likewise vestigial — it desugars to `index`.)
   | ESlice Expr Expr Expr Bool (Ref String)
   | ELetGroup (List LetBind) Expr
   | ESection Section

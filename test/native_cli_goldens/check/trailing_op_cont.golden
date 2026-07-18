@@ -119,6 +119,8 @@ sequence : a (b c) -> b (a c)
 setIndex : a -> b -> c -> a
 shrink : a -> List a
 signum : a -> a
+slice : a -> Int -> Int -> a
+sliceListGo : List a -> Int -> Int -> Int -> List a
 snd : (a, b) -> b
 sub : Int -> Int -> Int
 sub : a -> a -> a

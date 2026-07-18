@@ -1789,7 +1789,7 @@ NEWLINE
 DEDENT
 NEWLINE
 EXPORT
-IDENT "slice"
+IDENT "sliceClamped"
 COLON
 UPPER "Int"
 ARROW
@@ -1799,7 +1799,7 @@ UPPER "String"
 ARROW
 UPPER "String"
 NEWLINE
-IDENT "slice"
+IDENT "sliceClamped"
 IDENT "lo"
 IDENT "hi"
 IDENT "s"

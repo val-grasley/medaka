@@ -85,7 +85,7 @@
 -- random-access page layout stays on `Array` (set/blit) because Builder cannot
 -- express positional writes.
 
-import array.{set, blit, slice}
+import array.{set, blit, sliceClamped}
 import bytebuilder.{
   newBuilder,
   emitU8,
@@ -177,7 +177,7 @@ prowSpill (_, _, spill) = spill
 --   spilled tail (empty when the record fits in the leaf).
 --
 --   When the record fits, the emitted cell is byte-for-byte what this writer
---   emitted before overflow support: `slice 0 len rec == rec` and no trailer.
+--   emitted before overflow support: `sliceClamped 0 len rec == rec` and no trailer.
 encodeLeafCell : Int -> Array Int -> (Array Int, Array Int)
 encodeLeafCell rowid recBytes =
   let plen = arrayLength recBytes
@@ -185,11 +185,11 @@ encodeLeafCell rowid recBytes =
   let buf = newBuilder ()
   emitBytes (sqVarintBytes plen) buf
   emitBytes (sqVarintBytes rowid) buf
-  emitBytes (toList (slice 0 local recBytes)) buf
+  emitBytes (toList (sliceClamped 0 local recBytes)) buf
   -- Placeholder first-overflow-page pointer; `assignOverflow` patches it once
   -- page numbers are known.  Absent entirely when nothing spills.
   let _ = if local < plen then emitU32BE 0 buf else ()
-  (buildArray buf, slice local plen recBytes)
+  (buildArray buf, sliceClamped local plen recBytes)
 
 -- ---------------------------------------------------------------------------
 -- Page assembly

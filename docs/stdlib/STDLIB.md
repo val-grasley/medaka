@@ -207,6 +207,10 @@ and prepended to every program by the compiler.
   - `mapSecond : (b -> d) -> p a b -> p a d` (default via `bimap identity`) — touch only the right/`Ok` side
   - ✅ Instances: `impl Bimappable (Result e)`, `impl Bimappable (,)` (the bare 2-tuple constructor — enabled by the tuple-as-type-constructor change, see `compiler/TUPLE-TYPE-CONSTRUCTOR-DESIGN.md`)
 
+- ✅ `Slice c` (#670) — read-only slicing of a container by a half-open index range; the `c.[lo..hi]` / `c.[lo..=hi]` bracket sugar desugars to a `slice` call, so the receiver is constrained to a real container (a non-container slice is a `No impl of Slice` type error, not a wrong-container heap read). Parallels `Index`.
+  - `slice : c -> Int -> Int -> c` — `slice c lo hi` is the sub-container over `[lo, hi)`; the inclusive `..=` form normalizes to `slice c lo (hi + 1)` in desugar
+  - ✅ Instances: `impl Slice (Array a)` (panics OOB, coded `E-SLICE-OOB`), `impl Slice String`, `impl Slice (List a)` (both clamp). The free `sliceClamped` functions on Array/List/String are the always-clamping standalone counterparts.
+
 ### Data types
 
 - ✅ `Ordering` — `Lt | Eq | Gt` — three-way comparison result
@@ -347,7 +351,7 @@ implementations here — use the dispatch path instead:
 - ✅ `span : (a -> Bool) -> List a -> (List a, List a)` — `(takeWhile p xs, dropWhile p xs)`
 - ✅ `break : (a -> Bool) -> List a -> (List a, List a)` — `span (not . p) xs`
 - ✅ `splitAt : Int -> List a -> (List a, List a)` — `(take n xs, drop n xs)`
-- ✅ `slice : Int -> Int -> List a -> List a` — `slice lo hi xs` is `drop lo (take hi xs)`
+- ✅ `sliceClamped : Int -> Int -> List a -> List a` — `sliceClamped lo hi xs` is `drop lo (take hi xs)` (clamps; the panicking form is `xs.[lo..hi]` via the `Slice` interface)
 - ✅ `chunks : Int -> List a -> List (List a)` — split into consecutive groups of N (last group may be shorter)
 
 ### Zipping and combining
@@ -543,7 +547,7 @@ Already present and reused: `charToStr` (= `fromChar`), `showStringLit`,
 
 ### Slicing and splitting
 
-- ✅ `slice : Int -> Int -> String -> String` — `slice lo hi s` — substring `[lo, hi)`
+- ✅ `sliceClamped : Int -> Int -> String -> String` — `sliceClamped lo hi s` — substring `[lo, hi)` (clamps; the panicking form is `s.[lo..hi]` via the `Slice` interface)
 - ✅ `take : Int -> String -> String` — first N codepoints (fewer if shorter)
 - ✅ `drop : Int -> String -> String` — drop the first N codepoints
 - ✅ `split : String -> String -> List String` — `split sep s` — split on `sep`, dropping the separator
@@ -649,7 +653,7 @@ typechecked as if it had no declared effect, then errored on the
 - 🟡 `map` — via `impl Mappable Array`
 - 🟡 `filter`, `filterMap` — via `impl Filterable Array` (no longer a standalone `filterA`; `filter`/`filterMap` are `Filterable` methods now)
 - ✅ `reverse : Array a -> Array a` — fresh array in opposite order
-- ✅ `slice : Int -> Int -> Array a -> Array a` — `[lo, hi)`; clamps to bounds, does not panic (use `arr[lo..hi]` for the panicking variant)
+- ✅ `sliceClamped : Int -> Int -> Array a -> Array a` — `[lo, hi)`; clamps to bounds, does not panic (use `arr.[lo..hi]` — the `Slice` interface — for the panicking variant)
 - ✅ `take : Int -> Array a -> Array a` — first N elements
 - ✅ `drop : Int -> Array a -> Array a` — everything after the first N
 - 🟡 `append` — via `impl Semigroup (Array a)` (also the `++` operator); no separate standalone
