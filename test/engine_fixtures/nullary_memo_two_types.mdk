@@ -1,0 +1,32 @@
+-- #719 guard (criterion 3): two DIFFERENT concrete types' nullary return-position
+-- impl methods memoise INDEPENDENTLY — no cross-instance sharing.  Each side effect
+-- fires exactly once (`[box]` then `[cup]`), and the two occurrences of each reuse
+-- their own per-instance CAF, on all three engines.
+interface HasUnit a where
+  theUnit : a
+
+data Box = Box String
+data Cup = Cup String
+
+impl HasUnit Box where
+  theUnit =
+    let _ = putStr "[box] "
+    Box "B"
+
+impl HasUnit Cup where
+  theUnit =
+    let _ = putStr "[cup] "
+    Cup "C"
+
+unBox : Box -> String
+unBox (Box s) = s
+
+unCup : Cup -> String
+unCup (Cup s) = s
+
+main =
+  let a = unBox (theUnit : Box)
+  let b = unCup (theUnit : Cup)
+  let c = unBox (theUnit : Box)
+  let d = unCup (theUnit : Cup)
+  putStrLn (a ++ b ++ c ++ d)
