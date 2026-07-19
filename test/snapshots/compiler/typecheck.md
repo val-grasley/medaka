@@ -1,5 +1,5 @@
 # META
-source_lines=15589
+source_lines=15631
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -5042,11 +5042,53 @@ inferVarPlain env x = match lookupVar env x
 -- mono).  Mirrors lib/typecheck.ml re-checking inferred_constraints at every use.
 instantiateVarTracked : String -> Scheme -> Mono
 instantiateVarTracked x s = match lookupAssocS2 x perRun.value.schemeObligationsRef.value
-  None => instantiate s
   Some obs =>
     let inst = instantiateTracked s
     let _ = recordSchemeCallObligations obs (snd inst)
     fst inst
+  -- #673: schemeObligationsRef is a PER-MODULE ref (reset per module), so a CROSS-MODULE
+  -- imported constrained binding (`println : Display a => …` from core, used from a module
+  -- that `import`s anything) has NO entry here — the plain-`instantiate` fallback silently
+  -- DROPPED its call obligation, so `check` false-greened on `println (Foo 1)` / a 6-tuple
+  -- with no Display while `run`/`build` (whose dict elaboration is a separate net) rejected.
+  -- The qual tables (populated when the SOURCE module was processed, keyed by import source
+  -- via qualConstraintFor) still carry its slot-parallel (ids, ifaces); reconstruct the same
+  -- call obligations the flat path records via recordCallObligations, so checkCallObligationsU
+  -- catches a missing impl on the located check path too.  Flat is unaffected (no cross-module
+  -- imports ⇒ qualConstraintFor is None), and a name already in schemeObligationsRef never
+  -- reaches this arm ⇒ no double-recording.
+  None => match bareCrossModuleObls x
+    Some (ids, ifaces) =>
+      if isEmptyL ids then instantiate s
+      else
+        let inst = instantiateTracked s
+        let _ = recordCallObligations ifaces (constraintMonosOf ids (snd inst))
+        fst inst
+    None => instantiate s
+
+-- #673: bare-name (source-module-blind) lookup of a constrained binding's slot-parallel
+-- (constraint tyvar ids, iface names) in the PERSISTENT cross-module qual tables.  Needed
+-- because a PRELUDE/core binding (`println`) is deliberately excluded from
+-- currentImportDefinersRef (importDefinersOf skips `core`), so qualConstraintFor cannot
+-- resolve its source module — yet its constraints ARE in the qual tables (attributed under
+-- key ("core", name) when the core pass ran).
+-- Key the ifaces lookup by the SAME (source, name) the ids came from, so a cross-module
+-- name collision can never zip one module's ids against another's ifaces.  A wrong pairing
+-- is harmless anyway (constraintMonosOf skips ids absent from THIS call's instantiation
+-- subst, so a mismatched scheme records no obligation), but exactness keeps it obviously so.
+bareCrossModuleObls : String -> Option (List Int, List String)
+bareCrossModuleObls name = map
+  ((src, ids) => (
+    ids,
+    fromOption [] (lookupQualIfaces src name crossRun.value.crossModuleFunConstraintIfacesQualRef.value),
+  ))
+  (bareQualLookupI name crossRun.value.crossModuleFunConstraintsQualRef.value)
+
+bareQualLookupI : String -> List ((String, String), List Int) -> Option (String, List Int)
+bareQualLookupI _ [] = None
+bareQualLookupI name (((m, n), v)::rest)
+  | n == name = Some (m, v)
+  | otherwise = bareQualLookupI name rest
 
 -- map each (iface, scheme-var-id VECTOR) through the instantiation subst to this
 -- call's monos, pushing ONE joint obligation per predicate onto
@@ -16771,7 +16813,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "inferVarPlain" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyCon "Mono"))))
 (DFunDef false "inferVarPlain" ((PVar "env") (PVar "x")) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (EVar "x")) (arm (PCon "Some" (PVar "s")) () (EBlock (DoLet false false (PVar "mono") (EApp (EApp (EVar "instantiateVarTracked") (EVar "x")) (EVar "s"))) (DoExpr (EApp (EApp (EVar "recordImplObligation") (EVar "x")) (EVar "mono"))))) (arm (PCon "None") () (EApp (EVar "unboundVarFresh") (EVar "x")))))
 (DTypeSig false "instantiateVarTracked" (TyFun (TyCon "String") (TyFun (TyCon "Scheme") (TyCon "Mono"))))
-(DFunDef false "instantiateVarTracked" ((PVar "x") (PVar "s")) (EMatch (EApp (EApp (EVar "lookupAssocS2") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "schemeObligationsRef") "value")) (arm (PCon "None") () (EApp (EVar "instantiate") (EVar "s"))) (arm (PCon "Some" (PVar "obs")) () (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "obs")) (EApp (EVar "snd") (EVar "inst")))) (DoExpr (EApp (EVar "fst") (EVar "inst")))))))
+(DFunDef false "instantiateVarTracked" ((PVar "x") (PVar "s")) (EMatch (EApp (EApp (EVar "lookupAssocS2") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "schemeObligationsRef") "value")) (arm (PCon "Some" (PVar "obs")) () (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "obs")) (EApp (EVar "snd") (EVar "inst")))) (DoExpr (EApp (EVar "fst") (EVar "inst"))))) (arm (PCon "None") () (EMatch (EApp (EVar "bareCrossModuleObls") (EVar "x")) (arm (PCon "Some" (PTuple (PVar "ids") (PVar "ifaces"))) () (EIf (EApp (EVar "isEmptyL") (EVar "ids")) (EApp (EVar "instantiate") (EVar "s")) (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EVar "recordCallObligations") (EVar "ifaces")) (EApp (EApp (EVar "constraintMonosOf") (EVar "ids")) (EApp (EVar "snd") (EVar "inst"))))) (DoExpr (EApp (EVar "fst") (EVar "inst")))))) (arm (PCon "None") () (EApp (EVar "instantiate") (EVar "s")))))))
+(DTypeSig false "bareCrossModuleObls" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "bareCrossModuleObls" ((PVar "name")) (EApp (EApp (EVar "map") (ELam ((PTuple (PVar "src") (PVar "ids"))) (ETuple (EVar "ids") (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EApp (EVar "lookupQualIfaces") (EVar "src")) (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "crossRun") "value") "crossModuleFunConstraintIfacesQualRef") "value")))))) (EApp (EApp (EVar "bareQualLookupI") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "crossRun") "value") "crossModuleFunConstraintsQualRef") "value"))))
+(DTypeSig false "bareQualLookupI" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))))))
+(DFunDef false "bareQualLookupI" (PWild (PList)) (EVar "None"))
+(DFunDef false "bareQualLookupI" ((PVar "name") (PCons (PTuple (PTuple (PVar "m") (PVar "n")) (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "name")) (EApp (EVar "Some") (ETuple (EVar "m") (EVar "v"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "bareQualLookupI") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "recordSchemeCallObligations" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "Mono"))) (TyCon "Unit"))))
 (DFunDef false "recordSchemeCallObligations" ((PList) PWild) (ELit LUnit))
 (DFunDef false "recordSchemeCallObligations" ((PCons (PTuple (PVar "iface") (PVar "ids")) (PVar "rest")) (PVar "subst")) (EMatch (EApp (EApp (EVar "substMonos") (EVar "ids")) (EVar "subst")) (arm (PCon "Some" (PVar "monos")) () (EBlock (DoLet false false PWild (EApp (EVar "pushCallObl") (ETuple (EVar "iface") (EVar "monos") (EFieldAccess (EVar "currentLoc") "value")))) (DoExpr (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "rest")) (EVar "subst"))))) (arm (PCon "None") () (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "rest")) (EVar "subst")))))
@@ -20375,7 +20422,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "inferVarPlain" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyCon "Mono"))))
 (DFunDef false "inferVarPlain" ((PVar "env") (PVar "x")) (EMatch (EApp (EApp (EVar "lookupVar") (EVar "env")) (EVar "x")) (arm (PCon "Some" (PVar "s")) () (EBlock (DoLet false false (PVar "mono") (EApp (EApp (EVar "instantiateVarTracked") (EVar "x")) (EVar "s"))) (DoExpr (EApp (EApp (EVar "recordImplObligation") (EVar "x")) (EVar "mono"))))) (arm (PCon "None") () (EApp (EVar "unboundVarFresh") (EVar "x")))))
 (DTypeSig false "instantiateVarTracked" (TyFun (TyCon "String") (TyFun (TyCon "Scheme") (TyCon "Mono"))))
-(DFunDef false "instantiateVarTracked" ((PVar "x") (PVar "s")) (EMatch (EApp (EApp (EVar "lookupAssocS2") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "schemeObligationsRef") "value")) (arm (PCon "None") () (EApp (EVar "instantiate") (EVar "s"))) (arm (PCon "Some" (PVar "obs")) () (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "obs")) (EApp (EVar "snd") (EVar "inst")))) (DoExpr (EApp (EVar "fst") (EVar "inst")))))))
+(DFunDef false "instantiateVarTracked" ((PVar "x") (PVar "s")) (EMatch (EApp (EApp (EVar "lookupAssocS2") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "schemeObligationsRef") "value")) (arm (PCon "Some" (PVar "obs")) () (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "obs")) (EApp (EVar "snd") (EVar "inst")))) (DoExpr (EApp (EVar "fst") (EVar "inst"))))) (arm (PCon "None") () (EMatch (EApp (EVar "bareCrossModuleObls") (EVar "x")) (arm (PCon "Some" (PTuple (PVar "ids") (PVar "ifaces"))) () (EIf (EApp (EVar "isEmptyL") (EVar "ids")) (EApp (EVar "instantiate") (EVar "s")) (EBlock (DoLet false false (PVar "inst") (EApp (EVar "instantiateTracked") (EVar "s"))) (DoLet false false PWild (EApp (EApp (EVar "recordCallObligations") (EVar "ifaces")) (EApp (EApp (EVar "constraintMonosOf") (EVar "ids")) (EApp (EVar "snd") (EVar "inst"))))) (DoExpr (EApp (EVar "fst") (EVar "inst")))))) (arm (PCon "None") () (EApp (EVar "instantiate") (EVar "s")))))))
+(DTypeSig false "bareCrossModuleObls" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "bareCrossModuleObls" ((PVar "name")) (EApp (EApp (EMethodRef "map") (ELam ((PTuple (PVar "src") (PVar "ids"))) (ETuple (EVar "ids") (EApp (EApp (EVar "fromOption") (EListLit)) (EApp (EApp (EApp (EVar "lookupQualIfaces") (EVar "src")) (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "crossRun") "value") "crossModuleFunConstraintIfacesQualRef") "value")))))) (EApp (EApp (EVar "bareQualLookupI") (EVar "name")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "crossRun") "value") "crossModuleFunConstraintsQualRef") "value"))))
+(DTypeSig false "bareQualLookupI" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyTuple (TyCon "String") (TyCon "String")) (TyApp (TyCon "List") (TyCon "Int")))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))))))
+(DFunDef false "bareQualLookupI" (PWild (PList)) (EVar "None"))
+(DFunDef false "bareQualLookupI" ((PVar "name") (PCons (PTuple (PTuple (PVar "m") (PVar "n")) (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n") (EVar "name")) (EApp (EVar "Some") (ETuple (EVar "m") (EVar "v"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "bareQualLookupI") (EVar "name")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "recordSchemeCallObligations" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "Int") (TyCon "Mono"))) (TyCon "Unit"))))
 (DFunDef false "recordSchemeCallObligations" ((PList) PWild) (ELit LUnit))
 (DFunDef false "recordSchemeCallObligations" ((PCons (PTuple (PVar "iface") (PVar "ids")) (PVar "rest")) (PVar "subst")) (EMatch (EApp (EApp (EVar "substMonos") (EVar "ids")) (EVar "subst")) (arm (PCon "Some" (PVar "monos")) () (EBlock (DoLet false false PWild (EApp (EVar "pushCallObl") (ETuple (EVar "iface") (EVar "monos") (EFieldAccess (EVar "currentLoc") "value")))) (DoExpr (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "rest")) (EVar "subst"))))) (arm (PCon "None") () (EApp (EApp (EVar "recordSchemeCallObligations") (EVar "rest")) (EVar "subst")))))

@@ -1,0 +1,11 @@
+-- Bug #673 CONTROL: isolates the defect to the imported-function obligation
+-- drop, NOT to how the value is produced.  Same 6-tuple with no Display impl,
+-- but each element is a plain literal (no `array.get` instantiation involved) —
+-- only the `import` (forcing the multi-module path) and the cross-module
+-- `println` remain.  It rejected on flat/no-import main all along; it must
+-- reject here too once the module path stops dropping the obligation.
+import array.{get}
+
+main =
+  let v = 1
+  println (v, v, v, v, v, v)

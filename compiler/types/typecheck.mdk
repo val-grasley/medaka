@@ -5038,11 +5038,53 @@ inferVarPlain env x = match lookupVar env x
 -- mono).  Mirrors lib/typecheck.ml re-checking inferred_constraints at every use.
 instantiateVarTracked : String -> Scheme -> Mono
 instantiateVarTracked x s = match lookupAssocS2 x perRun.value.schemeObligationsRef.value
-  None => instantiate s
   Some obs =>
     let inst = instantiateTracked s
     let _ = recordSchemeCallObligations obs (snd inst)
     fst inst
+  -- #673: schemeObligationsRef is a PER-MODULE ref (reset per module), so a CROSS-MODULE
+  -- imported constrained binding (`println : Display a => …` from core, used from a module
+  -- that `import`s anything) has NO entry here — the plain-`instantiate` fallback silently
+  -- DROPPED its call obligation, so `check` false-greened on `println (Foo 1)` / a 6-tuple
+  -- with no Display while `run`/`build` (whose dict elaboration is a separate net) rejected.
+  -- The qual tables (populated when the SOURCE module was processed, keyed by import source
+  -- via qualConstraintFor) still carry its slot-parallel (ids, ifaces); reconstruct the same
+  -- call obligations the flat path records via recordCallObligations, so checkCallObligationsU
+  -- catches a missing impl on the located check path too.  Flat is unaffected (no cross-module
+  -- imports ⇒ qualConstraintFor is None), and a name already in schemeObligationsRef never
+  -- reaches this arm ⇒ no double-recording.
+  None => match bareCrossModuleObls x
+    Some (ids, ifaces) =>
+      if isEmptyL ids then instantiate s
+      else
+        let inst = instantiateTracked s
+        let _ = recordCallObligations ifaces (constraintMonosOf ids (snd inst))
+        fst inst
+    None => instantiate s
+
+-- #673: bare-name (source-module-blind) lookup of a constrained binding's slot-parallel
+-- (constraint tyvar ids, iface names) in the PERSISTENT cross-module qual tables.  Needed
+-- because a PRELUDE/core binding (`println`) is deliberately excluded from
+-- currentImportDefinersRef (importDefinersOf skips `core`), so qualConstraintFor cannot
+-- resolve its source module — yet its constraints ARE in the qual tables (attributed under
+-- key ("core", name) when the core pass ran).
+-- Key the ifaces lookup by the SAME (source, name) the ids came from, so a cross-module
+-- name collision can never zip one module's ids against another's ifaces.  A wrong pairing
+-- is harmless anyway (constraintMonosOf skips ids absent from THIS call's instantiation
+-- subst, so a mismatched scheme records no obligation), but exactness keeps it obviously so.
+bareCrossModuleObls : String -> Option (List Int, List String)
+bareCrossModuleObls name = map
+  ((src, ids) => (
+    ids,
+    fromOption [] (lookupQualIfaces src name crossRun.value.crossModuleFunConstraintIfacesQualRef.value),
+  ))
+  (bareQualLookupI name crossRun.value.crossModuleFunConstraintsQualRef.value)
+
+bareQualLookupI : String -> List ((String, String), List Int) -> Option (String, List Int)
+bareQualLookupI _ [] = None
+bareQualLookupI name (((m, n), v)::rest)
+  | n == name = Some (m, v)
+  | otherwise = bareQualLookupI name rest
 
 -- map each (iface, scheme-var-id VECTOR) through the instantiation subst to this
 -- call's monos, pushing ONE joint obligation per predicate onto

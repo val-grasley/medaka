@@ -94,6 +94,8 @@ attributeModuleArrIfaces : String -> List Decl -> List (String, List String) -> 
 augmentWithParams : List (String, Mono) -> List Ty -> List Mono -> List (String, Mono)
 axisSub : List (String, Param) -> (String, Param) -> Bool
 axisUnion : List (String, Param) -> List (String, Param) -> List String
+bareCrossModuleObls : String -> Option (List Int, List String)
+bareQualLookupI : String -> List ((String, String), List Int) -> Option (String, List Int)
 bestAlignedEntry : List (Int, Mono) -> List (String, List Int) -> Int -> Option (List Int) -> Option (List Int)
 bestFieldCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
 bindOutsideDoMsg : String
