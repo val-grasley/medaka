@@ -638,5 +638,59 @@ case "$unused_out" in
      else fail=$((fail+1)); printf 'FAIL 674d/import-both-use-neither (exit %d: [%s])\n' "$unused_code" "$unused_out"; fi ;;
 esac
 
+# 13. #673 cross-module constrained-FUNCTION obligation on the located CHECK path.
+#     Two guards, one root cause (instantiateVarTracked dropped a cross-module binding's
+#     call obligation because per-module schemeObligationsRef has no entry for it):
+#
+#  13a. UNDER-rejection (#673 itself): a PRELUDE constrained fn (`println : Display a => …`)
+#       applied to a 6-tuple (Display impls stop at arity 5) in an import-bearing program
+#       MUST be rejected on `check` — it false-greened (exit 0, empty --json) while run/build
+#       rejected via their separate dict net.  The fix reads core's OWN captured obligations
+#       (coreSchemeObligationsRef) so the located path records the Display obligation.
+cat > "$TMP/x673_reject.mdk" <<'EOF'
+import helper.{double}
+main = println (double 1, double 1, double 1, double 1, double 1, double 1)
+EOF
+x673r_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/x673_reject.mdk" 2>/dev/null)"
+x673r_code=$?
+case "$x673r_out" in
+  *"No impl of Display for (Int, Int, Int, Int, Int, Int)"*)
+    if [ "$x673r_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   673a/prelude-fn-obligation (cross-module println Display obligation enforced)\n'
+    else fail=$((fail+1)); printf 'FAIL 673a/prelude-fn-obligation (rejected but exit %d)\n' "$x673r_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL 673a/prelude-fn-obligation (cross-module obligation dropped: [%s])\n' "$x673r_out" ;;
+esac
+#  13b. OVER-rejection guard (the #673-rework regression): two modules export a same-named
+#       `bar` — foo's is `Display a =>`-constrained, baz's is UNCONSTRAINED — and the entry
+#       uses BAZ's `bar` on a no-`Display` type.  This is VALID; `check` MUST accept it.  A
+#       source-BLIND name lookup misattributes foo's Display constraint to baz's `bar` and
+#       falsely rejects `No impl of Display for NoD`; the source-exact lookup (qualConstraintFor
+#       resolves `bar`→baz via currentImportDefinersRef) must not.  Asserted on `check` ONLY:
+#       run/build reject this shape via a SEPARATE, PRE-EXISTING emit-path same-name over-
+#       rejection bug (present on main, independent of #673 and out of scope here).
+cat > "$TMP/x673_foo.mdk" <<'EOF'
+public export data FooT = FooT
+export bar : Display a => a -> String
+bar x = display x
+EOF
+cat > "$TMP/x673_baz.mdk" <<'EOF'
+export bar : a -> a
+bar x = x
+EOF
+cat > "$TMP/x673_collide.mdk" <<'EOF'
+import x673_baz.{bar}
+import x673_foo
+public export data NoD = NoD
+main =
+  let _ = bar NoD
+  println "ok"
+EOF
+x673c_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/x673_collide.mdk" 2>/dev/null)"
+x673c_code=$?
+case "$x673c_out" in
+  *"No impl"*) fail=$((fail+1)); printf 'FAIL 673b/samename-no-overreject (misattributed foreign constraint: [%s])\n' "$x673c_out" ;;
+  *) if [ "$x673c_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   673b/samename-no-overreject (baz unconstrained bar not tagged with foo Display)\n'
+     else fail=$((fail+1)); printf 'FAIL 673b/samename-no-overreject (exit %d: [%s])\n' "$x673c_code" "$x673c_out"; fi ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

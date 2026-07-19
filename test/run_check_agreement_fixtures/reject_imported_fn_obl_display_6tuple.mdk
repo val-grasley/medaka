@@ -1,0 +1,20 @@
+-- Bug #673: `check` false-greened (exit 0) on a multi-module program that
+-- `run`/`build` reject, DROPPING a cross-module constrained-function's call
+-- obligation on the LOCATED (check) path.  `println : Display a => a -> …` is
+-- imported from the prelude (core); a value from imported `array.get` feeds a
+-- 6-tuple, and Display impls exist only to arity 5.  The Display obligation was
+-- recorded from the PER-MODULE schemeObligationsRef, which has no entry for a
+-- cross-module binding, so instantiateVarTracked silently took the plain
+-- `instantiate` path and dropped it — check reported nothing while run/build
+-- (whose dict elaboration is a separate net) rejected.  DISTINCT from #40's
+-- string-interp `display`-method path (an IMPL obligation, already checked):
+-- this is the imported-FUNCTION call obligation.  Fix: fall back to the
+-- persistent cross-module qual tables (bareCrossModuleObls) when the per-module
+-- table misses.  MUST stay multi-module (an import triggers the module path).
+import array.{get}
+
+main =
+  let v = match get 0 [|1|]
+    Some x => x
+    None => -1
+  println (v, v, v, v, v, v)

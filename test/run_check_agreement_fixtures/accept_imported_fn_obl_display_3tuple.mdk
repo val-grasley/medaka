@@ -1,0 +1,11 @@
+-- Bug #673 OVER-REJECTION GUARD: the same imported-poly flow whose obligation
+-- IS satisfiable must keep checking, running, and building.  A 3-tuple HAS a
+-- Display impl, so recording the (now-not-dropped) obligation must resolve
+-- cleanly, never over-reject.  Rejecting this would be worse than the bug.
+import array.{get}
+
+main =
+  let v = match get 0 [|1|]
+    Some x => x
+    None => -1
+  println (v, v, v)

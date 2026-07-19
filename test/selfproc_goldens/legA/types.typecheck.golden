@@ -288,6 +288,7 @@ declMethodNames : List Decl -> List String
 declMethodNamesOf : Decl -> List String
 declTopFnNames : List Decl -> List String
 declaredConstraintSlots : String -> (List Int, List String)
+declaredCrossModuleObls : String -> Option (List (String, List Int))
 declaredEffects : Ty -> List Atom
 declaredOblOne : List Int -> List (String, Mono) -> Constraint -> List (String, List Int)
 declaredPairOne : (String, Mono) -> List (String, Int)
@@ -1111,6 +1112,7 @@ shadowStandaloneDicts : TcEnv -> String -> String -> Mono -> (List Mono, List St
 shadowStandaloneDictsWith : Option Scheme -> String -> String -> Mono -> (List Mono, List String)
 shadowStandaloneHead : TcEnv -> Expr -> Option (String, List (Ref Route))
 shadowVarHeadMethodScheme : TcEnv -> String -> Expr -> Mono
+shatterVecObls : List String -> List Int -> List (String, List Int)
 sigConstraints : Ty -> List (String, String)
 sigConstraintsOf : Ty -> List Constraint
 sigNamesToSet : List (String, Ty) -> Map String Unit -> Map String Unit

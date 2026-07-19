@@ -1,6 +1,0 @@
-import array.{get}
-main =
-  let v = match get 0 [|1|]
-    Some x => x
-    None => -1
-  println (v, v, v, v, v, v)

@@ -1897,6 +1897,7 @@ data CrossRun = CrossRun {
     crossModuleFunConstraintIfacesQualRef : Ref (List ((String, String), List String)),
     crossModuleMethodConstraintsRef : Ref (List (String, List Int)),
     crossModuleMethodConstraintsQualRef : Ref (List ((String, String), List Int)),
+    coreSchemeObligationsRef : Ref (OrdMap (List (String, List Int))),  -- #673: core's OWN schemeObligationsRef, snapshotted after the core pass (see declaredCrossModuleObls)
   }
 
 -- Construct all 22 field-Refs fresh (each reproduces its former top-level ref's initial).
@@ -1957,6 +1958,7 @@ freshCrossRun env = CrossRun {
   crossModuleFunConstraintIfacesQualRef = Ref [],
   crossModuleMethodConstraintsRef = Ref [],
   crossModuleMethodConstraintsQualRef = Ref [],
+  coreSchemeObligationsRef = Ref omEmpty,
 }
 
 -- The single module-level cell holding the current run's accumulator bundle.
@@ -5038,11 +5040,50 @@ inferVarPlain env x = match lookupVar env x
 -- mono).  Mirrors lib/typecheck.ml re-checking inferred_constraints at every use.
 instantiateVarTracked : String -> Scheme -> Mono
 instantiateVarTracked x s = match lookupAssocS2 x perRun.value.schemeObligationsRef.value
-  None => instantiate s
   Some obs =>
     let inst = instantiateTracked s
     let _ = recordSchemeCallObligations obs (snd inst)
     fst inst
+  -- #673: schemeObligationsRef is a PER-MODULE ref (reset per module), so a CROSS-MODULE
+  -- constrained binding used as a plain EVar has NO entry here.  For a PRELUDE binding
+  -- (`println : Display a => …`, the #673 repro) the plain-`instantiate` fallback silently
+  -- DROPPED its call obligation, so `check` false-greened on `println (Foo 1)` / a 6-tuple
+  -- with no Display while `run`/`build` (dict elaboration is a separate net) rejected.
+  None => match declaredCrossModuleObls x
+    Some obs =>
+      let inst = instantiateTracked s
+      let _ = recordSchemeCallObligations obs (snd inst)
+      fst inst
+    None => instantiate s
+
+-- #673: the declared call obligations of a CROSS-MODULE constrained binding [x] used as a
+-- plain EVar, in schemeObligations shape (`(iface, quantified-var-id VECTOR)` list) so the
+-- caller records them exactly like the same-module `Some obs` branch.  TWO source-EXACT
+-- lookups, NEVER a name-only whole-table scan (both correctness- and perf-unsound, #673 rework):
+--
+--   (1) qualConstraintFor x — a USER import resolves through currentImportDefinersRef to the
+--       ACTUAL owning module's (src, name) qual entry, so a same-named import from a DIFFERENT
+--       module (foo's constrained `bar` vs baz's unconstrained `bar`, where `x` resolves to
+--       baz) can never be misattributed.  It also gates on the cheap currentImportDefinersRef
+--       membership, so only a genuine import pays a scan — not every unconstrained/local var.
+--   (2) coreSchemeObligationsRef — core's OWN captured schemeObligationsRef (snapshotted right
+--       after the core pass, before the first module's resetState).  Prelude names are
+--       deliberately excluded from currentImportDefinersRef (importDefinersOf skips `core`),
+--       so qualConstraintFor cannot see them; this is the source-EXACT store for exactly that
+--       set (`println`/`print`), an O(log n) OrdMap lookup with ZERO wrong-module surface.
+declaredCrossModuleObls : String -> Option (List (String, List Int))
+declaredCrossModuleObls x = match qualConstraintFor x
+  Some (ids, ifaces) => Some (shatterVecObls ifaces ids)
+  None => omLookup x crossRun.value.coreSchemeObligationsRef.value
+
+-- pair each iface with its own single scheme-var id (the "shattered per-tyvar dict slots"
+-- shape funConstraintsRef stores — see recordCallObligations), skipping unnamed ("") slots.
+shatterVecObls : List String -> List Int -> List (String, List Int)
+shatterVecObls [] _ = []
+shatterVecObls _ [] = []
+shatterVecObls (iface::ifs) (id::ids)
+  | iface == "" = shatterVecObls ifs ids
+  | otherwise = (iface, [id]) :: shatterVecObls ifs ids
 
 -- map each (iface, scheme-var-id VECTOR) through the instantiation subst to this
 -- call's monos, pushing ONE joint obligation per predicate onto
@@ -14719,6 +14760,11 @@ checkModulesPreamble runtimeDecls coreDecls modules =
   let runtimeSeed = externSchemes runtimeDecls
   let _ = seedAbstractRecordTypes coreDecls modules
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
+  -- #673: snapshot core's OWN obligations NOW — perRun.schemeObligationsRef still holds core's
+  -- bindings (the next module's resetState has not run yet).  This is the source-exact store a
+  -- plain-EVar use of a PRELUDE constrained fn (`println`) reads in instantiateVarTracked, so
+  -- its Display obligation lands on the located check path instead of being dropped.
+  let _ = setRef crossRun.value.coreSchemeObligationsRef (omFromPairs perRun.value.schemeObligationsRef.value omEmpty)
   (runtimeSeed, coreSchemes)
 
 -- worker: plain per-module typecheck (no diagnostics harvest, no accAll).  Surfaces
