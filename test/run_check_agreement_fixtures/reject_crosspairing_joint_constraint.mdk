@@ -1,0 +1,23 @@
+-- #619 (declared-only) + #607 punch-list item 4: the exotic CROSS-PAIRING the
+-- pair-shattered coverage test under-checks. `crossHelper` DECLARES `Ix a b` and
+-- `Ix c d`; its body `ix w z` (w : a, z : d) induces the JOINT `Ix a d`, which is
+-- NOT a declared predicate — yet every one of its arguments (a from `Ix a b`, d
+-- from `Ix c d`) does appear in some declared predicate, so the per-argument pair
+-- subset test passes and the joint constraint slips through.
+--
+-- Under the pre-#619 UNION the inferred `Ix a d` was MERGED into the scheme and
+-- propagated to callers (silent widening of a signature). Declared-only sources the
+-- scheme SOLELY from the declared `=>` (so `Ix a d` is never propagated), and the
+-- vector-valued coverage check (censusSuperCloseVec / reportUncoveredVec) rejects the
+-- binding: a body needing more than its signature declares is a def-site type error.
+-- .expected = REJECT: `Could not deduce 'Ix a d' from the signature of 'crossHelper'`.
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+crossHelper : (Ix a b, Ix c d) => a -> b -> c -> d -> Int
+crossHelper w x y z = ix w z
+
+main = println (crossHelper 1 2 3 4)

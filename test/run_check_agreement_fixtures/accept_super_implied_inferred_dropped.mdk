@@ -1,0 +1,31 @@
+-- #619 (declared-only): the `when`-shaped case. `whenW` is signed `ThenW f =>`;
+-- its body calls `pureW` (an AppW method), inducing `AppW f`. Because
+-- `ThenW requires AppW`, the inferred `AppW f` is ENTAILED by the declared context.
+--
+-- Pre-#619 the UNION merged it in, so `whenW` displayed the redundant
+-- `(AppW f, ThenW f) =>` (the stdlib `when` displayed `(Applicative a, Thenable a)`).
+-- Declared-only sources the scheme SOLELY from the declared `=>`, and the coverage
+-- check CONFIRMS `AppW f` is covered by `ThenW`'s super chain rather than merging it —
+-- so `whenW`'s context is exactly `ThenW f`, and the binding is ACCEPTED (the
+-- never-over-reject direction: an entailed inferred predicate must not be rejected).
+-- .expected = ACCEPT: the program is well-typed and runs. .out pins its stdout.
+data Wrap a = Wrap a
+
+interface AppW f where
+  pureW : a -> f a
+
+interface ThenW f requires AppW f where
+  seqW : f a -> f b -> f b
+
+impl AppW Wrap where
+  pureW x = Wrap x
+
+impl ThenW Wrap where
+  seqW a b = b
+
+whenW : ThenW f => Bool -> f Unit -> f Unit
+whenW c x = if c then x else pureW ()
+
+main =
+  let _ = whenW True (Wrap ())
+  println "ok"

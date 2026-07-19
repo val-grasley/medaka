@@ -359,6 +359,15 @@ Hindley–Milner rules carry the translation through unchanged.
             -- (x d₁ … dₘ): the SAME dict params, NOT a fresh entailment
 (gen-rec)──────────────────────────────────────────────────────────────────
             P | Γ ⊢ (let rec x = e) ⇝ (let rec x = Λā. λ d̄. e')
+
+
+            x :: ∀ā. Q_sig ⇒ τ   (ascribed signature)
+            P'ᵢ = the predicates the body infers on ā
+            Q_sig ⊩ P'ᵢ          (entailment under `requires`-closure, §3)
+            (P, Q_sig) | Γ ⊢ e ⇝ e' : τ
+(gen-sig)───────────────────────────────────────────────────────────────────
+            P | Γ ⊢ (let x : Q_sig ⇒ τ = e) ⇝ (let x = Λā. λ d̄_sig. e')
+                where d̄_sig = (d₁:π₁)…(dₖ:πₖ),  {π₁..πₖ} = Q_sig
 ```
 
 Reading.
@@ -384,6 +393,34 @@ Reading.
   dictionary at each recursive step (non-termination, or evidence that disagrees
   with the caller's). A mutually-recursive group shares **one** `λ d̄.` prefix
   over the whole group.
+
+- **`gen-sig`** is `gen` for a binding carrying an **ascribed signature** (#619).
+  The distinction from `gen` is which set becomes the binding's principal context.
+  `gen` reads it off the body (`P'` = the inferred deferred predicates); `gen-sig`
+  takes it **from the signature**: `Q_sig` — not the inferred `P'ᵢ` — is the
+  principal context, so the abstracted dictionaries `d̄_sig`, the displayed scheme,
+  and every caller's discharged predicates (`var`) all come from `Q_sig`. A
+  signature is a **contract the body must satisfy, not a floor it can raise** (the
+  standard qualified-types reading — Jones; Hall–Peyton-Jones–Wadler). The body's
+  inferred `P'ᵢ` is therefore **checked, not merged**: the side condition
+  `Q_sig ⊩ P'ᵢ` demands every inferred predicate be entailed by the ascribed
+  context, closed under `requires` (§3). If it fails — the body genuinely needs a
+  predicate `Q_sig` does not license — the program is **rejected**
+  (`T-MISSING-CONSTRAINT`), never silently widened to `Q_sig ∪ P'ᵢ`. Two
+  consequences fall out, and both are the point of the rule:
+    - a declared predicate the body never dispatches on is **still abstracted** —
+      it is part of the contract (`sz2 : Sz a ⇒ a → Int` whose body ignores `Sz`
+      still has `Sz a` in its scheme and every caller discharges it);
+    - a predicate the body infers that `Q_sig` **already entails via a superclass**
+      is **dropped, not displayed** (`when : Thenable m ⇒ …` whose body's `pure`
+      infers `Applicative m` has scheme context exactly `Thenable m`, since
+      `Thenable requires Applicative`). Merging it in — the pre-#619 behaviour —
+      was sound but produced a redundant `(Applicative m, Thenable m) ⇒` display
+      and propagated a superclass-redundant predicate to every caller.
+  When `Q_sig` is empty the rule degenerates to the ordinary monomorphic-signature
+  case, and `gen-sig` still fires (a signed binding with no `⇒` has principal
+  context `∅`, so a body that infers **any** predicate on `ā` is rejected — the
+  usual `Could not deduce … add '… ⇒'` error).
 
 The arity and order of `(d₁:π₁)…(dₘ:πₘ)` are part of the binding's elaborated
 type and **travel with the binding's identity**, not its surface name.
@@ -690,6 +727,17 @@ module-qualified identity.
   "the value the source denotes" is well-defined.
 - **Evaluator interchangeability.** Under the single-evaluator law (§7), any two
   refining evaluators agree on every elaborated program.
+- **Signature authority (§4 `gen-sig`, #619).** For a binding with an ascribed
+  signature, its principal context is the declared `Q_sig`, and elaboration abstracts
+  exactly `Q_sig`. The body's inferred context `P'ᵢ` is admitted **iff** `Q_sig ⊩ P'ᵢ`
+  (`requires`-closed entailment, §3); otherwise the program is rejected. Equivalently:
+  a well-typed signed binding never has a scheme context that differs from — is neither
+  a superset nor a subset of — the predicates it wrote, so no caller discharges a
+  predicate the author did not declare, and none is silently dropped that the body
+  genuinely needs. The entailment side condition is **vector-valued** on multi-parameter
+  predicates: `Q_sig = {Ix a b, Ix c d}` does **not** entail an inferred joint `Ix a d`
+  (each argument appears in `Q_sig`, but the predicate does not), so that binding is
+  rejected rather than widened — the per-argument reading would be unsound.
 
 ---
 

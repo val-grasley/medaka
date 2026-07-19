@@ -1,0 +1,18 @@
+-- #619 / #607 punch-list item 4: pins the DIAGNOSTIC COUNT for the exotic
+-- cross-pairing. `crossHelper` declares `Ix a b, Ix c d`; its body induces the
+-- JOINT `Ix a d`, undeclared. The per-argument pair coverage test passes (a and d
+-- each appear in some declared predicate), so ONLY the vector-valued coverage check
+-- (reportUncoveredVec) fires — and it must fire EXACTLY ONCE. A regression that
+-- shattered the joint vector per argument, or that double-reported alongside the
+-- pair test, would show two or three diagnostics here; an exit-code gate cannot see
+-- that (all are REJECT). Correct output: one T-MISSING-CONSTRAINT for `Ix a d`.
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int Int where
+  ix a i = a + i
+
+crossHelper : (Ix a b, Ix c d) => a -> b -> c -> d -> Int
+crossHelper w x y z = ix w z
+
+main = println (crossHelper 1 2 3 4)

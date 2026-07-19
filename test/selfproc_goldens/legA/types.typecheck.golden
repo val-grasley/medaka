@@ -31,6 +31,7 @@ allIfaceMethodNames : List Decl -> List String
 allInRange : List Int -> Int -> Bool
 allList : (a -> Bool) -> List a -> Bool
 allModuleLines : List (String, List (String, Scheme)) -> List String
+allPairsIn : String -> List Int -> List (String, Int) -> Bool
 alpha : List (String, Expr) -> Expr -> KP
 alphaArms : List (String, Expr) -> Option String -> List Arm -> KP
 alphaCollectBinds : List LetBind -> List (String, Expr) -> List (String, Expr)
@@ -126,7 +127,10 @@ buildStandaloneShadowsGraph : List Decl -> List Decl -> List String
 buildTupleCallHint : String -> List Expr -> Expr -> Expr -> (String, Option (Loc, String))
 censusSuperClose : List Decl -> List (String, Int) -> List (String, Int)
 censusSuperCloseFix : List Decl -> List (String, Int) -> List (String, Int) -> List (String, Int)
+censusSuperCloseVec : List Decl -> List (String, List Int) -> List (String, List Int)
+censusSuperCloseVecFix : List Decl -> List (String, List Int) -> List (String, List Int) -> List (String, List Int)
 censusSuperSlotsOf : List Decl -> (String, Int) -> List (String, Int)
+censusSuperSlotsVecOf : List Decl -> (String, List Int) -> List (String, List Int)
 checkAnnotTooGeneral : Ty -> List Mono -> Unit
 checkBodyImpl : List (String, Scheme) -> CheckMode -> List Decl -> List (String, Scheme)
 checkCallObligations : List Decl -> List (String, List Mono, Option Loc) -> Unit
@@ -179,8 +183,8 @@ checkProgramSeededSplit : List (String, Scheme) -> List Decl -> List Decl -> Lis
 checkRedundantGo : Option String -> List (List Pat) -> Map String Unit -> Bool -> List Arm -> Unit
 checkReqObligations : ImplUniverse -> Option Loc -> List (String, List Mono) -> Unit
 checkReqOne : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
-checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
-checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> Unit
+checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> Unit
 checkSigTooGeneral : String -> Ty -> List (String, Mono) -> Unit
 checkSigsTooGeneral : List (String, Ty, List (String, Mono)) -> Unit
 checkSuperImpls : List Decl -> List Decl -> Unit
@@ -357,6 +361,7 @@ driverState : Ref DriverState
 dropPairs : Int -> List (String, Int) -> List (String, Int)
 dropSchemesNamed : List String -> List (String, Scheme) -> List (String, Scheme)
 dropShadowedCore : List String -> List Decl -> List Decl
+dropVecObls : Int -> List (String, List Int) -> List (String, List Int)
 dsub : Param -> Param -> Bool
 dsubN : Param -> Param -> Bool
 dtopFor : String -> Param
@@ -790,6 +795,7 @@ methodTyOf : String -> List IfaceMethod -> Option Ty
 methodsPerMidGo : List (String, List String) -> List (String, List Decl) -> List (String, List String)
 mintParamReprs : List Kind -> List Mono
 missingConstraintMsg : String -> String -> String -> String
+missingConstraintVecMsg : String -> String -> List String -> String
 missingFieldMsg : String -> String -> String
 missingImplMethodMsg : String -> List Ty -> String -> String
 missingSuperImplMsg : String -> List Ty -> String -> List Ty -> String
@@ -1022,6 +1028,7 @@ reopenRowN : Bool -> EffRow -> EffRow
 reportAmbiguousImpl : String -> Route
 reportNumOrNoImpl : String -> List Mono -> Option Loc -> Unit
 reportUncovered : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, Int) -> Unit
+reportUncoveredVec : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, List Int) -> List (String, List Int) -> Unit
 reqObligationsFor : ImplUniverse -> String -> List Mono -> List (String, List Mono)
 reqToObligation : List (String, Mono) -> Require -> (String, List Mono)
 reqTyToMono : List (String, Mono) -> Ty -> Mono
@@ -1086,6 +1093,7 @@ schemeLines : List (String, Scheme) -> List String
 schemeMono : Scheme -> Mono
 schemeObligationOne : List Int -> String -> List String -> Ty -> Mono -> List (String, List Int)
 schemeObligationsOf : List Int -> List (String, List String, Ty, Mono, Option Loc) -> List (String, List Int)
+schemeOblsForMember : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> List (String, List Int)
 scopeArities : List ((String, String), List Int) -> Map String Unit -> List Decl -> List (String, List Int)
 scopeMethodArities : List ((String, String), List Int) -> Map String Unit -> List (String, List Int)
 scopeShadowsCore : Unit -> Unit
@@ -1167,6 +1175,7 @@ superImplExists : List Decl -> String -> List Ty -> Bool
 superImplMsgsOf : List Decl -> Decl -> List String
 superMsgFor : List Decl -> String -> List Ty -> List (String, Ty) -> Super -> List String
 superSlotOf : List (String, Int) -> Super -> List (String, Int)
+superSlotVecOf : List (String, Int) -> Super -> List (String, List Int)
 superSlotsOf : List Decl -> (String, Int) -> List (String, Int)
 supersFix : List String -> List String -> List String
 swapArgFix : Expr -> Expr -> String -> Option (Loc, String)

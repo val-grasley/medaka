@@ -12965,7 +12965,7 @@ processSCC env sigs grouped members =
   -- context (superclass-closed) does NOT cover severs the constraint for callers
   -- → wrong-dictionary dispatch (a silent wrong answer).  Reject at the def-site.
   -- Runs on every path; the census over compiler+stdlib+sqlite was 0 new failures.
-  let _ = checkSigConstraintCoverage regs sigs sigTvMaps addedObls schemes
+  let _ = checkSigConstraintCoverage regs sigs sigTvMaps callOblsDelta addedObls schemes
   let _ = registerInferredConstraints sigs schemes
   -- FLAT-PATH SHADOW FIX (facet 1): thread forward only the NON-method-shadowing
   -- schemes, so a method name a user fn shadows keeps resolving to the METHOD
@@ -13340,36 +13340,46 @@ maybeInferConstraint sigs m sch
 -- but recording the inferred obligation list here too is harmless (a satisfiable
 -- concrete instantiation passes; an unsatisfiable one SHOULD error).  Runs on every
 -- path (NOT gated on dictEligibleSetRef), so the plain check path catches the hole.
--- SOURCING (#607 item 2, #610): a binding's obligations are the UNION of
---   (a) the predicates its BODY induces on its own quantified vars (addedObls), and
---   (b) the predicates its signature DECLARES (declaredSchemeOblsFor).
--- (b) is the source DICT-SEMANTICS §4 `gen`/`var` actually specifies — the context a
--- binding abstracts is its declared/principal one, and every use discharges each
--- residual predicate of the instantiated scheme.  Sourcing from (a) alone meant a
--- declared constraint whose body never dispatches on it was silently dropped from the
--- scheme AND from every caller's obligations (#610).  (a) is retained because an
--- UNSIGNED binding has no declared context to read — its inferred constraints are
--- promoted, not checked (see checkSigConstraintOne).
--- UNION, not declared-only, deliberately: for a SIGNED binding §4 arguably makes the
--- declared context the whole context (checkSigConstraintCoverage already rejects a
--- signed binding whose inferred constraints the declared context does not cover), so
--- (a) could be dropped there.  It is kept because that argument is only as strong as
--- the coverage check is complete, and a union can only ever enforce MORE than the
--- pre-#607 behaviour, never less.  Cost: the union can display a superclass-redundant
--- predicate — `when : Thenable m => …` (declared) whose body's `pure` also infers
--- Applicative now renders `(Applicative a, Thenable a) =>`, though `Thenable requires
--- Applicative`.  Both predicates are true and neither over-rejects; collapsing the
--- display along the super chain is cosmetic and belongs with the vector-valued
--- superclass work (punch-list item 4).
+-- SOURCING (#619 DECLARED-ONLY; supersedes the #607/#610 UNION): the predicates a
+-- binding abstracts are its PRINCIPAL context, and per DICT-SEMANTICS §4 `gen`/`var`
+-- an ASCRIBED signature IS that context — a contract the body must satisfy, not a
+-- floor it can raise (Jones; Hall-Peyton-Jones-Wadler; Haskell).  So:
+--   • SIGNED binding   → obligations come SOLELY from the declared `=>` context
+--       (declaredSchemeOblsFor).  The body's inferred obligations
+--       (schemeObligationsOf / forwardedVecObls) are NOT merged in — they are
+--       CHECKED as entailed by the declared context (checkSigConstraintCoverage);
+--       a body that genuinely needs MORE than the signature declares is a def-site
+--       type error (T-MISSING-CONSTRAINT), not a silent widening.
+--   • UNSIGNED binding → no declared context exists, so the inferred principal
+--       context stands: direct body dispatch (schemeObligationsOf) plus any
+--       constraint forwarded from a constrained callee (forwardedVecObls).  Its
+--       inferred constraints are promoted, not checked (see checkSigConstraintOne).
+-- #610 stays satisfied: a declared constraint the body never dispatches on
+-- (`sz2 : Sz a => a -> Int; sz2 x = 9`) is still sourced from declaredSchemeOblsFor,
+-- so the scheme keeps `Sz a` and every caller discharges it.  #619 additionally drops
+-- the union's redundant superclass display — `when : Thenable m => …` whose body's
+-- `pure` infers Applicative now renders just `Thenable a =>` (Applicative is entailed
+-- by `Thenable requires Applicative`, so it is checked-and-dropped, not merged).
 registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 registerSchemeObligations _ _ _ [] = ()
 registerSchemeObligations sigTvMaps callObls addedObls ((m, sch)::rest) =
-  let obs = dedupVecObls (schemeObligationsOf (schemeIds sch) addedObls ++ forwardedVecObls (schemeIds sch) callObls ++ declaredSchemeOblsFor sigTvMaps m (schemeIds sch))
+  let obs = dedupVecObls (schemeOblsForMember sigTvMaps callObls addedObls m sch)
   let _ = if isEmptyL obs then
     ()
   else
     setRef perRun.value.schemeObligationsRef ((m, obs)::perRun.value.schemeObligationsRef.value)
   registerSchemeObligations sigTvMaps callObls addedObls rest
+
+-- #619: a SIGNED binding's scheme context is EXACTLY its declared `=>` predicates
+-- (authoritative); an UNSIGNED binding's is its inferred principal context (direct
+-- dispatch + forwarded).  Signedness is `lookupSigTvMap … = Some` — true for any
+-- signed member, including a signed binding with an EMPTY `=>` (whose declared
+-- context is correctly empty), which is what distinguishes it from an unsigned one.
+schemeOblsForMember : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> List (String, List Int)
+schemeOblsForMember sigTvMaps callObls addedObls m sch = match lookupSigTvMap m sigTvMaps
+  Some _ => declaredSchemeOblsFor sigTvMaps m (schemeIds sch)
+  None => schemeObligationsOf (schemeIds sch) addedObls
+    ++ forwardedVecObls (schemeIds sch) callObls
 
 -- the DECLARED `=>` predicates of signed member [m], each as its argument vector of
 -- scheme-quantified tyvar ids.  A predicate is kept only if EVERY argument is a plain
@@ -13477,34 +13487,45 @@ pairsOfVecObls ((iface, ids)::rest) = map (id => (iface, id)) ids
 -- member's own quantified vars must be covered by the DECLARED `=>` context,
 -- closed under the interface `requires` (superclass) graph.  An uncovered
 -- inferred constraint ⇒ def-site type_error (the constraint analogue of
--- checkEffectEscape).  The inferred obligations are the UNION of the flat-path
--- (schemeObligationsOf over addedObls) and the marked-path (inferredConstraintIds +
--- ifaceForInferredId) sources — a return-position-method constraint lands only in the
--- latter.
--- #607: this test runs in (iface, var-id) PAIR currency on BOTH sides — a multi-param
+-- checkEffectEscape).  Under #619 DECLARED-ONLY this is the SOLE enforcement of the
+-- body's inferred obligations: registerSchemeObligations no longer merges them into
+-- the scheme, so a body needing more than its signature declares is caught HERE or
+-- silently severed.  The inferred obligations are the UNION of the flat-path
+-- (schemeObligationsOf over addedObls), the FORWARDED path (forwardedVecObls over the
+-- constrained-callee call delta — #619: a signed forwarder that under-declares is no
+-- longer backstopped by the union, so it must be checked here), and the marked-path
+-- (inferredConstraintIds + ifaceForInferredId) sources — a return-position-method
+-- constraint lands only in the last.
+-- #607: the PAIR test runs in (iface, var-id) currency on both sides — a multi-param
 -- predicate is shattered per argument before the subset test (pairsOfVecObls /
 -- declaredPairsFor).  Shattering both sides is sound for a COVERAGE (subset) question
 -- — declared `Ix a i` covers inferred `Ix a` and `Ix i` — and it makes the reject
--- direction live at n>=2, where it previously skipped multi-param entirely.  It can
--- still UNDER-reject an exotic cross-pairing (declared `Ix a b, Ix c d` vs inferred
--- `Ix a d`), which is the never-over-reject direction; keying the subset test on whole
--- vectors needs the superclass closure to become vector-valued too (superSlotsOf —
--- #607 punch-list item 4), which is deliberately not done here.
-checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
-checkSigConstraintCoverage _ _ _ _ [] = ()
-checkSigConstraintCoverage regs sigs sigTvMaps addedObls ((m, sch)::rest) =
-  let _ = checkSigConstraintOne regs sigs sigTvMaps addedObls m sch
-  checkSigConstraintCoverage regs sigs sigTvMaps addedObls rest
+-- direction live at n>=2.  On its own it UNDER-rejects the exotic cross-pairing
+-- (declared `Ix a b, Ix c d` vs inferred `Ix a d`: all four pairs a,b,c,d are declared,
+-- so pair coverage passes though the JOINT `Ix a d` is undeclared).
+-- #619/#607 item 4: reportUncoveredVec closes that gap — an inferred JOINT vector
+-- (arity >= 2) whose EXACT argument vector is not among the declared vectors
+-- (vector-valued superclass closure, censusSuperCloseVec / superSlotVecOf) is
+-- uncovered, and is reported when the pair test did not already flag one of its args.
+checkSigConstraintCoverage : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+checkSigConstraintCoverage _ _ _ _ _ [] = ()
+checkSigConstraintCoverage regs sigs sigTvMaps callObls addedObls ((m, sch)::rest) =
+  let _ = checkSigConstraintOne regs sigs sigTvMaps callObls addedObls m sch
+  checkSigConstraintCoverage regs sigs sigTvMaps callObls addedObls rest
 
-checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> Unit
-checkSigConstraintOne regs sigs sigTvMaps addedObls m sch = match omLookup m driverState.value.sigTyMapRef.value
+checkSigConstraintOne : List (String, List (String, Mono)) -> List (String, Ty) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> String -> Scheme -> Unit
+checkSigConstraintOne regs sigs sigTvMaps callObls addedObls m sch = match omLookup m driverState.value.sigTyMapRef.value
   None => ()   -- unsigned member: its inferred constraints are promoted, not checked
   Some _ =>
-    let declared = censusSuperClose driverState.value.superDeclsRef.value (declaredPairsFor m regs)
+    let declaredPairs = censusSuperClose driverState.value.superDeclsRef.value (declaredPairsFor m regs)
     let inferredA = pairsOfVecObls (schemeObligationsOf (schemeIds sch) addedObls)
+    let inferredFwd = pairsOfVecObls (forwardedVecObls (schemeIds sch) callObls)
     let inferredB = inferredIfacePairs m (schemeIds sch)
-    let inferred = dedupPairs (inferredA ++ inferredB)
-    reportUncovered m sigTvMaps declared inferred
+    let inferred = dedupPairs (inferredA ++ inferredFwd ++ inferredB)
+    let _ = reportUncovered m sigTvMaps declaredPairs inferred
+    let declaredVecs = censusSuperCloseVec driverState.value.superDeclsRef.value (declaredSchemeOblsFor sigTvMaps m (schemeIds sch))
+    let inferredVecs = schemeObligationsOf (schemeIds sch) addedObls ++ forwardedVecObls (schemeIds sch) callObls
+    reportUncoveredVec m sigTvMaps declaredPairs declaredVecs inferredVecs
 
 -- inferred (iface, id) pairs from the marked path: each inferred constraint var id
 -- paired with its recovered iface (skip an id whose iface can't be recovered).
@@ -13553,6 +13574,73 @@ censusSuperSlotsOf allDecls (iface, id) = match ifaceSupersOf allDecls iface
   Some (typarams, supers) =>
     let subst = zipL typarams (replicate (listLen typarams) id)
     flatMap (superSlotOf subst) supers
+
+-- #619/#607 item 4: VECTOR-valued transitive super-closure over declared constraint
+-- vectors.  Unlike censusSuperClose (which collapses each predicate to per-arg pairs),
+-- this preserves the whole argument vector, so an inferred JOINT predicate can be
+-- tested for membership as a unit — the exotic cross-pairing `Ix a d` is NOT a member
+-- of {`Ix a b`, `Ix c d`} even though every one of its args appears in some declared
+-- predicate.  Ungated (mirrors censusSuperClose) so prelude super chains are included.
+censusSuperCloseVec : List Decl -> List (String, List Int) -> List (String, List Int)
+censusSuperCloseVec allDecls declared =
+  censusSuperCloseVecFix allDecls declared declared
+
+censusSuperCloseVecFix : List Decl -> List (String, List Int) -> List (String, List Int) -> List (String, List Int)
+censusSuperCloseVecFix allDecls acc frontier =
+  let next = dedupVecObls (acc ++ flatMap (censusSuperSlotsVecOf allDecls) frontier)
+  if listLen next == listLen acc then
+    acc
+  else
+    censusSuperCloseVecFix allDecls next (dropVecObls (listLen acc) next)
+
+-- the direct super vectors of one (iface, ids) predicate: the interface's typarams map
+-- POSITIONALLY onto ids (so a multi-param super carries the right per-arg ids, not a
+-- single shared one), and each `Super superName params` emits its own arg vector.
+censusSuperSlotsVecOf : List Decl -> (String, List Int) -> List (String, List Int)
+censusSuperSlotsVecOf allDecls (iface, ids) = match ifaceSupersOf allDecls iface
+  None => []
+  Some (typarams, supers) =>
+    let subst = zipL typarams ids
+    flatMap (superSlotVecOf subst) supers
+
+superSlotVecOf : List (String, Int) -> Super -> List (String, List Int)
+superSlotVecOf subst (Super superName params) =
+  let mapped = filterMaybeIds (map (p => lookupAssoc p subst) params)
+  if listLen mapped == listLen params then [(superName, mapped)] else []
+
+dropVecObls : Int -> List (String, List Int) -> List (String, List Int)
+dropVecObls n xs
+  | n <= 0 = xs
+  | otherwise = match xs
+    [] => []
+    _::rest => dropVecObls (n - 1) rest
+
+-- one type_error per inferred JOINT vector (arity >= 2) whose exact vector the declared
+-- (super-closed) set does not contain.  Skipped when the pair test already flagged one
+-- of the vector's args (allPairsIn False) — so a genuinely absent constraint reports
+-- ONCE, via reportUncovered, and only the cross-pairing (all args present, joint
+-- vector absent) reports here.  Arity < 2 is fully handled by the pair test.
+reportUncoveredVec : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, List Int) -> List (String, List Int) -> Unit
+reportUncoveredVec _ _ _ _ [] = ()
+reportUncoveredVec m sigTvMaps declaredPairs declaredVecs ((iface, ids)::rest) =
+  let _ = if listLen ids < 2 then
+    ()
+  else if containsVecObl (iface, ids) declaredVecs then
+    ()
+  else if not (allPairsIn iface ids declaredPairs) then
+    ()
+  else
+    pushTypeError "T-MISSING-CONSTRAINT" (missingConstraintVecMsg m iface (map (varNameForId sigTvMaps m) ids))
+  reportUncoveredVec m sigTvMaps declaredPairs declaredVecs rest
+
+allPairsIn : String -> List Int -> List (String, Int) -> Bool
+allPairsIn iface ids declaredPairs =
+  allList (id => containsPair (iface, id) declaredPairs) ids
+
+missingConstraintVecMsg : String -> String -> List String -> String
+missingConstraintVecMsg name iface varNames =
+  let pred = joinWith " " (iface::varNames)
+  "Could not deduce '\{pred}' from the signature of '\{name}'. Its body requires it; add '\{pred} =>' to the declared type"
 
 -- one type_error per inferred (iface, id) not covered by the declared-closed set.
 reportUncovered : String -> List (String, Ty, List (String, Mono)) -> List (String, Int) -> List (String, Int) -> Unit
