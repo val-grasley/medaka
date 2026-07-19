@@ -1,0 +1,17 @@
+-- #671: an OUTER wildcard param on a fn whose body is a lambda
+-- (`mk _ = (y => 42)`) once hit an emitter panic — the float-closure detection
+-- scan called paramEnv on the outer params, which only matched PVar. paramEnv/
+-- paramDecls now accept PWild (bind no name, still occupy the ABI slot). check and
+-- run always accepted these; only native `build` panicked. Covers the base case,
+-- the multi-wildcard arity-raise, and a lambda that uses its own bound param.
+mkA : a -> b -> Int
+mkA _ = y => 42
+
+mkB : a -> b -> c -> Int
+mkB _ _ = y => 42
+
+mkC : a -> Int -> Int
+mkC _ = y => y + 1
+
+main : <IO> Unit
+main = putStrLn (intToString (mkA 0 0 + mkB 0 0 0 + mkC 0 41))

@@ -8589,10 +8589,18 @@ allInt : List Pat -> List LTy
 allInt [] = []
 allInt (_::rest) = LTInt :: allInt rest
 
+-- A `PWild` param binds no name but still occupies an ABI slot: emit the `%argN`
+-- word (unused in the body) exactly as a `PVar` would, so positional %argN indexing
+-- stays aligned.  #671: an outer wildcard param on a closure-returning fn
+-- (`mk _ = (y => 42)`) reaches here via `isFloatClosureBody`/arity-raise; without
+-- this arm it hit the catch-all panic even though `run`/eval accepted it.
 paramDecls : List Pat -> Int -> String
 paramDecls [] _ = ""
 paramDecls [PVar _] i = "i64 %arg" ++ intToString i
+paramDecls [PWild] i = "i64 %arg" ++ intToString i
 paramDecls ((PVar _)::rest) i =
+  "i64 %arg\{intToString i}, \{paramDecls rest (i + 1)}"
+paramDecls (PWild::rest) i =
   "i64 %arg\{intToString i}, \{paramDecls rest (i + 1)}"
 paramDecls _ _ =
   panic "llvm spike: function parameters must be plain variables in slice 2"
@@ -8605,6 +8613,12 @@ paramEnv ((PVar x)::rest) (ty::tys) i =
   (x, ("%arg" ++ intToString i, ty)) :: paramEnv rest tys (i + 1)
 paramEnv ((PVar x)::rest) [] i =
   (x, ("%arg" ++ intToString i, LTInt)) :: paramEnv rest [] (i + 1)
+-- A `PWild` param binds no name: contribute NO env entry, but still consume its
+-- type slot and advance the %argN index so later `PVar` params keep their positions
+-- (#671 — a wildcard outer param on a closure-returning fn reached here through
+-- `isFloatClosureBody`; the missing arm was the emitter panic).
+paramEnv (PWild::rest) (_::tys) i = paramEnv rest tys (i + 1)
+paramEnv (PWild::rest) [] i = paramEnv rest [] (i + 1)
 paramEnv _ _ _ =
   panic "llvm spike: function parameters must be plain variables in slice 2"
 
