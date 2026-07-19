@@ -249,8 +249,10 @@ twin `monoid_nested` IS promoted and clean.
 
 ## 4. The engine-unavailability categories
 
-70 fixtures cannot be run by at least one engine. These are ledgered, never silently
-skipped, and each carries its specific reason.
+Most ledgered fixtures cannot be run by at least one engine (derive the current tally —
+never cite an encoded one: `grep -v '^#' test/engine_divergence.txt | grep -c ':na'`; note
+#709 moved the 26 pure `native:prelude-collision` rows out to the rejection-parity gate).
+These are ledgered, never silently skipped, and each carries its specific reason.
 
 ### 4.1 `eval:extern-not-implemented` — 23 fixtures (was 25). **`medaka run` could not do I/O.**
 
@@ -377,14 +379,34 @@ ledger entirely** (deleted). `emitter:shared-eager-init` now has ZERO `eager_glo
 rows; the remaining `eager_global_{list,string}_slice` rows are `wasm:emitter-gap`
 (a lowering gap, unrelated).
 
-### 4.5 `native:prelude-collision` — 7 fixtures
+### 4.5 `native:prelude-collision` — MOVED OUT of this ledger (#709)
 
-`llvm/{adt_list_fold, adt_option, clo_adt, list_filter, list_sum, rec_build,
-rec_update}`. `test/llvm_fixtures/` is a **prelude-free** corpus: fixtures redefine
-`IntList`, `Point`, `Option`… which collide with `stdlib/core.mdk` under a real
-`medaka build`. This is a property of the corpus, not a compiler bug — it is exactly
-why `diff_compiler_llvm.sh` drives the prelude-free `llvm_emit_main` entry rather
-than `medaka build`. Ledgered so the count can never quietly grow.
+`test/llvm_fixtures/` and `test/llvm_fixtures_typed/` are **prelude-free** corpora:
+fixtures redefine `IntList`, `Point`, `Option`, or a core interface (`Eq`, `Ord`,
+`Semigroup`…) which collide with `stdlib/core.mdk` under a real `medaka build`. This is
+a property of the corpus, not a compiler bug — it is exactly why `diff_compiler_llvm.sh`
+drives the prelude-free `llvm_emit_main`/`llvm_emit_typed_main` entries (which prepend
+nothing) rather than `medaka build`.
+
+These fixtures made **ZERO cross-engine value comparison** in `diff_compiler_engines.sh`
+(signature `na:na:na:*` — no two arms both `ran`): they only ever asserted that both
+shipping backends REJECT them identically, which is a *rejection* property, not the value
+*agreement* this differential exists to prove. Per #709 the **26 pure prelude-collision
+rows were removed from this ledger** and re-homed into a dedicated rejection-parity gate:
+
+- **manifest**: `test/rejection_parity_fixtures.txt` (the 26 keys)
+- **gate**: `test/diff_compiler_rejection_parity.sh` — asserts native `medaka build` AND
+  wasm `medaka build --target wasm` both reject each fixture. Self-draining: if a fixture
+  starts COMPILING on either backend it goes RED and names it ("re-home it"); `checked 0`
+  is a FAIL; a manifest key with no fixture file is a FAIL. It rides the `engines` CI shard
+  (the only one with the wasm toolchain + `MEDAKA_REQUIRE_WASM=1`).
+
+`diff_compiler_engines.sh` now EXCLUDES every manifest key (via `keyfor` + the manifest),
+so its headline count reflects fixtures that actually compare. **Only 2 rows remain in
+this ledger under this category**: `llvm/rec_build` and `llvm/rec_update` — they ALSO hit
+a `wasm:emitter-gap` (native rejects the redefined `Point`; wasm panics on `CRecord`), so
+the two backends do NOT reject for the same reason and they are NOT identical-rejection
+fixtures. They stay here.
 
 ### 4.6 `native:autoprint-ambiguous` — 1 fixture
 
@@ -443,11 +465,11 @@ mains.
 > grep -v '^#' test/engine_divergence.txt | grep -v '^[[:space:]]*$' | awk '{print $3}' \
 >   | sort | uniq -c | sort -rn
 > ```
-> ⚠️ **The other `### 4.x` headings in this section carry the same class of encoded count
-> and at least one is provably rotten** — §4.5 `native:prelude-collision` says *7 fixtures*
-> where the row count is **28** (derived 2026-07-17). They were not corrected here because
-> that census was not investigated, and swapping in an unexamined number is the exact
-> failure this note is about. **Derive before you cite any of them.**
+> ⚠️ **The other `### 4.x` headings in this section carry the same class of encoded count.**
+> §4.5 `native:prelude-collision` used to say *7 fixtures* while the ledger held **28**; that
+> section has since been rewritten (#709 moved its 26 pure rows out to the rejection-parity
+> gate, leaving 2) and now carries no encoded row count at all. The remaining `### 4.x`
+> headings were not audited. **Derive before you cite any of them.**
 
 The WasmGC emitter cannot produce a module that assembles and validates. It reports
 its own gaps, which is to its credit. Distinct causes, by frequency:

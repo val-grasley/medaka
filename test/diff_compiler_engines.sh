@@ -177,6 +177,35 @@ LEDGER="$ROOT/test/engine_divergence.txt"
 PINDIR="$ROOT/test/engine_value_pins"
 TIMEOUT="${TIMEOUT:-60}"
 
+# ── Rejection-parity exclusion (issue #709) ────────────────────────────────────
+# A chunk of the corpus made ZERO cross-engine value comparison: prelude-free
+# fixtures that REDEFINE a core name, which both shipping backends reject under a
+# real `medaka build` (signature na:na:na:* — no two arms both `ran`). They asserted
+# nothing about engine AGREEMENT (this gate's whole point), only that the backends
+# reject identically — a real property, but a REJECTION one, not a differential one.
+# They now live in test/rejection_parity_fixtures.txt and are asserted by
+# test/diff_compiler_rejection_parity.sh; this gate EXCLUDES them so its headline
+# count reflects fixtures that actually COMPARE across engines. The fixtures stay in
+# their corpora (the prelude-free llvm_emit PROBE gates still consume them) — only
+# their membership in THIS value differential is removed.
+REJECT_MANIFEST="$ROOT/test/rejection_parity_fixtures.txt"
+
+# keyfor <fixture-path> — the corpus-qualified key for a fixture, IDENTICAL to the
+# per-worker keying below (factored out so the top-level corpus filter and the worker
+# agree byte-for-byte). See the worker's own case block for why each corpus prefix is
+# load-bearing (18 basenames collide across corpora as DIFFERENT files).
+keyfor() {
+  case "$1" in
+    */engine_fixtures/*)       echo "engine/$(basename "$1" .mdk)" ;;
+    */llvm_fixtures_modules/*) echo "llvmM/$(basename "$(dirname "$1")")" ;;
+    */llvm_fixtures_typed/*)   echo "llvmT/$(basename "$1" .mdk)" ;;
+    */wasm/fixtures_typed/*)   echo "wasmT/$(basename "$1" .mdk)" ;;
+    */llvm_fixtures/*)         echo "llvm/$(basename "$1" .mdk)"  ;;
+    */wasm/fixtures/*)         echo "wasm/$(basename "$1" .mdk)"  ;;
+    *)                         echo "other/$(basename "$1" .mdk)" ;;
+  esac
+}
+
 run_t() { perl -e 'alarm shift; exec @ARGV' "$@"; }   # portable timeout (no coreutils on mac)
 
 # Sets WASM_OK / WASM_OFF_WHY / NODE.  Factored out of the (former) inline preflight
@@ -251,15 +280,7 @@ if [ "${1:-}" = "--one" ]; then
   # next person who copies a corpus, so be explicit.  A module fixture's `$f` is the
   # program's ENTRY file (always named entry.mdk), so key by the PARENT DIR name — a
   # bare `basename entry.mdk` would collapse all 16 module programs onto one key.
-  case "$f" in
-    */engine_fixtures/*)       key="engine/$(basename "$f" .mdk)" ;;
-    */llvm_fixtures_modules/*) key="llvmM/$(basename "$(dirname "$f")")" ;;
-    */llvm_fixtures_typed/*)   key="llvmT/$(basename "$f" .mdk)" ;;
-    */wasm/fixtures_typed/*)   key="wasmT/$(basename "$f" .mdk)" ;;
-    */llvm_fixtures/*)         key="llvm/$(basename "$f" .mdk)"  ;;
-    */wasm/fixtures/*)         key="wasm/$(basename "$f" .mdk)"  ;;
-    *)                         key="other/$(basename "$f" .mdk)" ;;
-  esac
+  key="$(keyfor "$f")"
   slug="${key//\//__}"
   W="$WORKDIR/$slug"; mkdir -p "$W"
   : >"$W/eval.out"; : >"$W/native.out"; : >"$W/wasm.out"
@@ -490,6 +511,26 @@ CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk \
 [ -n "$MODULE_ENTRIES" ] && CORPUS="$CORPUS
 $MODULE_ENTRIES"
 [ -n "$CORPUS" ] || { echo "the fixture corpus is empty — the gate compared nothing"; exit 2; }
+
+# ── Drop the rejection-parity sub-corpus (issue #709) ─────────────────────────
+# Every key in test/rejection_parity_fixtures.txt makes ZERO cross-engine value
+# comparison (both backends reject it identically); it is asserted by
+# test/diff_compiler_rejection_parity.sh instead. Exclude it here so the headline
+# count reflects fixtures that actually compare. The manifest carries no ledger
+# rows for these keys either (they were removed alongside this filter), so an
+# excluded fixture can never masquerade as a still-known divergence.
+if [ -s "$REJECT_MANIFEST" ]; then
+  excl="$(grep -vE '^\s*(#|$)' "$REJECT_MANIFEST" 2>/dev/null || true)"
+  if [ -n "$excl" ]; then
+    CORPUS="$(printf '%s\n' "$CORPUS" | while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      printf '%s\n' "$excl" | grep -qxF "$(keyfor "$p")" && continue
+      printf '%s\n' "$p"
+    done)"
+    [ -n "$CORPUS" ] || { echo "the rejection-parity filter emptied the corpus — bug in test/rejection_parity_fixtures.txt"; exit 2; }
+  fi
+fi
+
 n_dispatched="$(printf '%s\n' "$CORPUS" | wc -l | tr -d ' ')"
 
 # Fan-out. NOTE this gate deliberately does NOT honour run_gates.sh's INNER_JOBS

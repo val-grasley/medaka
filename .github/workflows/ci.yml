@@ -501,7 +501,16 @@ jobs:
             # degrades to a TWO-engine differential and the required check goes green having
             # never compared the backends. MEDAKA_REQUIRE_WASM=1 (set with it) makes that
             # degradation a HARD FAIL here, so the wiring can never silently rot back.
-            pattern: "'diff_compiler_engines'"
+            # diff_compiler_rejection_parity (#709) rides ALONG here, not as new weight:
+            # its 26 fixtures were REMOVED from diff_compiler_engines' value differential
+            # (they made zero cross-engine comparison — both backends reject them
+            # identically), so this shard's total build count DROPS. The gate re-asserts
+            # the property they actually carry (both backends reject), and it needs THIS
+            # shard's toolchain: wasm-tools + Node 24 + the wasm oracle + MEDAKA_REQUIRE_WASM=1
+            # (so the wasm-rejection half is mandatory in CI, never silently degraded). It is
+            # ~3s (rejections fail at the front end, before clang/wasm-tools), so it adds
+            # nothing measurable to the shard that already owns the wasm arm.
+            pattern: "'diff_compiler_engines' 'diff_compiler_rejection_parity'"
             full_cores: "1"
             wasm_arm: "1"
           - name: sqlite

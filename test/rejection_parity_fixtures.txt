@@ -1,0 +1,55 @@
+# test/rejection_parity_fixtures.txt — the REJECTION-PARITY sub-corpus manifest (issue #709).
+#
+# These fixtures live in the prelude-FREE emitter corpora (test/llvm_fixtures/ and
+# test/llvm_fixtures_typed/) where they serve the prelude-free llvm_emit PROBE gates
+# (diff_compiler_llvm.sh / diff_compiler_llvm_typed.sh), which prepend NO stdlib/core.mdk
+# and so emit them cleanly. Under the SHIPPING `medaka build` — which prepends core.mdk —
+# each REDEFINES a core name (a prelude type or interface), so BOTH shipping backends
+# (native LLVM and WasmGC) REJECT it at the front end, identically.
+#
+# In test/diff_compiler_engines.sh they therefore made ZERO cross-engine value comparison
+# (signature na:na:na:* — no two arms both `ran`), inflating the engines corpus + ledger
+# while asserting nothing about engine AGREEMENT (the gate's whole point). This manifest
+# moves them OUT of the value differential (diff_compiler_engines.sh EXCLUDES every key
+# here) and INTO the rejection-parity gate (test/diff_compiler_rejection_parity.sh), which
+# asserts the real, preserved property: BOTH backends reject each one.
+#
+# ⚠️ SELF-DRAINING. If a fixture here starts COMPILING on either backend (its rejection was
+# fixed, or the front end changed), diff_compiler_rejection_parity.sh goes RED and names it:
+# re-home it — promote it back into the engines value differential (add it back to the
+# ledger with its now-observed signature) and delete its line here.
+#
+# Format: one key per line, `<corpus>/<basename>` — the SAME key
+# diff_compiler_engines.sh assigns (llvm/ = test/llvm_fixtures/, llvmT/ =
+# test/llvm_fixtures_typed/). Blank lines and #-comments are ignored.
+# Category for every row below: native:prelude-collision (see test/ENGINE-DIVERGENCE.md).
+# NOT here on purpose: llvm/rec_build, llvm/rec_update — those ALSO hit a wasm:emitter-gap
+# (native rejects the type, wasm panics on CRecord), i.e. the two backends do NOT reject
+# for the same reason, so they stay in the engines ledger, not this identical-rejection set.
+
+llvm/adt_list_fold
+llvm/adt_option
+llvm/clo_adt
+llvm/list_filter
+llvm/list_sum
+llvmT/dict_clamp
+llvmT/dict_debug_list
+llvmT/dict_hash_list
+llvmT/dict_when
+llvmT/disp_arg_clauses
+llvmT/disp_arg_prim_compare
+llvmT/disp_arg_prim_display
+llvmT/disp_constr_elem_int
+llvmT/disp_constr_fold_int
+llvmT/disp_constr_forward_int
+llvmT/disp_constr_pick_int
+llvmT/disp_ord_default_gt
+llvmT/disp_ord_default_gte
+llvmT/disp_ord_default_lt
+llvmT/disp_ord_default_lte
+llvmT/disp_req_compare_list_int
+llvmT/disp_req_eq_list_int
+llvmT/impl_andthen_list
+llvmT/impl_ap_list
+llvmT/impl_append_list
+llvmT/impl_append_str
