@@ -756,6 +756,7 @@ matchingEntriesByIfaceGo : List KeyEntry -> String -> List Mono -> List KeyEntry
 matchingEntriesGo : List KeyEntry -> String -> List Mono -> List KeyEntry
 maybeInferConstraint : List (String, Ty) -> String -> Scheme -> Unit
 maybeStandaloneValueMono : String -> Option Mono
+maybeStandaloneValueMonoEmit : TcEnv -> String -> Ref Route -> Option Mono
 memberAliasEntry : String -> List ((String, String), List a) -> UseMember -> List (String, List a)
 memberBinding : UseMember -> (String, String)
 memberClauseIsValue : (List Pat, Expr) -> Bool
