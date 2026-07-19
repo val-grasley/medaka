@@ -268,6 +268,24 @@ both error *"Ambiguous instance for Monoid"*) — only the lenient `eval_autopri
 oracle accepts it, so it is an oracle artifact, not a backend divergence. Its signatured
 twin `monoid_nested` IS promoted and clean.
 
+### 3.6 `#711` — promoting `eval_prelude`/`eval_list`: 1 more `wasm:codegen-bug`
+
+Issue #711 promoted the interpreter-only `test/eval_prelude/` + `test/eval_list/` fixtures
+into `test/engine_fixtures/` (reshaped tuple `main`s so each Display node is ≤5-arity, same
+values). Six of the seven agree cleanly across all three engines
+(`debug_dispatch`, `float_totalorder_nan`, `list_combinators`, `ord_eq`, `programs`,
+`string_interp`). One reproduces a real `run != build` divergence — the same
+`wasm:codegen-bug` shape as §3.4/§3.5 (eval == native, wasm build fails).
+
+| fixture | eval == native | wasm | issue | diagnosis |
+|---|---|---|---|---|
+| `engine/numeric_combinators` | `((-5, 7, 10, 0, 4), (7, 36, 9, (True, True, False), Lt))` | **validate fail** | #729 (S1) | wasm-tools **validate** rejects: *"type mismatch: expected i32, found (ref eq)"*. Bisected trigger: the prelude's own point-free `clamp lo hi = min hi >> max lo` (`stdlib/core.mdk`) — a top-level `Ord a =>` function whose body composes two dict-passed interface methods point-free leaves a value/dict on the WasmGC operand stack. In isolation the minimal `main = clamp 0 10 15` reports *"values remaining on stack at end of block"* (the #717/#718 phrasing); inside this fixture's larger tuple `main` it surfaces as the #713/#714 i32↔(ref eq) boxing signature. |
+
+Same WasmGC dict-forwarding/boxing family as #713/#714/#717/#718 — **likely one root
+cause** in `compiler/backend/wasm_emit.mdk`. Filed separately (#729) because the trigger is
+a **prelude function every user can call**, with a one-line reproducer, not a synthetic
+impl body or lists+HOF program. Native LLVM handles it correctly; the defect is WasmGC-only.
+
 ---
 
 ## 4. The engine-unavailability categories
