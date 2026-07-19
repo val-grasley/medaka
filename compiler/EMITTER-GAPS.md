@@ -982,3 +982,51 @@ concrete tag to stamp), which native handles via arg-tag dispatch but WasmGC rej
 (`W5: RNone arg-tag dispatch … out of slice` — a documented wasm MVP boundary). eval + native
 give the right answer (42); wasm cannot build it. This is the general-purpose wasm-RNone gap, not
 a general-instance gap, and is left for the wasm-RNone slice.
+
+## Wasm dict-forwarding STACK-DISCIPLINE family — CLOSED (2026-07-19, `wasm_emit.mdk` only)
+
+Three `medaka build --target wasm` failures where `wasm-tools validate` rejected the module for an
+operand-stack imbalance while eval + native were correct (`run != build`, wasm-only). All in the
+WasmGC dict-forwarding/boxing emit path; each was a place the emitter assumed a flat
+`dictWords ++ argInstrs ++ call` EXACTLY matches the callee's parameter count. Native gets away with
+the same shapes because LLVM cdecl silently ignores extra args and does not strictly type the call;
+wasm's structural types do not. Wasm-only (outside the LLVM self-compile graph) → gated by the wasm
+oracles + `diff_compiler_engines`, no seed re-mint. Three distinct defects, one theme:
+
+- **#717 — terminal impl body that IGNORES its `requires` dict** (`impl S (List a) requires S a where
+  s _ = 2`; `impl Default (List a) requires Default a where def = []`). The dict-pass DROPS the unused
+  dict param (`usesImplDict` false), so `$mdk_impl_<tag>_<m>` declares FEWER leading dict params than
+  the call-site route forwards → a surplus dict witness left on the stack (`values remaining on stack
+  at end of block`). **Fix:** `emitMethodRef`'s RKey concrete-impl (`Some`) arm forwards only the
+  leading dicts the define actually declares — `takeRoutesW (implLeadingDictCountW …) (methRoutes ++
+  implRoutes)` (a prefix: method-level dicts, then kept `requires` dicts). A define that kept all its
+  dicts is byte-identical.
+- **#718 — inherited constrained default under a `requires` context** (`impl Ord (Box a) requires
+  Ord a` defining only `compare`, inheriting lt/gt/lte/gte/min/max). `emitDefaultDefineW` had DEFERRED
+  the element-`requires` dict path (a bare `RKey tag []` dropped the routes), so `$mdk_default_lt_Box`
+  called the 3-param `$mdk_impl_Box_compare` with 2 operands (`expected (ref eq) but nothing on
+  stack`). **Fix:** port llvm_emit's reqDict path — prepend `$reqdict_<k>` params
+  (`innerDefaultReqCountW`/`reqDictPatsW`) and thread them (RDict) into the inner same-interface call
+  via `restampIfaceDictsW`, which now takes the `rr : List Route` param its native peer always had.
+- **#729/#713/#714 — point-free / over-applied dict-passed fn** (`clamp lo hi = min hi >> max lo`, a
+  top-level `Ord a =>` fn whose body keeps a trailing `CLam`; also `sumL = foldlL add 0`, `compd 5`,
+  `inc = add 1` via the RLocal path). The define's VALUE arity is short of the args a saturating call
+  supplies, so `emitDictRef`'s flat `call` left the surplus arg + the returned closure unconsumed
+  (`values remaining on stack`; inside a larger tuple it surfaced as the `expected i32, found (ref
+  eq)` boxing signature — the SAME root, not a distinct boxing-lattice bug). **Fix:** `emitDictRef`
+  now mirrors `emitAppRef`'s CVar saturation gate — exact saturation stays the byte-identical direct
+  call, otherwise materialize the CDict as a closure VALUE and apply every arg through `$__mdk_apply`
+  (whose over-application arm chains into the returned closure). This gate needs the TRUE emitted
+  define arity, so `bindArity` (feeding `progFnArity`) was corrected to the POST-eta arity
+  (`clauseArityOf (map etaSaturateFnClause …)`, matching `emitRefFnBind`): a point-free
+  under-applied-CMethod body like `elem a = fold g False` eta-saturates to arity 4, and the old
+  pre-eta count (3) mis-classified the saturated `elem 3 xs` as under-applied → a malformed value
+  closure calling the 4-param define with 3 operands. Only such point-free fns' table arity changes
+  (etaSaturateFnClause is a no-op elsewhere); the emitted defines were already post-eta, so fixpoint
+  C3a stayed byte-identical.
+
+Verified all five repros wasm build + validate + run correctly, matching eval == native, and the six
+`engine_fixtures` rows (`impl_requires_terminal_body`, `instance_terminal_default`,
+`prelude_default_parametric_requires`, `numeric_combinators`, `hof_compose`, `effect_poly`) promoted
+out of `test/engine_divergence.txt` (their `.pin` values unchanged). Fixpoint C3a/C3b YES,
+`typecheck_compiler_source` clean.
