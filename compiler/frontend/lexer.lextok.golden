@@ -4168,6 +4168,79 @@ DEDENT
 NEWLINE
 DEDENT
 NEWLINE
+IDENT "commonEscDecode"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Option"
+UPPER "String"
+NEWLINE
+IDENT "commonEscDecode"
+IDENT "e"
+INDENT
+PIPE
+IDENT "e"
+EQ_EQ
+CHAR "n"
+EQUAL
+UPPER "Some"
+STRING "\n"
+NEWLINE
+PIPE
+IDENT "e"
+EQ_EQ
+CHAR "t"
+EQUAL
+UPPER "Some"
+STRING "\t"
+NEWLINE
+PIPE
+IDENT "e"
+EQ_EQ
+CHAR "r"
+EQUAL
+UPPER "Some"
+STRING "\r"
+NEWLINE
+PIPE
+IDENT "e"
+EQ_EQ
+CHAR "0"
+EQUAL
+UPPER "Some"
+LPAREN
+IDENT "charToStr"
+LPAREN
+IDENT "fromOption"
+CHAR " "
+LPAREN
+IDENT "charFromCode"
+INT 0
+RPAREN
+RPAREN
+RPAREN
+NEWLINE
+PIPE
+IDENT "isBackslash"
+IDENT "e"
+EQUAL
+UPPER "Some"
+STRING "\\"
+NEWLINE
+PIPE
+IDENT "isQuote"
+IDENT "e"
+EQUAL
+UPPER "Some"
+STRING "\""
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+UPPER "None"
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "scanStrEsc"
 COLON
 UPPER "Array"
@@ -4229,144 +4302,6 @@ IDENT "depth"
 INT 1
 NEWLINE
 PIPE
-IDENT "e"
-EQ_EQ
-CHAR "n"
-EQUAL
-IDENT "scanStr"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 2
-RPAREN
-IDENT "startQ"
-IDENT "depth"
-IDENT "id"
-LPAREN
-IDENT "acc"
-PLUSPLUS
-STRING "\n"
-RPAREN
-NEWLINE
-PIPE
-IDENT "e"
-EQ_EQ
-CHAR "t"
-EQUAL
-IDENT "scanStr"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 2
-RPAREN
-IDENT "startQ"
-IDENT "depth"
-IDENT "id"
-LPAREN
-IDENT "acc"
-PLUSPLUS
-STRING "\t"
-RPAREN
-NEWLINE
-PIPE
-IDENT "isQuote"
-IDENT "e"
-EQUAL
-IDENT "scanStr"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 2
-RPAREN
-IDENT "startQ"
-IDENT "depth"
-IDENT "id"
-LPAREN
-IDENT "acc"
-PLUSPLUS
-STRING "\""
-RPAREN
-NEWLINE
-PIPE
-IDENT "isBackslash"
-IDENT "e"
-EQUAL
-IDENT "scanStr"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 2
-RPAREN
-IDENT "startQ"
-IDENT "depth"
-IDENT "id"
-LPAREN
-IDENT "acc"
-PLUSPLUS
-STRING "\\"
-RPAREN
-NEWLINE
-PIPE
-IDENT "e"
-EQ_EQ
-CHAR "r"
-EQUAL
-IDENT "scanStr"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 2
-RPAREN
-IDENT "startQ"
-IDENT "depth"
-IDENT "id"
-LPAREN
-IDENT "acc"
-PLUSPLUS
-STRING "\r"
-RPAREN
-NEWLINE
-PIPE
-IDENT "e"
-EQ_EQ
-CHAR "0"
-EQUAL
-IDENT "scanStr"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 2
-RPAREN
-IDENT "startQ"
-IDENT "depth"
-IDENT "id"
-LPAREN
-IDENT "acc"
-PLUSPLUS
-IDENT "charToStr"
-LPAREN
-IDENT "fromOption"
-CHAR " "
-LPAREN
-IDENT "charFromCode"
-INT 0
-RPAREN
-RPAREN
-RPAREN
-NEWLINE
-PIPE
 IDENT "isUnicodeEsc"
 IDENT "src"
 IDENT "len"
@@ -4417,12 +4352,40 @@ NEWLINE
 PIPE
 IDENT "otherwise"
 EQUAL
+MATCH
+IDENT "commonEscDecode"
+IDENT "e"
+INDENT
+UPPER "Some"
+IDENT "s"
+FAT_ARROW
+IDENT "scanStr"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+IDENT "startQ"
+IDENT "depth"
+IDENT "id"
+LPAREN
+IDENT "acc"
+PLUSPLUS
+IDENT "s"
+RPAREN
+NEWLINE
+UPPER "None"
+FAT_ARROW
 IDENT "lexErrorTok"
 IDENT "p"
 INTERP_OPEN "invalid escape sequence '\\"
 IDENT "charToStr"
 IDENT "e"
 INTERP_END "'"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
@@ -6458,6 +6421,31 @@ IDENT "joinWith"
 STRING "\n"
 IDENT "xs"
 NEWLINE
+IDENT "charEscDecode"
+COLON
+UPPER "Char"
+ARROW
+UPPER "Option"
+UPPER "String"
+NEWLINE
+IDENT "charEscDecode"
+IDENT "e"
+INDENT
+PIPE
+IDENT "isApos"
+IDENT "e"
+EQUAL
+UPPER "Some"
+STRING "'"
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+IDENT "commonEscDecode"
+IDENT "e"
+NEWLINE
+DEDENT
+NEWLINE
 IDENT "scanChar"
 COLON
 UPPER "Array"
@@ -6516,6 +6504,19 @@ IDENT "depth"
 IDENT "id"
 INDENT
 PIPE
+IDENT "p"
+GEQ
+IDENT "len"
+EQUAL
+IDENT "lexErrorTok"
+LPAREN
+IDENT "p"
+MINUS
+INT 1
+RPAREN
+IDENT "charUntermMsg"
+NEWLINE
+PIPE
 IDENT "isBackslash"
 LPAREN
 IDENT "at"
@@ -6525,9 +6526,25 @@ RPAREN
 AND
 IDENT "p"
 PLUS
-INT 2
-LT
+INT 1
+GEQ
 IDENT "len"
+EQUAL
+IDENT "lexErrorTok"
+LPAREN
+IDENT "p"
+MINUS
+INT 1
+RPAREN
+IDENT "charUntermMsg"
+NEWLINE
+PIPE
+IDENT "isBackslash"
+LPAREN
+IDENT "at"
+IDENT "src"
+IDENT "p"
+RPAREN
 AND
 IDENT "at"
 IDENT "src"
@@ -6538,6 +6555,12 @@ INT 1
 RPAREN
 EQ_EQ
 CHAR "u"
+AND
+IDENT "p"
+PLUS
+INT 2
+LT
+IDENT "len"
 AND
 IDENT "at"
 IDENT "src"
@@ -6563,14 +6586,7 @@ IDENT "at"
 IDENT "src"
 IDENT "p"
 RPAREN
-AND
-IDENT "p"
-PLUS
-INT 2
-LT
-IDENT "len"
 EQUAL
-INDENT
 IDENT "escChar"
 IDENT "src"
 IDENT "len"
@@ -6587,233 +6603,108 @@ INT 1
 RPAREN
 RPAREN
 NEWLINE
-DEDENT
-NEWLINE
-PIPE
-IDENT "otherwise"
-EQUAL
-IDENT "rawChar"
-IDENT "src"
-IDENT "len"
-IDENT "p"
-IDENT "depth"
-IDENT "id"
-NEWLINE
-DEDENT
-NEWLINE
-IDENT "escChar"
-COLON
-UPPER "Array"
-UPPER "Char"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "Int"
-ARROW
-UPPER "Char"
-ARROW
-UPPER "List"
-UPPER "RawTok"
-NEWLINE
-IDENT "escChar"
-IDENT "src"
-IDENT "len"
-IDENT "p"
-IDENT "depth"
-IDENT "id"
-IDENT "e"
-INDENT
-PIPE
-IDENT "e"
-EQ_EQ
-CHAR "n"
-EQUAL
-UPPER "RTok"
-LPAREN
-UPPER "TChar"
-STRING "\n"
-RPAREN
-IDENT "p"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-CONS
-IDENT "scan"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-IDENT "depth"
-IDENT "id"
-NEWLINE
-PIPE
-IDENT "e"
-EQ_EQ
-CHAR "t"
-EQUAL
-UPPER "RTok"
-LPAREN
-UPPER "TChar"
-STRING "\t"
-RPAREN
-IDENT "p"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-CONS
-IDENT "scan"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-IDENT "depth"
-IDENT "id"
-NEWLINE
-PIPE
-IDENT "e"
-EQ_EQ
-CHAR "r"
-EQUAL
-UPPER "RTok"
-LPAREN
-UPPER "TChar"
-STRING "\r"
-RPAREN
-IDENT "p"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-CONS
-IDENT "scan"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-IDENT "depth"
-IDENT "id"
-NEWLINE
 PIPE
 IDENT "isApos"
-IDENT "e"
-EQUAL
-UPPER "RTok"
 LPAREN
-UPPER "TChar"
-STRING "'"
-RPAREN
-IDENT "p"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-CONS
-IDENT "scan"
+IDENT "at"
 IDENT "src"
-IDENT "len"
-LPAREN
 IDENT "p"
-PLUS
-INT 3
 RPAREN
-IDENT "depth"
-IDENT "id"
-NEWLINE
-PIPE
-IDENT "isBackslash"
-IDENT "e"
 EQUAL
-UPPER "RTok"
-LPAREN
-UPPER "TChar"
-STRING "\\"
-RPAREN
-IDENT "p"
+IDENT "lexErrorTok"
 LPAREN
 IDENT "p"
-PLUS
-INT 3
+MINUS
+INT 1
 RPAREN
-CONS
-IDENT "scan"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-IDENT "depth"
-IDENT "id"
-NEWLINE
-PIPE
-IDENT "e"
-EQ_EQ
-CHAR "0"
-EQUAL
-UPPER "RTok"
-LPAREN
-UPPER "TChar"
-LPAREN
-IDENT "charToStr"
-LPAREN
-IDENT "fromOption"
-CHAR " "
-LPAREN
-IDENT "charFromCode"
-INT 0
-RPAREN
-RPAREN
-RPAREN
-RPAREN
-IDENT "p"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-CONS
-IDENT "scan"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "p"
-PLUS
-INT 3
-RPAREN
-IDENT "depth"
-IDENT "id"
+STRING "character literal is empty. A character is exactly one codepoint — write `'\\0'` for the NUL character, or use a `\"\"` string for an empty value"
 NEWLINE
 PIPE
 IDENT "otherwise"
 EQUAL
+IDENT "rawChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+IDENT "depth"
+IDENT "id"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "charUntermMsg"
+COLON
+UPPER "String"
+NEWLINE
+IDENT "charUntermMsg"
+EQUAL
+STRING "character literal is not terminated. A character is one codepoint between single quotes, as in `'a'` or `'\\n'`"
+NEWLINE
+IDENT "escChar"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Char"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+NEWLINE
+IDENT "escChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+IDENT "depth"
+IDENT "id"
+IDENT "e"
+EQUAL
+MATCH
+IDENT "charEscDecode"
+IDENT "e"
+INDENT
+UPPER "None"
+FAT_ARROW
+IDENT "lexErrorTok"
+IDENT "p"
+INTERP_OPEN "invalid escape sequence '\\"
+IDENT "charToStr"
+IDENT "e"
+INTERP_END "'"
+NEWLINE
+UPPER "Some"
+IDENT "s"
+FAT_ARROW
+INDENT
+IF
+IDENT "p"
+PLUS
+INT 2
+LT
+IDENT "len"
+AND
+IDENT "isApos"
+LPAREN
+IDENT "at"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+RPAREN
+THEN
 INDENT
 UPPER "RTok"
 LPAREN
 UPPER "TChar"
-LPAREN
-IDENT "charToStr"
-IDENT "e"
-RPAREN
+IDENT "s"
 RPAREN
 IDENT "p"
 LPAREN
@@ -6832,6 +6723,19 @@ INT 3
 RPAREN
 IDENT "depth"
 IDENT "id"
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "lexErrorTok"
+LPAREN
+IDENT "p"
+MINUS
+INT 1
+RPAREN
+IDENT "charUntermMsg"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
@@ -6859,6 +6763,57 @@ IDENT "len"
 IDENT "p"
 IDENT "depth"
 IDENT "id"
+INDENT
+PIPE
+IDENT "p"
+PLUS
+INT 1
+LT
+IDENT "len"
+AND
+IDENT "isApos"
+LPAREN
+IDENT "at"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 1
+RPAREN
+RPAREN
+EQUAL
+UPPER "RTok"
+LPAREN
+UPPER "TChar"
+LPAREN
+IDENT "charToStr"
+LPAREN
+IDENT "at"
+IDENT "src"
+IDENT "p"
+RPAREN
+RPAREN
+RPAREN
+IDENT "p"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+CONS
+IDENT "scan"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+IDENT "depth"
+IDENT "id"
+NEWLINE
+PIPE
+IDENT "otherwise"
 EQUAL
 INDENT
 LET
@@ -6869,33 +6824,39 @@ IDENT "src"
 IDENT "len"
 IDENT "p"
 NEWLINE
-UPPER "RTok"
+IF
+IDENT "e"
+GEQ
+IDENT "len"
+THEN
+INDENT
+IDENT "lexErrorTok"
 LPAREN
-UPPER "TChar"
+IDENT "p"
+MINUS
+INT 1
+RPAREN
+IDENT "charUntermMsg"
+NEWLINE
+DEDENT
+ELSE
+INDENT
+IDENT "lexErrorTok"
 LPAREN
+IDENT "p"
+MINUS
+INT 1
+RPAREN
+INTERP_OPEN "character literal must be a single codepoint, but `'"
 IDENT "substr"
 IDENT "src"
 IDENT "p"
 IDENT "e"
-RPAREN
-RPAREN
-IDENT "p"
-LPAREN
-IDENT "e"
-PLUS
-INT 1
-RPAREN
-CONS
-IDENT "scan"
-IDENT "src"
-IDENT "len"
-LPAREN
-IDENT "e"
-PLUS
-INT 1
-RPAREN
-IDENT "depth"
-IDENT "id"
+INTERP_END "'` has more than one. Use a `\"...\"` string for text, or `'\\u{...}'` for one codepoint by its hex value"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE

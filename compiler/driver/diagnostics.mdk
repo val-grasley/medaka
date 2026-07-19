@@ -205,6 +205,7 @@ parseErrCode msg
   | startsWith "unterminated block" msg = "L-UNTERMINATED-COMMENT"
   | startsWith "invalid escape" msg = "L-BAD-ESCAPE"
   | startsWith "unicode escape" msg = "L-BAD-UNICODE-ESCAPE"
+  | startsWith "character literal" msg = "L-BAD-CHAR-LITERAL"
   | startsWith "unexpected '\\'" msg = "L-HS-LAMBDA"
   | startsWith "Medaka has no '$'" msg = "L-HS-DOLLAR"
   | startsWith "unexpected character" msg = "L-BAD-CHAR"

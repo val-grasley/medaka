@@ -17,6 +17,8 @@ bumpFrame : List Int -> List Int
 canEndExpr : Token -> Bool
 canStartAtom : Token -> Bool
 charClose : Array Char -> Int -> Int -> Int
+charEscDecode : Char -> Option String
+charUntermMsg : String
 closeAll : List Int -> Int -> List (Token, Int)
 closeAllPairs : List Int -> Int -> List (Token, Int, Int)
 closeBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
@@ -27,6 +29,7 @@ collectNoUs : Array Char -> Int -> Int -> List Char
 commentCol : Comment -> Int
 commentLine : Comment -> Int
 commentText : Comment -> String
+commonEscDecode : Char -> Option String
 consumeNl : Array Char -> Int -> Int -> Int -> (Int, Int)
 continuationTok : Array Char -> Int -> Int -> Token
 describeToken : Token -> String

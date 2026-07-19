@@ -1,0 +1,6 @@
+-- Lexer error: an empty char literal `''` names zero codepoints (#668). It used
+-- to lex as an empty `TChar` at exit 0, which injected a NUL byte into the built
+-- binary while emitting nothing under the interpreter. A char is exactly one
+-- codepoint; write `'\0'` for NUL or `""` for an empty string.
+c : Char
+c = ''

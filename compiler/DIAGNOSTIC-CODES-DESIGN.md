@@ -68,14 +68,18 @@ decisions" §1 (code scheme) and §5 (warning-range regression).
 Counts are of **distinct error KINDS** (codes map to kinds, not raw sites);
 raw-site counts noted where they diverge.
 
-### Lex — `compiler/frontend/lexer.mdk` (`TLexError String`, 9 sites / **4 kinds**)
+### Lex — `compiler/frontend/lexer.mdk` (`TLexError String`, **5 kinds**)
 
-| Message | Sites | Kind |
-|---|---|---|
-| `unterminated string literal` | 2 (`:508`, `:513`) | unterminated-string |
-| `unterminated block comment` | 1 (`:356`) | unterminated-comment |
-| `invalid escape sequence '\x'` | 1 (`:527`) | bad-escape |
-| `unexpected character 'c'` | 1 (`:828`) | bad-char |
+(Site line-numbers are not tracked here — they rot; grep `lexErrorTok` for the
+live set. The kinds are the stable handle.)
+
+| Message | Kind |
+|---|---|
+| `unterminated string literal` | unterminated-string |
+| `unterminated block comment` | unterminated-comment |
+| `invalid escape sequence '\x'` (string AND char paths — shared) | bad-escape |
+| `character literal must be a single codepoint …` / `… is empty` / `… is not terminated` | bad-char-literal |
+| `unexpected character 'c'` | bad-char |
 
 Lexer errors do not reach `Diag` directly — a `TLexError` token is surfaced by
 `parseResult` as a `ParseError` (the driver renders it exactly like a parse
@@ -178,6 +182,7 @@ kebab-case; never renumber (append only).
 | `L-UNTERMINATED-COMMENT` | unterminated block comment |
 | `L-BAD-ESCAPE` | invalid escape sequence |
 | `L-BAD-UNICODE-ESCAPE` | Any `\u{…}` escape the lexer must reject. Two families: **ill-formed** — the digit run is empty, is not closed by `}`, or contains a `_` (a digit separator in *integer* literals, deliberately not here — #592); and **well-formed but naming no character** — out of range (`> 10FFFF`), or a UTF-16 surrogate (`D800`–`DFFF`), which is never a scalar value. **The enumeration of causes lives in the guard clauses of `uniEscWellFormed`/`uniEscTermErr`/`uniEscErr` (`compiler/frontend/lexer.mdk`), not in this cell** — read them there. This row used to say "Covers **both**… the two messages", which #592 silently made wrong by adding four more; a list written down here has no derivation and no expiry, so it is stated as a rule instead: *every* `\u{…}` defect shares this one code (as `L-INT-OVERFLOW` does across its two stages) because they are one user-facing defect — "this escape is not a character" — and *every* message therefore opens with the `"unicode escape"` prefix that `parseErrCode` (`compiler/driver/diagnostics.mdk`) keys on, while still naming its specific cause in prose. Three checks are independently load-bearing and none is redundant: shape (an ill-formed run has no codepoint to check at all, and its terminator is not where the scanner assumed — the #592 S0), digit count (`parseRadix` accumulates in a wrapping 63-bit `Int`, so `\u{8000000000000041}` = 2^63+65 once wrapped to `65` and lexed as `A`, which no range check can see), and range (which no digit count can see — `\u{110000}` is 6 digits). Raised from all five `\u{…}` scan sites (char literal, plain/triple string, both interpolation continuations) |
+| `L-BAD-CHAR-LITERAL` | A character literal that is not exactly one codepoint (#668). Three causes, one code because they are one user-facing defect — "a `Char` is exactly one codepoint": **empty** (`''`), **multi-codepoint** (`'ab'`), and **unterminated** (`'a`<EOF> or a valid escape not followed by a closing quote, `'\na'`). All three messages open with the `"character literal"` prefix that `parseErrCode` (`compiler/driver/diagnostics.mdk`) keys on; the enumeration lives in the guard clauses of `readChar`/`rawChar`/`escChar` (`compiler/frontend/lexer.mdk`), not this cell. A **bad escape** inside a char (`'\v'`) is NOT this code — it shares `L-BAD-ESCAPE` with the string path via the same `"invalid escape sequence '\x'"` message and the shared `commonEscDecode` table, because "this is not a valid escape" is the same defect in both literal kinds. A valid multi-BYTE single codepoint (`'é'`, `'😀'`) is one codepoint and is accepted — the check counts codepoints (source array elements), never bytes |
 | `L-BAD-CHAR` | unexpected character |
 | `L-HS-LAMBDA` | stray `\` (Haskell lambda `\x -> e`; suggest `x => e`) |
 | `L-HS-DOLLAR` | stray `$` (Haskell low-precedence apply; suggest direct apply/parens/`\|>`) |
