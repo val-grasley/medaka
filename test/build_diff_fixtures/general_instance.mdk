@@ -1,0 +1,11 @@
+-- #666: a general instance (`impl Iface a`, type-variable head) must EMIT and
+-- dispatch at a concrete receiver type that has no impl of its own — an ADT
+-- receiver and a primitive receiver both resolve to it.  Was an emitter gap-panic
+-- ("no impl of method 'rk' for type 'Int'", exit 1, no binary).
+data Box a = Box a
+interface Rk a where
+  rk : a -> Int
+impl Rk a where
+  rk _ = 1
+main : <IO> Unit
+main = putStrLn (intToString (rk (5 : Int) + rk True + rk (Box 9)))

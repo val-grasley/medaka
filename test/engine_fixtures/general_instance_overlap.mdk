@@ -1,0 +1,12 @@
+-- #667: an interface with a concrete impl AND a general (`impl Iface a`) impl.
+-- A receiver covered only by the general resolves to it; a receiver with a
+-- concrete impl still resolves to the concrete one (most-specific-wins).
+interface Sz a where
+  sz : a -> Int
+impl Sz Int where
+  sz _ = 111
+impl Sz a where
+  sz _ = 999
+useSz : Sz a => a -> Int
+useSz x = sz x
+main = (useSz True, useSz "hi", useSz (5 : Int), sz (7 : Int))

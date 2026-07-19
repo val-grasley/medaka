@@ -209,6 +209,7 @@ import support.util.{
   lookupAssoc,
   listLen,
   maxI,
+  noneHeadTag,
 }
 import backend.trmc_analysis.{
   SelfRef(..),
@@ -3419,10 +3420,38 @@ emitMethodDispatchRef prog env d name dpar args =
   -- the dict tag is read repeatedly; stash it in the scratch local for this depth.
   let tagRead = readDictParam prog env dpar
   let blk = "$disp_\{name}_\{intToString d}"
-  let chain = emitDispatchChain prog name impls blk tagRead dpar argInstrs (listLen args) 0
+  -- #667: a GENERAL instance (`impl Iface a`) is registered under noneHeadTag, so its
+  -- runtime dict header never equals the CONCRETE receiver tag a caller's dict carries
+  -- — a tag-guarded arm for it can never fire.  It is the `min⊑` catch-all for any
+  -- receiver no concrete arm claimed (DICT-SEMANTICS §3), so emit every concrete arm
+  -- guarded, then the general's body UNCONDITIONALLY at block level (the fallthrough
+  -- point reached when no concrete arm matched), replacing the trailing `unreachable`.
+  -- Byte-identical when no general instance is present (genTail = []).
+  let concretes = filterList (p => fst p != noneHeadTag) impls
+  let chain = emitDispatchChain prog name concretes blk tagRead dpar argInstrs (listLen args) 0
+  let genTail = emitGeneralArm prog name (firstGeneralImplW impls) blk dpar argInstrs (listLen args)
   ["block " ++ blk ++ " (result (ref eq))"]
     ++ indent chain
+    ++ indent genTail
     ++ ["unreachable", "end"]
+
+-- the general instance's catch-all body (mirror of a concrete dispatch arm minus the
+-- `dictTag == key` `if` guard): load its nested requires-dicts, push the args, call
+-- the lifted fn, and `br` out of the result block.  Placed at block level after the
+-- concrete chain, so it runs precisely when no concrete arm matched (#667).  Peer of
+-- llvm_emit's emitDispatchArmBody catch-all path.
+firstGeneralImplW : List (String, String) -> Option (String, String)
+firstGeneralImplW [] = None
+firstGeneralImplW (p::rest)
+  | fst p == noneHeadTag = Some p
+  | otherwise = firstGeneralImplW rest
+
+emitGeneralArm : Prog -> String -> Option (String, String) -> String -> String -> List String -> Int -> List String
+emitGeneralArm _ _ None _ _ _ _ = []
+emitGeneralArm prog name (Some (tag, key)) blk dpar argInstrs nArgs =
+  let reqDicts = implReqDictCount prog name key nArgs
+  let reqLoads = flatMap (loadReqDict dpar) (rangeList 0 reqDicts)
+  reqLoads ++ argInstrs ++ ["call $" ++ implFnSymOfTag tag name, "br " ++ blk]
 
 -- one comparison + call per candidate impl group.  loaded tag (i32) == dictTag
 -- routeKey?  if so: load this impl's nested requires-dicts from the dict param's
@@ -4183,7 +4212,14 @@ emitDefaultRKeyRef prog dictWords argInstrs name tag = match defaultForW prog na
     let fname = defaultFnNameW tag name
     let _ = ensureDefaultEmittedW prog fname tag name entry
     dictWords ++ argInstrs ++ ["call $" ++ fname]
-  None => gapL "wasm layer-15: no impl of method '\{name}' for type '\{tag}'"
+  None => match findByTagW name noneHeadTag (progImpls prog)
+    -- a GENERAL instance (`impl Iface a`) is registered under noneHeadTag, never the
+    -- concrete receiver tag, so implForW/defaultForW both miss it.  It is the `min⊑`
+    -- match when the receiver type has no impl of its own — call its lifted fn
+    -- directly, exactly as the concrete-hit path does (mirrors llvm emitGeneralRKey /
+    -- eval pickTagFallback).  Concrete impls still win via the implForW check above.
+    Some _ => dictWords ++ argInstrs ++ ["call $" ++ implFnSym prog noneHeadTag name]
+    None => gapL "wasm layer-15: no impl of method '\{name}' for type '\{tag}'"
 
 -- a module-level set of already-synthesized default symbols (dedup like
 -- llvm_emit's emittedDefaultsRef) + the accumulated define line-blocks, drained

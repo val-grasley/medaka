@@ -929,3 +929,56 @@ invisible to it **by construction**. Only removing the approximation (#561) can 
 **After Stages A+B:** a value global whose initializer reaches another global through STRUCTURE
 or a direct `CVar`/`CDict` **call** is now correctly ordered on both backends. Only an interface-
 **method dispatch** (#4) or a **genuine cycle** (#5) remains unsound — until #561.
+
+---
+
+## General-instance dispatch (`impl Iface a`) — CLOSED (#666 S1 emit gap + #667 S0 run≠build, 2026-07-19)
+
+A **general instance** — head is a bare type variable, `impl Iface a` — is stored under the
+sentinel tag `noneHeadTag` (`"__none__"`) because a type-variable head has no head tycon
+(`fromOption noneHeadTag (headTyconHead …)`). Two engines had NO dispatch tier that consulted
+that sentinel when a method is called at a concrete receiver the general instance is the *only*
+(`min⊑`, DICT-SEMANTICS §3) match for:
+
+- **#666 (S1, native + wasm emit gap).** `impl Sz a; sz (5:Int)` stamps an `RKey "Int"` route.
+  `implFor "sz" "Int"` = `findByTag "Int"` → None (the general is keyed `"__none__"`), and
+  `emitDefaultRKey`→`defaultFor` matched only a `CImplDefault`, not the `CImplTagged "__none__"`
+  general → `gapE "no impl of method 'sz' for type 'Int' (slice 6)"`, exit 1, no binary. `check`
+  and `run` were both fine. WasmGC had the identical gap in `emitDefaultRKeyRef`→`defaultForW`.
+- **#667 (S0, run≠build AND native was UB-fragile).** `impl Sz Int` + `impl Sz a`; a
+  `Sz a =>`-polymorphic caller (`useSz True`) dispatches the inner `sz` through the **RDict
+  runtime dispatcher**, where the dict word carries the CONCRETE receiver tag (`hashName "Bool"`).
+  The dispatcher's general arm was an `icmp` keyed on the general's own header
+  (`hashName "__none__"`) — a tag a caller's dict never carries — so control fell to
+  `unreachable`. eval mis-resolved it via the arg-tag punt (`run` = 111, the wrong concrete
+  sibling); native "worked" only as a `clang -O2` accident (at `-O0` the same IR prints garbage,
+  e.g. `70365815715828`); wasm trapped (`instantiate failed: unreachable`).
+
+**Fix (all three engines, mirroring the existing default-fallback structure — no new mechanism):**
+- **eval** (`eval.mdk`, `pickByTag`→`pickTagFallback`): when the per-tag filter is empty and no
+  interface-default candidate exists, select a `VTypedImpl noneHeadTag` general instance before
+  punting to the arg-tag whole-`VMulti` path.
+- **native RKey** (`llvm_emit.mdk`, `emitDefaultRKey`→`emitGeneralRKey`): on an `implFor` miss with
+  no `CImplDefault`, `findByTag noneHeadTag` and emit a direct call to the general's lifted fn.
+- **native RDict** (`llvm_emit.mdk`, `emitDispatchChain`): emit every concrete arm guarded, then the
+  general instance's body **unconditionally** as the catch-all, replacing the trailing
+  `unreachable` (the general matches any receiver no concrete arm claimed). Body factored into the
+  shared `emitDispatchArmBody`; **byte-identical** when no general instance is present (the whole
+  compiler + stdlib have none) — fixpoint C3a/C3b stayed YES with NO seed re-mint.
+- **wasm** (`wasm_emit.mdk`): `emitDefaultRKeyRef` general tier (peer of `emitGeneralRKey`) +
+  `emitMethodDispatchRef` general catch-all (`emitGeneralArm`, block-level after the concrete
+  chain — the fallthrough point before the outer `unreachable`).
+
+Most-specific-wins preserved everywhere: the new tier fires **only** on a concrete-lookup miss, so
+`sz (5:Int)` with both `impl Sz Int` + `impl Sz a` still selects the concrete `111` while `sz True`
+selects the general `999`. Gates: `diff_compiler_engines` 0 regressions (+2 `engine_fixtures`
+covering both facets across all three engines), `diff_compiler_build` +1 (`general_instance`,
+`stdout=3`), `diff_compiler_llvm{,_typed,_typed_ir,_modules}` 0-fail, `diff_wasm{,_typed,_modules}`
+0-fail, fixpoint C3a/C3b YES, `typecheck_compiler_source` clean.
+
+**RESIDUAL (pre-existing, orthogonal — NOT this fix):** a general-instance **default method**
+(`szD x = sz x` on `impl Sz a`) stamps the inner `sz` as `RNone` (a typevar-head impl has no
+concrete tag to stamp), which native handles via arg-tag dispatch but WasmGC rejects
+(`W5: RNone arg-tag dispatch … out of slice` — a documented wasm MVP boundary). eval + native
+give the right answer (42); wasm cannot build it. This is the general-purpose wasm-RNone gap, not
+a general-instance gap, and is left for the wasm-RNone slice.

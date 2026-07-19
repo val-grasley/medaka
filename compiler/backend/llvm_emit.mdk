@@ -193,6 +193,7 @@ import support.util.{
   filterList,
   startsWith,
   fallthroughName,
+  noneHeadTag,
 }
 import backend.llvm_preamble.{preambleLines}
 import support.ordmap.{
@@ -4064,6 +4065,32 @@ emitDefaultRKey e env name tag methRoutes implRoutes argOps = match defaultFor e
     else
       LTInt
     emitImplCall e fname (dictWords ++ argOps) resTy
+  None => emitGeneralRKey e env name tag methRoutes implRoutes argOps
+
+-- Last dispatch tier for an RKey route that matched neither a concrete impl nor an
+-- interface default: a GENERAL instance (`impl Iface a`), whose head is a bare type
+-- variable and so is registered under noneHeadTag ("__none__") — never under the
+-- concrete receiver tag.  It is the `min⊑` match (DICT-SEMANTICS §3) when the
+-- receiver's concrete type has no impl of its own, so we emit a direct call to its
+-- lifted fn exactly as the concrete-hit path does (mirrors eval's pickTagFallback
+-- general tier).  Only when there is no general instance either is it a real gap
+-- (#666).  Concrete impls still win: emitMethod's implFor consults the concrete tag
+-- first, so this fires only on a concrete miss.
+emitGeneralRKey : Emit -> List (String, (String, LTy)) -> String -> String -> List Route -> List Route -> List String -> (String, LTy)
+emitGeneralRKey e env name tag methRoutes implRoutes argOps = match findByTag noneHeadTag (implsOf e name)
+  Some entry =>
+    let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
+    let headTag = implEntryTag entry
+    let resTy = if methodReturnsSelf (implEntryIface entry) name then
+      tagToLTy headTag
+    else
+      LTInt
+    emitImplCallSat
+      e
+      (implFnName (implFnSymOf (implEntriesOf e) name entry) name)
+      (dictWords ++ argOps)
+      (methodArityOf name + lengthS dictWords)
+      resTy
   None => gapE "no impl of method '\{name}' for type '\{tag}' (slice 6)"
 -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a
 -- relational OPERATOR (`<`→`lt`/…) on a parametric Ord head (tuple/`List a`/
@@ -4724,7 +4751,6 @@ loadReqDicts e dictPtr n i
 emitDispatchArm : Emit -> String -> String -> CImplEntry -> String -> List String -> List String -> String -> String -> Unit
 emitDispatchArm e dictPtr headTag ent name methWords argOps slot endL =
   let routeKey = implEntryRouteKey (implEntriesOf e) ent
-  let symTag = implFnSymOf (implEntriesOf e) name ent
   let cmp = freshReg e
   let _ = emit e "  \{cmp} = icmp eq i64 \{headTag}, \{intToString (hashName routeKey)}"
   let n = intToString (freshLocal e)
@@ -4732,18 +4758,53 @@ emitDispatchArm e dictPtr headTag ent name methWords argOps slot endL =
   let next = "dispnext" ++ n
   let _ = emit e "  br i1 \{cmp}, label %\{yes}, label %\{next}"
   let _ = emit e (yes ++ ":")
+  let _ = emitDispatchArmBody e dictPtr ent name methWords argOps slot endL
+  emit e (next ++ ":")
+
+-- the matched-arm body — shared by the guarded concrete arm (emitDispatchArm) and
+-- the general instance's UNCONDITIONAL catch-all arm (emitDispatchChain).  Load the
+-- impl's per-instance cell `requires` dicts, call its lifted fn, store the result,
+-- and jump to the dispatcher exit.
+emitDispatchArmBody : Emit -> String -> CImplEntry -> String -> List String -> List String -> String -> String -> Unit
+emitDispatchArmBody e dictPtr ent name methWords argOps slot endL =
+  let symTag = implFnSymOf (implEntriesOf e) name ent
   let cellCount = implReqCount e name ent - lengthS methWords
   let cellDicts = loadReqDicts e dictPtr cellCount 0
   let (rv, _) = emitImplCall e (implFnName symTag name) (methWords ++ cellDicts ++ argOps) LTInt
   let _ = emit e "  store i64 \{rv}, ptr \{slot}"
-  let _ = emit e ("  br label %" ++ endL)
-  emit e (next ++ ":")
+  emit e ("  br label %" ++ endL)
+
+-- a GENERAL instance (`impl Iface a`) is stored under noneHeadTag, so its runtime
+-- dict header is hashName noneHeadTag — but a caller's dict carries the CONCRETE
+-- receiver tag ("Bool"), never that key, so an icmp arm keyed on the general's own
+-- header never fires (the tag falls through to `unreachable`; #667).  A general
+-- instance is the `min⊑` match for ANY receiver a concrete arm did not claim
+-- (DICT-SEMANTICS §3), so it is the dispatcher's CATCH-ALL: emit every concrete arm
+-- as a guarded icmp first (most-specific-wins preserved), then the general's body
+-- UNCONDITIONALLY in place of the trailing `unreachable`.  Byte-identical when no
+-- general instance is present (the whole compiler + stdlib), so the fixpoint holds.
+isGeneralEntry : CImplEntry -> Bool
+isGeneralEntry ent = implEntryTag ent == noneHeadTag
+
+firstGeneralEntry : List CImplEntry -> Option CImplEntry
+firstGeneralEntry [] = None
+firstGeneralEntry (ent::rest)
+  | isGeneralEntry ent = Some ent
+  | otherwise = firstGeneralEntry rest
 
 emitDispatchChain : Emit -> String -> String -> List CImplEntry -> String -> List String -> List String -> String -> String -> Unit
-emitDispatchChain e _ _ [] _ _ _ _ _ = emit e "  unreachable"
-emitDispatchChain e dictPtr headTag (ent::rest) name methWords argOps slot endL =
+emitDispatchChain e dictPtr headTag impls name methWords argOps slot endL =
+  let _ = emitConcreteArms e dictPtr headTag (filterList (ent => not (isGeneralEntry ent)) impls) name methWords argOps slot endL
+  match firstGeneralEntry impls
+    Some gen =>
+      emitDispatchArmBody e dictPtr gen name methWords argOps slot endL
+    None => emit e "  unreachable"
+
+emitConcreteArms : Emit -> String -> String -> List CImplEntry -> String -> List String -> List String -> String -> String -> Unit
+emitConcreteArms _ _ _ [] _ _ _ _ _ = ()
+emitConcreteArms e dictPtr headTag (ent::rest) name methWords argOps slot endL =
   let _ = emitDispatchArm e dictPtr headTag ent name methWords argOps slot endL
-  emitDispatchChain e dictPtr headTag rest name methWords argOps slot endL
+  emitConcreteArms e dictPtr headTag rest name methWords argOps slot endL
 
 -- GAP 2 phase-b (MIXED case): a method that HAS tagged impls but whose interface ALSO
 -- owns a default AND can carry element tags with no explicit impl — the derived-Ord

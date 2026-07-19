@@ -1,0 +1,8 @@
+-- #666: a general instance (`impl Iface a`) is the sole (min-of-order) match at a
+-- concrete receiver type that has no impl of its own — must emit + dispatch to it.
+data Box a = Box a
+interface Rk a where
+  rk : a -> Int
+impl Rk a where
+  rk _ = 1
+main = (rk (5 : Int), rk True, rk (Box 9))

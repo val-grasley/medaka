@@ -895,8 +895,22 @@ narrowMethod v _ = v
 -- there is ALSO no default do we leave the whole VMulti for arg-tag fallback.
 pickByTag : List (Value e) -> String -> Value e
 pickByTag vs tag = match filterList (hasTag tag) vs
-  [] => oneOrMultiV (filterList isDefaultCand vs) vs
+  [] => pickTagFallback vs
   matched => oneOrMultiV matched vs
+
+-- No concrete impl carries the route tag.  Fall back in most-specific order: the
+-- interface DEFAULT (installed untagged) if one exists, else a GENERAL instance
+-- (`impl Iface a`, whose method is tagged noneHeadTag because a type-variable head
+-- has no head tycon).  A general instance is the `min⊑` match (DICT-SEMANTICS §3)
+-- when the receiver's concrete type has no impl of its own, so it must be selected
+-- here BEFORE punting to the untyped arg-tag path — which would grab the first
+-- CONCRETE sibling and mis-dispatch (#667).  Mirrors the LLVM emitDefaultRKey
+-- default→general→gap fallback chain.  Only when neither a default nor a general
+-- instance exists do we leave the whole VMulti for arg-tag fallback.
+pickTagFallback : List (Value e) -> Value e
+pickTagFallback vs = match filterList isDefaultCand vs
+  [] => oneOrMultiV (filterList (hasTag noneHeadTag) vs) vs
+  defs => oneOrMultiV defs vs
 
 -- an interface-default fallback candidate: installed untagged (VClosure / VThunk),
 -- never wrapped in a VTypedImpl dispatch tag.

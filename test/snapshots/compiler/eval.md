@@ -1,5 +1,5 @@
 # META
-source_lines=3404
+source_lines=3418
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -899,8 +899,22 @@ narrowMethod v _ = v
 -- there is ALSO no default do we leave the whole VMulti for arg-tag fallback.
 pickByTag : List (Value e) -> String -> Value e
 pickByTag vs tag = match filterList (hasTag tag) vs
-  [] => oneOrMultiV (filterList isDefaultCand vs) vs
+  [] => pickTagFallback vs
   matched => oneOrMultiV matched vs
+
+-- No concrete impl carries the route tag.  Fall back in most-specific order: the
+-- interface DEFAULT (installed untagged) if one exists, else a GENERAL instance
+-- (`impl Iface a`, whose method is tagged noneHeadTag because a type-variable head
+-- has no head tycon).  A general instance is the `min⊑` match (DICT-SEMANTICS §3)
+-- when the receiver's concrete type has no impl of its own, so it must be selected
+-- here BEFORE punting to the untyped arg-tag path — which would grab the first
+-- CONCRETE sibling and mis-dispatch (#667).  Mirrors the LLVM emitDefaultRKey
+-- default→general→gap fallback chain.  Only when neither a default nor a general
+-- instance exists do we leave the whole VMulti for arg-tag fallback.
+pickTagFallback : List (Value e) -> Value e
+pickTagFallback vs = match filterList isDefaultCand vs
+  [] => oneOrMultiV (filterList (hasTag noneHeadTag) vs) vs
+  defs => oneOrMultiV defs vs
 
 -- an interface-default fallback candidate: installed untagged (VClosure / VThunk),
 -- never wrapped in a VTypedImpl dispatch tag.
@@ -3801,7 +3815,9 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "narrowMethod" ((PCon "VTypedImpl" (PVar "t") (PVar "k") (PVar "p") (PVar "s") (PVar "inner")) PWild) (EApp (EVar "stripResolved") (EApp (EApp (EApp (EApp (EApp (EVar "VTypedImpl") (EVar "t")) (EVar "k")) (EVar "p")) (EVar "s")) (EVar "inner"))))
 (DFunDef false "narrowMethod" ((PVar "v") PWild) (EVar "v"))
 (DTypeSig false "pickByTag" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))
-(DFunDef false "pickByTag" ((PVar "vs") (PVar "tag")) (EMatch (EApp (EApp (EVar "filterList") (EApp (EVar "hasTag") (EVar "tag"))) (EVar "vs")) (arm (PList) () (EApp (EApp (EVar "oneOrMultiV") (EApp (EApp (EVar "filterList") (EVar "isDefaultCand")) (EVar "vs"))) (EVar "vs"))) (arm (PVar "matched") () (EApp (EApp (EVar "oneOrMultiV") (EVar "matched")) (EVar "vs")))))
+(DFunDef false "pickByTag" ((PVar "vs") (PVar "tag")) (EMatch (EApp (EApp (EVar "filterList") (EApp (EVar "hasTag") (EVar "tag"))) (EVar "vs")) (arm (PList) () (EApp (EVar "pickTagFallback") (EVar "vs"))) (arm (PVar "matched") () (EApp (EApp (EVar "oneOrMultiV") (EVar "matched")) (EVar "vs")))))
+(DTypeSig false "pickTagFallback" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "Value") (TyVar "e"))))
+(DFunDef false "pickTagFallback" ((PVar "vs")) (EMatch (EApp (EApp (EVar "filterList") (EVar "isDefaultCand")) (EVar "vs")) (arm (PList) () (EApp (EApp (EVar "oneOrMultiV") (EApp (EApp (EVar "filterList") (EApp (EVar "hasTag") (EVar "noneHeadTag"))) (EVar "vs"))) (EVar "vs"))) (arm (PVar "defs") () (EApp (EApp (EVar "oneOrMultiV") (EVar "defs")) (EVar "vs")))))
 (DTypeSig false "isDefaultCand" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyCon "Bool")))
 (DFunDef false "isDefaultCand" ((PCon "VTypedImpl" PWild PWild PWild PWild PWild)) (EVar "False"))
 (DFunDef false "isDefaultCand" (PWild) (EVar "True"))
@@ -5193,7 +5209,9 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "narrowMethod" ((PCon "VTypedImpl" (PVar "t") (PVar "k") (PVar "p") (PVar "s") (PVar "inner")) PWild) (EApp (EVar "stripResolved") (EApp (EApp (EApp (EApp (EApp (EVar "VTypedImpl") (EVar "t")) (EVar "k")) (EVar "p")) (EVar "s")) (EVar "inner"))))
 (DFunDef false "narrowMethod" ((PVar "v") PWild) (EVar "v"))
 (DTypeSig false "pickByTag" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyFun (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))
-(DFunDef false "pickByTag" ((PVar "vs") (PVar "tag")) (EMatch (EApp (EApp (EVar "filterList") (EApp (EVar "hasTag") (EVar "tag"))) (EVar "vs")) (arm (PList) () (EApp (EApp (EVar "oneOrMultiV") (EApp (EApp (EVar "filterList") (EVar "isDefaultCand")) (EVar "vs"))) (EVar "vs"))) (arm (PVar "matched") () (EApp (EApp (EVar "oneOrMultiV") (EVar "matched")) (EVar "vs")))))
+(DFunDef false "pickByTag" ((PVar "vs") (PVar "tag")) (EMatch (EApp (EApp (EVar "filterList") (EApp (EVar "hasTag") (EVar "tag"))) (EVar "vs")) (arm (PList) () (EApp (EVar "pickTagFallback") (EVar "vs"))) (arm (PVar "matched") () (EApp (EApp (EVar "oneOrMultiV") (EVar "matched")) (EVar "vs")))))
+(DTypeSig false "pickTagFallback" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "Value") (TyVar "e"))))
+(DFunDef false "pickTagFallback" ((PVar "vs")) (EMatch (EApp (EApp (EVar "filterList") (EVar "isDefaultCand")) (EVar "vs")) (arm (PList) () (EApp (EApp (EVar "oneOrMultiV") (EApp (EApp (EVar "filterList") (EApp (EVar "hasTag") (EVar "noneHeadTag"))) (EVar "vs"))) (EVar "vs"))) (arm (PVar "defs") () (EApp (EApp (EVar "oneOrMultiV") (EVar "defs")) (EVar "vs")))))
 (DTypeSig false "isDefaultCand" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyCon "Bool")))
 (DFunDef false "isDefaultCand" ((PCon "VTypedImpl" PWild PWild PWild PWild PWild)) (EVar "False"))
 (DFunDef false "isDefaultCand" (PWild) (EVar "True"))
