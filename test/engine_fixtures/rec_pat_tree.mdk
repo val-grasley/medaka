@@ -1,0 +1,21 @@
+-- record patterns through the decision tree (PRec arms with fall-through)
+data Vec = { dx : Int, dy : Int }
+
+magnitude v = v.dx * v.dx + v.dy * v.dy
+
+-- multi-arm record match: specific field-value arms fall through in the tree
+axis v = match v
+  Vec { dx = 0, dy } => dy
+  Vec { dx, dy = 0 } => dx
+  Vec { dx, dy } => dx + dy
+
+main =
+  let up = Vec { dx = 0, dy = 5 }
+  let right = Vec { dx = 3, dy = 0 }
+  let diag = Vec { dx = 2, dy = 4 }
+  ( magnitude up
+  , magnitude right
+  , axis up
+  , axis right
+  , axis diag
+  )

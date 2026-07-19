@@ -1,0 +1,21 @@
+-- Effect-polymorphism erasure (STAGE2-DESIGN §2.3).  `runTwice`'s effect row `e`
+-- is a quantified VARIABLE — instantiated to distinct rows at distinct call sites
+-- (the Ref-mutating `bump` vs the pure `square`).  After
+-- erasure both instantiations flow through the SAME combinator code: effects
+-- carry no runtime witness, so an effect-polymorphic function is represented
+-- identically to a monomorphic one.  Diffed against the tree-walker by eval /
+-- core_ir / eval_bytecode harnesses — all three must agree, proving erasure is
+-- semantics-preserving across the AST walker, the Core IR evaluator, and the VM.
+runTwice : (a -> <e> a) -> a -> <e> a
+runTwice f x = f (f x)
+
+bump r u =
+  let _ = setRef r (r.value + 1)
+  r.value
+
+square x = x * x
+
+main =
+  let r = Ref 7
+  -- Ref-mutating instantiation vs pure instantiation (e = {})
+  (runTwice (bump r) 0, runTwice square 3, r.value)

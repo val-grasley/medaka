@@ -1,0 +1,10 @@
+-- Top-level DLetGroup (`let rec …`) coverage, each mutual-recursion pair
+-- expressed as two separate top-level `let rec` bindings.
+-- Uses both unconstrained mutual recursion and constrained (== and -) mutual recursion.
+let rec ping n = if n then "ping" else pong n
+let rec pong n = if n then pong n else "pong"
+
+let rec isEven n = if n == 0 then True else isOdd (n - 1)
+let rec isOdd n = if n == 0 then False else isEven (n - 1)
+
+main = (ping False, isEven 4, isOdd 3)

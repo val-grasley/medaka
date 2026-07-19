@@ -1,0 +1,21 @@
+-- as-patterns (in match), literal-pattern dispatch, char values, unary minus, currying
+ack 0 n = n + 1
+ack m 0 = ack (m - 1) 1
+ack m n = ack (m - 1) (ack m (n - 1))
+dedup (x :: y :: rest) = if x == y then dedup (y :: rest) else x :: dedup (y :: rest)
+dedup other = other
+firstTwo xs = match xs
+  whole@(x :: y :: _) => (x, y, whole)
+  other => (0, 0, other)
+const3 a b c = a
+neg = (0 - 5)
+vowel 'a' = True
+vowel 'e' = True
+vowel c = False
+-- Reshaped for the engines corpus (#707): 7-tuple exceeds the ≤5 tuple-Display arity,
+-- nested into two ≤5 sub-tuples. Same values, autoprints identically across engines.
+main =
+  let part = const3 1 2
+  ( (ack 2 3, dedup [1, 1, 2, 3, 3, 3], firstTwo [7, 8, 9], part 99, neg)
+  , (vowel 'e', vowel 'z')
+  )

@@ -1,0 +1,17 @@
+-- cons / append, list patterns, equality & ordering, let
+revApp [] acc = acc
+revApp (x :: xs) acc = revApp xs (x :: acc)
+rev xs = revApp xs []
+len [] = 0
+len (_ :: xs) = 1 + len xs
+zip2 [] _ = []
+zip2 _ [] = []
+zip2 (x :: xs) (y :: ys) = (x, y) :: zip2 xs ys
+-- Reshaped for the engines corpus (#707): 6-tuple exceeds the ≤5 tuple-Display arity,
+-- nested into two ≤5 sub-tuples. Same values, autoprints identically across engines.
+main =
+  let a = [1, 2, 3]
+  let b = [4, 5]
+  ( (rev a, a ++ b, len (a ++ b))
+  , ([1, 2] == [1, 2], [1, 2] < [1, 3], zip2 a b)
+  )

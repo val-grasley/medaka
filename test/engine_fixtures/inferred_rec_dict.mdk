@@ -1,0 +1,16 @@
+-- Inferred-constraint recursion: a recursive function WITHOUT an explicit type
+-- signature whose recursion uses a constrained operation (== needs Eq, -/+ need
+-- Num) must forward the INFERRED constraint's dict into the self/mutual recursive
+-- call.  Before the fix, the recursive callee was under-applied (its EDictAt route
+-- stayed empty while dict_pass still prepended the dict param) → dispatch failed.
+--   countDown      : self-recursion, inferred Eq + Num
+--   isEven / isOdd : mutual recursion, inferred Eq + Num (shared SCC)
+--   sumTo          : self-recursion threading an accumulating Num result
+countDown n = if n == 0 then 0 else countDown (n - 1)
+
+isEven n = if n == 0 then True else isOdd (n - 1)
+isOdd n = if n == 0 then False else isEven (n - 1)
+
+sumTo n = if n == 0 then 0 else n + sumTo (n - 1)
+
+main = (countDown 5, isEven 4, isOdd 4, sumTo 5)

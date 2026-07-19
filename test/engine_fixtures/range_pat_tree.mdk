@@ -1,0 +1,19 @@
+-- range patterns through the decision tree (PRng arms with fall-through)
+classify n = match n
+  0..=4 => "tiny"
+  5..=9 => "small"
+  _ => "big"
+
+hexDigit c = match c
+  '0'..'9' => "num"
+  'a'..'f' => "lo"
+  'A'..'F' => "hi"
+  _ => "no"
+
+-- Reshaped for the engines corpus (#707): the eval_fixtures twin's 9-tuple exceeds
+-- the ≤5 tuple-Display arity, so the arms are nested into two ≤5 sub-tuples. Same
+-- values, Display-autoprintable identically across eval/native/wasm.
+main =
+  ( (classify 0, classify 4, classify 5, classify 9, classify 10)
+  , (hexDigit '3', hexDigit 'b', hexDigit 'E', hexDigit 'z')
+  )

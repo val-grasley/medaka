@@ -1,0 +1,22 @@
+-- A LOCAL binder whose name collides with a prelude interface method (`debug`)
+-- must resolve to the local binding, NOT dispatch as the method.  The marker /
+-- typecheck prepass is scope-blind by default; the scope-aware rp/an/dn guard in
+-- rewriteArgScoped keeps a shadowed reference a plain EVar so inference resolves
+-- the local.  Mirrors lib/typecheck.ml's `env.locals` skip of the method table.
+-- Regression for the native `run`-vs-`build` divergence (run mis-dispatched
+-- `debug` to `Debug Int` → `intToString: not an Int`).
+
+debug x = x + 1
+
+fromLet y =
+  let debug = 99
+  debug
+
+fromLambda = (debug => debug + 1) 41
+
+fromMatch y = match y
+  debug => debug + 100
+
+fromParam debug = debug * 2
+
+main = (fromLet 0, fromLambda, fromMatch 5, fromParam 21)

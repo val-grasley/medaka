@@ -1,0 +1,27 @@
+-- explicit Refs (Ref / setRef / .value) + pure recursive accumulation
+countUp n =
+  let r = Ref 0
+  let _ = bump r n
+  r.value
+bump r 0 = r.value
+bump r k =
+  let _ = setRef r (r.value + 1)
+  bump r (k - 1)
+-- `loop`'s `i > n` (Ord) and the bare `0`/`1` literals (Num) are otherwise unconstrained,
+-- so HM leaves them ambiguous — eval defaults to Int and runs, but the typed backends
+-- correctly reject with "Ambiguous instance for Ord; add a type annotation". The `Int`
+-- signature grounds it to exactly what eval defaults to, so all three engines agree.
+sumTo : Int -> Int
+sumTo n = loop 0 1 n
+loop : Int -> Int -> Int -> Int
+loop acc i n
+  | i > n = acc
+  | otherwise = loop (acc + i) (i + 1) n
+-- Reshaped for the engines corpus (#707): the eval_fixtures twin's 4-tuple includes the
+-- bare `Ref` value `r`, which has no Display instance (pp_value renders it there). The
+-- observable that matters — the mutation — is `r.value` (42 after the setRef), kept below;
+-- the bare `r` is dropped. Same values across eval/native/wasm.
+main =
+  let r = Ref 41
+  let _ = setRef r (r.value + 1)
+  (r.value, countUp 5, sumTo 10)

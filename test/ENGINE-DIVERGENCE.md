@@ -195,6 +195,30 @@ auto-print formatting — see the ⚠️ note above §3.2's table before treatin
 settled.)* All five existed **only** because the two backends' corpora were disjoint —
 which is precisely the thesis this gate tests.
 
+### 3.4 `wasm:codegen-bug` — 3 ACTIVE rows, found by the #707 `eval_fixtures` promotion
+
+These are **live** rows (category `wasm:codegen-bug`) — not the historical §3.2 table.
+Issue #707 promoted `test/eval_fixtures/` (interpreter-only until then) into
+`test/engine_fixtures/` so it runs the 3-engine differential. Three fixtures reproduce a
+real `run != build` divergence: **eval == native, and the `medaka build --target wasm`
+CLI path fails** (the wasm arm is `na` — the module never assembles/validates). The
+engines-corpus row IS the self-draining pin for each issue: when the WasmGC backend is
+fixed the wasm arm flips to `ran` and this gate goes RED, naming the issue to close.
+(These wasm-build bugs are NOT pinnable by the must-fail suite — it has no `build` verb;
+see `test/MUST-FAIL-NOT-PINNABLE.txt`.) The eval/native value is pinned in
+`test/engine_value_pins/engine/<name>.pin` (only the arms that ran are checked, so the
+`na` wasm arm never trips the pin).
+
+| fixture | eval == native | wasm | issue | diagnosis |
+|---|---|---|---|---|
+| `engine/adt_user_cons_nil` | `(60, 3, 0)` | **parse fail** | #712 (S1) | wasm-tools **parse** rejects the WAT: *"duplicate type identifier"* on `$C_Cons`. A user ADT `data T = Cons Int T \| Nil` collides with the built-in list type ids the WasmGC backend synthesises for the reserved `Cons`/`Nil` names, declaring `$C_Cons`/`$T_List` twice. |
+| `engine/hof_compose` | `(12, [2, 3, 4], 10, 11, 22)` | **validate fail** | #713 (S2) | wasm-tools **validate** rejects the module: *"type mismatch: expected i32, found (ref eq)"* — an i32↔(ref eq) boxing-lattice mismatch in the WasmGC backend on the list + HOF/compose/section closures. |
+| `engine/effect_poly` | `(9, 81, 9)` | **validate fail** | #714 (S2) | wasm-tools **validate** rejects the module: *"type mismatch: expected (ref eq), found i32"* — the mirror i32↔(ref eq) boxing mismatch on the effect-polymorphic combinator's Ref-mutating instantiation. |
+
+All three are genuine `run != build` divergences (eval and native agree on the correct
+value; only wasm fails), exactly the class this gate exists to surface. The native LLVM
+backend handles all three correctly — the defect is WasmGC-only.
+
 ---
 
 ## 4. The engine-unavailability categories

@@ -1,0 +1,12 @@
+-- higher-order functions, closures, composition, pipe, sections
+add x y = x + y
+double = (2 * _)
+inc = add 1
+applyTwice f x = f (f x)
+mapL f [] = []
+mapL f (x :: xs) = f x :: mapL f xs
+foldlL f acc [] = acc
+foldlL f acc (x :: xs) = foldlL f (f acc x) xs
+sumL = foldlL add 0
+compd = (double >> inc)
+main = (applyTwice double 3, mapL inc [1, 2, 3], sumL [1, 2, 3, 4], compd 5, 10 |> inc |> double)

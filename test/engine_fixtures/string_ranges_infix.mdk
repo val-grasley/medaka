@@ -1,0 +1,25 @@
+-- codepoint string indexing, int + char range patterns.
+-- Slice sugar `.[lo..hi]` moved OUT with #670 (now a prelude `Slice.slice` method the
+-- prelude-free eval probe cannot dispatch); slice coverage: core.mdk doctests +
+-- diff_compiler_slice_oob + diff_wasm_modules.
+sub x y = x - y
+classify n = match n
+  0..9 => "low"
+  10..99 => "mid"
+  _ => "high"
+kind c = match c
+  'a'..'z' => "lower"
+  'A'..'Z' => "upper"
+  '0'..'9' => "digit"
+  _ => "sym"
+-- Reshaped for the engines corpus (#707): 10-tuple exceeds the ≤5 tuple-Display arity,
+-- nested into two ≤5 sub-tuples. Same values, autoprints identically across engines.
+main =
+  ( ( arrayGetUnsafe 0 (stringToChars "hello")
+    , arrayGetUnsafe 1 (stringToChars "héllo")
+    , classify 3
+    , classify 42
+    , classify 500
+    )
+  , (kind 'q', kind 'K', kind '7', kind '!', sub 100 (sub 20 5))
+  )

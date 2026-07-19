@@ -1,0 +1,12 @@
+-- function guards + where-clause local bindings
+classify n
+  | n < 0 = "neg"
+  | n == 0 = "zero"
+  | otherwise = "pos"
+hypotSq a b = sq a + sq b
+  where
+    sq x = x * x
+fib n
+  | n < 2 = n
+  | otherwise = fib (n - 1) + fib (n - 2)
+main = (classify (0 - 5), classify 0, classify 9, hypotSq 3 4, fib 10)

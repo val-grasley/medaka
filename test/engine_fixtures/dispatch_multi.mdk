@@ -1,0 +1,27 @@
+-- a multi-method interface, dispatch on a recursive ADT, and an Eq-like
+-- method that dispatches on its first argument among several impls
+interface Sized a where
+  size : a -> Int
+  isEmpty : a -> Bool
+  isEmpty x = size x == 0
+data Nat = Z | S Nat
+data Tree = Leaf | Branch Tree Tree
+impl Sized Nat where
+  size Z = 0
+  size (S n) = 1 + size n
+impl Sized Tree where
+  size Leaf = 0
+  size (Branch l r) = 1 + size l + size r
+interface Combine a where
+  combine : a -> a -> a
+impl Combine Nat where
+  combine Z m = m
+  combine (S n) m = S (combine n m)
+three = S (S (S Z))
+t = Branch (Branch Leaf Leaf) Leaf
+-- Reshaped for the engines corpus (#707): 6-tuple exceeds the ≤5 tuple-Display arity,
+-- nested into two ≤5 sub-tuples. Same values, autoprints identically across engines.
+main =
+  ( (size three, isEmpty Z, isEmpty three)
+  , (size t, isEmpty Leaf, size (combine three (S Z)))
+  )

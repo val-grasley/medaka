@@ -1,0 +1,15 @@
+-- ADTs with payloads, nested pattern matching, recursion over a tree
+-- `deriving (Display)` added for the engines corpus (#707): `main` returns a `Tree`
+-- value, which the auto-print contract Displays; the eval_fixtures twin renders it via
+-- pp_value instead. Same value across eval/native/wasm.
+data Tree = Leaf Int | Node Tree Tree deriving (Display)
+sumT (Leaf n) = n
+sumT (Node l r) = sumT l + sumT r
+depth (Leaf _) = 1
+depth (Node l r) = 1 + maxI (depth l) (depth r)
+maxI a b = if a > b then a else b
+data Opt = Non | Som Int
+unwrap Non d = d
+unwrap (Som x) _ = x
+t = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3)
+main = (sumT t, depth t, unwrap (Som 7) 0, unwrap Non 99, Node (Leaf 1) (Leaf 2))

@@ -1,0 +1,18 @@
+-- extern kernel: int/string/char/array primitives, value-boundary marshalling
+shout s = stringToUpper s
+firstChar s = arrayGetUnsafe 0 (stringToChars s)
+charAt s i = arrayGetUnsafe i (stringToChars s)
+nChars s = arrayLength (stringToChars s)
+joinAll parts = stringConcat parts
+codeOf c = charCode c
+-- Reshaped for the engines corpus (#707): 8-tuple exceeds the ≤5 tuple-Display arity,
+-- nested into two ≤5 sub-tuples. Same values, autoprints identically across engines.
+main =
+  let greeting = joinAll ["he", "ll", "o"]
+  ( (intToString 42, greeting, shout greeting, stringLength greeting)
+  , ( nChars "héllo"
+    , codeOf (charAt "ABC" 1)
+    , stringToChars "ab"
+    , intToString (stringLength "abc") ++ "!"
+    )
+  )

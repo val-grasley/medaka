@@ -1,0 +1,18 @@
+-- array literals, indexing (via arrayGetUnsafe), ranges (list + array).
+-- Slice sugar `.[lo..hi]` moved OUT of this prelude-free fixture with #670: it now
+-- desugars to a `Slice`-interface `slice` method call the prelude-free eval probe
+-- cannot dispatch (mirrors how `.[i]` index left this fixture in #16b). Slice value
+-- coverage is in stdlib/core.mdk doctests + diff_compiler_slice_oob + diff_wasm_modules.
+arr = [|10, 20, 30, 40, 50|]
+xs = [1..5]
+ys = [0..=4]
+zs = [|2..6|]
+sumList [] = 0
+sumList (x :: xs) = x + sumList xs
+-- Reshaped for the engines corpus (#707): 6-tuple exceeds the ≤5 tuple-Display arity,
+-- nested into two ≤5 sub-tuples. Same values, autoprints identically across engines.
+main =
+  let a3 = arrayGetUnsafe 3 arr
+  ( (a3, xs, ys)
+  , (zs, sumList xs, arrayGetUnsafe 0 arr + arrayGetUnsafe 4 arr)
+  )
