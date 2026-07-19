@@ -2754,14 +2754,22 @@ constFoldFloat (CBinPrim op l r _) = match (constFoldFloat l, constFoldFloat r)
   _ => None
 constFoldFloat _ = None
 
--- Host float op for the const-fold — only the four ops that map to a single hardware
--- float instruction (bit-identical to the runtime `fadd/fsub/fmul/fdiv`).  `%`/frem
--- is intentionally left unfolded (returns None → normal emission).
+-- Host float op for the const-fold — each computed with the SAME operation the
+-- runtime routes this operator to, so the host fold is bit-identical to what the
+-- built program (and the interpreter) produce for the same operands on this box:
+-- `+`/`-`/`*`/`/` are the hardware `fadd/fsub/fmul/fdiv`, and `%` is `floatRem`
+-- (libm `fmod` == LLVM `frem` == the runtime `mdk_float_rem` == eval's `floatRem`).
+-- `%` MUST be folded too: `x % 0.0` is NaN for any finite x, so a constant `frem`
+-- is the identical #672 divergence (clang folds `frem 0.0,0.0` to +NaN while the
+-- runtime/interp fmod give -NaN) — the libm-call vs single-instruction distinction
+-- is irrelevant because both runtime and interp use libm fmod, so the host fmod
+-- matches them exactly.  Any other op returns None → normal (non-folded) emission.
 hostFloatOp : String -> Float -> Float -> Option Float
 hostFloatOp "+" a b = Some (a + b)
 hostFloatOp "-" a b = Some (a - b)
 hostFloatOp "*" a b = Some (a * b)
 hostFloatOp "/" a b = Some (a / b)
+hostFloatOp "%" a b = Some (floatRem a b)
 hostFloatOp _ _ _ = None
 
 -- If `op l r` is a constant float-arith subtree evaluating to a NaN, that host NaN's

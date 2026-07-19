@@ -1,5 +1,5 @@
 # META
-source_lines=10458
+source_lines=10466
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -2758,14 +2758,22 @@ constFoldFloat (CBinPrim op l r _) = match (constFoldFloat l, constFoldFloat r)
   _ => None
 constFoldFloat _ = None
 
--- Host float op for the const-fold — only the four ops that map to a single hardware
--- float instruction (bit-identical to the runtime `fadd/fsub/fmul/fdiv`).  `%`/frem
--- is intentionally left unfolded (returns None → normal emission).
+-- Host float op for the const-fold — each computed with the SAME operation the
+-- runtime routes this operator to, so the host fold is bit-identical to what the
+-- built program (and the interpreter) produce for the same operands on this box:
+-- `+`/`-`/`*`/`/` are the hardware `fadd/fsub/fmul/fdiv`, and `%` is `floatRem`
+-- (libm `fmod` == LLVM `frem` == the runtime `mdk_float_rem` == eval's `floatRem`).
+-- `%` MUST be folded too: `x % 0.0` is NaN for any finite x, so a constant `frem`
+-- is the identical #672 divergence (clang folds `frem 0.0,0.0` to +NaN while the
+-- runtime/interp fmod give -NaN) — the libm-call vs single-instruction distinction
+-- is irrelevant because both runtime and interp use libm fmod, so the host fmod
+-- matches them exactly.  Any other op returns None → normal (non-folded) emission.
 hostFloatOp : String -> Float -> Float -> Option Float
 hostFloatOp "+" a b = Some (a + b)
 hostFloatOp "-" a b = Some (a - b)
 hostFloatOp "*" a b = Some (a * b)
 hostFloatOp "/" a b = Some (a / b)
+hostFloatOp "%" a b = Some (floatRem a b)
 hostFloatOp _ _ _ = None
 
 -- If `op l r` is a constant float-arith subtree evaluating to a NaN, that host NaN's
@@ -11026,6 +11034,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "hostFloatOp" ((PLit (LString "-")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "-" (EVar "a") (EVar "b"))))
 (DFunDef false "hostFloatOp" ((PLit (LString "*")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "*" (EVar "a") (EVar "b"))))
 (DFunDef false "hostFloatOp" ((PLit (LString "/")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "/" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "%")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EApp (EApp (EVar "floatRem") (EVar "a")) (EVar "b"))))
 (DFunDef false "hostFloatOp" (PWild PWild PWild) (EVar "None"))
 (DTypeSig false "constNanFold" (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "Option") (TyCon "String"))))))
 (DFunDef false "constNanFold" ((PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EMatch (ETuple (EApp (EVar "constFoldFloat") (EVar "l")) (EApp (EVar "constFoldFloat") (EVar "r"))) (arm (PTuple (PCon "Some" (PVar "a")) (PCon "Some" (PVar "b"))) () (EMatch (EApp (EApp (EApp (EVar "hostFloatOp") (EVar "op")) (EVar "a")) (EVar "b")) (arm (PCon "Some" (PVar "v")) () (EIf (EBinOp "!=" (EVar "v") (EVar "v")) (EApp (EVar "Some") (EApp (EVar "floatBitsHex") (EVar "v"))) (EVar "None"))) (arm (PCon "None") () (EVar "None")))) (arm PWild () (EVar "None"))) (EVar "None")))
@@ -13194,6 +13203,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "hostFloatOp" ((PLit (LString "-")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "-" (EVar "a") (EVar "b"))))
 (DFunDef false "hostFloatOp" ((PLit (LString "*")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "*" (EVar "a") (EVar "b"))))
 (DFunDef false "hostFloatOp" ((PLit (LString "/")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "/" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "%")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EApp (EApp (EVar "floatRem") (EVar "a")) (EVar "b"))))
 (DFunDef false "hostFloatOp" (PWild PWild PWild) (EVar "None"))
 (DTypeSig false "constNanFold" (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "Option") (TyCon "String"))))))
 (DFunDef false "constNanFold" ((PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EMatch (ETuple (EApp (EVar "constFoldFloat") (EVar "l")) (EApp (EVar "constFoldFloat") (EVar "r"))) (arm (PTuple (PCon "Some" (PVar "a")) (PCon "Some" (PVar "b"))) () (EMatch (EApp (EApp (EApp (EVar "hostFloatOp") (EVar "op")) (EVar "a")) (EVar "b")) (arm (PCon "Some" (PVar "v")) () (EIf (EBinOp "!=" (EVar "v") (EVar "v")) (EApp (EVar "Some") (EApp (EVar "floatBitsHex") (EVar "v"))) (EVar "None"))) (arm (PCon "None") () (EVar "None")))) (arm PWild () (EVar "None"))) (EVar "None")))
