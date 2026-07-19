@@ -2727,6 +2727,69 @@ recordFloatRet e env w body =
   else
     ()
 
+-- ── #672: NaN const-fold SIGN parity (run==build on the same box) ────────────
+-- clang constant-folds a NaN-producing float op on constant operands (e.g.
+-- `fdiv double 0.0, 0.0`) to APFloat's canonical qNaN = +NaN (0x7FF8…), but the
+-- runtime `divsd` (native) and the tree-walk interpreter both yield the HOST's NaN —
+-- −NaN (0xFFF8…) on x86.  Under the sign-dependent totalOrder (N6, Rust total_cmp)
+-- a +NaN sorts/compares/hashes OPPOSITELY to a −NaN, so a literal-folded NaN gave a
+-- same-box run≠build divergence (Gt vs Lt / nan-last vs nan-first).  Fix: when a
+-- fully-constant float-arith subtree evaluates ON THE EMITTER HOST (a,b are runtime
+-- Floats pulled out of the AST, so this runs at emitter runtime — clang cannot fold
+-- it — and produces exactly what the same box's runtime/interpreter produce) to a
+-- NaN, emit that value's EXACT 64 bits as a `double` hex constant.  clang keeps an
+-- explicit 0xFFF8… verbatim through -O2 + inlining (verified) and never re-folds it.
+-- Non-NaN constants are left as the plain op: clang folds them to a bit-identical
+-- finite/inf value, so there is no divergence and nothing to intercept.  Because the
+-- bits are the HOST's, an x86-built binary carries −NaN and an ARM-built one +NaN —
+-- each matching its own box; cross-BUILD portability (one binary, two targets) is a
+-- separate golden-portability item (#509) and deliberately out of scope here.
+
+-- Host value of a fully-constant float-arith subtree, or None if any leaf is
+-- non-constant.  Uses the host's own hardware float ops (bit-identical to runtime).
+constFoldFloat : CExpr -> Option Float
+constFoldFloat (CLit (LFloat f)) = Some f
+constFoldFloat (CBinPrim op l r _) = match (constFoldFloat l, constFoldFloat r)
+  (Some a, Some b) => hostFloatOp op a b
+  _ => None
+constFoldFloat _ = None
+
+-- Host float op for the const-fold — only the four ops that map to a single hardware
+-- float instruction (bit-identical to the runtime `fadd/fsub/fmul/fdiv`).  `%`/frem
+-- is intentionally left unfolded (returns None → normal emission).
+hostFloatOp : String -> Float -> Float -> Option Float
+hostFloatOp "+" a b = Some (a + b)
+hostFloatOp "-" a b = Some (a - b)
+hostFloatOp "*" a b = Some (a * b)
+hostFloatOp "/" a b = Some (a / b)
+hostFloatOp _ _ _ = None
+
+-- If `op l r` is a constant float-arith subtree evaluating to a NaN, that host NaN's
+-- exact bits as an LLVM `double` hex constant (`0x…`); else None.  `v != v` is IEEE
+-- NaN-ness (true only for a NaN) and runs on the emitter host, so it observes the
+-- host's real NaN, sign included.
+constNanFold : String -> CExpr -> CExpr -> Option String
+constNanFold op l r =
+  if isArithOp op then match (constFoldFloat l, constFoldFloat r)
+    (Some a, Some b) => match hostFloatOp op a b
+      Some v => if v != v then Some (floatBitsHex v) else None
+      None => None
+    _ => None
+  else None
+
+-- LLVM `double` hex literal of a host Float's exact 64-bit pattern.  floatToBytes64
+-- gives 8 big-endian bytes (byte 0 = MSB), so their concatenated hex IS the i64 bit
+-- pattern — the form LLVM requires to spell a NaN double constant.
+floatBitsHex : Float -> String
+floatBitsHex f = "0x" ++ bytesHexBE (floatToBytes64 f) 0
+
+bytesHexBE : Array Int -> Int -> String
+bytesHexBE arr i =
+  if i >= arrayLength arr then
+    ""
+  else
+    hex2 (arrayGetUnsafe i arr) ++ bytesHexBE arr (i + 1)
+
 -- Emit `ex` as an UNBOXED double register (no heap box).  Recurses through float
 -- arith nodes; a non-arith leaf is emitted normally to a word then unboxed once
 -- (matching emitArith's existing LTFloat branch, which already unboxes operands on
@@ -2735,11 +2798,16 @@ emitFloatD : Emit -> List (String, (String, LTy)) -> CExpr -> String
 emitFloatD e env (CLit (LFloat f)) = ensureFloatDot (floatToString f)
 emitFloatD e env (ex@(CBinPrim op l r _)) =
   if isArithOp op then
-    let ld = emitFloatD e env l
-    let rd = emitFloatD e env r
-    let res = freshReg e
-    let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
-    res
+    match constNanFold op l r
+      -- #672: a compile-time-constant NaN → the host's exact NaN bits (a valid
+      -- `double` operand), so clang keeps −NaN instead of re-folding to +NaN.
+      Some hexC => hexC
+      None =>
+        let ld = emitFloatD e env l
+        let rd = emitFloatD e env r
+        let res = freshReg e
+        let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+        res
   else emitFloatLeaf e env ex
 emitFloatD e env ex = emitFloatLeaf e env ex
 
@@ -2867,12 +2935,16 @@ floatFieldRecord e recName label =
 -- fused statically-Float arithmetic: both operands as unboxed doubles, one float
 -- op, box ONCE (replaces N intermediate boxes with 1).
 emitFloatArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> (String, LTy)
-emitFloatArith e env op l r =
-  let ld = emitFloatD e env l
-  let rd = emitFloatD e env r
-  let res = freshReg e
-  let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
-  (boxFloat e res, LTFloat)
+emitFloatArith e env op l r = match constNanFold op l r
+  -- #672: box the host's exact NaN bits so clang keeps −NaN (matches runtime/eval on
+  -- this box) rather than folding `fdiv 0.0,0.0` to its canonical +NaN.
+  Some hexC => (boxFloat e hexC, LTFloat)
+  None =>
+    let ld = emitFloatD e env l
+    let rd = emitFloatD e env r
+    let res = freshReg e
+    let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+    (boxFloat e res, LTFloat)
 
 -- the boxing fallback path (left operand not statically float): unchanged from the
 -- original emitArith.  Still reached for float values the static check misses (e.g.

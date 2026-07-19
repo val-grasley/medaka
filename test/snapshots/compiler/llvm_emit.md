@@ -1,5 +1,5 @@
 # META
-source_lines=10386
+source_lines=10458
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -2731,6 +2731,69 @@ recordFloatRet e env w body =
   else
     ()
 
+-- ── #672: NaN const-fold SIGN parity (run==build on the same box) ────────────
+-- clang constant-folds a NaN-producing float op on constant operands (e.g.
+-- `fdiv double 0.0, 0.0`) to APFloat's canonical qNaN = +NaN (0x7FF8…), but the
+-- runtime `divsd` (native) and the tree-walk interpreter both yield the HOST's NaN —
+-- −NaN (0xFFF8…) on x86.  Under the sign-dependent totalOrder (N6, Rust total_cmp)
+-- a +NaN sorts/compares/hashes OPPOSITELY to a −NaN, so a literal-folded NaN gave a
+-- same-box run≠build divergence (Gt vs Lt / nan-last vs nan-first).  Fix: when a
+-- fully-constant float-arith subtree evaluates ON THE EMITTER HOST (a,b are runtime
+-- Floats pulled out of the AST, so this runs at emitter runtime — clang cannot fold
+-- it — and produces exactly what the same box's runtime/interpreter produce) to a
+-- NaN, emit that value's EXACT 64 bits as a `double` hex constant.  clang keeps an
+-- explicit 0xFFF8… verbatim through -O2 + inlining (verified) and never re-folds it.
+-- Non-NaN constants are left as the plain op: clang folds them to a bit-identical
+-- finite/inf value, so there is no divergence and nothing to intercept.  Because the
+-- bits are the HOST's, an x86-built binary carries −NaN and an ARM-built one +NaN —
+-- each matching its own box; cross-BUILD portability (one binary, two targets) is a
+-- separate golden-portability item (#509) and deliberately out of scope here.
+
+-- Host value of a fully-constant float-arith subtree, or None if any leaf is
+-- non-constant.  Uses the host's own hardware float ops (bit-identical to runtime).
+constFoldFloat : CExpr -> Option Float
+constFoldFloat (CLit (LFloat f)) = Some f
+constFoldFloat (CBinPrim op l r _) = match (constFoldFloat l, constFoldFloat r)
+  (Some a, Some b) => hostFloatOp op a b
+  _ => None
+constFoldFloat _ = None
+
+-- Host float op for the const-fold — only the four ops that map to a single hardware
+-- float instruction (bit-identical to the runtime `fadd/fsub/fmul/fdiv`).  `%`/frem
+-- is intentionally left unfolded (returns None → normal emission).
+hostFloatOp : String -> Float -> Float -> Option Float
+hostFloatOp "+" a b = Some (a + b)
+hostFloatOp "-" a b = Some (a - b)
+hostFloatOp "*" a b = Some (a * b)
+hostFloatOp "/" a b = Some (a / b)
+hostFloatOp _ _ _ = None
+
+-- If `op l r` is a constant float-arith subtree evaluating to a NaN, that host NaN's
+-- exact bits as an LLVM `double` hex constant (`0x…`); else None.  `v != v` is IEEE
+-- NaN-ness (true only for a NaN) and runs on the emitter host, so it observes the
+-- host's real NaN, sign included.
+constNanFold : String -> CExpr -> CExpr -> Option String
+constNanFold op l r =
+  if isArithOp op then match (constFoldFloat l, constFoldFloat r)
+    (Some a, Some b) => match hostFloatOp op a b
+      Some v => if v != v then Some (floatBitsHex v) else None
+      None => None
+    _ => None
+  else None
+
+-- LLVM `double` hex literal of a host Float's exact 64-bit pattern.  floatToBytes64
+-- gives 8 big-endian bytes (byte 0 = MSB), so their concatenated hex IS the i64 bit
+-- pattern — the form LLVM requires to spell a NaN double constant.
+floatBitsHex : Float -> String
+floatBitsHex f = "0x" ++ bytesHexBE (floatToBytes64 f) 0
+
+bytesHexBE : Array Int -> Int -> String
+bytesHexBE arr i =
+  if i >= arrayLength arr then
+    ""
+  else
+    hex2 (arrayGetUnsafe i arr) ++ bytesHexBE arr (i + 1)
+
 -- Emit `ex` as an UNBOXED double register (no heap box).  Recurses through float
 -- arith nodes; a non-arith leaf is emitted normally to a word then unboxed once
 -- (matching emitArith's existing LTFloat branch, which already unboxes operands on
@@ -2739,11 +2802,16 @@ emitFloatD : Emit -> List (String, (String, LTy)) -> CExpr -> String
 emitFloatD e env (CLit (LFloat f)) = ensureFloatDot (floatToString f)
 emitFloatD e env (ex@(CBinPrim op l r _)) =
   if isArithOp op then
-    let ld = emitFloatD e env l
-    let rd = emitFloatD e env r
-    let res = freshReg e
-    let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
-    res
+    match constNanFold op l r
+      -- #672: a compile-time-constant NaN → the host's exact NaN bits (a valid
+      -- `double` operand), so clang keeps −NaN instead of re-folding to +NaN.
+      Some hexC => hexC
+      None =>
+        let ld = emitFloatD e env l
+        let rd = emitFloatD e env r
+        let res = freshReg e
+        let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+        res
   else emitFloatLeaf e env ex
 emitFloatD e env ex = emitFloatLeaf e env ex
 
@@ -2871,12 +2939,16 @@ floatFieldRecord e recName label =
 -- fused statically-Float arithmetic: both operands as unboxed doubles, one float
 -- op, box ONCE (replaces N intermediate boxes with 1).
 emitFloatArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> (String, LTy)
-emitFloatArith e env op l r =
-  let ld = emitFloatD e env l
-  let rd = emitFloatD e env r
-  let res = freshReg e
-  let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
-  (boxFloat e res, LTFloat)
+emitFloatArith e env op l r = match constNanFold op l r
+  -- #672: box the host's exact NaN bits so clang keeps −NaN (matches runtime/eval on
+  -- this box) rather than folding `fdiv 0.0,0.0` to its canonical +NaN.
+  Some hexC => (boxFloat e hexC, LTFloat)
+  None =>
+    let ld = emitFloatD e env l
+    let rd = emitFloatD e env r
+    let res = freshReg e
+    let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+    (boxFloat e res, LTFloat)
 
 -- the boxing fallback path (left operand not statically float): unchanged from the
 -- original emitArith.  Still reached for float values the static check misses (e.g.
@@ -10945,9 +11017,25 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "blockFloatRet" ((PVar "env") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "blockFloatRet") (EVar "env")) (EVar "rest")))
 (DTypeSig false "recordFloatRet" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyCon "Unit"))))))
 (DFunDef false "recordFloatRet" ((PVar "e") (PVar "env") (PVar "w") (PVar "body")) (EIf (EApp (EApp (EVar "bodyFloatRet") (EVar "env")) (EVar "body")) (EApp (EApp (EVar "setRef") (EVar "closureRetTyRef")) (EBinOp "::" (ETuple (EVar "w") (EVar "LTFloat")) (EFieldAccess (EVar "closureRetTyRef") "value"))) (ELit LUnit)))
+(DTypeSig false "constFoldFloat" (TyFun (TyCon "CExpr") (TyApp (TyCon "Option") (TyCon "Float"))))
+(DFunDef false "constFoldFloat" ((PCon "CLit" (PCon "LFloat" (PVar "f")))) (EApp (EVar "Some") (EVar "f")))
+(DFunDef false "constFoldFloat" ((PCon "CBinPrim" (PVar "op") (PVar "l") (PVar "r") PWild)) (EMatch (ETuple (EApp (EVar "constFoldFloat") (EVar "l")) (EApp (EVar "constFoldFloat") (EVar "r"))) (arm (PTuple (PCon "Some" (PVar "a")) (PCon "Some" (PVar "b"))) () (EApp (EApp (EApp (EVar "hostFloatOp") (EVar "op")) (EVar "a")) (EVar "b"))) (arm PWild () (EVar "None"))))
+(DFunDef false "constFoldFloat" (PWild) (EVar "None"))
+(DTypeSig false "hostFloatOp" (TyFun (TyCon "String") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyApp (TyCon "Option") (TyCon "Float"))))))
+(DFunDef false "hostFloatOp" ((PLit (LString "+")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "+" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "-")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "-" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "*")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "*" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "/")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "/" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" (PWild PWild PWild) (EVar "None"))
+(DTypeSig false "constNanFold" (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "Option") (TyCon "String"))))))
+(DFunDef false "constNanFold" ((PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EMatch (ETuple (EApp (EVar "constFoldFloat") (EVar "l")) (EApp (EVar "constFoldFloat") (EVar "r"))) (arm (PTuple (PCon "Some" (PVar "a")) (PCon "Some" (PVar "b"))) () (EMatch (EApp (EApp (EApp (EVar "hostFloatOp") (EVar "op")) (EVar "a")) (EVar "b")) (arm (PCon "Some" (PVar "v")) () (EIf (EBinOp "!=" (EVar "v") (EVar "v")) (EApp (EVar "Some") (EApp (EVar "floatBitsHex") (EVar "v"))) (EVar "None"))) (arm (PCon "None") () (EVar "None")))) (arm PWild () (EVar "None"))) (EVar "None")))
+(DTypeSig false "floatBitsHex" (TyFun (TyCon "Float") (TyCon "String")))
+(DFunDef false "floatBitsHex" ((PVar "f")) (EBinOp "++" (ELit (LString "0x")) (EApp (EApp (EVar "bytesHexBE") (EApp (EVar "floatToBytes64") (EVar "f"))) (ELit (LInt 0)))))
+(DTypeSig false "bytesHexBE" (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyCon "String"))))
+(DFunDef false "bytesHexBE" ((PVar "arr") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "arr"))) (ELit (LString "")) (EBinOp "++" (EApp (EVar "hex2") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EApp (EApp (EVar "bytesHexBE") (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))))
 (DTypeSig false "emitFloatD" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "CExpr") (TyCon "String")))))
 (DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PCon "CLit" (PCon "LFloat" (PVar "f")))) (EApp (EVar "ensureFloatDot") (EApp (EVar "floatToString") (EVar "f"))))
-(DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PAs "ex" (PCon "CBinPrim" (PVar "op") (PVar "l") (PVar "r") PWild))) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EVar "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EVar "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (EVar "res"))) (EApp (EApp (EApp (EVar "emitFloatLeaf") (EVar "e")) (EVar "env")) (EVar "ex"))))
+(DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PAs "ex" (PCon "CBinPrim" (PVar "op") (PVar "l") (PVar "r") PWild))) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EMatch (EApp (EApp (EApp (EVar "constNanFold") (EVar "op")) (EVar "l")) (EVar "r")) (arm (PCon "Some" (PVar "hexC")) () (EVar "hexC")) (arm (PCon "None") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EVar "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EVar "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (EVar "res"))))) (EApp (EApp (EApp (EVar "emitFloatLeaf") (EVar "e")) (EVar "env")) (EVar "ex"))))
 (DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PVar "ex")) (EApp (EApp (EApp (EVar "emitFloatLeaf") (EVar "e")) (EVar "env")) (EVar "ex")))
 (DTypeSig false "emitFloatLeaf" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "CExpr") (TyCon "String")))))
 (DFunDef false "emitFloatLeaf" ((PVar "e") (PVar "env") (PVar "ex")) (EMatch (EApp (EVar "floatFromIntArg") (EVar "ex")) (arm (PCon "Some" (PVar "a")) () (EBlock (DoLet false false (PTuple (PVar "aw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "a"))) (DoLet false false (PVar "i") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "aw"))) (DoLet false false (PVar "r") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "r"))) (ELit (LString " = sitofp i64 "))) (EApp (EVar "display") (EVar "i"))) (ELit (LString " to double"))))) (DoExpr (EVar "r")))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "emitFloatLeafN") (EVar "e")) (EVar "env")) (EVar "ex")))))
@@ -10980,7 +11068,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "floatFieldRecord" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "floatFieldRecord" ((PVar "e") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EApp (EVar "recFieldTable") (EVar "e"))) (arm (PCon "Some" (PVar "labels")) () (EIf (EApp (EApp (EVar "contains") (EVar "label")) (EVar "labels")) (EApp (EVar "Some") (ETuple (EVar "recName") (EVar "labels"))) (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "label")))) (arm (PCon "None") () (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "label"))))))
 (DTypeSig false "emitFloatArith" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyCon "String") (TyCon "LTy"))))))))
-(DFunDef false "emitFloatArith" ((PVar "e") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EVar "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EVar "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat")))))
+(DFunDef false "emitFloatArith" ((PVar "e") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EMatch (EApp (EApp (EApp (EVar "constNanFold") (EVar "op")) (EVar "l")) (EVar "r")) (arm (PCon "Some" (PVar "hexC")) () (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "hexC")) (EVar "LTFloat"))) (arm (PCon "None") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EVar "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EVar "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat")))))))
 (DTypeSig false "emitArithW" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyCon "String") (TyCon "LTy"))))))))
 (DFunDef false "emitArithW" ((PVar "e") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PTuple (PVar "lv") (PVar "lty")) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PTuple (PVar "rv") (PVar "rty")) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "r"))) (DoExpr (EMatch (EVar "lty") (arm (PCon "LTFloat") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "lv"))) (DoLet false false (PVar "rd") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "rv"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EVar "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EVar "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat"))))) (arm (PCon "LTNum") () (EBlock (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = call i64 @"))) (EApp (EVar "display") (EApp (EVar "numOp") (EVar "op")))) (ELit (LString "(i64 "))) (EApp (EVar "display") (EVar "lv"))) (ELit (LString ", i64 "))) (EApp (EVar "display") (EVar "rv"))) (ELit (LString ")"))))) (DoExpr (ETuple (EVar "res") (EVar "LTNum"))))) (arm PWild () (EMatch (EVar "rty") (arm (PCon "LTFloat") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "lv"))) (DoLet false false (PVar "rd") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "rv"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EVar "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EVar "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat"))))) (arm (PCon "LTNum") () (EBlock (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = call i64 @"))) (EApp (EVar "display") (EApp (EVar "numOp") (EVar "op")))) (ELit (LString "(i64 "))) (EApp (EVar "display") (EVar "lv"))) (ELit (LString ", i64 "))) (EApp (EVar "display") (EVar "rv"))) (ELit (LString ")"))))) (DoExpr (ETuple (EVar "res") (EVar "LTNum"))))) (arm PWild () (EBlock (DoLet false false (PVar "li") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "lv"))) (DoLet false false (PVar "ri") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "rv"))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (EApp (EApp (EApp (EApp (EVar "emitIntDivZeroChecked") (EVar "e")) (EVar "op")) (EVar "li")) (EVar "ri")) (EBlock (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EVar "display") (EApp (EVar "intOp") (EVar "op")))) (ELit (LString " i64 "))) (EApp (EVar "display") (EVar "li"))) (ELit (LString ", "))) (EApp (EVar "display") (EVar "ri"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "tagInt") (EVar "e")) (EVar "res")) (EVar "LTInt"))))))))))))))
 (DTypeSig false "emitIntDivZeroChecked" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))))))
@@ -13097,9 +13185,25 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "blockFloatRet" ((PVar "env") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "blockFloatRet") (EVar "env")) (EVar "rest")))
 (DTypeSig false "recordFloatRet" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyCon "Unit"))))))
 (DFunDef false "recordFloatRet" ((PVar "e") (PVar "env") (PVar "w") (PVar "body")) (EIf (EApp (EApp (EVar "bodyFloatRet") (EVar "env")) (EVar "body")) (EApp (EApp (EVar "setRef") (EVar "closureRetTyRef")) (EBinOp "::" (ETuple (EVar "w") (EVar "LTFloat")) (EFieldAccess (EVar "closureRetTyRef") "value"))) (ELit LUnit)))
+(DTypeSig false "constFoldFloat" (TyFun (TyCon "CExpr") (TyApp (TyCon "Option") (TyCon "Float"))))
+(DFunDef false "constFoldFloat" ((PCon "CLit" (PCon "LFloat" (PVar "f")))) (EApp (EVar "Some") (EVar "f")))
+(DFunDef false "constFoldFloat" ((PCon "CBinPrim" (PVar "op") (PVar "l") (PVar "r") PWild)) (EMatch (ETuple (EApp (EVar "constFoldFloat") (EVar "l")) (EApp (EVar "constFoldFloat") (EVar "r"))) (arm (PTuple (PCon "Some" (PVar "a")) (PCon "Some" (PVar "b"))) () (EApp (EApp (EApp (EVar "hostFloatOp") (EVar "op")) (EVar "a")) (EVar "b"))) (arm PWild () (EVar "None"))))
+(DFunDef false "constFoldFloat" (PWild) (EVar "None"))
+(DTypeSig false "hostFloatOp" (TyFun (TyCon "String") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyApp (TyCon "Option") (TyCon "Float"))))))
+(DFunDef false "hostFloatOp" ((PLit (LString "+")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "+" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "-")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "-" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "*")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "*" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" ((PLit (LString "/")) (PVar "a") (PVar "b")) (EApp (EVar "Some") (EBinOp "/" (EVar "a") (EVar "b"))))
+(DFunDef false "hostFloatOp" (PWild PWild PWild) (EVar "None"))
+(DTypeSig false "constNanFold" (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyApp (TyCon "Option") (TyCon "String"))))))
+(DFunDef false "constNanFold" ((PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EMatch (ETuple (EApp (EVar "constFoldFloat") (EVar "l")) (EApp (EVar "constFoldFloat") (EVar "r"))) (arm (PTuple (PCon "Some" (PVar "a")) (PCon "Some" (PVar "b"))) () (EMatch (EApp (EApp (EApp (EVar "hostFloatOp") (EVar "op")) (EVar "a")) (EVar "b")) (arm (PCon "Some" (PVar "v")) () (EIf (EBinOp "!=" (EVar "v") (EVar "v")) (EApp (EVar "Some") (EApp (EVar "floatBitsHex") (EVar "v"))) (EVar "None"))) (arm (PCon "None") () (EVar "None")))) (arm PWild () (EVar "None"))) (EVar "None")))
+(DTypeSig false "floatBitsHex" (TyFun (TyCon "Float") (TyCon "String")))
+(DFunDef false "floatBitsHex" ((PVar "f")) (EBinOp "++" (ELit (LString "0x")) (EApp (EApp (EVar "bytesHexBE") (EApp (EVar "floatToBytes64") (EVar "f"))) (ELit (LInt 0)))))
+(DTypeSig false "bytesHexBE" (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyCon "String"))))
+(DFunDef false "bytesHexBE" ((PVar "arr") (PVar "i")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "arr"))) (ELit (LString "")) (EBinOp "++" (EApp (EVar "hex2") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "arr"))) (EApp (EApp (EVar "bytesHexBE") (EVar "arr")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))))
 (DTypeSig false "emitFloatD" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "CExpr") (TyCon "String")))))
 (DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PCon "CLit" (PCon "LFloat" (PVar "f")))) (EApp (EVar "ensureFloatDot") (EApp (EVar "floatToString") (EVar "f"))))
-(DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PAs "ex" (PCon "CBinPrim" (PVar "op") (PVar "l") (PVar "r") PWild))) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EMethodRef "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (EVar "res"))) (EApp (EApp (EApp (EVar "emitFloatLeaf") (EVar "e")) (EVar "env")) (EVar "ex"))))
+(DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PAs "ex" (PCon "CBinPrim" (PVar "op") (PVar "l") (PVar "r") PWild))) (EIf (EApp (EVar "isArithOp") (EVar "op")) (EMatch (EApp (EApp (EApp (EVar "constNanFold") (EVar "op")) (EVar "l")) (EVar "r")) (arm (PCon "Some" (PVar "hexC")) () (EVar "hexC")) (arm (PCon "None") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EMethodRef "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (EVar "res"))))) (EApp (EApp (EApp (EVar "emitFloatLeaf") (EVar "e")) (EVar "env")) (EVar "ex"))))
 (DFunDef false "emitFloatD" ((PVar "e") (PVar "env") (PVar "ex")) (EApp (EApp (EApp (EVar "emitFloatLeaf") (EVar "e")) (EVar "env")) (EVar "ex")))
 (DTypeSig false "emitFloatLeaf" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "CExpr") (TyCon "String")))))
 (DFunDef false "emitFloatLeaf" ((PVar "e") (PVar "env") (PVar "ex")) (EMatch (EApp (EVar "floatFromIntArg") (EVar "ex")) (arm (PCon "Some" (PVar "a")) () (EBlock (DoLet false false (PTuple (PVar "aw") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "a"))) (DoLet false false (PVar "i") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "aw"))) (DoLet false false (PVar "r") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "r"))) (ELit (LString " = sitofp i64 "))) (EApp (EMethodRef "display") (EVar "i"))) (ELit (LString " to double"))))) (DoExpr (EVar "r")))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "emitFloatLeafN") (EVar "e")) (EVar "env")) (EVar "ex")))))
@@ -13132,7 +13236,7 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "floatFieldRecord" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "floatFieldRecord" ((PVar "e") (PVar "recName") (PVar "label")) (EIf (EBinOp "==" (EVar "recName") (ELit (LString ""))) (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "label")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "recName")) (EApp (EVar "recFieldTable") (EVar "e"))) (arm (PCon "Some" (PVar "labels")) () (EIf (EApp (EApp (EVar "contains") (EVar "label")) (EVar "labels")) (EApp (EVar "Some") (ETuple (EVar "recName") (EVar "labels"))) (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "label")))) (arm (PCon "None") () (EApp (EApp (EVar "findRecordByLabel") (EApp (EVar "recFieldTable") (EVar "e"))) (EVar "label"))))))
 (DTypeSig false "emitFloatArith" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyCon "String") (TyCon "LTy"))))))))
-(DFunDef false "emitFloatArith" ((PVar "e") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EMethodRef "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat")))))
+(DFunDef false "emitFloatArith" ((PVar "e") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EMatch (EApp (EApp (EApp (EVar "constNanFold") (EVar "op")) (EVar "l")) (EVar "r")) (arm (PCon "Some" (PVar "hexC")) () (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "hexC")) (EVar "LTFloat"))) (arm (PCon "None") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PVar "rd") (EApp (EApp (EApp (EVar "emitFloatD") (EVar "e")) (EVar "env")) (EVar "r"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EMethodRef "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat")))))))
 (DTypeSig false "emitArithW" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyFun (TyCon "CExpr") (TyTuple (TyCon "String") (TyCon "LTy"))))))))
 (DFunDef false "emitArithW" ((PVar "e") (PVar "env") (PVar "op") (PVar "l") (PVar "r")) (EBlock (DoLet false false (PTuple (PVar "lv") (PVar "lty")) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "l"))) (DoLet false false (PTuple (PVar "rv") (PVar "rty")) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "r"))) (DoExpr (EMatch (EVar "lty") (arm (PCon "LTFloat") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "lv"))) (DoLet false false (PVar "rd") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "rv"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EMethodRef "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat"))))) (arm (PCon "LTNum") () (EBlock (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = call i64 @"))) (EApp (EMethodRef "display") (EApp (EVar "numOp") (EVar "op")))) (ELit (LString "(i64 "))) (EApp (EMethodRef "display") (EVar "lv"))) (ELit (LString ", i64 "))) (EApp (EMethodRef "display") (EVar "rv"))) (ELit (LString ")"))))) (DoExpr (ETuple (EVar "res") (EVar "LTNum"))))) (arm PWild () (EMatch (EVar "rty") (arm (PCon "LTFloat") () (EBlock (DoLet false false (PVar "ld") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "lv"))) (DoLet false false (PVar "rd") (EApp (EApp (EVar "unboxFloat") (EVar "e")) (EVar "rv"))) (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "floatOp") (EVar "op")))) (ELit (LString " double "))) (EApp (EMethodRef "display") (EVar "ld"))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EVar "rd"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "boxFloat") (EVar "e")) (EVar "res")) (EVar "LTFloat"))))) (arm (PCon "LTNum") () (EBlock (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = call i64 @"))) (EApp (EMethodRef "display") (EApp (EVar "numOp") (EVar "op")))) (ELit (LString "(i64 "))) (EApp (EMethodRef "display") (EVar "lv"))) (ELit (LString ", i64 "))) (EApp (EMethodRef "display") (EVar "rv"))) (ELit (LString ")"))))) (DoExpr (ETuple (EVar "res") (EVar "LTNum"))))) (arm PWild () (EBlock (DoLet false false (PVar "li") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "lv"))) (DoLet false false (PVar "ri") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "rv"))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "op") (ELit (LString "/"))) (EBinOp "==" (EVar "op") (ELit (LString "%")))) (EApp (EApp (EApp (EApp (EVar "emitIntDivZeroChecked") (EVar "e")) (EVar "op")) (EVar "li")) (EVar "ri")) (EBlock (DoLet false false (PVar "res") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "res"))) (ELit (LString " = "))) (EApp (EMethodRef "display") (EApp (EVar "intOp") (EVar "op")))) (ELit (LString " i64 "))) (EApp (EMethodRef "display") (EVar "li"))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EVar "ri"))) (ELit (LString ""))))) (DoExpr (ETuple (EApp (EApp (EVar "tagInt") (EVar "e")) (EVar "res")) (EVar "LTInt"))))))))))))))
 (DTypeSig false "emitIntDivZeroChecked" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))))))

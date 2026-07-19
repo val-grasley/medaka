@@ -158,482 +158,481 @@ declare void @mdk_enable_run_stdout_flush(i64)
 define i32 @mdk_program_main(i32 %argc, ptr %argv) {
 entry:
   call void @mdk_set_args(i32 %argc, ptr %argv)
-  %t0 = fdiv double 0.0, 0.0
-  %t1 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t1
-  %t2 = getelementptr i8, ptr %t1, i64 8
-  store double %t0, ptr %t2
-  %t3 = ptrtoint ptr %t1 to i64
-  store i64 %t3, ptr @mdk_g_nan
-  %t4 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t4
-  %t5 = getelementptr i8, ptr %t4, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLt_0 to i64), ptr %t5
-  %t6 = ptrtoint ptr %t4 to i64
+  %t0 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t0
+  %t1 = getelementptr i8, ptr %t0, i64 8
+  store double 0xFFF8000000000000, ptr %t1
+  %t2 = ptrtoint ptr %t0 to i64
+  store i64 %t2, ptr @mdk_g_nan
+  %t3 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t3
+  %t4 = getelementptr i8, ptr %t3, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLt_0 to i64), ptr %t4
+  %t5 = ptrtoint ptr %t3 to i64
+  %t6 = load i64, ptr @mdk_g_nan
   %t7 = load i64, ptr @mdk_g_nan
-  %t8 = load i64, ptr @mdk_g_nan
-  %t9 = call i64 @mdk_applyCmp(i64 %t6, i64 %t7, i64 %t8)
-  %t10 = call i64 @mdk_bit(i64 %t9)
-  %t11 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t11
-  %t12 = getelementptr i8, ptr %t11, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLe_1 to i64), ptr %t12
-  %t13 = ptrtoint ptr %t11 to i64
+  %t8 = call i64 @mdk_applyCmp(i64 %t5, i64 %t6, i64 %t7)
+  %t9 = call i64 @mdk_bit(i64 %t8)
+  %t10 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t10
+  %t11 = getelementptr i8, ptr %t10, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLe_1 to i64), ptr %t11
+  %t12 = ptrtoint ptr %t10 to i64
+  %t13 = load i64, ptr @mdk_g_nan
   %t14 = load i64, ptr @mdk_g_nan
-  %t15 = load i64, ptr @mdk_g_nan
-  %t16 = call i64 @mdk_applyCmp(i64 %t13, i64 %t14, i64 %t15)
-  %t17 = call i64 @mdk_bit(i64 %t16)
-  %t18 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t18
-  %t19 = getelementptr i8, ptr %t18, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGt_2 to i64), ptr %t19
-  %t20 = ptrtoint ptr %t18 to i64
+  %t15 = call i64 @mdk_applyCmp(i64 %t12, i64 %t13, i64 %t14)
+  %t16 = call i64 @mdk_bit(i64 %t15)
+  %t17 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t17
+  %t18 = getelementptr i8, ptr %t17, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGt_2 to i64), ptr %t18
+  %t19 = ptrtoint ptr %t17 to i64
+  %t20 = load i64, ptr @mdk_g_nan
   %t21 = load i64, ptr @mdk_g_nan
-  %t22 = load i64, ptr @mdk_g_nan
-  %t23 = call i64 @mdk_applyCmp(i64 %t20, i64 %t21, i64 %t22)
-  %t24 = call i64 @mdk_bit(i64 %t23)
-  %t25 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t25
-  %t26 = getelementptr i8, ptr %t25, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGe_3 to i64), ptr %t26
-  %t27 = ptrtoint ptr %t25 to i64
+  %t22 = call i64 @mdk_applyCmp(i64 %t19, i64 %t20, i64 %t21)
+  %t23 = call i64 @mdk_bit(i64 %t22)
+  %t24 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t24
+  %t25 = getelementptr i8, ptr %t24, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGe_3 to i64), ptr %t25
+  %t26 = ptrtoint ptr %t24 to i64
+  %t27 = load i64, ptr @mdk_g_nan
   %t28 = load i64, ptr @mdk_g_nan
-  %t29 = load i64, ptr @mdk_g_nan
-  %t30 = call i64 @mdk_applyCmp(i64 %t27, i64 %t28, i64 %t29)
-  %t31 = call i64 @mdk_bit(i64 %t30)
-  %t32 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t32
-  %t33 = getelementptr i8, ptr %t32, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLt_4 to i64), ptr %t33
-  %t34 = ptrtoint ptr %t32 to i64
-  %t35 = load i64, ptr @mdk_g_nan
-  %t36 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t36
-  %t37 = getelementptr i8, ptr %t36, i64 8
-  store double 1.0, ptr %t37
-  %t38 = ptrtoint ptr %t36 to i64
-  %t39 = call i64 @mdk_applyCmp(i64 %t34, i64 %t35, i64 %t38)
-  %t40 = call i64 @mdk_bit(i64 %t39)
-  %t41 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t41
-  %t42 = getelementptr i8, ptr %t41, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLe_5 to i64), ptr %t42
-  %t43 = ptrtoint ptr %t41 to i64
-  %t44 = load i64, ptr @mdk_g_nan
-  %t45 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t45
-  %t46 = getelementptr i8, ptr %t45, i64 8
-  store double 1.0, ptr %t46
-  %t47 = ptrtoint ptr %t45 to i64
-  %t48 = call i64 @mdk_applyCmp(i64 %t43, i64 %t44, i64 %t47)
-  %t49 = call i64 @mdk_bit(i64 %t48)
-  %t50 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t50
-  %t51 = getelementptr i8, ptr %t50, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGt_6 to i64), ptr %t51
-  %t52 = ptrtoint ptr %t50 to i64
-  %t53 = load i64, ptr @mdk_g_nan
-  %t54 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t54
-  %t55 = getelementptr i8, ptr %t54, i64 8
-  store double 1.0, ptr %t55
-  %t56 = ptrtoint ptr %t54 to i64
-  %t57 = call i64 @mdk_applyCmp(i64 %t52, i64 %t53, i64 %t56)
-  %t58 = call i64 @mdk_bit(i64 %t57)
-  %t59 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t59
-  %t60 = getelementptr i8, ptr %t59, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGe_7 to i64), ptr %t60
-  %t61 = ptrtoint ptr %t59 to i64
-  %t62 = load i64, ptr @mdk_g_nan
-  %t63 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t63
-  %t64 = getelementptr i8, ptr %t63, i64 8
-  store double 1.0, ptr %t64
-  %t65 = ptrtoint ptr %t63 to i64
-  %t66 = call i64 @mdk_applyCmp(i64 %t61, i64 %t62, i64 %t65)
-  %t67 = call i64 @mdk_bit(i64 %t66)
-  %t68 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t68
-  %t69 = getelementptr i8, ptr %t68, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLt_8 to i64), ptr %t69
-  %t70 = ptrtoint ptr %t68 to i64
-  %t71 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t71
-  %t72 = getelementptr i8, ptr %t71, i64 8
-  store double 1.0, ptr %t72
-  %t73 = ptrtoint ptr %t71 to i64
-  %t74 = load i64, ptr @mdk_g_nan
-  %t75 = call i64 @mdk_applyCmp(i64 %t70, i64 %t73, i64 %t74)
-  %t76 = call i64 @mdk_bit(i64 %t75)
-  %t77 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t77
-  %t78 = getelementptr i8, ptr %t77, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLe_9 to i64), ptr %t78
-  %t79 = ptrtoint ptr %t77 to i64
-  %t80 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t80
-  %t81 = getelementptr i8, ptr %t80, i64 8
-  store double 1.0, ptr %t81
-  %t82 = ptrtoint ptr %t80 to i64
-  %t83 = load i64, ptr @mdk_g_nan
-  %t84 = call i64 @mdk_applyCmp(i64 %t79, i64 %t82, i64 %t83)
-  %t85 = call i64 @mdk_bit(i64 %t84)
-  %t86 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t86
-  %t87 = getelementptr i8, ptr %t86, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGt_10 to i64), ptr %t87
-  %t88 = ptrtoint ptr %t86 to i64
-  %t89 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t89
-  %t90 = getelementptr i8, ptr %t89, i64 8
-  store double 1.0, ptr %t90
-  %t91 = ptrtoint ptr %t89 to i64
-  %t92 = load i64, ptr @mdk_g_nan
-  %t93 = call i64 @mdk_applyCmp(i64 %t88, i64 %t91, i64 %t92)
-  %t94 = call i64 @mdk_bit(i64 %t93)
-  %t95 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t95
-  %t96 = getelementptr i8, ptr %t95, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGe_11 to i64), ptr %t96
-  %t97 = ptrtoint ptr %t95 to i64
-  %t98 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t98
-  %t99 = getelementptr i8, ptr %t98, i64 8
-  store double 1.0, ptr %t99
-  %t100 = ptrtoint ptr %t98 to i64
-  %t101 = load i64, ptr @mdk_g_nan
-  %t102 = call i64 @mdk_applyCmp(i64 %t97, i64 %t100, i64 %t101)
-  %t103 = call i64 @mdk_bit(i64 %t102)
-  %t104 = ashr i64 5, 1
-  %t105 = ashr i64 %t17, 1
-  %t106 = mul i64 %t104, %t105
-  %t107 = shl i64 %t106, 1
-  %t108 = or i64 %t107, 1
-  %t109 = ashr i64 %t10, 1
-  %t110 = ashr i64 %t108, 1
-  %t111 = add i64 %t109, %t110
-  %t112 = shl i64 %t111, 1
-  %t113 = or i64 %t112, 1
-  %t114 = ashr i64 9, 1
-  %t115 = ashr i64 %t24, 1
-  %t116 = mul i64 %t114, %t115
-  %t117 = shl i64 %t116, 1
-  %t118 = or i64 %t117, 1
-  %t119 = ashr i64 %t113, 1
-  %t120 = ashr i64 %t118, 1
-  %t121 = add i64 %t119, %t120
-  %t122 = shl i64 %t121, 1
-  %t123 = or i64 %t122, 1
-  %t124 = ashr i64 17, 1
-  %t125 = ashr i64 %t31, 1
-  %t126 = mul i64 %t124, %t125
-  %t127 = shl i64 %t126, 1
-  %t128 = or i64 %t127, 1
-  %t129 = ashr i64 %t123, 1
-  %t130 = ashr i64 %t128, 1
-  %t131 = add i64 %t129, %t130
-  %t132 = shl i64 %t131, 1
-  %t133 = or i64 %t132, 1
-  %t134 = ashr i64 33, 1
-  %t135 = ashr i64 %t40, 1
-  %t136 = mul i64 %t134, %t135
-  %t137 = shl i64 %t136, 1
-  %t138 = or i64 %t137, 1
-  %t139 = ashr i64 %t133, 1
-  %t140 = ashr i64 %t138, 1
-  %t141 = add i64 %t139, %t140
-  %t142 = shl i64 %t141, 1
-  %t143 = or i64 %t142, 1
-  %t144 = ashr i64 65, 1
-  %t145 = ashr i64 %t49, 1
-  %t146 = mul i64 %t144, %t145
-  %t147 = shl i64 %t146, 1
-  %t148 = or i64 %t147, 1
-  %t149 = ashr i64 %t143, 1
-  %t150 = ashr i64 %t148, 1
-  %t151 = add i64 %t149, %t150
-  %t152 = shl i64 %t151, 1
-  %t153 = or i64 %t152, 1
-  %t154 = ashr i64 129, 1
-  %t155 = ashr i64 %t58, 1
-  %t156 = mul i64 %t154, %t155
-  %t157 = shl i64 %t156, 1
-  %t158 = or i64 %t157, 1
-  %t159 = ashr i64 %t153, 1
-  %t160 = ashr i64 %t158, 1
-  %t161 = add i64 %t159, %t160
-  %t162 = shl i64 %t161, 1
-  %t163 = or i64 %t162, 1
-  %t164 = ashr i64 257, 1
-  %t165 = ashr i64 %t67, 1
-  %t166 = mul i64 %t164, %t165
-  %t167 = shl i64 %t166, 1
-  %t168 = or i64 %t167, 1
-  %t169 = ashr i64 %t163, 1
-  %t170 = ashr i64 %t168, 1
-  %t171 = add i64 %t169, %t170
-  %t172 = shl i64 %t171, 1
-  %t173 = or i64 %t172, 1
-  %t174 = ashr i64 513, 1
-  %t175 = ashr i64 %t76, 1
-  %t176 = mul i64 %t174, %t175
-  %t177 = shl i64 %t176, 1
-  %t178 = or i64 %t177, 1
-  %t179 = ashr i64 %t173, 1
-  %t180 = ashr i64 %t178, 1
-  %t181 = add i64 %t179, %t180
-  %t182 = shl i64 %t181, 1
-  %t183 = or i64 %t182, 1
-  %t184 = ashr i64 1025, 1
-  %t185 = ashr i64 %t85, 1
-  %t186 = mul i64 %t184, %t185
-  %t187 = shl i64 %t186, 1
-  %t188 = or i64 %t187, 1
-  %t189 = ashr i64 %t183, 1
-  %t190 = ashr i64 %t188, 1
-  %t191 = add i64 %t189, %t190
-  %t192 = shl i64 %t191, 1
-  %t193 = or i64 %t192, 1
-  %t194 = ashr i64 2049, 1
-  %t195 = ashr i64 %t94, 1
-  %t196 = mul i64 %t194, %t195
-  %t197 = shl i64 %t196, 1
-  %t198 = or i64 %t197, 1
-  %t199 = ashr i64 %t193, 1
-  %t200 = ashr i64 %t198, 1
-  %t201 = add i64 %t199, %t200
-  %t202 = shl i64 %t201, 1
-  %t203 = or i64 %t202, 1
-  %t204 = ashr i64 4097, 1
-  %t205 = ashr i64 %t103, 1
-  %t206 = mul i64 %t204, %t205
-  %t207 = shl i64 %t206, 1
-  %t208 = or i64 %t207, 1
-  %t209 = ashr i64 %t203, 1
-  %t210 = ashr i64 %t208, 1
-  %t211 = add i64 %t209, %t210
-  %t212 = shl i64 %t211, 1
-  %t213 = or i64 %t212, 1
-  store i64 %t213, ptr @mdk_g_nanBits
-  %t214 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t214
-  %t215 = getelementptr i8, ptr %t214, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLt_12 to i64), ptr %t215
-  %t216 = ptrtoint ptr %t214 to i64
-  %t217 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t217
-  %t218 = getelementptr i8, ptr %t217, i64 8
-  store double 1.0, ptr %t218
-  %t219 = ptrtoint ptr %t217 to i64
-  %t220 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t220
-  %t221 = getelementptr i8, ptr %t220, i64 8
-  store double 2.0, ptr %t221
-  %t222 = ptrtoint ptr %t220 to i64
-  %t223 = call i64 @mdk_applyCmp(i64 %t216, i64 %t219, i64 %t222)
-  %t224 = call i64 @mdk_bit(i64 %t223)
-  %t225 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t225
-  %t226 = getelementptr i8, ptr %t225, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLe_13 to i64), ptr %t226
-  %t227 = ptrtoint ptr %t225 to i64
-  %t228 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t228
-  %t229 = getelementptr i8, ptr %t228, i64 8
-  store double 1.0, ptr %t229
-  %t230 = ptrtoint ptr %t228 to i64
-  %t231 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t231
-  %t232 = getelementptr i8, ptr %t231, i64 8
-  store double 2.0, ptr %t232
-  %t233 = ptrtoint ptr %t231 to i64
-  %t234 = call i64 @mdk_applyCmp(i64 %t227, i64 %t230, i64 %t233)
-  %t235 = call i64 @mdk_bit(i64 %t234)
-  %t236 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t236
-  %t237 = getelementptr i8, ptr %t236, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLe_14 to i64), ptr %t237
-  %t238 = ptrtoint ptr %t236 to i64
-  %t239 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t239
-  %t240 = getelementptr i8, ptr %t239, i64 8
-  store double 2.0, ptr %t240
-  %t241 = ptrtoint ptr %t239 to i64
-  %t242 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t242
-  %t243 = getelementptr i8, ptr %t242, i64 8
-  store double 1.0, ptr %t243
-  %t244 = ptrtoint ptr %t242 to i64
-  %t245 = call i64 @mdk_applyCmp(i64 %t238, i64 %t241, i64 %t244)
-  %t246 = call i64 @mdk_bit(i64 %t245)
-  %t247 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t247
-  %t248 = getelementptr i8, ptr %t247, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGt_15 to i64), ptr %t248
-  %t249 = ptrtoint ptr %t247 to i64
-  %t250 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t250
-  %t251 = getelementptr i8, ptr %t250, i64 8
-  store double 2.0, ptr %t251
-  %t252 = ptrtoint ptr %t250 to i64
-  %t253 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t253
-  %t254 = getelementptr i8, ptr %t253, i64 8
-  store double 1.0, ptr %t254
-  %t255 = ptrtoint ptr %t253 to i64
-  %t256 = call i64 @mdk_applyCmp(i64 %t249, i64 %t252, i64 %t255)
-  %t257 = call i64 @mdk_bit(i64 %t256)
-  %t258 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t258
-  %t259 = getelementptr i8, ptr %t258, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGe_16 to i64), ptr %t259
-  %t260 = ptrtoint ptr %t258 to i64
-  %t261 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t261
-  %t262 = getelementptr i8, ptr %t261, i64 8
-  store double 1.0, ptr %t262
-  %t263 = ptrtoint ptr %t261 to i64
-  %t264 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t264
-  %t265 = getelementptr i8, ptr %t264, i64 8
-  store double 1.0, ptr %t265
-  %t266 = ptrtoint ptr %t264 to i64
-  %t267 = call i64 @mdk_applyCmp(i64 %t260, i64 %t263, i64 %t266)
-  %t268 = call i64 @mdk_bit(i64 %t267)
-  %t269 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t269
-  %t270 = getelementptr i8, ptr %t269, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLe_17 to i64), ptr %t270
-  %t271 = ptrtoint ptr %t269 to i64
-  %t272 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t272
-  %t273 = getelementptr i8, ptr %t272, i64 8
-  store double 1.0, ptr %t273
-  %t274 = ptrtoint ptr %t272 to i64
-  %t275 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t275
-  %t276 = getelementptr i8, ptr %t275, i64 8
-  store double 1.0, ptr %t276
-  %t277 = ptrtoint ptr %t275 to i64
-  %t278 = call i64 @mdk_applyCmp(i64 %t271, i64 %t274, i64 %t277)
-  %t279 = call i64 @mdk_bit(i64 %t278)
-  %t280 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t280
-  %t281 = getelementptr i8, ptr %t280, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLt_18 to i64), ptr %t281
-  %t282 = ptrtoint ptr %t280 to i64
-  %t283 = call i64 @mdk_applyCmp(i64 %t282, i64 3, i64 5)
-  %t284 = call i64 @mdk_bit(i64 %t283)
-  %t285 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t285
-  %t286 = getelementptr i8, ptr %t285, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpLe_19 to i64), ptr %t286
-  %t287 = ptrtoint ptr %t285 to i64
-  %t288 = call i64 @mdk_applyCmp(i64 %t287, i64 5, i64 3)
-  %t289 = call i64 @mdk_bit(i64 %t288)
-  %t290 = call ptr @mdk_alloc(i64 16)
-  store i64 2, ptr %t290
-  %t291 = getelementptr i8, ptr %t290, i64 8
-  store i64 ptrtoint (ptr @mdk_eta_cmpGe_20 to i64), ptr %t291
-  %t292 = ptrtoint ptr %t290 to i64
-  %t293 = call i64 @mdk_applyCmp(i64 %t292, i64 5, i64 5)
-  %t294 = call i64 @mdk_bit(i64 %t293)
-  %t295 = ashr i64 5, 1
-  %t296 = ashr i64 %t235, 1
-  %t297 = mul i64 %t295, %t296
-  %t298 = shl i64 %t297, 1
-  %t299 = or i64 %t298, 1
-  %t300 = ashr i64 %t224, 1
-  %t301 = ashr i64 %t299, 1
-  %t302 = add i64 %t300, %t301
-  %t303 = shl i64 %t302, 1
-  %t304 = or i64 %t303, 1
-  %t305 = ashr i64 9, 1
-  %t306 = ashr i64 %t246, 1
-  %t307 = mul i64 %t305, %t306
-  %t308 = shl i64 %t307, 1
-  %t309 = or i64 %t308, 1
-  %t310 = ashr i64 %t304, 1
-  %t311 = ashr i64 %t309, 1
-  %t312 = add i64 %t310, %t311
-  %t313 = shl i64 %t312, 1
-  %t314 = or i64 %t313, 1
-  %t315 = ashr i64 17, 1
-  %t316 = ashr i64 %t257, 1
-  %t317 = mul i64 %t315, %t316
-  %t318 = shl i64 %t317, 1
-  %t319 = or i64 %t318, 1
-  %t320 = ashr i64 %t314, 1
-  %t321 = ashr i64 %t319, 1
-  %t322 = add i64 %t320, %t321
-  %t323 = shl i64 %t322, 1
-  %t324 = or i64 %t323, 1
-  %t325 = ashr i64 33, 1
-  %t326 = ashr i64 %t268, 1
-  %t327 = mul i64 %t325, %t326
-  %t328 = shl i64 %t327, 1
-  %t329 = or i64 %t328, 1
-  %t330 = ashr i64 %t324, 1
-  %t331 = ashr i64 %t329, 1
-  %t332 = add i64 %t330, %t331
-  %t333 = shl i64 %t332, 1
-  %t334 = or i64 %t333, 1
-  %t335 = ashr i64 65, 1
-  %t336 = ashr i64 %t279, 1
-  %t337 = mul i64 %t335, %t336
-  %t338 = shl i64 %t337, 1
-  %t339 = or i64 %t338, 1
-  %t340 = ashr i64 %t334, 1
-  %t341 = ashr i64 %t339, 1
-  %t342 = add i64 %t340, %t341
-  %t343 = shl i64 %t342, 1
-  %t344 = or i64 %t343, 1
-  %t345 = ashr i64 129, 1
-  %t346 = ashr i64 %t284, 1
-  %t347 = mul i64 %t345, %t346
-  %t348 = shl i64 %t347, 1
-  %t349 = or i64 %t348, 1
-  %t350 = ashr i64 %t344, 1
-  %t351 = ashr i64 %t349, 1
-  %t352 = add i64 %t350, %t351
-  %t353 = shl i64 %t352, 1
-  %t354 = or i64 %t353, 1
-  %t355 = ashr i64 257, 1
-  %t356 = ashr i64 %t289, 1
-  %t357 = mul i64 %t355, %t356
-  %t358 = shl i64 %t357, 1
-  %t359 = or i64 %t358, 1
-  %t360 = ashr i64 %t354, 1
-  %t361 = ashr i64 %t359, 1
-  %t362 = add i64 %t360, %t361
-  %t363 = shl i64 %t362, 1
-  %t364 = or i64 %t363, 1
-  %t365 = ashr i64 513, 1
-  %t366 = ashr i64 %t294, 1
-  %t367 = mul i64 %t365, %t366
-  %t368 = shl i64 %t367, 1
-  %t369 = or i64 %t368, 1
-  %t370 = ashr i64 %t364, 1
-  %t371 = ashr i64 %t369, 1
-  %t372 = add i64 %t370, %t371
-  %t373 = shl i64 %t372, 1
-  %t374 = or i64 %t373, 1
-  store i64 %t374, ptr @mdk_g_ctlBits
-  %t375 = load i64, ptr @mdk_g_nanBits
-  %t376 = ashr i64 %t375, 1
-  %t377 = ashr i64 2001, 1
-  %t378 = mul i64 %t376, %t377
-  %t379 = shl i64 %t378, 1
-  %t380 = or i64 %t379, 1
-  %t381 = load i64, ptr @mdk_g_ctlBits
+  %t29 = call i64 @mdk_applyCmp(i64 %t26, i64 %t27, i64 %t28)
+  %t30 = call i64 @mdk_bit(i64 %t29)
+  %t31 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t31
+  %t32 = getelementptr i8, ptr %t31, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLt_4 to i64), ptr %t32
+  %t33 = ptrtoint ptr %t31 to i64
+  %t34 = load i64, ptr @mdk_g_nan
+  %t35 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t35
+  %t36 = getelementptr i8, ptr %t35, i64 8
+  store double 1.0, ptr %t36
+  %t37 = ptrtoint ptr %t35 to i64
+  %t38 = call i64 @mdk_applyCmp(i64 %t33, i64 %t34, i64 %t37)
+  %t39 = call i64 @mdk_bit(i64 %t38)
+  %t40 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t40
+  %t41 = getelementptr i8, ptr %t40, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLe_5 to i64), ptr %t41
+  %t42 = ptrtoint ptr %t40 to i64
+  %t43 = load i64, ptr @mdk_g_nan
+  %t44 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t44
+  %t45 = getelementptr i8, ptr %t44, i64 8
+  store double 1.0, ptr %t45
+  %t46 = ptrtoint ptr %t44 to i64
+  %t47 = call i64 @mdk_applyCmp(i64 %t42, i64 %t43, i64 %t46)
+  %t48 = call i64 @mdk_bit(i64 %t47)
+  %t49 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t49
+  %t50 = getelementptr i8, ptr %t49, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGt_6 to i64), ptr %t50
+  %t51 = ptrtoint ptr %t49 to i64
+  %t52 = load i64, ptr @mdk_g_nan
+  %t53 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t53
+  %t54 = getelementptr i8, ptr %t53, i64 8
+  store double 1.0, ptr %t54
+  %t55 = ptrtoint ptr %t53 to i64
+  %t56 = call i64 @mdk_applyCmp(i64 %t51, i64 %t52, i64 %t55)
+  %t57 = call i64 @mdk_bit(i64 %t56)
+  %t58 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t58
+  %t59 = getelementptr i8, ptr %t58, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGe_7 to i64), ptr %t59
+  %t60 = ptrtoint ptr %t58 to i64
+  %t61 = load i64, ptr @mdk_g_nan
+  %t62 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t62
+  %t63 = getelementptr i8, ptr %t62, i64 8
+  store double 1.0, ptr %t63
+  %t64 = ptrtoint ptr %t62 to i64
+  %t65 = call i64 @mdk_applyCmp(i64 %t60, i64 %t61, i64 %t64)
+  %t66 = call i64 @mdk_bit(i64 %t65)
+  %t67 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t67
+  %t68 = getelementptr i8, ptr %t67, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLt_8 to i64), ptr %t68
+  %t69 = ptrtoint ptr %t67 to i64
+  %t70 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t70
+  %t71 = getelementptr i8, ptr %t70, i64 8
+  store double 1.0, ptr %t71
+  %t72 = ptrtoint ptr %t70 to i64
+  %t73 = load i64, ptr @mdk_g_nan
+  %t74 = call i64 @mdk_applyCmp(i64 %t69, i64 %t72, i64 %t73)
+  %t75 = call i64 @mdk_bit(i64 %t74)
+  %t76 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t76
+  %t77 = getelementptr i8, ptr %t76, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLe_9 to i64), ptr %t77
+  %t78 = ptrtoint ptr %t76 to i64
+  %t79 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t79
+  %t80 = getelementptr i8, ptr %t79, i64 8
+  store double 1.0, ptr %t80
+  %t81 = ptrtoint ptr %t79 to i64
+  %t82 = load i64, ptr @mdk_g_nan
+  %t83 = call i64 @mdk_applyCmp(i64 %t78, i64 %t81, i64 %t82)
+  %t84 = call i64 @mdk_bit(i64 %t83)
+  %t85 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t85
+  %t86 = getelementptr i8, ptr %t85, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGt_10 to i64), ptr %t86
+  %t87 = ptrtoint ptr %t85 to i64
+  %t88 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t88
+  %t89 = getelementptr i8, ptr %t88, i64 8
+  store double 1.0, ptr %t89
+  %t90 = ptrtoint ptr %t88 to i64
+  %t91 = load i64, ptr @mdk_g_nan
+  %t92 = call i64 @mdk_applyCmp(i64 %t87, i64 %t90, i64 %t91)
+  %t93 = call i64 @mdk_bit(i64 %t92)
+  %t94 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t94
+  %t95 = getelementptr i8, ptr %t94, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGe_11 to i64), ptr %t95
+  %t96 = ptrtoint ptr %t94 to i64
+  %t97 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t97
+  %t98 = getelementptr i8, ptr %t97, i64 8
+  store double 1.0, ptr %t98
+  %t99 = ptrtoint ptr %t97 to i64
+  %t100 = load i64, ptr @mdk_g_nan
+  %t101 = call i64 @mdk_applyCmp(i64 %t96, i64 %t99, i64 %t100)
+  %t102 = call i64 @mdk_bit(i64 %t101)
+  %t103 = ashr i64 5, 1
+  %t104 = ashr i64 %t16, 1
+  %t105 = mul i64 %t103, %t104
+  %t106 = shl i64 %t105, 1
+  %t107 = or i64 %t106, 1
+  %t108 = ashr i64 %t9, 1
+  %t109 = ashr i64 %t107, 1
+  %t110 = add i64 %t108, %t109
+  %t111 = shl i64 %t110, 1
+  %t112 = or i64 %t111, 1
+  %t113 = ashr i64 9, 1
+  %t114 = ashr i64 %t23, 1
+  %t115 = mul i64 %t113, %t114
+  %t116 = shl i64 %t115, 1
+  %t117 = or i64 %t116, 1
+  %t118 = ashr i64 %t112, 1
+  %t119 = ashr i64 %t117, 1
+  %t120 = add i64 %t118, %t119
+  %t121 = shl i64 %t120, 1
+  %t122 = or i64 %t121, 1
+  %t123 = ashr i64 17, 1
+  %t124 = ashr i64 %t30, 1
+  %t125 = mul i64 %t123, %t124
+  %t126 = shl i64 %t125, 1
+  %t127 = or i64 %t126, 1
+  %t128 = ashr i64 %t122, 1
+  %t129 = ashr i64 %t127, 1
+  %t130 = add i64 %t128, %t129
+  %t131 = shl i64 %t130, 1
+  %t132 = or i64 %t131, 1
+  %t133 = ashr i64 33, 1
+  %t134 = ashr i64 %t39, 1
+  %t135 = mul i64 %t133, %t134
+  %t136 = shl i64 %t135, 1
+  %t137 = or i64 %t136, 1
+  %t138 = ashr i64 %t132, 1
+  %t139 = ashr i64 %t137, 1
+  %t140 = add i64 %t138, %t139
+  %t141 = shl i64 %t140, 1
+  %t142 = or i64 %t141, 1
+  %t143 = ashr i64 65, 1
+  %t144 = ashr i64 %t48, 1
+  %t145 = mul i64 %t143, %t144
+  %t146 = shl i64 %t145, 1
+  %t147 = or i64 %t146, 1
+  %t148 = ashr i64 %t142, 1
+  %t149 = ashr i64 %t147, 1
+  %t150 = add i64 %t148, %t149
+  %t151 = shl i64 %t150, 1
+  %t152 = or i64 %t151, 1
+  %t153 = ashr i64 129, 1
+  %t154 = ashr i64 %t57, 1
+  %t155 = mul i64 %t153, %t154
+  %t156 = shl i64 %t155, 1
+  %t157 = or i64 %t156, 1
+  %t158 = ashr i64 %t152, 1
+  %t159 = ashr i64 %t157, 1
+  %t160 = add i64 %t158, %t159
+  %t161 = shl i64 %t160, 1
+  %t162 = or i64 %t161, 1
+  %t163 = ashr i64 257, 1
+  %t164 = ashr i64 %t66, 1
+  %t165 = mul i64 %t163, %t164
+  %t166 = shl i64 %t165, 1
+  %t167 = or i64 %t166, 1
+  %t168 = ashr i64 %t162, 1
+  %t169 = ashr i64 %t167, 1
+  %t170 = add i64 %t168, %t169
+  %t171 = shl i64 %t170, 1
+  %t172 = or i64 %t171, 1
+  %t173 = ashr i64 513, 1
+  %t174 = ashr i64 %t75, 1
+  %t175 = mul i64 %t173, %t174
+  %t176 = shl i64 %t175, 1
+  %t177 = or i64 %t176, 1
+  %t178 = ashr i64 %t172, 1
+  %t179 = ashr i64 %t177, 1
+  %t180 = add i64 %t178, %t179
+  %t181 = shl i64 %t180, 1
+  %t182 = or i64 %t181, 1
+  %t183 = ashr i64 1025, 1
+  %t184 = ashr i64 %t84, 1
+  %t185 = mul i64 %t183, %t184
+  %t186 = shl i64 %t185, 1
+  %t187 = or i64 %t186, 1
+  %t188 = ashr i64 %t182, 1
+  %t189 = ashr i64 %t187, 1
+  %t190 = add i64 %t188, %t189
+  %t191 = shl i64 %t190, 1
+  %t192 = or i64 %t191, 1
+  %t193 = ashr i64 2049, 1
+  %t194 = ashr i64 %t93, 1
+  %t195 = mul i64 %t193, %t194
+  %t196 = shl i64 %t195, 1
+  %t197 = or i64 %t196, 1
+  %t198 = ashr i64 %t192, 1
+  %t199 = ashr i64 %t197, 1
+  %t200 = add i64 %t198, %t199
+  %t201 = shl i64 %t200, 1
+  %t202 = or i64 %t201, 1
+  %t203 = ashr i64 4097, 1
+  %t204 = ashr i64 %t102, 1
+  %t205 = mul i64 %t203, %t204
+  %t206 = shl i64 %t205, 1
+  %t207 = or i64 %t206, 1
+  %t208 = ashr i64 %t202, 1
+  %t209 = ashr i64 %t207, 1
+  %t210 = add i64 %t208, %t209
+  %t211 = shl i64 %t210, 1
+  %t212 = or i64 %t211, 1
+  store i64 %t212, ptr @mdk_g_nanBits
+  %t213 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t213
+  %t214 = getelementptr i8, ptr %t213, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLt_12 to i64), ptr %t214
+  %t215 = ptrtoint ptr %t213 to i64
+  %t216 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t216
+  %t217 = getelementptr i8, ptr %t216, i64 8
+  store double 1.0, ptr %t217
+  %t218 = ptrtoint ptr %t216 to i64
+  %t219 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t219
+  %t220 = getelementptr i8, ptr %t219, i64 8
+  store double 2.0, ptr %t220
+  %t221 = ptrtoint ptr %t219 to i64
+  %t222 = call i64 @mdk_applyCmp(i64 %t215, i64 %t218, i64 %t221)
+  %t223 = call i64 @mdk_bit(i64 %t222)
+  %t224 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t224
+  %t225 = getelementptr i8, ptr %t224, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLe_13 to i64), ptr %t225
+  %t226 = ptrtoint ptr %t224 to i64
+  %t227 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t227
+  %t228 = getelementptr i8, ptr %t227, i64 8
+  store double 1.0, ptr %t228
+  %t229 = ptrtoint ptr %t227 to i64
+  %t230 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t230
+  %t231 = getelementptr i8, ptr %t230, i64 8
+  store double 2.0, ptr %t231
+  %t232 = ptrtoint ptr %t230 to i64
+  %t233 = call i64 @mdk_applyCmp(i64 %t226, i64 %t229, i64 %t232)
+  %t234 = call i64 @mdk_bit(i64 %t233)
+  %t235 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t235
+  %t236 = getelementptr i8, ptr %t235, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLe_14 to i64), ptr %t236
+  %t237 = ptrtoint ptr %t235 to i64
+  %t238 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t238
+  %t239 = getelementptr i8, ptr %t238, i64 8
+  store double 2.0, ptr %t239
+  %t240 = ptrtoint ptr %t238 to i64
+  %t241 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t241
+  %t242 = getelementptr i8, ptr %t241, i64 8
+  store double 1.0, ptr %t242
+  %t243 = ptrtoint ptr %t241 to i64
+  %t244 = call i64 @mdk_applyCmp(i64 %t237, i64 %t240, i64 %t243)
+  %t245 = call i64 @mdk_bit(i64 %t244)
+  %t246 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t246
+  %t247 = getelementptr i8, ptr %t246, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGt_15 to i64), ptr %t247
+  %t248 = ptrtoint ptr %t246 to i64
+  %t249 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t249
+  %t250 = getelementptr i8, ptr %t249, i64 8
+  store double 2.0, ptr %t250
+  %t251 = ptrtoint ptr %t249 to i64
+  %t252 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t252
+  %t253 = getelementptr i8, ptr %t252, i64 8
+  store double 1.0, ptr %t253
+  %t254 = ptrtoint ptr %t252 to i64
+  %t255 = call i64 @mdk_applyCmp(i64 %t248, i64 %t251, i64 %t254)
+  %t256 = call i64 @mdk_bit(i64 %t255)
+  %t257 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t257
+  %t258 = getelementptr i8, ptr %t257, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGe_16 to i64), ptr %t258
+  %t259 = ptrtoint ptr %t257 to i64
+  %t260 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t260
+  %t261 = getelementptr i8, ptr %t260, i64 8
+  store double 1.0, ptr %t261
+  %t262 = ptrtoint ptr %t260 to i64
+  %t263 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t263
+  %t264 = getelementptr i8, ptr %t263, i64 8
+  store double 1.0, ptr %t264
+  %t265 = ptrtoint ptr %t263 to i64
+  %t266 = call i64 @mdk_applyCmp(i64 %t259, i64 %t262, i64 %t265)
+  %t267 = call i64 @mdk_bit(i64 %t266)
+  %t268 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t268
+  %t269 = getelementptr i8, ptr %t268, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLe_17 to i64), ptr %t269
+  %t270 = ptrtoint ptr %t268 to i64
+  %t271 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t271
+  %t272 = getelementptr i8, ptr %t271, i64 8
+  store double 1.0, ptr %t272
+  %t273 = ptrtoint ptr %t271 to i64
+  %t274 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t274
+  %t275 = getelementptr i8, ptr %t274, i64 8
+  store double 1.0, ptr %t275
+  %t276 = ptrtoint ptr %t274 to i64
+  %t277 = call i64 @mdk_applyCmp(i64 %t270, i64 %t273, i64 %t276)
+  %t278 = call i64 @mdk_bit(i64 %t277)
+  %t279 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t279
+  %t280 = getelementptr i8, ptr %t279, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLt_18 to i64), ptr %t280
+  %t281 = ptrtoint ptr %t279 to i64
+  %t282 = call i64 @mdk_applyCmp(i64 %t281, i64 3, i64 5)
+  %t283 = call i64 @mdk_bit(i64 %t282)
+  %t284 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t284
+  %t285 = getelementptr i8, ptr %t284, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpLe_19 to i64), ptr %t285
+  %t286 = ptrtoint ptr %t284 to i64
+  %t287 = call i64 @mdk_applyCmp(i64 %t286, i64 5, i64 3)
+  %t288 = call i64 @mdk_bit(i64 %t287)
+  %t289 = call ptr @mdk_alloc(i64 16)
+  store i64 2, ptr %t289
+  %t290 = getelementptr i8, ptr %t289, i64 8
+  store i64 ptrtoint (ptr @mdk_eta_cmpGe_20 to i64), ptr %t290
+  %t291 = ptrtoint ptr %t289 to i64
+  %t292 = call i64 @mdk_applyCmp(i64 %t291, i64 5, i64 5)
+  %t293 = call i64 @mdk_bit(i64 %t292)
+  %t294 = ashr i64 5, 1
+  %t295 = ashr i64 %t234, 1
+  %t296 = mul i64 %t294, %t295
+  %t297 = shl i64 %t296, 1
+  %t298 = or i64 %t297, 1
+  %t299 = ashr i64 %t223, 1
+  %t300 = ashr i64 %t298, 1
+  %t301 = add i64 %t299, %t300
+  %t302 = shl i64 %t301, 1
+  %t303 = or i64 %t302, 1
+  %t304 = ashr i64 9, 1
+  %t305 = ashr i64 %t245, 1
+  %t306 = mul i64 %t304, %t305
+  %t307 = shl i64 %t306, 1
+  %t308 = or i64 %t307, 1
+  %t309 = ashr i64 %t303, 1
+  %t310 = ashr i64 %t308, 1
+  %t311 = add i64 %t309, %t310
+  %t312 = shl i64 %t311, 1
+  %t313 = or i64 %t312, 1
+  %t314 = ashr i64 17, 1
+  %t315 = ashr i64 %t256, 1
+  %t316 = mul i64 %t314, %t315
+  %t317 = shl i64 %t316, 1
+  %t318 = or i64 %t317, 1
+  %t319 = ashr i64 %t313, 1
+  %t320 = ashr i64 %t318, 1
+  %t321 = add i64 %t319, %t320
+  %t322 = shl i64 %t321, 1
+  %t323 = or i64 %t322, 1
+  %t324 = ashr i64 33, 1
+  %t325 = ashr i64 %t267, 1
+  %t326 = mul i64 %t324, %t325
+  %t327 = shl i64 %t326, 1
+  %t328 = or i64 %t327, 1
+  %t329 = ashr i64 %t323, 1
+  %t330 = ashr i64 %t328, 1
+  %t331 = add i64 %t329, %t330
+  %t332 = shl i64 %t331, 1
+  %t333 = or i64 %t332, 1
+  %t334 = ashr i64 65, 1
+  %t335 = ashr i64 %t278, 1
+  %t336 = mul i64 %t334, %t335
+  %t337 = shl i64 %t336, 1
+  %t338 = or i64 %t337, 1
+  %t339 = ashr i64 %t333, 1
+  %t340 = ashr i64 %t338, 1
+  %t341 = add i64 %t339, %t340
+  %t342 = shl i64 %t341, 1
+  %t343 = or i64 %t342, 1
+  %t344 = ashr i64 129, 1
+  %t345 = ashr i64 %t283, 1
+  %t346 = mul i64 %t344, %t345
+  %t347 = shl i64 %t346, 1
+  %t348 = or i64 %t347, 1
+  %t349 = ashr i64 %t343, 1
+  %t350 = ashr i64 %t348, 1
+  %t351 = add i64 %t349, %t350
+  %t352 = shl i64 %t351, 1
+  %t353 = or i64 %t352, 1
+  %t354 = ashr i64 257, 1
+  %t355 = ashr i64 %t288, 1
+  %t356 = mul i64 %t354, %t355
+  %t357 = shl i64 %t356, 1
+  %t358 = or i64 %t357, 1
+  %t359 = ashr i64 %t353, 1
+  %t360 = ashr i64 %t358, 1
+  %t361 = add i64 %t359, %t360
+  %t362 = shl i64 %t361, 1
+  %t363 = or i64 %t362, 1
+  %t364 = ashr i64 513, 1
+  %t365 = ashr i64 %t293, 1
+  %t366 = mul i64 %t364, %t365
+  %t367 = shl i64 %t366, 1
+  %t368 = or i64 %t367, 1
+  %t369 = ashr i64 %t363, 1
+  %t370 = ashr i64 %t368, 1
+  %t371 = add i64 %t369, %t370
+  %t372 = shl i64 %t371, 1
+  %t373 = or i64 %t372, 1
+  store i64 %t373, ptr @mdk_g_ctlBits
+  %t374 = load i64, ptr @mdk_g_nanBits
+  %t375 = ashr i64 %t374, 1
+  %t376 = ashr i64 2001, 1
+  %t377 = mul i64 %t375, %t376
+  %t378 = shl i64 %t377, 1
+  %t379 = or i64 %t378, 1
+  %t380 = load i64, ptr @mdk_g_ctlBits
+  %t381 = ashr i64 %t379, 1
   %t382 = ashr i64 %t380, 1
-  %t383 = ashr i64 %t381, 1
-  %t384 = add i64 %t382, %t383
-  %t385 = shl i64 %t384, 1
-  %t386 = or i64 %t385, 1
-  %t387 = ashr i64 %t386, 1
-  call void @mdk_print_int(i64 %t387)
+  %t383 = add i64 %t381, %t382
+  %t384 = shl i64 %t383, 1
+  %t385 = or i64 %t384, 1
+  %t386 = ashr i64 %t385, 1
+  call void @mdk_print_int(i64 %t386)
   ret i32 0
 }
 define i64 @mdk_applyCmp(i64 %arg0, i64 %arg1, i64 %arg2) {

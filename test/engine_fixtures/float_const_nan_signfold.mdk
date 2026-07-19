@@ -1,0 +1,28 @@
+-- #672 (S0, run != build): a COMPILE-TIME-CONSTANT NaN must sort/compare/hash
+-- identically across all three engines on the SAME box.
+--
+-- `0.0 / 0.0` is a constant, so the native (LLVM) backend emitted `fdiv double
+-- 0.0, 0.0` and clang const-folded it to APFloat's canonical qNaN = +NaN
+-- (0x7FF8...), while the tree-walk interpreter and the WasmGC backend both
+-- computed the HOST's NaN at runtime -- -NaN (0xFFF8...) on x86.  Under the
+-- sign-dependent totalOrder (N6, Rust total_cmp) a +NaN sorts/compares/hashes
+-- OPPOSITELY to a -NaN, so `compare (0.0/0.0) 1.0` was `Gt` under `medaka build`
+-- but `Lt` under `medaka run` -- a silent same-box run != build divergence.  The
+-- emitter now folds a constant NaN op on the host and emits its exact bits, so
+-- native keeps the runtime's -NaN and all three engines agree.
+--
+-- Unlike float_totalorder_nan.mdk (which states every NaN law RELATIVE to nanLow
+-- and is therefore blind to a sign divergence), this fixture prints the RAW
+-- sign-dependent results, so the engines differential SEES a divergence.
+--
+-- #509-SAFE: the engines gate diffs the three engines against EACH OTHER on the
+-- same box (no golden file, and NO .pin for this fixture on purpose), so an x86
+-- -NaN vs an arm +NaN never enters the comparison -- only same-box agreement does.
+
+import list.{sort}
+
+main = (
+  compare (0.0 / 0.0) 1.0,
+  debug (sort [2.0, 0.0 / 0.0, 1.0]),
+  hashFloat (0.0 / 0.0),
+)
