@@ -1,0 +1,22 @@
+-- #609 regression: min⊑ must be a REAL ORDER at n≥2 — specificity in a NON-ZERO
+-- head argument decides.  Goal `Ix Int Bool` matches BOTH `Ix Int a` (via a↦Bool)
+-- and `Ix Int Bool`; DICT-SEMANTICS §3 `inst = min⊑(match(IE, C τ̄))` picks the
+-- unique most-specific, so the answer is 2.
+--
+-- Pre-fix, ⊑ compared arg-0 patterns (`Int` vs `Int`) and called them EQUAL, so
+-- min⊑ degenerated to first-match: this file printed 1 (the GENERAL impl) and its
+-- _swapped sibling printed 2.
+--
+-- ⊑ over vectors is `I_A ⊑ I_B iff ∃σ. σ(C B̄) = C Ā` — ONE σ over the whole
+-- vector.  Here σ = [a↦Bool] gives σ(Ix Int a) = Ix Int Bool, so
+-- `Ix Int Bool` ⊑ `Ix Int a` strictly, and the specific impl wins.
+interface Ix a i where
+  ix : a -> i -> Int
+
+impl Ix Int a where
+  ix a i = 1
+
+impl Ix Int Bool where
+  ix a i = 2
+
+main = println (ix 1 True)

@@ -1,0 +1,19 @@
+-- Instance-`requires` dict-passing (Phase 83/84 single-level): a parametric impl
+-- `impl Default (List a) requires Default a` resolves `def : List Int` to `[0]` by
+-- threading the ELEMENT dict (`Default Int`) into the impl body, where the inner
+-- return-position `def` reads it through the `$dict_def_0` param the impl method
+-- gained.  Two call sites at different element types (Int / String) confirm the
+-- threaded dict is per-site, not type-pinned — `[0]` vs `["empty"]`.
+interface Default a where
+  def : a
+
+impl Default Int where
+  def = 0
+
+impl Default String where
+  def = "empty"
+
+impl Default (List a) requires Default a where
+  def = [def]
+
+main = putStrLn (debug (def : List Int) ++ " / " ++ debug (def : List String))
