@@ -914,6 +914,21 @@ an emitter-graph file does NOT invalidate the seed (emitted IR is identical); an
   in docs.
 - Record durable workflow learnings in memory; record role learnings **here**.
 
+### 🏁 At session end, run the `orchestrator-wrapup` skill — don't hand-roll the close-out
+
+Before you tell the user "done," load **`.claude/skills/orchestrator-wrapup`**. "Done" is not
+when the last PR merges — it is when the tree, the tracker, and the docs are consistent with what
+you actually learned, and the shared box is clean. The skill is the derived (not from-memory)
+checklist for that: every friction item / review residual / in-tree marker is **filed** (read the
+issue number back — the write path can silently no-op); every open bug you filed is **pinned** with
+a self-draining fixture (`test/must_fail_census.sh --all` lists the unpinned); child
+`worktree-agent-*` trees are **removed** (never one with unmerged commits or a live agent); orphan
+`build_oracles`/`xargs -P` pools are **reaped** (`TaskStop` the owner first, its PIDs only, never a
+box-wide `pkill`); scratch/`/tmp`/stray artifacts are cleaned and `git status` is clean; and durable
+learnings are written into ORCHESTRATING.md / AGENTS.md / memory / the misleading skill — committed,
+not left dangling. The loose ends a long session accumulates evaporate unless you deliberately land
+them.
+
 ---
 
 ## Medaka specifics
