@@ -38,7 +38,7 @@ eq : a -> a -> Bool
 eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
 filter : (a -> Bool) -> b a -> b a
 filterMap : (a -> Option b) -> c a -> c b
-filterThen : (Applicative b, Thenable b) => (a -> b Bool) -> List a -> b (List a)
+filterThen : Thenable b => (a -> b Bool) -> List a -> b (List a)
 find : Foldable b => (a -> Bool) -> b a -> Option a
 flat : Thenable a => a (a b) -> a b
 flatMap : Thenable b => (a -> b c) -> b a -> b c
@@ -47,8 +47,8 @@ floatSignBit : Float -> Bool
 fold : (a -> b -> a) -> a -> c b -> a
 foldMap : (a -> b) -> c a -> b
 foldRight : (a -> b -> b) -> b -> c a -> b
-foldThen : (Applicative c, Thenable c) => (a -> b -> c a) -> a -> List b -> c a
-forEach : (Applicative b, Thenable b) => List a -> (a -> b Unit) -> b Unit
+foldThen : Thenable c => (a -> b -> c a) -> a -> List b -> c a
+forEach : Thenable b => List a -> (a -> b Unit) -> b Unit
 fromEntries : List a -> b
 fromInt : Int -> a
 fromOption : a -> Option a -> a
@@ -59,7 +59,7 @@ fst : (a, b) -> a
 greet : String -> String
 gt : a -> a -> Bool
 gte : a -> a -> Bool
-guard : (Alternative a, Applicative a) => Bool -> a Unit
+guard : Alternative a => Bool -> a Unit
 hash : a -> Int
 hashListItems : Hashable a => Int -> List a -> Int
 identity : a -> a
@@ -76,8 +76,8 @@ lt : a -> a -> Bool
 lte : a -> a -> Bool
 main : Unit
 map : (a -> b) -> c a -> c b
-map2 : (Applicative d, Mappable d) => (a -> b -> c) -> d a -> d b -> d c
-map3 : (Applicative e, Mappable e) => (a -> b -> c -> d) -> e a -> e b -> e c -> e d
+map2 : Applicative d => (a -> b -> c) -> d a -> d b -> d c
+map3 : Applicative e => (a -> b -> c -> d) -> e a -> e b -> e c -> e d
 mapErr : (a -> b) -> Result a c -> Result b c
 mapFirst : (a -> b) -> c a d -> c b d
 mapSecond : (a -> b) -> c d a -> c d b
@@ -103,9 +103,9 @@ println : Display a => a -> <IO> Unit
 product : (Foldable a, Num b) => a b -> b
 pure : a -> b a
 repeat : Int -> String -> String
-repeatThen : (Applicative a, Mappable a, Thenable a) => Int -> a b -> a (List b)
+repeatThen : Thenable a => Int -> a b -> a (List b)
 replaceWith : Mappable a => a b -> c -> a c
-runEach : (Applicative a, Thenable a) => List (a b) -> a Unit
+runEach : Thenable a => List (a b) -> a Unit
 sequence : a (b c) -> b (a c)
 setIndex : a -> b -> c -> a
 shrink : a -> List a
@@ -121,6 +121,6 @@ toResult : a -> Option b -> Result a b
 to_rep : a -> Rep
 traverse : (a -> b c) -> d a -> b (d c)
 uncurry : (a -> b -> c) -> (a, b) -> c
-unless : (Applicative a, Thenable a) => Bool -> a Unit -> a Unit
-when : (Applicative a, Thenable a) => Bool -> a Unit -> a Unit
+unless : Thenable a => Bool -> a Unit -> a Unit
+when : Thenable a => Bool -> a Unit -> a Unit
 xor : Bool -> Bool -> Bool
