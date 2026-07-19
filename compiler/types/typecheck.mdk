@@ -5954,15 +5954,28 @@ maybeStandaloneValueMono name
 -- application head is bracketed True by inferShadowAppHead / inferDefinerShadowApp and keeps
 -- ordinary per-receiver dispatch.  None (⇒ caller keeps the method scheme) when the route
 -- carries no mangled sym, or when the standalone scheme is unavailable.
--- ⚠️ singleTyparamIfaceMethod is REQUIRED, not incidental: at MULTI-typaram width the
--- importer app-head path (`get (Box 3) 1`, interface `Ix a i`) uses ORDINARY dispatch and
--- does NOT bracket shadowHeadCtxRef (inferShadowApp/inferDefinerShadowApp only fire for
--- single-typaram shadows), so an app head there reaches inferMethodAt with shadowHeadCtxRef
--- False AND a mangled route sym — indistinguishable from a value position by those two
--- signals alone.  The check-path maybeStandaloneValueMono declines multi-typaram importer
--- shadows for exactly this reason (its importer arm is singleTyparamIfaceMethod-gated, Fork 1),
--- so mirroring that guard here keeps emit in lockstep with check and leaves i10's per-receiver
--- dispatch (4 then 3) intact.  Sz/Sizeable are single-typaram, so #410/#669 still pin.
+-- ⚠️ #724: the gate is PER SHADOW KIND (emitValueShadowGate), mirroring the check-path
+-- maybeStandaloneValueMono's per-arm split exactly — NOT one blanket singleTyparamIfaceMethod.
+-- The classifier is isDefinerShadow (`contains name definerShadowNamesRef`, the SAME test the
+-- check path uses), NOT shadowStandaloneSchemesRef membership: that ref is standaloneSchemeFor's
+-- scheme-SOURCE selector and an importer occurrence is not reliably in it at this pin, so keying
+-- on it mis-grounds i10's multi-typaram importer app head to a garbage-pointer build.
+--   • DEFINER arm (isDefinerShadow): typaram-agnostic, mirroring the check-path definer arm
+--     (which grounds a MULTI-typaram definer value position — #724's exact skew: check grounded,
+--     emit declined, so `map size [1,2,3]` stamped a null Display element dict and SIGSEGVd).
+--     Safe at multi-typaram width because a DEFINER app head is ALWAYS bracketed: it is caught
+--     by definerShadowArgHead's isDefinerShadow disjunct (typaram-agnostic) →
+--     inferDefinerShadowApp, which sets shadowHeadCtxRef True and types the head via
+--     shadowVarHeadMethodScheme / definerShadowHeadType — NEVER through inferMethodAt.  So the
+--     only definer occurrence reaching here with shadowHeadCtxRef False is a genuine value
+--     position, which is precisely what must ground (d22z is the app-head control).
+--   • otherwise (importer / non-shadow): singleTyparamIfaceMethod is REQUIRED, not incidental.
+--     At MULTI-typaram width the importer app-head path (`get (Box 3) 1`, interface `Ix a i`,
+--     i10) uses ORDINARY dispatch, so an app head can reach inferMethodAt with shadowHeadCtxRef
+--     False AND a mangled route sym — indistinguishable from a value position by those two
+--     signals alone.  The check-path importer arm is singleTyparamIfaceMethod-gated (Fork 1)
+--     for exactly this reason; keeping the guard here leaves i10's per-receiver dispatch
+--     (4 then 3) intact.  Sz/Sizeable are single-typaram, so #410/#669 still pin.
 --
 -- #410/#669 DIRECTION-2 (deliberately NOT taken): the alternative floor was to leave the type
 -- alone and instead make a container element route that resolves to RNone from a genuinely-free
@@ -5976,9 +5989,35 @@ maybeStandaloneValueMonoEmit : TcEnv -> String -> Ref Route -> Option Mono
 maybeStandaloneValueMonoEmit env name tagRef
   | toggles.value.shadowHeadCtxRef.value = None
   | routeLocalSym tagRef.value == "" = None
-  | not (singleTyparamIfaceMethod name) = None
+  | not (emitValueShadowGate name) = None
   | otherwise =
     map instantiate (standaloneSchemeFor env name (routeLocalSym tagRef.value))
+
+-- #724: the per-shadow-kind gate for the emit-path value-position pin, mirroring the
+-- check-path maybeStandaloneValueMono's per-arm split (definer arm typaram-agnostic; importer
+-- arm singleTyparam-scoped, Fork 1).  The definer/importer classifier is isDefinerShadow —
+-- `contains name definerShadowNamesRef`, which holds BARE names on EVERY path (the emit path
+-- recovers the mangled local funDef through the mangle map, buildDefinerShadows) and NEVER
+-- holds an imported standalone, so it is the reliable test (its header, :5717).  ⚠️ It is NOT
+-- shadowStandaloneSchemesRef membership: that ref is standaloneSchemeFor's SCHEME-SOURCE
+-- selector, not a definer/importer classifier — an importer occurrence is not reliably in it
+-- at this pin, so keying on it mis-grounded i10's multi-typaram importer APP head to a
+-- garbage-pointer build (the P0-20 shape).
+--   • DEFINER shadow (isDefinerShadow): admit typaram-agnostically.  Safe at multi-typaram
+--     width because a definer app head is ALWAYS bracketed by inferDefinerShadowApp
+--     (definerShadowArgHead's isDefinerShadow disjunct fires typaram-agnostically), so it
+--     reaches maybeStandaloneValueMonoEmit with shadowHeadCtxRef True and is declined by that
+--     function's first guard — the ONLY definer occurrence reaching the pin with
+--     shadowHeadCtxRef False is a genuine value position, which is what must ground.
+--   • otherwise (importer or non-shadow): keep singleTyparamIfaceMethod — a MULTI-typaram
+--     importer app head (`get (Box 3) 1`, i10) uses ORDINARY dispatch and is NOT bracketed,
+--     so it too can reach the pin with shadowHeadCtxRef False and a mangled route sym; the
+--     singleTyparam gate is what keeps it (and its per-receiver dispatch, 4 then 3) intact,
+--     exactly as the check-path importer arm does.
+emitValueShadowGate : String -> Bool
+emitValueShadowGate name
+  | isDefinerShadow name = True
+  | otherwise = singleTyparamIfaceMethod name
 
 -- #411: is [name] an occurrence whose TYPE maybeStandaloneValueMono pins to the
 -- standalone?  ⭐ THE ROUTE MUST FOLLOW THE ARM (the P0-20 lesson): a site typed against

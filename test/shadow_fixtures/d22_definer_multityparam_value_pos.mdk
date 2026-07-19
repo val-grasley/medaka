@@ -1,0 +1,28 @@
+-- SHADOW-SEMANTICS cell D22 (#724): definer shadow of a method on a MULTI-TYPARAM
+-- interface (`interface Ix a i`, two type params), in VALUE position.  d18 at
+-- multi-typaram width -- the exact cell the corpus lacked (d18 is single-typaram
+-- Sizeable; d11 is multi-typaram but an APP head).
+--
+-- The #410-class skew at multi-typaram width: the CHECK path grounds the value-position
+-- definer shadow to the standalone scheme (`Int -> Int`) typaram-AGNOSTICally
+-- (maybeStandaloneValueMono's definer arm gates on ifaceMethodName), but the EMIT path's
+-- maybeStandaloneValueMonoEmit DECLINED it behind a blanket `singleTyparamIfaceMethod`
+-- gate.  So `map size [1,2,3]` inferred element type `a -> i -> Int` (a function) on
+-- build, and `println`'s `Display (List (Int -> Int))` stamped a NULL element dict
+-- (RNone -> i64 0) -> the shipped binary SEGFAULTed (exit 139), while check and run were
+-- clean [2, 3, 4].  Fixed 2026-07-19 by splitting maybeStandaloneValueMonoEmit's gate per
+-- shadow kind (emitValueShadowGate): DEFINER arm is now ifaceMethodName (typaram-agnostic,
+-- mirroring the check path), IMPORTER arm stays singleTyparamIfaceMethod (i10 / Fork 1).
+-- Now ALL_EXACT [2, 3, 4] on check/run/build.
+interface Ix a i where
+  size : a -> i -> Int
+
+data Box = Box Int
+
+impl Ix Box Int where
+  size (Box a) i = a + i
+
+size : Int -> Int
+size n = n + 1
+
+main = println (map size [1, 2, 3])

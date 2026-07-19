@@ -385,6 +385,7 @@ elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> (List D
 elaborateOne : List Decl -> List Decl -> (String, List Decl) -> List Decl
 emitCyclicAliasErrors : List String -> Unit
 emitSwapDiag : String -> Expr -> Expr -> Option Mono
+emitValueShadowGate : String -> Bool
 emptyImplUniverse : ImplUniverse
 enclDictVarOf : Mono -> String -> Option String
 enclSlot : String -> Mono -> Option Int
