@@ -8389,12 +8389,28 @@ collectFloatClosureFns e ((CBind name ((CClause pats body)::[]))::rest) =
     collectFloatClosureFns e rest
 collectFloatClosureFns e (_::rest) = collectFloatClosureFns e rest
 
+-- The float-closure DETECTION scan runs `paramEnv` over the RAW outer params of
+-- EVERY single-clause CLam-bodied fn, BEFORE any `allPVar` gate (this is the only
+-- `paramEnv` caller not so gated), so it must tolerate every `Pat` shape.  `paramEnv`
+-- only handles `PVar`/`PWild`; a fn whose outer param is any OTHER pattern
+-- (`PCon`/`PTuple`/… — #737) simply isn't a float-closure factory, so the scan
+-- returns False instead of feeding `paramEnv` a shape it panics on.  (The real emit
+-- path routes such a fn through `emitMultiClauseFn` — never the float-worker path —
+-- so skipping it here never suppresses a legitimate float-worker.)
+paramEnvSafe : List Pat -> Bool
+paramEnvSafe [] = True
+paramEnvSafe ((PVar _)::rest) = paramEnvSafe rest
+paramEnvSafe (PWild::rest) = paramEnvSafe rest
+paramEnvSafe _ = False
+
 isFloatClosureBody : Emit -> String -> List Pat -> CExpr -> Bool
 isFloatClosureBody e name pats (CLam _ lamBody) =
-  let ptys = match sigLookup e name
-    Some (FnSig ts _) => ts
-    None => allInt pats
-  bodyFloatRet (paramEnv pats ptys 0) lamBody
+  if paramEnvSafe pats then
+    let ptys = match sigLookup e name
+      Some (FnSig ts _) => ts
+      None => allInt pats
+    bodyFloatRet (paramEnv pats ptys 0) lamBody
+  else False
 isFloatClosureBody e name pats _ = False
 
 -- after a SATURATED known-fn call whose callee returns a float-returning closure,
@@ -8591,9 +8607,11 @@ allInt (_::rest) = LTInt :: allInt rest
 
 -- A `PWild` param binds no name but still occupies an ABI slot: emit the `%argN`
 -- word (unused in the body) exactly as a `PVar` would, so positional %argN indexing
--- stays aligned.  #671: an outer wildcard param on a closure-returning fn
--- (`mk _ = (y => 42)`) reaches here via `isFloatClosureBody`/arity-raise; without
--- this arm it hit the catch-all panic even though `run`/eval accepted it.
+-- stays aligned.  These `PWild` arms are kept SYMMETRIC with `paramEnv`'s (the two
+-- are always used as a pair); every `paramDecls` caller is `allPVar`-gated
+-- (`emitFn`, `emitRecLam`), so a `PWild` never actually reaches here — a wildcard
+-- outer param routes through `emitMultiClauseFn` — but keeping the arms avoids a
+-- spurious catch-all panic if a future caller drops that gate.
 paramDecls : List Pat -> Int -> String
 paramDecls [] _ = ""
 paramDecls [PVar _] i = "i64 %arg" ++ intToString i

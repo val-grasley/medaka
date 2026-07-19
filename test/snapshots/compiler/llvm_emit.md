@@ -1,5 +1,5 @@
 # META
-source_lines=10480
+source_lines=10498
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -8393,12 +8393,28 @@ collectFloatClosureFns e ((CBind name ((CClause pats body)::[]))::rest) =
     collectFloatClosureFns e rest
 collectFloatClosureFns e (_::rest) = collectFloatClosureFns e rest
 
+-- The float-closure DETECTION scan runs `paramEnv` over the RAW outer params of
+-- EVERY single-clause CLam-bodied fn, BEFORE any `allPVar` gate (this is the only
+-- `paramEnv` caller not so gated), so it must tolerate every `Pat` shape.  `paramEnv`
+-- only handles `PVar`/`PWild`; a fn whose outer param is any OTHER pattern
+-- (`PCon`/`PTuple`/… — #737) simply isn't a float-closure factory, so the scan
+-- returns False instead of feeding `paramEnv` a shape it panics on.  (The real emit
+-- path routes such a fn through `emitMultiClauseFn` — never the float-worker path —
+-- so skipping it here never suppresses a legitimate float-worker.)
+paramEnvSafe : List Pat -> Bool
+paramEnvSafe [] = True
+paramEnvSafe ((PVar _)::rest) = paramEnvSafe rest
+paramEnvSafe (PWild::rest) = paramEnvSafe rest
+paramEnvSafe _ = False
+
 isFloatClosureBody : Emit -> String -> List Pat -> CExpr -> Bool
 isFloatClosureBody e name pats (CLam _ lamBody) =
-  let ptys = match sigLookup e name
-    Some (FnSig ts _) => ts
-    None => allInt pats
-  bodyFloatRet (paramEnv pats ptys 0) lamBody
+  if paramEnvSafe pats then
+    let ptys = match sigLookup e name
+      Some (FnSig ts _) => ts
+      None => allInt pats
+    bodyFloatRet (paramEnv pats ptys 0) lamBody
+  else False
 isFloatClosureBody e name pats _ = False
 
 -- after a SATURATED known-fn call whose callee returns a float-returning closure,
@@ -8595,9 +8611,11 @@ allInt (_::rest) = LTInt :: allInt rest
 
 -- A `PWild` param binds no name but still occupies an ABI slot: emit the `%argN`
 -- word (unused in the body) exactly as a `PVar` would, so positional %argN indexing
--- stays aligned.  #671: an outer wildcard param on a closure-returning fn
--- (`mk _ = (y => 42)`) reaches here via `isFloatClosureBody`/arity-raise; without
--- this arm it hit the catch-all panic even though `run`/eval accepted it.
+-- stays aligned.  These `PWild` arms are kept SYMMETRIC with `paramEnv`'s (the two
+-- are always used as a pair); every `paramDecls` caller is `allPVar`-gated
+-- (`emitFn`, `emitRecLam`), so a `PWild` never actually reaches here — a wildcard
+-- outer param routes through `emitMultiClauseFn` — but keeping the arms avoids a
+-- spurious catch-all panic if a future caller drops that gate.
 paramDecls : List Pat -> Int -> String
 paramDecls [] _ = ""
 paramDecls [PVar _] i = "i64 %arg" ++ intToString i
@@ -12117,8 +12135,13 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "collectFloatClosureFns" (PWild (PList)) (EListLit))
 (DFunDef false "collectFloatClosureFns" ((PVar "e") (PCons (PCon "CBind" (PVar "name") (PCons (PCon "CClause" (PVar "pats") (PVar "body")) (PList))) (PVar "rest"))) (EIf (EApp (EApp (EApp (EApp (EVar "isFloatClosureBody") (EVar "e")) (EVar "name")) (EVar "pats")) (EVar "body")) (EBinOp "::" (EVar "name") (EApp (EApp (EVar "collectFloatClosureFns") (EVar "e")) (EVar "rest"))) (EApp (EApp (EVar "collectFloatClosureFns") (EVar "e")) (EVar "rest"))))
 (DFunDef false "collectFloatClosureFns" ((PVar "e") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "collectFloatClosureFns") (EVar "e")) (EVar "rest")))
+(DTypeSig false "paramEnvSafe" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Bool")))
+(DFunDef false "paramEnvSafe" ((PList)) (EVar "True"))
+(DFunDef false "paramEnvSafe" ((PCons (PCon "PVar" PWild) (PVar "rest"))) (EApp (EVar "paramEnvSafe") (EVar "rest")))
+(DFunDef false "paramEnvSafe" ((PCons (PCon "PWild") (PVar "rest"))) (EApp (EVar "paramEnvSafe") (EVar "rest")))
+(DFunDef false "paramEnvSafe" (PWild) (EVar "False"))
 (DTypeSig false "isFloatClosureBody" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyCon "CExpr") (TyCon "Bool"))))))
-(DFunDef false "isFloatClosureBody" ((PVar "e") (PVar "name") (PVar "pats") (PCon "CLam" PWild (PVar "lamBody"))) (EBlock (DoLet false false (PVar "ptys") (EMatch (EApp (EApp (EVar "sigLookup") (EVar "e")) (EVar "name")) (arm (PCon "Some" (PCon "FnSig" (PVar "ts") PWild)) () (EVar "ts")) (arm (PCon "None") () (EApp (EVar "allInt") (EVar "pats"))))) (DoExpr (EApp (EApp (EVar "bodyFloatRet") (EApp (EApp (EApp (EVar "paramEnv") (EVar "pats")) (EVar "ptys")) (ELit (LInt 0)))) (EVar "lamBody")))))
+(DFunDef false "isFloatClosureBody" ((PVar "e") (PVar "name") (PVar "pats") (PCon "CLam" PWild (PVar "lamBody"))) (EIf (EApp (EVar "paramEnvSafe") (EVar "pats")) (EBlock (DoLet false false (PVar "ptys") (EMatch (EApp (EApp (EVar "sigLookup") (EVar "e")) (EVar "name")) (arm (PCon "Some" (PCon "FnSig" (PVar "ts") PWild)) () (EVar "ts")) (arm (PCon "None") () (EApp (EVar "allInt") (EVar "pats"))))) (DoExpr (EApp (EApp (EVar "bodyFloatRet") (EApp (EApp (EApp (EVar "paramEnv") (EVar "pats")) (EVar "ptys")) (ELit (LInt 0)))) (EVar "lamBody")))) (EVar "False")))
 (DFunDef false "isFloatClosureBody" ((PVar "e") (PVar "name") (PVar "pats") PWild) (EVar "False"))
 (DTypeSig false "recordFloatClosureResult" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyTuple (TyCon "String") (TyCon "LTy")) (TyCon "Unit")))))))
 (DFunDef false "recordFloatClosureResult" ((PVar "e") (PVar "fname") (PVar "argc") (PVar "arity") (PTuple (PVar "reg") PWild)) (EIf (EBinOp "&&" (EBinOp "==" (EVar "argc") (EVar "arity")) (EApp (EApp (EVar "contains") (EVar "fname")) (EFieldAccess (EVar "floatClosureFnsRef") "value"))) (EApp (EApp (EVar "setRef") (EVar "closureRetTyRef")) (EBinOp "::" (ETuple (EVar "reg") (EVar "LTFloat")) (EFieldAccess (EVar "closureRetTyRef") "value"))) (ELit LUnit)))
@@ -14290,8 +14313,13 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DFunDef false "collectFloatClosureFns" (PWild (PList)) (EListLit))
 (DFunDef false "collectFloatClosureFns" ((PVar "e") (PCons (PCon "CBind" (PVar "name") (PCons (PCon "CClause" (PVar "pats") (PVar "body")) (PList))) (PVar "rest"))) (EIf (EApp (EApp (EApp (EApp (EVar "isFloatClosureBody") (EVar "e")) (EVar "name")) (EVar "pats")) (EVar "body")) (EBinOp "::" (EVar "name") (EApp (EApp (EVar "collectFloatClosureFns") (EVar "e")) (EVar "rest"))) (EApp (EApp (EVar "collectFloatClosureFns") (EVar "e")) (EVar "rest"))))
 (DFunDef false "collectFloatClosureFns" ((PVar "e") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "collectFloatClosureFns") (EVar "e")) (EVar "rest")))
+(DTypeSig false "paramEnvSafe" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Bool")))
+(DFunDef false "paramEnvSafe" ((PList)) (EVar "True"))
+(DFunDef false "paramEnvSafe" ((PCons (PCon "PVar" PWild) (PVar "rest"))) (EApp (EVar "paramEnvSafe") (EVar "rest")))
+(DFunDef false "paramEnvSafe" ((PCons (PCon "PWild") (PVar "rest"))) (EApp (EVar "paramEnvSafe") (EVar "rest")))
+(DFunDef false "paramEnvSafe" (PWild) (EVar "False"))
 (DTypeSig false "isFloatClosureBody" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyCon "CExpr") (TyCon "Bool"))))))
-(DFunDef false "isFloatClosureBody" ((PVar "e") (PVar "name") (PVar "pats") (PCon "CLam" PWild (PVar "lamBody"))) (EBlock (DoLet false false (PVar "ptys") (EMatch (EApp (EApp (EVar "sigLookup") (EVar "e")) (EVar "name")) (arm (PCon "Some" (PCon "FnSig" (PVar "ts") PWild)) () (EVar "ts")) (arm (PCon "None") () (EApp (EVar "allInt") (EVar "pats"))))) (DoExpr (EApp (EApp (EVar "bodyFloatRet") (EApp (EApp (EApp (EVar "paramEnv") (EVar "pats")) (EVar "ptys")) (ELit (LInt 0)))) (EVar "lamBody")))))
+(DFunDef false "isFloatClosureBody" ((PVar "e") (PVar "name") (PVar "pats") (PCon "CLam" PWild (PVar "lamBody"))) (EIf (EApp (EVar "paramEnvSafe") (EVar "pats")) (EBlock (DoLet false false (PVar "ptys") (EMatch (EApp (EApp (EVar "sigLookup") (EVar "e")) (EVar "name")) (arm (PCon "Some" (PCon "FnSig" (PVar "ts") PWild)) () (EVar "ts")) (arm (PCon "None") () (EApp (EVar "allInt") (EVar "pats"))))) (DoExpr (EApp (EApp (EVar "bodyFloatRet") (EApp (EApp (EApp (EVar "paramEnv") (EVar "pats")) (EVar "ptys")) (ELit (LInt 0)))) (EVar "lamBody")))) (EVar "False")))
 (DFunDef false "isFloatClosureBody" ((PVar "e") (PVar "name") (PVar "pats") PWild) (EVar "False"))
 (DTypeSig false "recordFloatClosureResult" (TyFun (TyCon "Emit") (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyTuple (TyCon "String") (TyCon "LTy")) (TyCon "Unit")))))))
 (DFunDef false "recordFloatClosureResult" ((PVar "e") (PVar "fname") (PVar "argc") (PVar "arity") (PTuple (PVar "reg") PWild)) (EIf (EBinOp "&&" (EBinOp "==" (EVar "argc") (EVar "arity")) (EApp (EApp (EVar "contains") (EVar "fname")) (EFieldAccess (EVar "floatClosureFnsRef") "value"))) (EApp (EApp (EVar "setRef") (EVar "closureRetTyRef")) (EBinOp "::" (ETuple (EVar "reg") (EVar "LTFloat")) (EFieldAccess (EVar "closureRetTyRef") "value"))) (ELit LUnit)))

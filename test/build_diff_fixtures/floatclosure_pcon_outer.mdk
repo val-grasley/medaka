@@ -1,0 +1,8 @@
+-- #737: single-clause closure-returning fn with a NON-variable (PCon) outer param.
+-- The float-closure detection scan (isFloatClosureBody→paramEnv) must not panic on
+-- a non-PVar/PWild outer pattern — such a fn just isn't a float-closure factory.
+data Box a = Box a
+
+mk (Box x) = (y => x + y)
+
+main = println (mk (Box 40) 2)
