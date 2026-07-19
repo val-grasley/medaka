@@ -1,0 +1,27 @@
+-- #731 item 1: a nullary return-position impl method reached through a RUNTIME-DICT
+-- route — here RDictFwd, the dict a polymorphic caller (`useTwice : HasUnit a =>`)
+-- forwards at a concrete type — is the SAME per-instance CAF eval memoises globally
+-- (VTypedImpl memoThunk, shared regardless of route).  #730 hoisted only the RKey
+-- occurrence, so the RDict/RDictFwd route re-ran the body on build, duplicating the
+-- side effect (`[eval] [eval] XX`).  With the sole-impl static hoist all three
+-- engines force it once: `[eval] XX`.  A run != build S1 — the engines gate is the pin.
+interface HasUnit a where
+  theUnit : a
+
+data Box = Box String
+
+impl HasUnit Box where
+  theUnit =
+    let _ = putStr "[eval] "
+    Box "X"
+
+unBox : Box -> String
+unBox (Box s) = s
+
+useTwice : HasUnit a => (a -> String) -> String
+useTwice un =
+  let a = un theUnit
+  let b = un theUnit
+  a ++ b
+
+main = putStrLn (useTwice unBox)

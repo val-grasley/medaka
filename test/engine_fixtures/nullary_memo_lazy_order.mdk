@@ -1,0 +1,26 @@
+-- #731 item 3: the nullary-CAF side effect must fire at FIRST USE, exactly once,
+-- and NOT eagerly at program init.  #730's own pins only assert the effect COUNT and
+-- same-type sharing, never WHEN it fires — a regression to eager forcing would pass
+-- them.  This fixture prints `start ` BEFORE the first reference: the memo's effect
+-- (`[force] `) must appear AFTER it (lazy, driven by the #561 lazy-value-global
+-- machinery), and NOT again at `mid ` (memoised).  Expected on all three engines:
+-- `start [force] mid end`.  Eager forcing would print `[force] start ...`.
+interface HasUnit a where
+  theUnit : a
+
+data Box = Box String
+
+impl HasUnit Box where
+  theUnit =
+    let _ = putStr "[force] "
+    Box "X"
+
+unBox : Box -> String
+unBox (Box s) = s
+
+main =
+  let _ = putStr "start "
+  let a = unBox (theUnit : Box)
+  let _ = putStr "mid "
+  let b = unBox (theUnit : Box)
+  putStrLn "end"
