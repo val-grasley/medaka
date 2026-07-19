@@ -1,0 +1,24 @@
+-- Phase 83/84 #5: structured/recursive instance dicts.  A parametric impl with a
+-- `requires` can itself require a parametric impl, so `def : List (List Int)` needs
+-- a two-level dict (the outer List element dict is another List dict, whose element
+-- dict is the Int dict).  Three levels and a mixed Option/List case confirm the
+-- recursion is unbounded and the gate (only return-position sites forward reqs)
+-- does not corrupt arg-position methods like println.
+interface Default a where
+  def : a
+
+impl Default Int where
+  def = 0
+
+impl Default (List a) requires Default a where
+  def = [def]
+
+impl Default (Option a) requires Default a where
+  def = Some def
+
+main : <IO> Unit
+main =
+  println (def : List Int)
+  println (def : List (List Int))
+  println (def : List (List (List Int)))
+  println (def : Option (List (Option Int)))

@@ -1,0 +1,6 @@
+-- `unless : Thenable m => Bool -> m Unit -> m Unit = if b then pure () else m`,
+-- the dual of `when`: `unless True x` returns `pure ()` at the constraint var's
+-- type, which (like `when`) needs the caller-supplied Applicative dict — arg-tag
+-- can't resolve a return-position method.  Confirms the prelude-dict-passing
+-- covers more than one prelude fn, at both Option and List, both branches.
+main = putStrLn (debug (unless True (Some ())) ++ " / " ++ debug (unless True [()]) ++ " / " ++ debug (unless False (Some ())))

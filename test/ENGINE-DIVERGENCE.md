@@ -219,6 +219,32 @@ All three are genuine `run != build` divergences (eval and native agree on the c
 value; only wasm fails), exactly the class this gate exists to surface. The native LLVM
 backend handles all three correctly — the defect is WasmGC-only.
 
+### 3.5 `#710` — promoting `eval_dict_fixtures`/`eval_typed_fixtures`: 4 more divergences
+
+Issue #710 promoted the interpreter-only `test/eval_dict_fixtures/` (dict-passing/dispatch —
+this repo's #1 `run != build` class) and `test/eval_typed_fixtures/` onto the 3-engine
+differential. 35 fixtures agree cleanly across all three engines; **four reproduce real
+divergences.** Three are the same `wasm:codegen-bug` shape as §3.4 (eval == native, wasm
+build fails). The fourth is different and worse — a **silent native+wasm miscompile**.
+
+| fixture | eval == native | wasm | issue | diagnosis |
+|---|---|---|---|---|
+| `engine/impl_requires_terminal_body` | `2 / 11 / 21 / 2` | **validate fail** | #717 (S1) | wasm-tools **validate** rejects: *"values remaining on stack at end of block"*. A TERMINAL return-position impl body that IGNORES its forwarded `requires` dict (`impl S (List a) requires S a where s _ = 2`) leaves the over-supplied dict on the WasmGC operand stack; native's `usesImplDict` gate drops it correctly. |
+| `engine/instance_terminal_default` | `[]` | **validate fail** | #717 (S1) | Same terminal-impl-body defect, `impl Default (List a) requires Default a where def = []` — the terminal value leaves the forwarded element dict on the stack. |
+| `engine/prelude_default_parametric_requires` | 13-line `True/False/…` block | **validate fail** | #718 (S1) | wasm-tools **validate** rejects: *"expected (ref eq) but nothing on stack"*. A user `impl Ord (Box a) requires Ord a` defining only `compare` and INHERITING the prelude `lt`/`gt`/`min`/`max` defaults: the WasmGC inherited-default emit path (eta-prepending the forwarded `requires` dicts) leaves the operand stack short a `(ref eq)`. |
+| `engine/return_pos_memoised` | **eval ≠ native** | `ran` (wrong) | #719 (**S0**) | `emitter:nullary-memo-dup`. A nullary return-position impl method with a side effect, used twice at one concrete type, runs its body ONCE under eval (memoised) but **TWICE under `medaka build` on BOTH backends**: `[eval] XX` vs `[eval] [eval] XX`. Signature `ne:eq:ne` — eval disagrees with native == wasm. **Silent** (no error). NOT value-pinnable (both wrong arms `ran`; the #86 pin layer has no per-arm ledger consult), so the `ne:eq:ne` row IS the pin. |
+
+The first three are WasmGC-only (native LLVM is correct). `#719` is the standout: **both
+compiled backends** are wrong and only the interpreter is right — a true silent `run !=
+build`, exactly the class §1 says a differential-only gate cannot see without a value oracle,
+here caught by eval being the value oracle for native/wasm.
+
+`inferred_chain` (unsignatured inferred-constraint propagation through a call chain) was
+NOT promoted: the shipping compiler REJECTS it uniformly (`medaka run` AND `medaka build`
+both error *"Ambiguous instance for Monoid"*) — only the lenient `eval_autoprint_main`
+oracle accepts it, so it is an oracle artifact, not a backend divergence. Its signatured
+twin `monoid_nested` IS promoted and clean.
+
 ---
 
 ## 4. The engine-unavailability categories
