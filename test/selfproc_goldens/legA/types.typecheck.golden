@@ -156,7 +156,7 @@ checkMatchRedundant : Mono -> List Arm -> Unit
 checkMatchToLines : List Decl -> List Decl -> String
 checkMissingFields : String -> List (String, Mono) -> List FieldAssign -> Unit
 checkModuleFull : List (String, Scheme) -> List Decl -> List Decl -> List (String, Scheme)
-checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
+checkModuleFullDiags : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
 checkModuleFullImpl : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> List (String, Scheme)
 checkModules : List Decl -> List Decl -> List (String, List Decl) -> List (String, List (String, Scheme))
 checkModulesAllLines : List Decl -> List Decl -> List (String, List Decl) -> String

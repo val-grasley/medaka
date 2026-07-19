@@ -15010,8 +15010,8 @@ checkModules runtimeDecls coreDecls modules =
 -- BEFORE the first module.  Every existing caller goes through a driver that does exactly
 -- that (foldModulesDiags / checkModulesDiags via resetCrossModuleState); a future
 -- standalone caller that skips it would leak the previous run's universe into this one.
-export checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
-checkModuleFullDiags seedVars accData accAll prog =
+export checkModuleFullDiags : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
+checkModuleFullDiags mid seedVars accData accAll prog =
   -- #415 item 1: same seeding preamble as the flat entry points (one body), but the
   -- oracle decls are THIS module's own first.
   -- P0-9: THIS module's own decls (`prog`) come FIRST so its constructors win
@@ -15037,7 +15037,17 @@ checkModuleFullDiags seedVars accData accAll prog =
   -- implInferEnabled stays False, so this does NOT trigger impl-body inference — it
   -- only feeds the shadow/dispatch-index/key tables, matching the eval path's
   -- elabModuleStamp (which passes accAll ++ prog too).
-  let schemes = checkModuleFullImpl "" seedVars accData accAll prog
+  -- #749: thread the REAL module id (not "") so this module's constrained fns are
+  -- attributed into crossModuleFunConstraintsQualRef under their OWN source module —
+  -- SOURCE-EXACT, exactly as the emit path (elabModuleStamp mid) does.  With mid=""
+  -- every module attributed under "", so qualConstraintFor (which keys by the import's
+  -- real source module via currentImportDefinersRef) always MISSED for a user-module
+  -- constrained callee → declaredCrossModuleObls dropped its obligation → `check`
+  -- false-greened on `p.f Z` (Display Z missing) while run/build rejected (the #673
+  -- residual #738 fixed only for the prelude/core coreSchemeObligationsRef flow).  The
+  -- source-exact keying makes it MISS for a genuinely-unconstrained same-name import
+  -- (#739's `q.f`, attributed nowhere), so no over-rejection is reintroduced.
+  let schemes = checkModuleFullImpl mid seedVars accData accAll prog
   let _ = runFinalChecks prog (accAll ++ accData ++ prog)
   (
     schemes,
@@ -15073,8 +15083,8 @@ checkModuleFullDiags seedVars accData accAll prog =
 -- doc above).  Surfaces this module's own `schemes` (for pubV) plus its (errs, warns)
 -- payload.  IMPORT-SCOPED seed exactly like cmCheckWorker; NOT a flat union.
 cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List TcDiag, List TcDiag))
-cmDiagsWorker _mid seed accData accAll prog =
-  let (schemes, errs, warns) = checkModuleFullDiags seed accData accAll prog
+cmDiagsWorker mid seed accData accAll prog =
+  let (schemes, errs, warns) = checkModuleFullDiags mid seed accData accAll prog
   (schemes, (errs, warns))
 
 export checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> List (String, (List TcDiag, List TcDiag))
@@ -15159,8 +15169,8 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
 -- FULL triple (schemes, errs, warns) as its payload so cmEntryCollect can keep the
 -- terminal module's OWN schemes/warns.  IMPORT-SCOPED seed, exactly like the others.
 cmEntryWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List (String, Scheme), List TcDiag, List TcDiag))
-cmEntryWorker _mid seed accData accAll prog =
-  let (schemes, errs, warns) = checkModuleFullDiags seed accData accAll prog
+cmEntryWorker mid seed accData accAll prog =
+  let (schemes, errs, warns) = checkModuleFullDiags mid seed accData accAll prog
   (schemes, (schemes, errs, warns))
 
 -- collect: the ENTRY report keeps the ENTRY (last/terminal) module's SCHEMES and

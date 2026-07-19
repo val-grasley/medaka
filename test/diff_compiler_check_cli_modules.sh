@@ -743,5 +743,62 @@ else
   fail=$((fail+1)); printf 'FAIL 739/aliased-constrained-import-keeps-dict (check %d, run %d [%s], build %d [%s])\n' "$ac_check_code" "$ac_run_code" "$ac_run" "$ac_build_code" "$ac_build_out"
 fi
 
+#  13e. #749 CHECK-path UNDER-rejection (the #673 residual for USER modules — the INVERSE of
+#       13b/13c).  A USER-module constrained fn (`x673_foo.bar : Display a => …`) applied to a
+#       no-`Display` type (`NoD`) is genuinely UNSATISFIABLE; `run`/`build` reject it, but `check`
+#       FALSE-GREENED (exit 0, empty --json) — #738 restored the located obligation only for the
+#       PRELUDE/core flow (coreSchemeObligationsRef), while a user-module obligation flows through
+#       the qual tables, which the check-diags path attributed under mid="" (never the real source
+#       module), so qualConstraintFor always missed → declaredCrossModuleObls dropped it.  The fix
+#       threads the REAL module id through checkModuleFullDiags → checkModuleFullImpl (source-exact,
+#       exactly as the emit path does), so `check` now records + rejects the obligation.  All three
+#       verbs must REJECT and check must carry a located `No impl of Display for NoD`.  The
+#       source-exactness is what keeps 13b/13c (unconstrained same-name) ACCEPTED — no #739 revert.
+cat > "$TMP/x749_use.mdk" <<'EOF'
+import x673_foo.{bar}
+public export data NoD = NoD
+main =
+  let _ = bar NoD
+  println "ok"
+EOF
+x749_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/x749_use.mdk" 2>/dev/null)"
+x749_code=$?
+case "$x749_out" in
+  *"No impl of Display for NoD"*)
+    if [ "$x749_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   749/usermodule-fn-obligation-check (user-module Display obligation enforced on check)\n'
+    else fail=$((fail+1)); printf 'FAIL 749/usermodule-fn-obligation-check (located but exit %d)\n' "$x749_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL 749/usermodule-fn-obligation-check (obligation dropped on check: [%s])\n' "$x749_out" ;;
+esac
+# run/build must AGREE (both reject; no binary).
+MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run "$TMP/x749_use.mdk" >/dev/null 2>&1
+x749_run_code=$?
+MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/x749_use.mdk" -o "$TMP/x749.out" >/dev/null 2>&1
+x749_build_code=$?
+if [ "$x749_run_code" -ne 0 ] && [ "$x749_build_code" -ne 0 ] && [ ! -x "$TMP/x749.out" ]; then
+  pass=$((pass+1)); printf 'ok   749/usermodule-fn-obligation-agree (run+build reject too — check==run==build)\n'
+else
+  fail=$((fail+1)); printf 'FAIL 749/usermodule-fn-obligation-agree (run %d, build %d, binary=%s)\n' "$x749_run_code" "$x749_build_code" "$([ -x "$TMP/x749.out" ] && echo yes || echo no)"
+fi
+#  13f. #749 ALIASED variant: an aliased constrained user import (`import x673_foo.{bar as bz}`)
+#       applied to the no-`Display` type must ALSO be rejected on check (alias→origin resolves via
+#       importOriginsOf/currentImportOriginsRef, #750), while the aliased-on-VALID-type case (13d)
+#       still accepts + routes its dict.  Guards that the fix rejects the invalid alias without
+#       re-dropping the valid alias's dict.
+cat > "$TMP/x749_alias.mdk" <<'EOF'
+import x673_foo.{bar as bz}
+public export data NoD = NoD
+main =
+  let _ = bz NoD
+  println "ok"
+EOF
+x749a_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/x749_alias.mdk" 2>/dev/null)"
+x749a_code=$?
+case "$x749a_out" in
+  *"No impl of Display for NoD"*)
+    if [ "$x749a_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   749/aliased-usermodule-fn-obligation-check (aliased user obligation enforced on check)\n'
+    else fail=$((fail+1)); printf 'FAIL 749/aliased-usermodule-fn-obligation-check (located but exit %d)\n' "$x749a_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL 749/aliased-usermodule-fn-obligation-check (aliased obligation dropped: [%s])\n' "$x749a_out" ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

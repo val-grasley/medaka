@@ -1,7 +1,0 @@
-import p.{f}
-public export data Z = Z
-impl Display Z where
-  display x = "Z"
-main =
-  let _ = f Z
-  println "ok"
