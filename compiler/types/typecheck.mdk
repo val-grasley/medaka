@@ -2478,6 +2478,7 @@ data PerRun =
       funConstraintsRef : Ref (List (String, List Int)),
       funConstraintIfacesRef : Ref (List (String, List String)),
       currentImportDefinersRef : Ref (List (String, String)),
+      currentImportOriginsRef : Ref (List (String, String)),
       pendingDictApps : Ref (List (Ref (List Route), List Mono, List String)),
       pendingDictAppsN : Ref Int,
       pendingCallObligations : Ref (List (String, List Mono, Option Loc)),
@@ -2542,6 +2543,7 @@ freshPerRun _ = PerRun {
   funConstraintsRef = Ref [],
   funConstraintIfacesRef = Ref [],
   currentImportDefinersRef = Ref [],
+  currentImportOriginsRef = Ref [],
   pendingDictApps = Ref [],
   pendingDictAppsN = Ref 0,
   pendingCallObligations = Ref [],
@@ -3913,10 +3915,18 @@ inferDictAt env name routesRef = match lookupVar env name
 qualConstraintFor : String -> Option (List Int, List String)
 qualConstraintFor name = match lookupAssoc name perRun.value.currentImportDefinersRef.value
   None => None
-  Some src => map (ids => (
-    ids,
-    fromOption [] (lookupQualIfaces src name crossRun.value.crossModuleFunConstraintIfacesQualRef.value),
-  )) (lookupQualArity src name crossRun.value.crossModuleFunConstraintsQualRef.value)
+  Some src =>
+    -- #739 fix follow-up: resolve an aliased import's surface name to its ORIGINAL exported
+    -- name before keying the qual tables (they are attributed under the defining name).  A
+    -- plain import / non-alias defaults to the name itself.  Without this, `{set as hmSet}`
+    -- of a constrained `hash_map.set` misses (qual has `(hash_map, set)`, not `(hash_map,
+    -- hmSet)`), declaredConstraintSlots returns ([],[]) and inferDictAtFound DROPS the Hash
+    -- dict → `no matching impl for dispatch` at run/build.
+    let origin = fromOption name (lookupAssoc name perRun.value.currentImportOriginsRef.value)
+    map (ids => (
+      ids,
+      fromOption [] (lookupQualIfaces src origin crossRun.value.crossModuleFunConstraintIfacesQualRef.value),
+    )) (lookupQualArity src origin crossRun.value.crossModuleFunConstraintsQualRef.value)
 
 lookupQualArity : String -> String -> List ((String, String), List Int) -> Option (List Int)
 lookupQualArity _ _ [] = None
@@ -3941,10 +3951,35 @@ lookupQualIfaces src name (((m, n), v)::rest)
 declaredConstraintSlots : String -> (List Int, List String)
 declaredConstraintSlots name = match qualConstraintFor name
   Some (ids, ifs) => (ids, ifs)
-  None => (
-    fromOption [] (lookupAssocSL2 name perRun.value.funConstraintsRef.value),
-    fromOption [] (lookupAssocS name perRun.value.funConstraintIfacesRef.value),
-  )
+  -- #739: source-exact fallback.  An EXPLICITLY-imported name (present in
+  -- currentImportDefinersRef) whose (import-source, name) qual entry is ABSENT is
+  -- genuinely UNCONSTRAINED in its source module — every module's constrained fns ARE
+  -- attributed into crossModuleFunConstraintsQualRef when it is processed, so a MISS for a
+  -- known import means "no constraint", not "look elsewhere".  Do NOT fall back to the
+  -- bare-name funConstraintsRef here: on the emit path that table is JOINTLY seeded across
+  -- every module (aliasConstraintEntries), so a DIFFERENT module's same-named CONSTRAINED
+  -- fn (`p.f : Display a => …`) would be misattributed to this unconstrained callee
+  -- (`q.f`), and per-module tyvarCounter reset makes its constraint id collide with a fresh
+  -- instantiation var → the call site records a phantom `Display Z` obligation and
+  -- run/build OVER-REJECT a valid program (#739).  Mirrors the check-path
+  -- declaredCrossModuleObls source-exact discipline (#673/#738).  Only local / wildcard /
+  -- re-export / check-path (mid "") names — absent from currentImportDefinersRef — still
+  -- take the bare-name path (byte-identical when there is no collision).
+  None =>
+    if hasImportDefiner name then ([], [])
+    else (
+      fromOption [] (lookupAssocSL2 name perRun.value.funConstraintsRef.value),
+      fromOption [] (lookupAssocS name perRun.value.funConstraintIfacesRef.value),
+    )
+
+-- #739: is [name] an explicitly-imported value (has a known source module)?  A miss in
+-- the qual constraint table for such a name is authoritative ("unconstrained in its
+-- source"), so declaredConstraintSlots must NOT fall through to the source-blind bare-name
+-- table for it.  A local / wildcard / re-export name is absent here and keeps the old path.
+hasImportDefiner : String -> Bool
+hasImportDefiner name = match lookupAssoc name perRun.value.currentImportDefinersRef.value
+  Some _ => True
+  None => False
 
 inferDictAtFound : String -> Ref (List Route) -> (Mono, List (Int, Mono)) -> Mono
 inferDictAtFound name routesRef inst =
@@ -3955,7 +3990,16 @@ inferDictAtFound name routesRef inst =
   let known = match q
         Some _ => True
         None => hasKeySL2 name perRun.value.funConstraintsRef.value
-  if known && anyIdPinned declaredIds (snd inst) then
+  -- #739: an explicitly-imported callee with NO cross-module constraint (declaredIds empty
+  -- and source-exact per Fix A above) is genuinely UNCONSTRAINED — it only reached this
+  -- EDictAt path because the marker's dict-name set is source-blind and a DIFFERENT module
+  -- exports a same-named CONSTRAINED fn (`p.f`).  It needs NO dict routing: leave routesRef
+  -- empty and return the plain instantiated type.  Neither branch below is safe here — the
+  -- `if` branch would record a phantom obligation off the bare-name collision, and the
+  -- `else` (recursive) branch's realizeRecDictApps does its OWN source-blind bare-name
+  -- funConstraintsRef lookup and would forward the wrong module's dict slot.
+  if isEmptyL declaredIds && hasImportDefiner name then fst inst
+  else if known && anyIdPinned declaredIds (snd inst) then
     -- WS-1b: expand the callee's constraint slots with their transitive supers HERE
     -- (the global table isn't expanded until expandSupersTable runs after inference),
     -- so this call site applies one dict per EXPANDED slot — matching the def params
@@ -11104,6 +11148,7 @@ checkBodyImpl seed mode prog0 =
       let _ = setRef perRun.value.funConstraintIfacesRef (aliasConstraintEntries prog crossRun.value.crossModuleFunConstraintIfacesQualRef.value
         ++ perRun.value.funConstraintIfacesRef.value)
       let _ = setRef perRun.value.currentImportDefinersRef (importDefinersOf prog)
+      let _ = setRef perRun.value.currentImportOriginsRef (importOriginsOf prog)
       ()
   -- #11 soundness: the interface-method→iface-param map (+ the registered-iface set).
   -- #154 PR2 (site #3): FLAT rebuilds both refs over its whole `fullUniverse` (already
@@ -14773,6 +14818,25 @@ importDefinersOf ((DUse _ path _)::rest) =
     None => importDefinersOf rest
     Some bindings => map (b => (snd b, depId)) bindings ++ importDefinersOf rest
 importDefinersOf (_::rest) = importDefinersOf rest
+
+-- #739 fix follow-up: local-import-name → ORIGINAL exported name, the alias-resolution
+-- companion to importDefinersOf (which maps local → source module).  `importedBindings`
+-- yields (origin, local) pairs, so an aliased member `{x as y}` gives (y ↦ x) and a plain
+-- `{f}` gives (f ↦ f).  qualConstraintFor keys the (source, name) qual tables by the ORIGIN,
+-- not the surface alias — the tables are attributed under the DEFINING name — so a constrained
+-- aliased import (`hash_map.{set as hmSet}`) resolves its `Hash`/`Eq` dict instead of being
+-- misclassified as unconstrained and short-circuited (which DROPPED the dict → dispatch panic).
+importOriginsOf : List Decl -> List (String, String)
+importOriginsOf [] = []
+importOriginsOf ((DAttrib _ d)::rest) = importOriginsOf [d]
+  ++ importOriginsOf rest
+importOriginsOf ((DUse _ path _)::rest) =
+  let depId = usePathModuleId path
+  if depId == "core" then importOriginsOf rest
+  else match importedBindings path
+    None => importOriginsOf rest
+    Some bindings => map (b => (snd b, fst b)) bindings ++ importOriginsOf rest
+importOriginsOf (_::rest) = importOriginsOf rest
 
 -- the (key, scheme) pairs a module RE-EXPORTS via `export import` (`DUse True`).
 -- Mirrors resolve's re-export set (resolve.pubUsePaths filters the same `DUse True`)

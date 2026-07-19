@@ -1,0 +1,2 @@
+export f : Display a => a -> String
+f x = display x

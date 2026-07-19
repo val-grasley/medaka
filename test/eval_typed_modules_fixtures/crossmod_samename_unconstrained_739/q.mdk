@@ -1,0 +1,2 @@
+export f : a -> a
+f x = x

@@ -1,0 +1,6 @@
+import q.{f}
+import p
+public export data Z = Z
+main =
+  let _ = f Z
+  println "ok"

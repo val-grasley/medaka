@@ -1,0 +1,13 @@
+issue: 749
+what: `check` false-greens (exit 0, empty --json) on a multi-module program where a
+what: USER-module imported constrained fn (`p.f : Display a => ...`) is applied to a
+what: no-`Display` type (`Z`); `run`/`build` reject it (the #673 dead-end circular message).
+what: #673 residual: #738 fixed only the prelude/core obligation flow, not the user-module one.
+cmd: check main.mdk
+exit: 0
+control: check control.mdk
+why-control: control.mdk is identical to main.mdk EXCEPT it adds an `impl Display Z`, so the
+why-control: `Display Z` obligation is SATISFIABLE and `check` correctly ACCEPTS (exit 0).
+why-control: The two files differ ONLY in that impl — which IS the claim (whether the obligation
+why-control: is satisfiable) — so a fix flips main to exit 1 (No impl of Display for Z) while
+why-control: this control stays exit 0.

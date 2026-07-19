@@ -664,9 +664,11 @@ esac
 #       uses BAZ's `bar` on a no-`Display` type.  This is VALID; `check` MUST accept it.  A
 #       source-BLIND name lookup misattributes foo's Display constraint to baz's `bar` and
 #       falsely rejects `No impl of Display for NoD`; the source-exact lookup (qualConstraintFor
-#       resolves `bar`→baz via currentImportDefinersRef) must not.  Asserted on `check` ONLY:
-#       run/build reject this shape via a SEPARATE, PRE-EXISTING emit-path same-name over-
-#       rejection bug (present on main, independent of #673 and out of scope here).
+#       resolves `bar`→baz via currentImportDefinersRef) must not.  #739: the SAME source-blind
+#       misattribution was ALSO present on the EMIT path (declaredConstraintSlots' bare-name
+#       fallback + inferDictAtFound), so `run`/`build` OVER-REJECTED this valid program while
+#       `check` (fixed by #673) accepted it.  It is now source-exact on the emit path too, so
+#       ALL THREE verbs agree: check/run/build ACCEPT and the program prints `ok`.
 cat > "$TMP/x673_foo.mdk" <<'EOF'
 public export data FooT = FooT
 export bar : Display a => a -> String
@@ -691,6 +693,55 @@ case "$x673c_out" in
   *) if [ "$x673c_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   673b/samename-no-overreject (baz unconstrained bar not tagged with foo Display)\n'
      else fail=$((fail+1)); printf 'FAIL 673b/samename-no-overreject (exit %d: [%s])\n' "$x673c_code" "$x673c_out"; fi ;;
 esac
+#  13c. #739 EMIT-path over-rejection: the SAME same-name collision must be accepted by `run`
+#       AND `build`, not just `check` — the emit path (declaredConstraintSlots/inferDictAtFound)
+#       used to misattribute foo's `Display` to baz's unconstrained `bar` and reject with a
+#       `type error` (exit 1) while `check` accepted (the dead-end circular message #673 warned
+#       about).  Both must now exit 0 and PRINT `ok`.  Pre-fix this leg fails (run/build exit 1).
+x739_run="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run "$TMP/x673_collide.mdk" 2>/dev/null)"
+x739_run_code=$?
+if [ "$x739_run_code" -eq 0 ] && [ "$x739_run" = "ok" ]; then
+  pass=$((pass+1)); printf 'ok   739/samename-emit-run (run accepts + prints ok)\n'
+else
+  fail=$((fail+1)); printf 'FAIL 739/samename-emit-run (exit %d, out [%s])\n' "$x739_run_code" "$x739_run"
+fi
+MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/x673_collide.mdk" -o "$TMP/x739.out" >/dev/null 2>&1
+x739_build_code=$?
+x739_build_out="$([ -x "$TMP/x739.out" ] && "$TMP/x739.out" 2>/dev/null | head -1)"  # native rt auto-prints a trailing () line; take the first
+if [ "$x739_build_code" -eq 0 ] && [ -x "$TMP/x739.out" ] && [ "$x739_build_out" = "ok" ]; then
+  pass=$((pass+1)); printf 'ok   739/samename-emit-build (build succeeds + binary prints ok)\n'
+else
+  fail=$((fail+1)); printf 'FAIL 739/samename-emit-build (exit %d, binary=%s, out [%s])\n' "$x739_build_code" "$([ -x "$TMP/x739.out" ] && echo yes || echo no)" "$x739_build_out"
+fi
+#  13d. #739 fix follow-up — the UNDER-application hole (CI-caught regression of the first cut).
+#       An ALIASED selective import of a CONSTRAINED fn (`import p.{f as g}`) used at a VALID
+#       type MUST keep its dict — check/run/build all accept and print the value.  The first
+#       #739 cut treated the alias local (`g`) as authoritative: it IS in currentImportDefinersRef
+#       but `qualConstraintFor` missed (the qual table is keyed by the ORIGIN `f`, not the alias),
+#       so declaredConstraintSlots returned ([],[]) and inferDictAtFound DROPPED the Display dict →
+#       `no matching impl for dispatch` at run/build.  The alias→origin resolution (importOriginsOf
+#       + currentImportOriginsRef) fixes it.  This is the same shape as hash_map.{set as hmSet}
+#       (Hash/Eq dict) that diff_compiler_test's hash_negative_hash caught.
+cat > "$TMP/aliascon_p.mdk" <<'EOF'
+export f : Display a => a -> String
+f x = display x
+EOF
+cat > "$TMP/aliascon.mdk" <<'EOF'
+import aliascon_p.{f as g}
+main = println (g 42)
+EOF
+ac_run="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" run "$TMP/aliascon.mdk" 2>/dev/null)"
+ac_run_code=$?
+MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/aliascon.mdk" >/dev/null 2>&1
+ac_check_code=$?
+MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/aliascon.mdk" -o "$TMP/aliascon.out" >/dev/null 2>&1
+ac_build_code=$?
+ac_build_out="$([ -x "$TMP/aliascon.out" ] && "$TMP/aliascon.out" 2>/dev/null | head -1)"
+if [ "$ac_check_code" -eq 0 ] && [ "$ac_run_code" -eq 0 ] && [ "$ac_run" = "42" ] && [ "$ac_build_code" -eq 0 ] && [ "$ac_build_out" = "42" ]; then
+  pass=$((pass+1)); printf 'ok   739/aliased-constrained-import-keeps-dict (check/run/build all 42)\n'
+else
+  fail=$((fail+1)); printf 'FAIL 739/aliased-constrained-import-keeps-dict (check %d, run %d [%s], build %d [%s])\n' "$ac_check_code" "$ac_run_code" "$ac_run" "$ac_build_code" "$ac_build_out"
+fi
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
