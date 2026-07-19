@@ -1,0 +1,20 @@
+-- SHADOW-SEMANTICS cell D22b (#724, NON-DEFAULTING variant of d22): the multi-typaram
+-- definer value-position shadow with STRING elements instead of Int.  d18b at multi-typaram
+-- width.  String has no Num-defaulting fallback, so if emitValueShadowGate's definer arm
+-- regressed to declining multi-typaram definers the element would stay a function type
+-- (`String -> String`) with no Display and the built binary would SEGFAULT on a NULL element
+-- dict -- exactly as the Int case did.  d22 pins the Int path; this pins that the grounding
+-- is REAL at multi-typaram width, not an artifact of Int defaulting.
+-- Expected: check/run/build all print [a!, b!, c!].
+interface Ix a i where
+  size : a -> i -> Int
+
+data Box = Box Int
+
+impl Ix Box Int where
+  size (Box a) i = a + i
+
+size : String -> String
+size n = n ++ "!"
+
+main = println (map size ["a", "b", "c"])

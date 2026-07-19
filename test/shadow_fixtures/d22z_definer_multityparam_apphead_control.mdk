@@ -1,0 +1,30 @@
+-- SHADOW-SEMANTICS cell D22z (#724, APP-HEAD CONTROL for the emit-gate relaxation):
+-- the same MULTI-TYPARAM interface `Ix a i` as d22, but the definer-shadow name `size`
+-- appears in BOTH positions in one program:
+--   * value position     `map size [1, 2, 3]`  -> the standalone `Int -> Int`, [2, 3, 4]
+--   * application head    `size 10`             -> the applied standalone, 11
+--
+-- This pins that relaxing maybeStandaloneValueMonoEmit's DEFINER arm to ifaceMethodName
+-- (typaram-agnostic) does NOT mis-ground the multi-typaram APP head.  A definer app head is
+-- caught by definerShadowArgHead (isDefinerShadow = ifaceMethodName) and routed through
+-- inferDefinerShadowApp, which sets shadowHeadCtxRef True before typing the head and types it
+-- via shadowVarHeadMethodScheme / definerShadowHeadType -- NEVER through inferMethodAt/the emit
+-- pin.  So the ONLY definer occurrence reaching the emit pin with shadowHeadCtxRef False is a
+-- genuine value position.  If the relaxation over-fired, `size 10` would be pinned to the
+-- standalone scheme AS A VALUE (not applied) and mis-elaborate.
+-- Expected: check/run/build all print ([2, 3, 4], 11).
+interface Ix a i where
+  size : a -> i -> Int
+
+data Box = Box Int
+
+impl Ix Box Int where
+  size (Box a) i = a + i
+
+size : Int -> Int
+size n = n + 1
+
+main =
+  let valpos = map size [1, 2, 3]
+  let applied = size 10
+  println (valpos, applied)
