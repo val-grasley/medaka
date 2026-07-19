@@ -1,0 +1,6 @@
+-- #737/#671: mixed wildcard + named outer params on a closure-returning fn — gates
+-- paramEnv's %argN slot-index lockstep across a PWild slot (the middle param binds
+-- no name but still consumes an ABI slot, so `z` must still resolve to %arg2).
+mk x _ z = (y => x + z + y)
+
+main = println (mk 10 99 30 2)

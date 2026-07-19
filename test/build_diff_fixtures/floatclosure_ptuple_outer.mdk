@@ -1,0 +1,4 @@
+-- #737: closure-returning fn with a PTuple outer param (the other verified repro).
+mk (a, b) = (y => a + b + y)
+
+main = println (mk (20, 20) 2)
