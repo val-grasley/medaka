@@ -561,5 +561,82 @@ case "$effok_out" in
      else fail=$((fail+1)); printf 'FAIL effect-xmod/accept (exit %d: [%s])\n' "$effok_code" "$effok_out"; fi ;;
 esac
 
+# 12. #674 CROSS-MODULE DUPLICATE PUBLIC CONSTRUCTOR.  Two modules each export a
+#     ctor of the SAME NAME.  The check side (typecheck/exhaust, last-loaded-wins) and
+#     the native mangler (per-unit, first-import-wins) used to DISAGREE on which one a
+#     bare `Node`/`Box` binds — check accepted, run was right, the native build CRASHED
+#     (E-NONEXHAUSTIVE-MATCH), and a bare `import` of the OTHER module wrongly rejected
+#     a VALID program.  The fix: import-scope the check-side ctor tables + reject a
+#     genuine cross-module ctor collision at resolve time.  Legs a–d below.
+cat > "$TMP/x674a.mdk" <<'EOF'
+public export data TA = Node Int
+export ma : TA
+ma = Node 111
+EOF
+cat > "$TMP/x674b.mdk" <<'EOF'
+public export data TB = Node Int
+export mb : TB
+mb = Node 222
+EOF
+# 12a. AMBIGUOUS: importing BOTH `Node`-exporting modules and USING `Node` is a
+#      hard resolve error (R-AMBIGUOUS-CTOR), exit 1 — NOT a silent accept.
+cat > "$TMP/x674_amb.mdk" <<'EOF'
+import x674b.{TB(..), mb}
+import x674a.{TA(..), ma}
+unA : TA -> Int
+unA (Node x) = x
+main = println (intToString (unA ma))
+EOF
+amb_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check --json "$TMP/x674_amb.mdk" 2>/dev/null)"
+amb_code=$?
+case "$amb_out" in
+  *R-AMBIGUOUS-CTOR*) if [ "$amb_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   674a/ambiguous-ctor (cross-module dup ctor rejected, exit 1)\n'
+                  else fail=$((fail+1)); printf 'FAIL 674a/ambiguous-ctor (flagged but exit %d)\n' "$amb_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL 674a/ambiguous-ctor (no R-AMBIGUOUS-CTOR: [%s])\n' "$amb_out" ;;
+esac
+# 12b. build AGREEMENT: the ambiguous program must NOT build a (crashing) binary —
+#      check and build agree that it is rejected, so the S0 miscompile is gone.
+MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/x674_amb.mdk" -o "$TMP/x674_amb.bin" >/dev/null 2>&1
+amb_bcode=$?
+if [ "$amb_bcode" -ne 0 ] && [ ! -x "$TMP/x674_amb.bin" ]; then
+  pass=$((pass+1)); printf 'ok   674b/no-crash-binary (ambiguous ctor never builds an executable)\n'
+else
+  fail=$((fail+1)); printf 'FAIL 674b/no-crash-binary (build exit %d, binary present=%s)\n' "$amb_bcode" "$([ -x "$TMP/x674_amb.bin" ] && echo yes || echo no)"
+fi
+# 12c. BARE-IMPORT VALIDITY: a bare `import x674b` (binds NO names — impls only) must
+#      NOT inject its `Node` and reject a valid program that uses only x674a's `Node`.
+#      check ACCEPTS and build AGREES, running to `111`.
+cat > "$TMP/x674_bare.mdk" <<'EOF'
+import x674a.{TA(..), ma}
+import x674b
+unA : TA -> Int
+unA (Node x) = x
+main = println (intToString (unA ma))
+EOF
+bare_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/x674_bare.mdk" 2>/dev/null)"
+bare_code=$?
+case "$bare_out" in
+  *"Type mismatch"*|*Ambiguous*) fail=$((fail+1)); printf 'FAIL 674c/bare-import-valid (bare import wrongly rejected: [%s])\n' "$bare_out" ;;
+  *) if [ "$bare_code" -eq 0 ]; then
+       if MEDAKA_ROOT="$ROOT" MEDAKA="$MEDAKA" bound "$MEDAKA" build "$TMP/x674_bare.mdk" -o "$TMP/x674_bare.bin" >/dev/null 2>&1 && [ "$("$TMP/x674_bare.bin" 2>/dev/null)" = "111" ]; then
+         pass=$((pass+1)); printf 'ok   674c/bare-import-valid (bare import stays impls-only; check+build run to 111)\n'
+       else fail=$((fail+1)); printf 'FAIL 674c/bare-import-valid (check clean but build/run wrong)\n'; fi
+     else fail=$((fail+1)); printf 'FAIL 674c/bare-import-valid (exit %d: [%s])\n' "$bare_code" "$bare_out"; fi ;;
+esac
+# 12d. USE-SITE firing: importing BOTH `Node`-exporting modules but USING NEITHER's
+#      `Node` stays LEGAL (the ambiguity check fires only on a genuine ambiguous use).
+cat > "$TMP/x674_unused.mdk" <<'EOF'
+import x674b.{TB(..), mb}
+import x674a.{TA(..), ma}
+main = println "hi"
+EOF
+unused_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/x674_unused.mdk" 2>/dev/null)"
+unused_code=$?
+case "$unused_out" in
+  *Ambiguous*) fail=$((fail+1)); printf 'FAIL 674d/import-both-use-neither (false ambiguity on unused ctor: [%s])\n' "$unused_out" ;;
+  *) if [ "$unused_code" -eq 0 ]; then pass=$((pass+1)); printf 'ok   674d/import-both-use-neither (unused dup ctor stays legal)\n'
+     else fail=$((fail+1)); printf 'FAIL 674d/import-both-use-neither (exit %d: [%s])\n' "$unused_code" "$unused_out"; fi ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

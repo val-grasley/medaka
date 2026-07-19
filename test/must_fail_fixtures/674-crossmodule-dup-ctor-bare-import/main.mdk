@@ -1,5 +1,0 @@
-import a.{TA(..), ma}
-import b
-unA : TA -> Int
-unA (Box x) = x
-main = println (intToString (unA ma))

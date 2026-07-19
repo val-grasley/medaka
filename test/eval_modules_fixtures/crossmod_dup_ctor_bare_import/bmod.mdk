@@ -1,0 +1,4 @@
+-- Same ctor NAME `Box`, different arity/type. Brought in ONLY via a bare
+-- `import bmod` (impls-only, binds NO names), so it must NOT pollute the entry's
+-- ctor tables and win resolution over the explicitly-imported a.Box.
+public export data TB = Box Int Int

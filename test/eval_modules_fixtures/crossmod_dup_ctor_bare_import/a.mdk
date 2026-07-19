@@ -1,0 +1,5 @@
+-- #674: a public ctor `Box` (arity 1) that COLLIDES by name with bmod's `Box`
+-- (arity 2). Only THIS module's `Box` is imported by name into the entry.
+public export data TA = Box Int
+export ma : TA
+ma = Box 5

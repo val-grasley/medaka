@@ -1,0 +1,9 @@
+-- #674 regression (Symptom B): a bare `import bmod` used to inject bmod's public
+-- `Box` into the global ctor table and win over the explicitly-named a.Box, so
+-- this VALID program was rejected (`Type mismatch: Int -> TB vs TA`). With
+-- import-scoped ctor tables it checks/runs/builds correctly.
+import a.{TA(..), ma}
+import bmod
+unA : TA -> Int
+unA (Box x) = x
+main = println (intToString (unA ma))

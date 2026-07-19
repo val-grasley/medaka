@@ -1887,6 +1887,7 @@ data CrossRun = CrossRun {
     universeDataParamKinds : Ref (List (String, List Kind)),
     universeAliasTable : Ref (List (String, (List String, Ty))),
     universeDataEnv : Ref TcEnv,
+    universeDataDecls : Ref (List Decl),  -- #674: prior modules' PUBLIC data DECLS (universeDataEnv is a lossy bare-name ctor env) — see appendDataUniverse
     obUnivConcreteRef : Ref (OrdMap (List (List Ty, List Require))),
     obUnivHeadlessRef : Ref (OrdMap (List (List Ty, List Require))),
     obUnivIfaceTagsRef : Ref (OrdMap (OrdMap Unit)),
@@ -1946,6 +1947,7 @@ freshCrossRun env = CrossRun {
   universeDataParamKinds = Ref [],
   universeAliasTable = Ref [],
   universeDataEnv = Ref env,
+  universeDataDecls = Ref [],
   obUnivConcreteRef = Ref omEmpty,
   obUnivHeadlessRef = Ref omEmpty,
   obUnivIfaceTagsRef = Ref omEmpty,
@@ -11049,7 +11051,14 @@ checkBodyImpl seed mode prog0 =
     Flat _ => registerAllData initialEnv prog
     Module _ _ _ =>
       let _ = loadDataUniverse ()
-      registerAllData crossRun.value.universeDataEnv.value prog0
+      let base = registerAllData crossRun.value.universeDataEnv.value prog0
+      -- #674: OVERLAY the ctors of the types THIS module imports with `(..)` so a
+      -- bare ctor name resolves to the module the unit imports it from, not the
+      -- universe's load-order winner.  Registers LAST → wins the omInsert tie-break.
+      -- Reads the persistent universe DECLS (not the Module `accData` field — that is
+      -- dead `[]` on the elaborate/emit path, #154 PR-C), so the overlay fires on the
+      -- run/build gate too, not just `check`.
+      registerAllData base (importedCtorTypeDecls prog0 crossRun.value.universeDataDecls.value)
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   -- methodNames: FLAT's SECOND ifaceMethodSchemes call over prog — dedup-skipped by
@@ -14005,7 +14014,13 @@ appendDataUniverse pubDecls =
   let _ = loadDataUniverse ()
   let env2 = registerAllData crossRun.value.universeDataEnv.value pubDecls
   let _ = storeDataUniverse ()
-  setRef crossRun.value.universeDataEnv env2
+  let _ = setRef crossRun.value.universeDataEnv env2
+  -- #674: keep the DECLS too (universeDataEnv is a bare-name ctor env — last-write-wins,
+  -- LOSSY across a duplicate ctor name — so it cannot recover a SPECIFIC module's ctor
+  -- for the import-scoped overlay).  checkBodyImpl re-registers the ctors of the types
+  -- THIS module imports with `(..)` from these decls; available on BOTH the check path
+  -- AND the elaborate/emit path (where the Module `accData` field is dead `[]`, #154 PR-C).
+  setRef crossRun.value.universeDataDecls (crossRun.value.universeDataDecls.value ++ pubDecls)
 
 -- #154 PR1: buildDefinerShadows with the `allIfaceMethodNames fullUniverse` scan
 -- replaced by the persistent interface-method membership SET.  `direct` still filters
@@ -14520,6 +14535,65 @@ importSeed (_::rest) depEnv = importSeed rest depEnv
 -- stamped from the callee's SCHEME, which importSeed binds under the alias local — so
 -- this costs only the cross-module arity DISAMBIGUATION, and only when two modules
 -- export same-named constrained fns of differing dict arity.
+-- ── #674: import-scoped constructor overlay ────────────────────────────────
+-- The type names a module imports WITH their constructors (`import mod.{T(..)}`),
+-- read from its own DUse decls.  These are the only imported ctors whose OWNING
+-- TYPE the unit binds by name, so their `data` decls can OVERLAY the whole-universe
+-- ctor tables (the typecheck scheme table AND the exhaust oracle) to make a bare
+-- ctor name resolve to the SPECIFIC module's constructor this unit imports — instead
+-- of the universe's arbitrary load-order winner, the #674 root cause where the check
+-- side (last-loaded-wins) and the native mangler (first-import-wins) DISAGREED.
+--
+-- ⚠️ PERF (issue #154): this is bounded by the MODULE'S OWN import count, NOT the
+-- universe size — a per-module VIEW/overlay, never a per-module rebuild of the global
+-- universe.  A module with no `T(..)` import overlays NOTHING and stays byte-identical;
+-- the overlay only ever moves a ctor whose bare name genuinely collides across modules.
+-- A bare `import mod` (UseName) and a wildcard `import mod.*` (UseWild) contribute no
+-- overlay: the bare form binds no ctors at all, and a wildcard cannot name its owning
+-- type here, so it takes the same universe-fallback the value seed's wildcard does.
+importedCtorTypeNames : List Decl -> List String
+importedCtorTypeNames decls = flatMap ctorImportTypeNames decls
+
+ctorImportTypeNames : Decl -> List String
+ctorImportTypeNames (DAttrib _ d) = ctorImportTypeNames d
+ctorImportTypeNames (DUse _ (UseGroup _ ms) _) = flatMap ctorMemberTypeName ms
+ctorImportTypeNames _ = []
+
+-- a `T(..)` member (ctors flag True) names its OWNING TYPE T; anything else names none.
+ctorMemberTypeName : UseMember -> List String
+ctorMemberTypeName (UseMember n True _ _) = [n]
+ctorMemberTypeName _ = []
+
+-- The `data`/`newtype` decls (from the surrounding universe `pool = accData`) that
+-- DEFINE the constructors of the types this module imports with `(..)`.  First match
+-- per type name; a type absent from the pool contributes nothing (the universe
+-- fallback stands), so this is always a safe overlay.
+importedCtorTypeDecls : List Decl -> List Decl -> List Decl
+importedCtorTypeDecls unitDecls pool =
+  flatMap (dataDeclForType pool) (importedCtorTypeNames unitDecls)
+
+dataDeclForType : List Decl -> String -> List Decl
+dataDeclForType pool name = match findDataDeclNamed name pool
+  Some d => [d]
+  None => []
+
+findDataDeclNamed : String -> List Decl -> Option Decl
+findDataDeclNamed _ [] = None
+findDataDeclNamed name ((DAttrib _ d)::rest) = match findDataDeclNamed name [d]
+  Some x => Some x
+  None => findDataDeclNamed name rest
+findDataDeclNamed name ((d@(DData _ n _ _ _))::rest) =
+  if n == name then
+    Some d
+  else
+    findDataDeclNamed name rest
+findDataDeclNamed name ((d@(DNewtype _ n _ _ _ _))::rest) =
+  if n == name then
+    Some d
+  else
+    findDataDeclNamed name rest
+findDataDeclNamed name (_::rest) = findDataDeclNamed name rest
+
 importDefinersOf : List Decl -> List (String, String)
 importDefinersOf [] = []
 importDefinersOf ((DAttrib _ d)::rest) = importDefinersOf [d]
@@ -14710,7 +14784,14 @@ checkModuleFullDiags seedVars accData accAll prog =
   -- the WRONG arity/type for this module's own `Bin` in a match and false-warns
   -- W-NONEXHAUSTIVE.  buildOracle is duplicate-tolerant, and accData still
   -- supplies prelude Option/Result ctors (this module never redefines them).
-  let _ = seedCheckRun (prog ++ accData)
+  -- #674: the types THIS module imports with `(..)` are prepended BEFORE accData so
+  -- their ctors win the oracle's first-wins bare-name tables over any same-named
+  -- ctor a non-imported module contributes by load order — the exhaustiveness peer
+  -- of the typecheck-scheme overlay.  Import-count bounded (no O(N²)); own-module
+  -- `prog` still wins first, and a module with no `T(..)` import is byte-identical.
+  -- The overlay decls come from the persistent universe (same source the dataEnv
+  -- overlay uses), which equals accData here but keeps the two overlays in lockstep.
+  let _ = seedCheckRun (prog ++ importedCtorTypeDecls prog crossRun.value.universeDataDecls.value ++ accData)
   -- Bug C: pass the cumulative full impl universe (core + earlier modules) as
   -- implDecls (was checkModuleFull, i.e. implDecls=[]) so buildStandaloneShadows sees
   -- an imported standalone funDef that shadows an interface method (`map`'s `toList`

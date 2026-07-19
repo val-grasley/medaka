@@ -53,7 +53,10 @@ contiguityErrors : List Decl -> List ResError
 coreExports : List Decl -> ModuleExports
 coreUseErrors : List Decl -> List Decl -> List ResError
 coreUseErrorsOf : ModuleExports -> Decl -> List ResError
+ctorAmbigMods : Env -> String -> List String
+ctorAmbiguousSet : List ModuleExports -> List Decl -> List (String, List String)
 ctorNames : List Decl -> List String
+ctorProvenance : List ModuleExports -> List UsePath -> List (String, List String)
 dataRecordNames : List Decl -> List String
 dbName : ResError -> String
 declBindNames : Decl -> List String
@@ -103,6 +106,7 @@ firstLocList : List Expr -> Option Loc
 firstOr : String -> List String -> String
 firstTyLoc : Ty -> Option Loc
 firstTyLocList : List Ty -> Option Loc
+foldCtorProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
 foldImports : List ModuleExports -> List (UsePath, Loc) -> ImportAdds
 foldProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
 hasFoldable : List Decl -> Bool
@@ -117,6 +121,7 @@ ifaceMethodPairs : ModuleExports -> List String -> List (String, List String)
 ifaceMethodsOf : String -> List (String, List String) -> List String
 ifaceValsOf : ModuleExports -> String -> List String
 implMethodNm : ImplMethod -> String
+importCtorNames : List ModuleExports -> UsePath -> List String
 importValueNames : List ModuleExports -> UsePath -> List String
 importedEffects : List ModuleExports -> List Decl -> List String
 importedIfaceMethods : List ModuleExports -> List Decl -> List String -> List (String, List String)
@@ -127,6 +132,7 @@ interfaceList : List Decl -> List (String, List String)
 internalExterns : List String
 internalGuardFor : Bool -> List String
 isAmbiguous : Env -> String -> Bool
+isCtorAmbiguous : Env -> String -> Bool
 isEmptyL : List a -> Bool
 isHaskellAliasPair : String -> String -> Bool
 isHint : String -> Bool

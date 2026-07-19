@@ -270,12 +270,15 @@ countHeadGo : List KeyEntry -> String -> String -> Int
 countInSubst : List Int -> List (Int, Mono) -> Int
 crossRun : Ref CrossRun
 ctorHeadIsUpper : String -> Bool
+ctorImportTypeNames : Decl -> List String
+ctorMemberTypeName : UseMember -> List String
 currentDoOrigin : Ref (Option Loc)
 currentLoc : Ref (Option Loc)
 currentLocalSchemes : Unit -> List (String, Scheme)
 currentMethodMismatch : Ref (Option String)
 currentSeedSchemes : Unit -> List (String, Scheme)
 cyclicSuperIfaceMsg : List String -> String
+dataDeclForType : List Decl -> String -> List Decl
 deAliasMethodImports : List (String, List String) -> Decl -> List Decl
 deAliasMethodMember : List String -> UseMember -> UseMember
 declBodyVars : String -> List Decl -> List String
@@ -426,6 +429,7 @@ filterImplTysFor : List Decl -> String -> String -> List (List Ty)
 filterMaybeIds : List (Option Int) -> List Int
 filterNonSelf : String -> List String -> List String
 findAtom : String -> List Atom -> Option Atom
+findDataDeclNamed : String -> List Decl -> Option Decl
 findImplEntry : Map String (List ImplEntry) -> String -> String -> Mono -> Option ImplEntry
 findImplEntryGo : List ImplEntry -> String -> String -> Mono -> Option ImplEntry
 findMatchingImplReqsU : ImplUniverse -> String -> List Mono -> Option (List (String, Mono), List Require)
@@ -562,6 +566,8 @@ importDefinersOf : List Decl -> List (String, String)
 importFormSchemes : String -> UsePath -> List (String, Scheme) -> List (String, Scheme)
 importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
 importedBindings : UsePath -> Option (List (String, String))
+importedCtorTypeDecls : List Decl -> List Decl -> List Decl
+importedCtorTypeNames : List Decl -> List String
 importerShadowDomain : String -> Option Mono
 importerShadowOnEmitPath : String -> Ref Route -> Bool
 importerStandaloneValueScheme : String -> Option Mono
