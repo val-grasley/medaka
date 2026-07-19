@@ -29,6 +29,15 @@
 #                                     prelude-dependent program the four above cannot
 #                                     (each of THOSE is also read by a prelude-free probe
 #                                     gate). Live differential only; optional value pin.
+#   test/llvm_fixtures_modules/*/     MULTI-MODULE programs (#708) — the module arm.
+#                                     Each subdir is a program: entry.mdk + imported
+#                                     sibling module(s), prelude-free.  The FIRST corpus
+#                                     to run cross-module import / re-export / dispatch —
+#                                     and the cross-module CTOR-COLLISION class (P0-9) —
+#                                     through all three engines at once.  The `$f` fed to
+#                                     the worker is the ENTRY file; every arm already uses
+#                                     dirname("$f") as its loader root, so no
+#                                     module-specific worker code is needed.
 #
 # (Corpus size is NOT hardcoded here on purpose — each directory's fixture count
 # drifts as fixtures are added, and a hand-maintained total rots the moment it
@@ -236,13 +245,20 @@ if [ "${1:-}" = "--one" ]; then
   # NOTE the typed patterns must be tested FIRST: */llvm_fixtures/* does not match
   # llvm_fixtures_typed (the glob needs a literal /llvm_fixtures/), but relying on
   # that is a trap for the next person to add a corpus — be explicit.
+  # ⚠️ The MODULE branch (*/llvm_fixtures_modules/*) MUST precede */llvm_fixtures/*:
+  # the glob */llvm_fixtures/* needs a literal /llvm_fixtures/ path component and so
+  # does NOT match /llvm_fixtures_modules/, but the ordering is load-bearing for the
+  # next person who copies a corpus, so be explicit.  A module fixture's `$f` is the
+  # program's ENTRY file (always named entry.mdk), so key by the PARENT DIR name — a
+  # bare `basename entry.mdk` would collapse all 16 module programs onto one key.
   case "$f" in
-    */engine_fixtures/*)     key="engine/$(basename "$f" .mdk)" ;;
-    */llvm_fixtures_typed/*) key="llvmT/$(basename "$f" .mdk)" ;;
-    */wasm/fixtures_typed/*) key="wasmT/$(basename "$f" .mdk)" ;;
-    */llvm_fixtures/*)       key="llvm/$(basename "$f" .mdk)"  ;;
-    */wasm/fixtures/*)       key="wasm/$(basename "$f" .mdk)"  ;;
-    *)                       key="other/$(basename "$f" .mdk)" ;;
+    */engine_fixtures/*)       key="engine/$(basename "$f" .mdk)" ;;
+    */llvm_fixtures_modules/*) key="llvmM/$(basename "$(dirname "$f")")" ;;
+    */llvm_fixtures_typed/*)   key="llvmT/$(basename "$f" .mdk)" ;;
+    */wasm/fixtures_typed/*)   key="wasmT/$(basename "$f" .mdk)" ;;
+    */llvm_fixtures/*)         key="llvm/$(basename "$f" .mdk)"  ;;
+    */wasm/fixtures/*)         key="wasm/$(basename "$f" .mdk)"  ;;
+    *)                         key="other/$(basename "$f" .mdk)" ;;
   esac
   slug="${key//\//__}"
   W="$WORKDIR/$slug"; mkdir -p "$W"
@@ -452,11 +468,27 @@ fi
 # only — no golden, no signature capture; an engine_value_pins/engine/<name>.pin (below)
 # is the sole per-fixture pinned artifact and it holds the program's OUTPUT VALUE, which
 # moves only on a real semantic change, never on an inert prelude edit.
+# The MODULE arm (#708): each subdir of test/llvm_fixtures_modules/ is a MULTI-FILE
+# program whose ENTRY is entry.mdk plus its imported sibling module file(s).  This is
+# the FIRST corpus to run cross-module semantics — import / re-export / cross-module
+# dispatch, and the cross-module CONSTRUCTOR-COLLISION class (the P0-9 shape:
+# installConsts/findCell last-write-wins across modules) — through all THREE engines
+# at once; before this the module corpora were checked pairwise at best
+# (eval_modules → two interpreters, no backend; wasm/fixtures_modules → native vs
+# wasm, no eval).  The per-fixture worker needs NO module-specific code: it already
+# feeds `dirname "$f"` to every arm as the loader root, and `medaka build`/the eval
+# probe walk the import graph from the entry's directory — so passing the entry file
+# is sufficient.  These fixtures are PRELUDE-FREE (only runtime externs), so the wasm
+# arm does not hit the real-prelude point-free-impl WAT gap that GAP-skips
+# diff_wasm_modules.sh, and all three engines run cleanly.
+MODULE_ENTRIES="$(ls "$ROOT"/test/llvm_fixtures_modules/*/entry.mdk 2>/dev/null)"
 CORPUS="$(ls "$ROOT"/test/llvm_fixtures/*.mdk \
              "$ROOT"/test/llvm_fixtures_typed/*.mdk \
              "$ROOT"/test/wasm/fixtures/*.mdk \
              "$ROOT"/test/wasm/fixtures_typed/*.mdk \
              "$ROOT"/test/engine_fixtures/*.mdk 2>/dev/null)"
+[ -n "$MODULE_ENTRIES" ] && CORPUS="$CORPUS
+$MODULE_ENTRIES"
 [ -n "$CORPUS" ] || { echo "the fixture corpus is empty — the gate compared nothing"; exit 2; }
 n_dispatched="$(printf '%s\n' "$CORPUS" | wc -l | tr -d ' ')"
 
@@ -574,7 +606,7 @@ t3p=$(tier 5 pass); t3f=$(tier 5 fail); t3n=$(tier 5 na)
 
 echo
 echo "══════════════════════════════════════════════════════════════════════"
-echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm ∪ llvm_typed ∪ wasm ∪ wasm_typed ∪ engine)"
+echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm ∪ llvm_typed ∪ wasm ∪ wasm_typed ∪ engine ∪ llvm_modules)"
 echo "══════════════════════════════════════════════════════════════════════"
 printf ' T1  eval   == native   %4d agree  %3d differ  %3d n/a\n' "$t1p" "$t1f" "$t1n"
 if [ "$WASM_OK" = 1 ]; then
