@@ -1,0 +1,7 @@
+-- Lexer error: `\v` is not a valid escape (#668). Inside a CHAR literal every
+-- backslash-letter that is not a real escape used to be silently reduced to the
+-- bare letter (`'\v'` -> `v`), never rejected — while the STRING lexer already
+-- rejected the identical escape. The two paths now share one escape table, so a
+-- char rejects `\v` with the same message a string does.
+c : Char
+c = '\v'

@@ -1,0 +1,5 @@
+-- Lexer error: a `\u{…}` char escape is still ONE codepoint and must be closed by
+-- `'` immediately (#668). `'\u{41}z` is unterminated — `readCharUnicode` used to
+-- resume scanning past a closing quote it never checked for, so this lexed as
+-- `TChar "A"` at exit 0 (the #668 Symptom-A silent accept, via the `\u{…}` path).
+x = '\u{41}z

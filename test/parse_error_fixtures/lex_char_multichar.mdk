@@ -1,0 +1,6 @@
+-- Lexer error: a char literal must be exactly ONE codepoint (#668). `'ab'` is
+-- two codepoints. It used to lex as a two-codepoint `TChar` at exit 0 — an S0
+-- run != build divergence (the interpreter kept both bytes, the native runtime
+-- kept only the first), which is why this is a lexer-side reject, not a warning.
+c : Char
+c = 'ab'

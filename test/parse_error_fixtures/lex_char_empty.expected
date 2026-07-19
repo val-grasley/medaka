@@ -1,0 +1,1 @@
+character literal is empty. A character is exactly one codepoint — write `'\0'` for the NUL character, or use a `""` string for an empty value

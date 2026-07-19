@@ -1,0 +1,1 @@
+character literal is not terminated. A character is one codepoint between single quotes, as in `'a'` or `'\n'`

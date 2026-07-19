@@ -1,0 +1,5 @@
+-- Lexer error: a `\u{…}` char escape followed by more source is more than one
+-- codepoint (#668). `'\u{41}ab'` used to mis-lex as `TChar "A"` and then resume
+-- mid-literal at `ab'`, producing a bogus downstream unbound-variable error rather
+-- than naming the real defect. A char is exactly one codepoint.
+x = '\u{41}ab'

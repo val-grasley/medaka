@@ -748,19 +748,32 @@ scanStr src len p startQ depth id acc
   | otherwise =
     scanStr src len (p + 1) startQ depth id (acc ++ charToStr (at src p))
 
+-- The escape letters shared by string AND character literals: the decoded
+-- content of `\<e>`, or `None` if `<e>` is not one of them. This ONE table is
+-- what keeps the string lexer and the char lexer (`charEscDecode`, below) in
+-- agreement — the char path used to accept any backslash-letter as the bare
+-- letter (`'\v'` → `v`) precisely because it did NOT consult a shared table
+-- (#668). `\{` (interpolation open) and `\u{…}` are handled by their callers
+-- before this point, and `\'` is char-only, so none of those appear here.
+commonEscDecode : Char -> Option String
+commonEscDecode e
+  | e == 'n' = Some "\n"
+  | e == 't' = Some "\t"
+  | e == 'r' = Some "\r"
+  | e == '0' = Some (charToStr (fromOption ' ' (charFromCode 0)))
+  | isBackslash e = Some "\\"
+  | isQuote e = Some "\""
+  | otherwise = None
+
 scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> Int -> String -> Char -> List RawTok
 scanStrEsc src len p startQ depth id acc e
   | e == '{' = RTok (TInterpOpen acc) p (p + 2) :: scan src len (p + 2) depth 1
-  | e == 'n' = scanStr src len (p + 2) startQ depth id (acc ++ "\n")
-  | e == 't' = scanStr src len (p + 2) startQ depth id (acc ++ "\t")
-  | isQuote e = scanStr src len (p + 2) startQ depth id (acc ++ "\"")
-  | isBackslash e = scanStr src len (p + 2) startQ depth id (acc ++ "\\")
-  | e == 'r' = scanStr src len (p + 2) startQ depth id (acc ++ "\r")
-  | e == '0' = scanStr src len (p + 2) startQ depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
   | isUnicodeEsc src len p e = match uniEscChar src len p
     None => lexErrorTok p (uniEscErr src len p)
     Some c => scanStr src len (uniEscEnd src len p) startQ depth id (acc ++ charToStr c)
-  | otherwise = lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
+  | otherwise = match commonEscDecode e
+    Some s => scanStr src len (p + 2) startQ depth id (acc ++ s)
+    None => lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
 scanInterpCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
@@ -953,33 +966,61 @@ joinNlStr xs = joinWith "\n" xs
 -- char literals — escapes processed into the value, mirroring lib/lexer.mll's
 -- `read_char` (Phase 133): `\n \t \r \0 \\ \'` and `\u{…}`, else raw chars up to
 -- the closing quote.  `pos` is at the opening `'`; content starts at `pos + 1`.
+-- The decoded content of a `\<e>` character escape, or `None` if `<e>` is not a
+-- valid escape. A char adds `\'` to the shared `commonEscDecode` table (a bare
+-- `'` there would close the literal); everything else — including any
+-- backslash-letter that is not a real escape (`\v`) — mirrors the string path
+-- and is a lex error (#668). `\u{…}` is handled separately by `readCharUnicode`.
+charEscDecode : Char -> Option String
+charEscDecode e
+  | isApos e = Some "'"
+  | otherwise = commonEscDecode e
+
 scanChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanChar src len pos depth id = readChar src len (pos + 1) depth id
 
+-- A char literal is EXACTLY ONE codepoint between `'`s (`docs/spec/SYNTAX.md`):
+-- one raw codepoint (possibly multi-BYTE, e.g. `'é'`/`'😀'`), one of the
+-- escapes in `charEscDecode`, or a `\u{…}` codepoint. `p` is just past the
+-- opening `'`; `p - 1` is that quote (used as the error caret). Before #668 the
+-- char path validated NONE of this: `'ab'` lexed as a two-codepoint `TChar`
+-- (an S0 run≠build divergence), `''` as an empty one, and `'\v'` as bare `v`.
 readChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 readChar src len p depth id
-  | isBackslash (at src p) && p + 2 < len && at src (p + 1) == 'u' && at src (p + 2) == '{' = readCharUnicode src len p depth id
-  | isBackslash (at src p) && p + 2 < len =
-    escChar src len p depth id (at src (p + 1))
+  | p >= len = lexErrorTok (p - 1) charUntermMsg
+  | isBackslash (at src p) && p + 1 >= len = lexErrorTok (p - 1) charUntermMsg
+  | isBackslash (at src p) && at src (p + 1) == 'u' && p + 2 < len && at src (p + 2) == '{' = readCharUnicode src len p depth id
+  | isBackslash (at src p) = escChar src len p depth id (at src (p + 1))
+  | isApos (at src p) = lexErrorTok (p - 1) "character literal is empty. A character is exactly one codepoint — write `'\\0'` for the NUL character, or use a `\"\"` string for an empty value"
   | otherwise = rawChar src len p depth id
 
--- `\<e>'` escape forms: three source chars (`\`, e, `'`), so advance by 3.
-escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
-escChar src len p depth id e
-  | e == 'n' = RTok (TChar "\n") p (p + 3) :: scan src len (p + 3) depth id
-  | e == 't' = RTok (TChar "\t") p (p + 3) :: scan src len (p + 3) depth id
-  | e == 'r' = RTok (TChar "\r") p (p + 3) :: scan src len (p + 3) depth id
-  | isApos e = RTok (TChar "'") p (p + 3) :: scan src len (p + 3) depth id
-  | isBackslash e = RTok (TChar "\\") p (p + 3) :: scan src len (p + 3) depth id
-  | e == '0' = RTok (TChar (charToStr (fromOption ' ' (charFromCode 0)))) p (p + 3) :: scan src len (p + 3) depth id
-  | otherwise =
-    RTok (TChar (charToStr e)) p (p + 3) :: scan src len (p + 3) depth id
+charUntermMsg : String
+charUntermMsg = "character literal is not terminated. A character is one codepoint between single quotes, as in `'a'` or `'\\n'`"
 
--- `[^'\\]+ '` — raw chars up to the closing quote.
+-- `\<e>'` escape forms: three source chars (`\`, e, `'`), so advance by 3.
+-- The closing quote at `p + 2` is REQUIRED — a valid escape followed by more
+-- source (`'\na'`) is still more than one codepoint and is rejected.
+escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
+escChar src len p depth id e = match charEscDecode e
+  None => lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
+  Some s =>
+    if p + 2 < len && isApos (at src (p + 2)) then
+      RTok (TChar s) p (p + 3) :: scan src len (p + 3) depth id
+    else
+      lexErrorTok (p - 1) charUntermMsg
+
+-- A single RAW codepoint, which must be immediately closed by `'`. `at src p` is
+-- one codepoint (the source is a codepoint array), so a multi-BYTE codepoint is
+-- ONE element and is accepted; `'ab'` is two elements and is rejected.
 rawChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
-rawChar src len p depth id =
-  let e = charClose src len p
-  RTok (TChar (substr src p e)) p (e + 1) :: scan src len (e + 1) depth id
+rawChar src len p depth id
+  | p + 1 < len && isApos (at src (p + 1)) = RTok (TChar (charToStr (at src p))) p (p + 2) :: scan src len (p + 2) depth id
+  | otherwise =
+    let e = charClose src len p
+    if e >= len then
+      lexErrorTok (p - 1) charUntermMsg
+    else
+      lexErrorTok (p - 1) "character literal must be a single codepoint, but `'\{substr src p e}'` has more than one. Use a `\"...\"` string for text, or `'\\u{...}'` for one codepoint by its hex value"
 
 charClose : Array Char -> Int -> Int -> Int
 charClose src len p
@@ -1105,13 +1146,19 @@ uniEscErr src len p
     Some cp if uniIsSurrogate cp => "unicode escape '\{uniEscText src len p}' is a UTF-16 surrogate, not a character. Codepoints D800-DFFF only ever encode one half of a surrogate pair and are never valid on their own"
     _ => "unicode escape '\{uniEscText src len p}' is out of range. A codepoint must be at most 10FFFF"
 
--- `\u{HEX}'` : the hex codepoint, then `}` then closing `'`.
+-- `\u{HEX}'` : the hex codepoint, then `}` (`he`), then the closing `'` (`he + 1`).
+-- The closing quote is REQUIRED, exactly as in `escChar`/`rawChar`: a `\u{…}` escape
+-- is still ONE codepoint, so `'\u{41}z` (unterminated) and `'\u{41}ab'` (a second
+-- codepoint after the escape) are rejected rather than resumed mid-literal (#668).
 readCharUnicode : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 readCharUnicode src len p depth id = match uniEscChar src len p
   None => lexErrorTok p (uniEscErr src len p)
   Some c =>
     let he = uHexEnd src len (p + 3)
-    RTok (TChar (charToStr c)) p (he + 2) :: scan src len (he + 2) depth id
+    if he + 1 < len && isApos (at src (he + 1)) then
+      RTok (TChar (charToStr c)) p (he + 2) :: scan src len (he + 2) depth id
+    else
+      lexErrorTok (p - 1) charUntermMsg
 
 uHexEnd : Array Char -> Int -> Int -> Int
 uHexEnd src len p

@@ -1,0 +1,24 @@
+-- Valid character literals: exactly ONE codepoint each (#668). Covers the plain
+-- ASCII char, every supported escape (`\n \t \r \0 \\ \' \"` and `\u{..}`), and
+-- single MULTI-BYTE codepoints (`é`, `λ`, `😀`) — one codepoint, several UTF-8
+-- bytes, all accepted. The char lexer counts codepoints, never bytes.
+plainC = 'a'
+newlineC = '\n'
+tabC = '\t'
+returnC = '\r'
+nulC = '\0'
+backslashC = '\\'
+aposC = '\''
+quoteC = '\"'
+uniC = '\u{41}'
+accentC = 'é'
+lambdaC = 'λ'
+emojiC = '😀'
+
+classify c =
+  match c
+    'a' => 1
+    '\n' => 2
+    '\u{41}' => 3
+    'é' => 4
+    _ => 0
