@@ -1,2 +1,0 @@
-mk _ = (y => 42)
-main = println (mk 0 0)

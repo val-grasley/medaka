@@ -1,5 +1,5 @@
 # META
-source_lines=10466
+source_lines=10480
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -8593,10 +8593,18 @@ allInt : List Pat -> List LTy
 allInt [] = []
 allInt (_::rest) = LTInt :: allInt rest
 
+-- A `PWild` param binds no name but still occupies an ABI slot: emit the `%argN`
+-- word (unused in the body) exactly as a `PVar` would, so positional %argN indexing
+-- stays aligned.  #671: an outer wildcard param on a closure-returning fn
+-- (`mk _ = (y => 42)`) reaches here via `isFloatClosureBody`/arity-raise; without
+-- this arm it hit the catch-all panic even though `run`/eval accepted it.
 paramDecls : List Pat -> Int -> String
 paramDecls [] _ = ""
 paramDecls [PVar _] i = "i64 %arg" ++ intToString i
+paramDecls [PWild] i = "i64 %arg" ++ intToString i
 paramDecls ((PVar _)::rest) i =
+  "i64 %arg\{intToString i}, \{paramDecls rest (i + 1)}"
+paramDecls (PWild::rest) i =
   "i64 %arg\{intToString i}, \{paramDecls rest (i + 1)}"
 paramDecls _ _ =
   panic "llvm spike: function parameters must be plain variables in slice 2"
@@ -8609,6 +8617,12 @@ paramEnv ((PVar x)::rest) (ty::tys) i =
   (x, ("%arg" ++ intToString i, ty)) :: paramEnv rest tys (i + 1)
 paramEnv ((PVar x)::rest) [] i =
   (x, ("%arg" ++ intToString i, LTInt)) :: paramEnv rest [] (i + 1)
+-- A `PWild` param binds no name: contribute NO env entry, but still consume its
+-- type slot and advance the %argN index so later `PVar` params keep their positions
+-- (#671 — a wildcard outer param on a closure-returning fn reached here through
+-- `isFloatClosureBody`; the missing arm was the emitter panic).
+paramEnv (PWild::rest) (_::tys) i = paramEnv rest tys (i + 1)
+paramEnv (PWild::rest) [] i = paramEnv rest [] (i + 1)
 paramEnv _ _ _ =
   panic "llvm spike: function parameters must be plain variables in slice 2"
 
@@ -12157,12 +12171,16 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "paramDecls" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyCon "Int") (TyCon "String"))))
 (DFunDef false "paramDecls" ((PList) PWild) (ELit (LString "")))
 (DFunDef false "paramDecls" ((PList (PCon "PVar" PWild)) (PVar "i")) (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EVar "intToString") (EVar "i"))))
+(DFunDef false "paramDecls" ((PList (PCon "PWild")) (PVar "i")) (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EVar "intToString") (EVar "i"))))
 (DFunDef false "paramDecls" ((PCons (PCon "PVar" PWild) (PVar "rest")) (PVar "i")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString ", "))) (EApp (EVar "display") (EApp (EApp (EVar "paramDecls") (EVar "rest")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))) (ELit (LString ""))))
+(DFunDef false "paramDecls" ((PCons (PCon "PWild") (PVar "rest")) (PVar "i")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString ", "))) (EApp (EVar "display") (EApp (EApp (EVar "paramDecls") (EVar "rest")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))) (ELit (LString ""))))
 (DFunDef false "paramDecls" (PWild PWild) (EApp (EVar "panic") (ELit (LString "llvm spike: function parameters must be plain variables in slice 2"))))
 (DTypeSig false "paramEnv" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyApp (TyCon "List") (TyCon "LTy")) (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy"))))))))
 (DFunDef false "paramEnv" ((PList) PWild PWild) (EListLit))
 (DFunDef false "paramEnv" ((PCons (PCon "PVar" (PVar "x")) (PVar "rest")) (PCons (PVar "ty") (PVar "tys")) (PVar "i")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EBinOp "++" (ELit (LString "%arg")) (EApp (EVar "intToString") (EVar "i"))) (EVar "ty"))) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EVar "tys")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
 (DFunDef false "paramEnv" ((PCons (PCon "PVar" (PVar "x")) (PVar "rest")) (PList) (PVar "i")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EBinOp "++" (ELit (LString "%arg")) (EApp (EVar "intToString") (EVar "i"))) (EVar "LTInt"))) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EListLit)) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
+(DFunDef false "paramEnv" ((PCons (PCon "PWild") (PVar "rest")) (PCons PWild (PVar "tys")) (PVar "i")) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EVar "tys")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))
+(DFunDef false "paramEnv" ((PCons (PCon "PWild") (PVar "rest")) (PList) (PVar "i")) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EListLit)) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))
 (DFunDef false "paramEnv" (PWild PWild PWild) (EApp (EVar "panic") (ELit (LString "llvm spike: function parameters must be plain variables in slice 2"))))
 (DTypeSig false "emitFnBody" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyCon "Unit"))))))
 (DFunDef false "emitFnBody" ((PVar "e") (PVar "env") (PVar "self") (PCon "CIf" (PVar "c") (PVar "t") (PVar "f"))) (EBlock (DoLet false false (PTuple (PVar "cv") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "c"))) (DoLet false false (PVar "ci") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "cv"))) (DoLet false false (PVar "cb") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EVar "display") (EVar "cb"))) (ELit (LString " = icmp ne i64 "))) (EApp (EVar "display") (EVar "ci"))) (ELit (LString ", 0"))))) (DoLet false false (PVar "n") (EApp (EVar "intToString") (EApp (EVar "freshLocal") (EVar "e")))) (DoLet false false (PVar "thenL") (EBinOp "++" (ELit (LString "then")) (EVar "n"))) (DoLet false false (PVar "elseL") (EBinOp "++" (ELit (LString "else")) (EVar "n"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  br i1 ")) (EApp (EVar "display") (EVar "cb"))) (ELit (LString ", label %"))) (EApp (EVar "display") (EVar "thenL"))) (ELit (LString ", label %"))) (EApp (EVar "display") (EVar "elseL"))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EVar "thenL") (ELit (LString ":"))))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "emitFnBody") (EVar "e")) (EVar "env")) (EVar "self")) (EVar "t"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EVar "elseL") (ELit (LString ":"))))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitFnBody") (EVar "e")) (EVar "env")) (EVar "self")) (EVar "f")))))
@@ -14326,12 +14344,16 @@ emitTopBindsGaps e env ((CBind name _)::rest) =
 (DTypeSig false "paramDecls" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyCon "Int") (TyCon "String"))))
 (DFunDef false "paramDecls" ((PList) PWild) (ELit (LString "")))
 (DFunDef false "paramDecls" ((PList (PCon "PVar" PWild)) (PVar "i")) (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EVar "intToString") (EVar "i"))))
+(DFunDef false "paramDecls" ((PList (PCon "PWild")) (PVar "i")) (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EVar "intToString") (EVar "i"))))
 (DFunDef false "paramDecls" ((PCons (PCon "PVar" PWild) (PVar "rest")) (PVar "i")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EApp (EApp (EVar "paramDecls") (EVar "rest")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))) (ELit (LString ""))))
+(DFunDef false "paramDecls" ((PCons (PCon "PWild") (PVar "rest")) (PVar "i")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "i64 %arg")) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "i")))) (ELit (LString ", "))) (EApp (EMethodRef "display") (EApp (EApp (EVar "paramDecls") (EVar "rest")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))) (ELit (LString ""))))
 (DFunDef false "paramDecls" (PWild PWild) (EApp (EVar "panic") (ELit (LString "llvm spike: function parameters must be plain variables in slice 2"))))
 (DTypeSig false "paramEnv" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyApp (TyCon "List") (TyCon "LTy")) (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy"))))))))
 (DFunDef false "paramEnv" ((PList) PWild PWild) (EListLit))
 (DFunDef false "paramEnv" ((PCons (PCon "PVar" (PVar "x")) (PVar "rest")) (PCons (PVar "ty") (PVar "tys")) (PVar "i")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EBinOp "++" (ELit (LString "%arg")) (EApp (EVar "intToString") (EVar "i"))) (EVar "ty"))) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EVar "tys")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
 (DFunDef false "paramEnv" ((PCons (PCon "PVar" (PVar "x")) (PVar "rest")) (PList) (PVar "i")) (EBinOp "::" (ETuple (EVar "x") (ETuple (EBinOp "++" (ELit (LString "%arg")) (EApp (EVar "intToString") (EVar "i"))) (EVar "LTInt"))) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EListLit)) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
+(DFunDef false "paramEnv" ((PCons (PCon "PWild") (PVar "rest")) (PCons PWild (PVar "tys")) (PVar "i")) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EVar "tys")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))
+(DFunDef false "paramEnv" ((PCons (PCon "PWild") (PVar "rest")) (PList) (PVar "i")) (EApp (EApp (EApp (EVar "paramEnv") (EVar "rest")) (EListLit)) (EBinOp "+" (EVar "i") (ELit (LInt 1)))))
 (DFunDef false "paramEnv" (PWild PWild PWild) (EApp (EVar "panic") (ELit (LString "llvm spike: function parameters must be plain variables in slice 2"))))
 (DTypeSig false "emitFnBody" (TyFun (TyCon "Emit") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyCon "String") (TyCon "LTy")))) (TyFun (TyCon "String") (TyFun (TyCon "CExpr") (TyCon "Unit"))))))
 (DFunDef false "emitFnBody" ((PVar "e") (PVar "env") (PVar "self") (PCon "CIf" (PVar "c") (PVar "t") (PVar "f"))) (EBlock (DoLet false false (PTuple (PVar "cv") PWild) (EApp (EApp (EApp (EVar "emitExpr") (EVar "e")) (EVar "env")) (EVar "c"))) (DoLet false false (PVar "ci") (EApp (EApp (EVar "untagInt") (EVar "e")) (EVar "cv"))) (DoLet false false (PVar "cb") (EApp (EVar "freshReg") (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  ")) (EApp (EMethodRef "display") (EVar "cb"))) (ELit (LString " = icmp ne i64 "))) (EApp (EMethodRef "display") (EVar "ci"))) (ELit (LString ", 0"))))) (DoLet false false (PVar "n") (EApp (EVar "intToString") (EApp (EVar "freshLocal") (EVar "e")))) (DoLet false false (PVar "thenL") (EBinOp "++" (ELit (LString "then")) (EVar "n"))) (DoLet false false (PVar "elseL") (EBinOp "++" (ELit (LString "else")) (EVar "n"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "  br i1 ")) (EApp (EMethodRef "display") (EVar "cb"))) (ELit (LString ", label %"))) (EApp (EMethodRef "display") (EVar "thenL"))) (ELit (LString ", label %"))) (EApp (EMethodRef "display") (EVar "elseL"))) (ELit (LString ""))))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EVar "thenL") (ELit (LString ":"))))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "emitFnBody") (EVar "e")) (EVar "env")) (EVar "self")) (EVar "t"))) (DoLet false false PWild (EApp (EApp (EVar "emit") (EVar "e")) (EBinOp "++" (EVar "elseL") (ELit (LString ":"))))) (DoExpr (EApp (EApp (EApp (EApp (EVar "emitFnBody") (EVar "e")) (EVar "env")) (EVar "self")) (EVar "f")))))
