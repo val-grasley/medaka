@@ -193,6 +193,40 @@ decend2:
   call void @mdk_print_int(i64 %t16)
   ret i32 0
 }
+define i64 @mdk_force_$memo_Int_zero() {
+entry:
+  %t0 = load i8, ptr @mdk_gs_$memo_Int_zero
+  switch i8 %t0, label %lz_unforced [ i8 2, label %lz_forced i8 1, label %lz_forcing ]
+lz_forced:
+  %t1 = load i64, ptr @mdk_g_$memo_Int_zero
+  ret i64 %t1
+lz_forcing:
+  call void @mdk_cyclic_value(ptr @.gname.$memo_Int_zero)
+  unreachable
+lz_unforced:
+  store i8 1, ptr @mdk_gs_$memo_Int_zero
+  %t2 = call i64 @mdk_impl_Int_zero()
+  store i64 %t2, ptr @mdk_g_$memo_Int_zero
+  store i8 2, ptr @mdk_gs_$memo_Int_zero
+  ret i64 %t2
+}
+define i64 @mdk_force_$memo_Flag_zero() {
+entry:
+  %t0 = load i8, ptr @mdk_gs_$memo_Flag_zero
+  switch i8 %t0, label %lz_unforced [ i8 2, label %lz_forced i8 1, label %lz_forcing ]
+lz_forced:
+  %t1 = load i64, ptr @mdk_g_$memo_Flag_zero
+  ret i64 %t1
+lz_forcing:
+  call void @mdk_cyclic_value(ptr @.gname.$memo_Flag_zero)
+  unreachable
+lz_unforced:
+  store i8 1, ptr @mdk_gs_$memo_Flag_zero
+  %t2 = call i64 @mdk_impl_Flag_zero()
+  store i64 %t2, ptr @mdk_g_$memo_Flag_zero
+  store i8 2, ptr @mdk_gs_$memo_Flag_zero
+  ret i64 %t2
+}
 define i64 @mdk_force_intZero() {
 entry:
   %t0 = load i8, ptr @mdk_gs_intZero
@@ -205,7 +239,7 @@ lz_forcing:
   unreachable
 lz_unforced:
   store i8 1, ptr @mdk_gs_intZero
-  %t2 = call i64 @mdk_impl_Int_zero()
+  %t2 = call i64 @mdk_force_$memo_Int_zero()
   store i64 %t2, ptr @mdk_g_intZero
   store i8 2, ptr @mdk_gs_intZero
   ret i64 %t2
@@ -222,7 +256,7 @@ lz_forcing:
   unreachable
 lz_unforced:
   store i8 1, ptr @mdk_gs_flagZero
-  %t2 = call i64 @mdk_impl_Flag_zero()
+  %t2 = call i64 @mdk_force_$memo_Flag_zero()
   store i64 %t2, ptr @mdk_g_flagZero
   store i8 2, ptr @mdk_gs_flagZero
   ret i64 %t2
@@ -237,9 +271,15 @@ entry:
   ret i64 1
 }
 
+@mdk_g_$memo_Int_zero = global i64 0
+@mdk_gs_$memo_Int_zero = global i8 0
+@mdk_g_$memo_Flag_zero = global i64 0
+@mdk_gs_$memo_Flag_zero = global i8 0
 @mdk_g_intZero = global i64 0
 @mdk_gs_intZero = global i8 0
 @mdk_g_flagZero = global i64 0
 @mdk_gs_flagZero = global i8 0
+@.gname.$memo_Int_zero = private unnamed_addr constant [15 x i8] c"\24\6D\65\6D\6F\5F\49\6E\74\5F\7A\65\72\6F\00"
+@.gname.$memo_Flag_zero = private unnamed_addr constant [16 x i8] c"\24\6D\65\6D\6F\5F\46\6C\61\67\5F\7A\65\72\6F\00"
 @.gname.intZero = private unnamed_addr constant [8 x i8] c"\69\6E\74\5A\65\72\6F\00"
 @.gname.flagZero = private unnamed_addr constant [9 x i8] c"\66\6C\61\67\5A\65\72\6F\00"

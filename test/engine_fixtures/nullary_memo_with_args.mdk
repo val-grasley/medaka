@@ -1,0 +1,18 @@
+-- #719 guard (criterion 2): a method WITH a discriminating argument must NOT be
+-- memoised — its side-effecting body runs once PER CALL on every engine.  Only a
+-- NULLARY return-position impl method is a per-instance CAF (see
+-- return_pos_memoised.mdk); this fixture pins that the args case is untouched.
+interface Speak a where
+  speak : a -> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d =
+    let _ = putStr "[call] "
+    "woof"
+
+main =
+  let a = speak Dog
+  let b = speak Dog
+  putStrLn (a ++ b)

@@ -68,6 +68,7 @@ import support.util.{
   noneHeadTag,
   isEmptyL,
   isNonEmptyL,
+  reverseL,
   startsWith,
 }
 
@@ -481,7 +482,9 @@ lowerProgram prog =
 -- line up with the cell's stored field offsets (verified by the fixture byte-diff).
 export lowerProgramEmit : List Decl -> CProgram
 lowerProgramEmit prog =
-  rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog)
+  hoistNullaryMemo (rewriteProgramRecPats
+    (buildRecPatFieldOrders prog)
+    (lowerProgram prog))
 
 -- type/ctor name → [field label in declared order], from every DData named-field
 -- (`ConNamed`) variant — records are the `data X = { … }` short form, whose
@@ -655,6 +658,169 @@ rewriteStmtRP fo (CSAssign x e) = CSAssign x (rewriteExprRP fo e)
 
 rewriteFieldRP : List (String, List String) -> CField -> CField
 rewriteFieldRP fo (CField k e) = CField k (rewriteExprRP fo e)
+
+-- ── #719: nullary return-position impl-method CAF memoisation (emit backends) ──
+-- A point-free (nullary) RETURN-POSITION impl method at a fixed concrete type
+-- (`theUnit : a`; RKey-dispatched, no discriminating argument) is a per-instance
+-- CAF: eval evaluates its body ONCE and shares the value at every occurrence at
+-- that type (eval.mdk implMethodValue/memoThunk, TYPECHECK-AUDIT C6).  Both emit
+-- backends, however, lowered each occurrence to a fresh `call
+-- @mdk_impl_<tag>_<method>()`, re-running the body — duplicating any side effect
+-- (issue #719, silent run != build on the LLVM and WasmGC backends).
+--
+-- Fix (emit-only, so BOTH backends inherit it via lowerProgramEmit — the eval arm
+-- already memoises): HOIST each such occurrence to a synthesized top-level value
+-- binding `$memo_<tag>_<method> = <the nullary CMethod>` and replace the occurrence
+-- with a reference to it.  The existing top-level value-global CAF machinery (#561
+-- lazy globals) then computes the body once, memoises it, and black-holes a cyclic
+-- self-force into E-CYCLIC-VALUE — the SAME machinery that already makes a top-level
+-- `x = theUnit : Box` correct on both backends.  No new memo infrastructure.
+--
+-- Gated to EXACTLY eval's memoThunk case: an RKey route with NO nested (parametric-
+-- impl) dicts and NO impl/method dict routes (`CMethod _ (RKey tag []) [] []`), whose
+-- resolved impl is RETURN-position (`positions == []`) AND point-free (`pats == []`).
+-- A method WITH arguments (non-empty pats), a discriminating-arg method (non-empty
+-- positions), a runtime-dict route (RDict/RDictFwd), or a dict-parametric impl
+-- (non-empty routes) is NOT hoisted — it keeps its per-call semantics.
+--
+-- Only occurrences that ACTUALLY appear are hoisted: the walk records each rewritten
+-- (tag, method) into memoRefsRef so no dead CAF global is emitted.  The module Ref
+-- (reset per hoistNullaryMemo call — lowerProgramEmit is the single caller) keeps the
+-- structural walk to one pass without tupling a collector through every CExpr case.
+memoRefsRef : Ref (List (String, String))
+memoRefsRef = Ref []
+
+-- the (method, tag) instances that are per-instance CAFs — see the gate above.
+memoKeys : List CImplEntry -> List (String, String)
+memoKeys [] = []
+memoKeys ((CImplEntry m _ (CImplTagged tag _ _ positions pats _))::rest)
+  | isEmptyL positions && isEmptyL pats = (m, tag) :: memoKeys rest
+memoKeys (_::rest) = memoKeys rest
+
+isMemoKey : List (String, String) -> String -> String -> Bool
+isMemoKey [] _ _ = False
+isMemoKey ((m2, t2)::rest) m tag = m == m2 && tag == t2 || isMemoKey rest m tag
+
+-- the synthesized CAF binding name for a memoised (tag, method) instance.  The `$`
+-- prefix is the internal-binder convention (cf. composeVar `$cf`), so it cannot
+-- collide with a user/prelude binding; it flows verbatim into `@mdk_g_<name>`.
+memoBindName : String -> String -> String
+memoBindName tag method = "$memo_\{tag}_\{method}"
+
+recordMemoRef : String -> String -> Unit
+recordMemoRef tag method = setRef memoRefsRef ((tag, method)::memoRefsRef.value)
+
+-- the whole-program hoist: rewrite every memoisable occurrence to a CAF reference,
+-- then prepend one synthesized CAF value-bind per referenced instance.  A no-op (the
+-- byte-identical old program) when the program defines no memoisable nullary method.
+hoistNullaryMemo : CProgram -> CProgram
+hoistNullaryMemo (CProgram groups ctorArs ctorTypes implEntries) =
+  let keys = memoKeys implEntries
+  if isEmptyL keys then CProgram groups ctorArs ctorTypes implEntries
+  else
+    let _ = setRef memoRefsRef []
+    let groups2 = map (hoistBind keys) groups
+    let impls2 = map (hoistImpl keys) implEntries
+    let refs = dedupPairs (reverseL memoRefsRef.value) []
+    CProgram (map memoCafBind refs ++ groups2) ctorArs ctorTypes impls2
+
+memoCafBind : (String, String) -> CBind
+memoCafBind (tag, method) = CBind
+  (memoBindName tag method)
+  [CClause [] (CMethod method (RKey tag []) [] [])]
+
+dedupPairs : List (String, String) -> List (String, String) -> List (String, String)
+dedupPairs [] _ = []
+dedupPairs (p::rest) seen
+  | pairMember p seen = dedupPairs rest seen
+  | otherwise = p :: dedupPairs rest (p::seen)
+
+pairMember : (String, String) -> List (String, String) -> Bool
+pairMember _ [] = False
+pairMember (a, b) ((a2, b2)::rest) = a == a2 && b == b2
+  || pairMember (a, b) rest
+
+hoistBind : List (String, String) -> CBind -> CBind
+hoistBind keys (CBind n clauses) = CBind n (map (hoistClause keys) clauses)
+
+hoistClause : List (String, String) -> CClause -> CClause
+hoistClause keys (CClause pats body) = CClause pats (hoistExpr keys body)
+
+hoistImpl : List (String, String) -> CImplEntry -> CImplEntry
+hoistImpl keys (CImplEntry n s (CImplTagged tag key iface pos pats body)) =
+  CImplEntry n s (CImplTagged tag key iface pos pats (hoistExpr keys body))
+hoistImpl keys (CImplEntry n s (CImplDefault pats body)) =
+  CImplEntry n s (CImplDefault pats (hoistExpr keys body))
+
+-- the structural walk (mirrors rewriteExprRP), rewriting ONLY the gated CMethod
+-- occurrence; everything else recurses unchanged.
+hoistExpr : List (String, String) -> CExpr -> CExpr
+hoistExpr keys (CMethod name (RKey tag []) [] []) =
+  if isMemoKey keys name tag then
+    let _ = recordMemoRef tag name
+    CVar (memoBindName tag name) AGlobal
+  else CMethod name (RKey tag []) [] []
+hoistExpr _ (CMethod name r ir mr) = CMethod name r ir mr
+hoistExpr _ (CLit l) = CLit l
+hoistExpr _ (CVar x addr) = CVar x addr
+hoistExpr keys (CApp f x) = CApp (hoistExpr keys f) (hoistExpr keys x)
+hoistExpr keys (CLam pats body) = CLam pats (hoistExpr keys body)
+hoistExpr keys (CLet r pat e1 e2) =
+  CLet r pat (hoistExpr keys e1) (hoistExpr keys e2)
+hoistExpr keys (CLetGroup binds body) =
+  CLetGroup (map (hoistBind keys) binds) (hoistExpr keys body)
+hoistExpr keys (CMatch scrut arms) =
+  CMatch (hoistExpr keys scrut) (map (hoistArm keys) arms)
+hoistExpr keys (CDecision scrut arms tree) =
+  CDecision (hoistExpr keys scrut) (map (hoistArm keys) arms) tree
+hoistExpr keys (CIf c t e) =
+  CIf (hoistExpr keys c) (hoistExpr keys t) (hoistExpr keys e)
+hoistExpr keys (CBinPrim op l r tag) =
+  CBinPrim op (hoistExpr keys l) (hoistExpr keys r) tag
+hoistExpr keys (CUnOp op x) = CUnOp op (hoistExpr keys x)
+hoistExpr keys (CTuple es) = CTuple (map (hoistExpr keys) es)
+hoistExpr keys (CList es) = CList (map (hoistExpr keys) es)
+hoistExpr keys (CRecord name fields) =
+  CRecord name (map (hoistField keys) fields)
+hoistExpr keys (CFieldAccess ex f n) = CFieldAccess (hoistExpr keys ex) f n
+hoistExpr keys (CRecordUpdate name base fields) =
+  CRecordUpdate name (hoistExpr keys base) (map (hoistField keys) fields)
+hoistExpr keys (CVariantUpdate con base fields) =
+  CVariantUpdate con (hoistExpr keys base) (map (hoistField keys) fields)
+hoistExpr keys (CArray es) = CArray (map (hoistExpr keys) es)
+hoistExpr keys (CRangeList lo hi incl) =
+  CRangeList (hoistExpr keys lo) (hoistExpr keys hi) incl
+hoistExpr keys (CRangeArray lo hi incl) =
+  CRangeArray (hoistExpr keys lo) (hoistExpr keys hi) incl
+hoistExpr keys (CIndex a i) = CIndex (hoistExpr keys a) (hoistExpr keys i)
+hoistExpr keys (CSlice a lo hi incl) =
+  CSlice (hoistExpr keys a) (hoistExpr keys lo) (hoistExpr keys hi) incl
+hoistExpr keys (CStringIndex a i) =
+  CStringIndex (hoistExpr keys a) (hoistExpr keys i)
+hoistExpr keys (CStringSlice a lo hi incl) =
+  CStringSlice (hoistExpr keys a) (hoistExpr keys lo) (hoistExpr keys hi) incl
+hoistExpr keys (CListIndex a i) =
+  CListIndex (hoistExpr keys a) (hoistExpr keys i)
+hoistExpr keys (CListSlice a lo hi incl) =
+  CListSlice (hoistExpr keys a) (hoistExpr keys lo) (hoistExpr keys hi) incl
+hoistExpr keys (CBlock stmts) = CBlock (map (hoistStmt keys) stmts)
+hoistExpr _ (CDict name rs) = CDict name rs
+
+hoistArm : List (String, String) -> CArm -> CArm
+hoistArm keys (CArm pat guards body) =
+  CArm pat (map (hoistGuard keys) guards) (hoistExpr keys body)
+
+hoistGuard : List (String, String) -> CGuard -> CGuard
+hoistGuard keys (CGBool e) = CGBool (hoistExpr keys e)
+hoistGuard keys (CGBind p e) = CGBind p (hoistExpr keys e)
+
+hoistStmt : List (String, String) -> CStmt -> CStmt
+hoistStmt keys (CSExpr e) = CSExpr (hoistExpr keys e)
+hoistStmt keys (CSLet r pat e) = CSLet r pat (hoistExpr keys e)
+hoistStmt keys (CSAssign x e) = CSAssign x (hoistExpr keys e)
+
+hoistField : List (String, String) -> CField -> CField
+hoistField keys (CField k e) = CField k (hoistExpr keys e)
 
 -- recompile a CDecision's tree from rewritten arms (same call lowerMatch makes).
 compileArmsC : List CArm -> CTree
