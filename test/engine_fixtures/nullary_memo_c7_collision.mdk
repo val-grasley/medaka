@@ -1,0 +1,36 @@
+-- #731 item 2: two impls that share a head tycon but differ in type args
+-- (`Foo (MyPair Int Bool)` vs `Foo (MyPair Bool Int)`) are a TYPECHECK-AUDIT C7
+-- collision — the RKey route carries the canonical KEY (`Foo|(MyPair Int Bool)|`),
+-- not the bare head `MyPair`.  #730 keyed the memo hoist on the bare head, so
+-- `isMemoKey` missed on the collision and the effect duplicated on build
+-- (`[IB] [IB] ...`).  Keying memo on the same selector the route carries fixes it.
+-- BOTH colliding impls are exercised twice here: each fires its effect exactly once
+-- (`[IB]` then `[BI]`) and the two memoise INDEPENDENTLY — proof the C7 keys are not
+-- collapsed into one CAF.  A run != build S1 — the engines gate is the pin.
+data MyPair a b = MyPair a b
+
+interface Foo a where
+  theVal : a
+
+impl Foo (MyPair Int Bool) where
+  theVal =
+    let _ = putStr "[IB] "
+    MyPair 1 True
+
+impl Foo (MyPair Bool Int) where
+  theVal =
+    let _ = putStr "[BI] "
+    MyPair True 1
+
+fstI : MyPair Int Bool -> Int
+fstI (MyPair a _) = a
+
+sndI : MyPair Bool Int -> Int
+sndI (MyPair _ b) = b
+
+main =
+  let a = fstI (theVal : MyPair Int Bool)
+  let b = fstI (theVal : MyPair Int Bool)
+  let c = sndI (theVal : MyPair Bool Int)
+  let d = sndI (theVal : MyPair Bool Int)
+  println (a + b + c + d)
