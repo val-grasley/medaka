@@ -1,3 +1,0 @@
-public export data TA = Box Int
-export ma : TA
-ma = Box 5

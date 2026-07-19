@@ -224,6 +224,7 @@ kebab-case; never renumber (append only).
 | `R-DUPLICATE-SIGNATURE` | `DuplicateSignature` — a top-level name carries >=2 of its own type signatures (unambiguous: a legitimate multi-clause function has exactly one). S-2 fix (2026-07-13); for a name this check covers, it replaces `R-DUPLICATE-BINDING`'s "must be contiguous, merge them" advice — that advice is wrong when the two runs are genuinely unrelated definitions, not one function split by accident. |
 | `R-DUP-BINDER` | `DuplicateBinder` (non-linear pattern / repeated parameter) |
 | `R-AMBIGUOUS-OCCURRENCE` | `AmbiguousOccurrence` |
+| `R-AMBIGUOUS-CTOR` | `AmbiguousConstructor` — a bare constructor USED (pattern or expression) that ≥2 explicitly-importing non-`core` modules bring into scope under the same name (#674). The constructor peer of `R-AMBIGUOUS-OCCURRENCE`. Fired at the USE site (importing both but never using the ctor stays legal). No qualified-ctor syntax exists, so the help points at a selective `import <mod>.{T(..)}` of ONE owning type, never "qualify". |
 | `R-INTERNAL-EXTERN` | `InternalExternAccess` |
 | `R-IMMUTABLE-ASSIGN` | `ReassignImmutable` — bare reassignment `x = e` of an existing binding (beta immutability model; use `Ref` + `:=`). Note: `let mut` is rejected earlier, at the parser (a `P-*` parse error), not here. |
 

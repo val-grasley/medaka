@@ -145,6 +145,14 @@ public export data ResError =
   -- name USED unqualified, exported by ≥2 non-`core` modules (use-time
   -- ambiguity; MAP-SET-AMBIGUITY-DESIGN.md)
   | AmbiguousOccurrence String (List String) (Option Loc)
+  -- CONSTRUCTOR (in a pattern or an expression) that ≥2 explicitly-imported
+  -- non-`core` modules bring into scope under the same name (#674).  The
+  -- constructor peer of AmbiguousOccurrence: without it a cross-module duplicate
+  -- public ctor was silently resolved by load/import order, and typecheck's
+  -- last-loaded-wins vs the native mangler's first-import-wins DISAGREED — check
+  -- accepted, run was right, the native build CRASHED.  Fired at the USE site, so
+  -- importing both but never using the ctor stays legal.
+  | AmbiguousConstructor String (List String) (Option Loc)
   -- an internal-only array-kernel extern (arrayGetUnsafe, …) referenced from a
   -- module that is neither in the standard library nor compiled with
   -- `--allow-internal` (see internalExterns / Env.internalGuard)
@@ -189,6 +197,7 @@ resErrorLoc (DuplicateSignature _ l _) = l
 resErrorLoc (DuplicateBinder _ _ l) = l
 resErrorLoc (AsPatternMisplaced l) = l
 resErrorLoc (AmbiguousOccurrence _ _ l) = l
+resErrorLoc (AmbiguousConstructor _ _ l) = l
 resErrorLoc (InternalExternAccess _ l) = l
 resErrorLoc (ReassignImmutable _ l) = l
 
@@ -212,6 +221,7 @@ public export data Env = Env {
     imported : OrdMap Unit,
     importedModuleValues : List (String, List String),  -- (modId, expValues) pairs for every non-`core` module this file `import`s
     ambiguous : List (String, List String),  -- (multi-module path only; single-file `buildEnv` leaves this `[]`) — lets
+    ctorAmbiguous : List (String, List String),  -- #674: CONSTRUCTOR name → its ≥2 explicitly-importing module ids (ctor peer of `ambiguous`)
     internalGuard : OrdMap Unit,  -- `checkVar` recognize an unbound name that's an export of an ALREADY
   }  -- imported module (needs a selective import, not a typo fix; audit #5).
 -- use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md): name → the ≥2 distinct
@@ -330,7 +340,12 @@ checkConstraint cur env (Constraint iface args) = (if contains iface env.interfa
 
 -- ── check_pat ─────────────────────────────────────────────────────────────
 checkPat : Option Loc -> Env -> Pat -> List ResError
-checkPat cur env (PCon c ps) = (if omHasKey c env.ctors || omHasKey c env.imported then [] else [UnknownConstructor c cur (suggestCtor c)])
+checkPat cur env (PCon c ps) = (if omHasKey c env.ctors || omHasKey c env.imported then
+    -- in scope — but a cross-module duplicate ctor (≥2 explicitly-importing
+    -- modules) is AMBIGUOUS at this use site (#674); local ctors are excluded
+    -- from ctorAmbiguous, so this only fires on a genuine import collision.
+    whenL (isCtorAmbiguous env c) [AmbiguousConstructor c (ctorAmbigMods env c) cur]
+  else [UnknownConstructor c cur (suggestCtor c)])
   ++ flatMap (checkPat cur env) ps
 checkPat cur env (PCons a b) = checkPat cur env a ++ checkPat cur env b
 checkPat cur env (PTuple ps) = flatMap (checkPat cur env) ps
@@ -494,6 +509,10 @@ checkVar cur env scope n
   -- non-core modules (same-module top-levels already excluded from the set).
   | not (contains n scope) && isAmbiguous env n =
     [AmbiguousOccurrence n (ambigMods env n) cur]
+  -- a CONSTRUCTOR used as an expression, brought in by ≥2 explicitly-importing
+  -- modules under one name (#674) — the expression peer of checkPat's PCon arm.
+  | not (contains n scope) && isCtorAmbiguous env n =
+    [AmbiguousConstructor n (ctorAmbigMods env n) cur]
   | otherwise = []
 
 -- The errors for a name that failed `lookupValue`: if it's exported by an
@@ -522,6 +541,18 @@ isAmbiguous env n = match lookupAssoc n env.ambiguous
 
 ambigMods : Env -> String -> List String
 ambigMods env n = match lookupAssoc n env.ambiguous
+  Some mods => mods
+  None => []
+
+-- constructor peer of isAmbiguous/ambigMods (#674): is this ctor name brought in
+-- by ≥2 explicitly-importing modules?
+isCtorAmbiguous : Env -> String -> Bool
+isCtorAmbiguous env n = match lookupAssoc n env.ctorAmbiguous
+  Some _ => True
+  None => False
+
+ctorAmbigMods : Env -> String -> List String
+ctorAmbigMods env n = match lookupAssoc n env.ctorAmbiguous
   Some mods => mods
   None => []
 
@@ -1104,6 +1135,7 @@ buildEnv runtimeDecls preludeDecls prog internalGuard =
     imported = omFromNames imported omEmpty,
     importedModuleValues = [],
     ambiguous = [],
+    ctorAmbiguous = [],
     internalGuard = omFromNames internalGuard omEmpty,
   }
 
@@ -1483,6 +1515,9 @@ resErrorSexp (AsPatternMisplaced _) = "AsPatternMisplaced"
 resErrorSexp (AmbiguousOccurrence n mods _) = "(AmbiguousOccurrence "
   ++ joinWith " " (escStr n :: map escStr mods)
   ++ ")"
+resErrorSexp (AmbiguousConstructor n mods _) = "(AmbiguousConstructor "
+  ++ joinWith " " (escStr n :: map escStr mods)
+  ++ ")"
 resErrorSexp (ReassignImmutable n _) = "(ReassignImmutable " ++ escStr n ++ ")"
 
 -- String key for an `Option Loc`, used only to distinguish dedup candidates
@@ -1579,6 +1614,11 @@ ppResError (DuplicateSignature n _ (Some (Loc _ l _ _ _))) = "'\{n}' is already 
 ppResError (DuplicateSignature n _ None) = "'\{n}' is already defined earlier in this file. A name may have only one type signature — rename or remove this duplicate definition, or merge the clauses into a single multi-clause function if that was the intent"
 ppResError (DuplicateBinder k n _) = "Duplicate binder: '\{n}' is bound more than once in this \{k}. Each binder must be distinct — rename one occurrence"
 ppResError (AmbiguousOccurrence n mods _) = "Ambiguous occurrence: '\{n}' is exported by \{ambigModPhrase mods}. Qualify, or select with `import <mod>.{\{n}}`"
+-- No `Type.\{n}` spelling exists (a qualified constructor is a parse error), so the
+-- fix is a selective import of ONE owning type: `import <mod>.{T(..)}` — bringing in
+-- only that module's constructors — with the other left as a bare `import <mod>` (or
+-- without `(..)`), which binds its impls but not its constructors.  Never "qualify".
+ppResError (AmbiguousConstructor n mods _) = "Ambiguous constructor: '\{n}' is brought into scope by \{ambigModPhrase mods}. Import the constructors of only one — e.g. `import <mod>.{T(..)}` — and drop the other's `(..)`"
 ppResError (InternalExternAccess n _) = "'"
   ++ n
   ++ "' is an internal-only primitive. Cannot be used outside the standard library (pass --allow-internal to override)"
@@ -1611,6 +1651,7 @@ resErrorCode (DuplicateSignature _ _ _) = "R-DUPLICATE-SIGNATURE"
 resErrorCode (DuplicateBinder _ _ _) = "R-DUP-BINDER"
 resErrorCode (AsPatternMisplaced _) = "R-AS-PATTERN-MISPLACED"
 resErrorCode (AmbiguousOccurrence _ _ _) = "R-AMBIGUOUS-OCCURRENCE"
+resErrorCode (AmbiguousConstructor _ _ _) = "R-AMBIGUOUS-CTOR"
 resErrorCode (InternalExternAccess _ _) = "R-INTERNAL-EXTERN"
 resErrorCode (ReassignImmutable _ _) = "R-IMMUTABLE-ASSIGN"
 
@@ -1895,6 +1936,47 @@ keepAmbiguous sameMod ((n, mids)::rest)
     (n, mids) :: keepAmbiguous sameMod rest
   | otherwise = keepAmbiguous sameMod rest
 
+-- ── constructor-name provenance / ambiguity (#674) ─────────────────────────
+-- The exact ctor peer of valueProvenance/ambiguousSet.  Each import contributes
+-- the CONSTRUCTOR names it actually binds (a bare `import m` binds NONE — impls
+-- only; a selective `import m.{T(..)}` binds T's exported ctors; `import m.*`
+-- binds all of m's ctors), attributed to its DIRECTLY-imported module id.  A ctor
+-- brought in by ≥2 distinct modules AND not defined locally is AMBIGUOUS: the same
+-- name resolves to different modules' constructors, so load/import order (the two
+-- check-side resolvers' opposite tie-breaks) can no longer decide it silently.
+
+-- the CONSTRUCTOR names one non-core import contributes, attributed to its
+-- directly-imported module id (re-export safe, like importValueNames).
+importCtorNames : List ModuleExports -> UsePath -> List String
+importCtorNames known path =
+  if useModId path == "core" then []
+  else match findExports (useModId path) known
+    None => []
+    Some exp =>
+      let (names, _) = importedNamesMM path exp
+      filterContains exp.expCtors names
+
+ctorProvenance : List ModuleExports -> List UsePath -> List (String, List String)
+ctorProvenance known paths = foldCtorProvenance known [] paths
+
+foldCtorProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+foldCtorProvenance _ prov [] = prov
+foldCtorProvenance known prov (p::rest) =
+  let mid = useModId p
+  let prov2 = if mid == "core" then
+    prov
+  else
+    addImportProvenance prov mid (importCtorNames known p)
+  foldCtorProvenance known prov2 rest
+
+-- Keep only ctor names bound by ≥2 distinct modules AND not defined by a
+-- same-module top-level `data`/`newtype` (a real local ctor wins).
+ctorAmbiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+ctorAmbiguousSet known prog =
+  let prov = ctorProvenance known (usePathsOf prog)
+  let sameMod = ctorNames prog
+  keepAmbiguous sameMod prov
+
 foldImports : List ModuleExports -> List (UsePath, Loc) -> ImportAdds
 foldImports _ [] = emptyAdds
 foldImports known ((p, loc)::rest) =
@@ -2041,6 +2123,7 @@ buildEnvMM runtimeDecls preludeDecls known prog internalGuard =
     imported = omFromNames adds.iaImported omEmpty,
     importedModuleValues = impModValues,
     ambiguous = ambiguousSet known prog,
+    ctorAmbiguous = ctorAmbiguousSet known prog,
     internalGuard = omFromNames internalGuard omEmpty,
   }
   (env, adds.iaErrors)
