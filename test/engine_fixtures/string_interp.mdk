@@ -1,0 +1,11 @@
+-- string interpolation (\{e} desugars to display e) over builtin + nested types
+-- No reshape needed: main's top-level tuple is already arity 5 (<=5 tuple-Display).
+data Color = Red | Green deriving (Debug, Display)
+greet name n = "hi \{name}, you have \{n} messages"
+main =
+  ( "val=\{40 + 2} ok=\{True}"
+  , "\{[1, 2, 3]} items, first \{Some 9}"
+  , greet "sam" 3
+  , "color=\{Red} vs \{Green}"
+  , "nested \{(1, "two", 'c')}"
+  )

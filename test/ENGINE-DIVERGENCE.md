@@ -50,16 +50,44 @@ a codegen bug now has to corrupt all three engines *identically* to hide.
 
 ## 2. The census
 
-**404 fixtures** = the union of ALL FOUR emitter corpora:
+⚠️ **DERIVE, DON'T ENCODE.** This section used to hardcode "404 fixtures" plus a
+per-corpus breakdown and a T1/T2/T3 tally — all of them counts of a *live, growing*
+corpus. Every one of those numbers was already stale by 2026-07-19 (the four
+original corpora alone had grown well past 404; the gate had also grown two more
+corpora — `test/engine_fixtures/` #530 and `test/llvm_fixtures_modules/` #708 — that
+this section never even listed) and any replacement number written here rots the
+same way the moment a fixture is added. **Run the command; don't trust a prior run's
+number, including a number that used to be in this doc.**
 
-| corpus | n | |
-|---|---|---|
-| `test/llvm_fixtures/` | 201 | untyped, prelude-free |
-| `test/llvm_fixtures_typed/` | 45 | its typed sibling |
-| `test/wasm/fixtures/` | 149 | untyped, prelude-free |
-| `test/wasm/fixtures_typed/` | 9 | its typed sibling |
+The gate's corpus is the union of six inputs (`test/diff_compiler_engines.sh`, the
+`CORPUS=`/`MODULE_ENTRIES=` assignments, currently around line 505). Per-corpus counts:
 
-Deterministic across repeated runs.
+```sh
+for d in test/llvm_fixtures test/llvm_fixtures_typed \
+         test/wasm/fixtures test/wasm/fixtures_typed \
+         test/engine_fixtures; do
+  printf '%-28s %d\n' "$d" "$(ls "$d"/*.mdk 2>/dev/null | wc -l)"
+done
+printf '%-28s %d\n' test/llvm_fixtures_modules \
+  "$(ls test/llvm_fixtures_modules/*/entry.mdk 2>/dev/null | wc -l)"
+```
+
+`test/llvm_fixtures/` and `test/wasm/fixtures/` are untyped/prelude-free; their
+`_typed` siblings and `test/engine_fixtures/` carry the real prelude;
+`test/llvm_fixtures_modules/` is the multi-module arm (one program = one subdirectory,
+counted by its `entry.mdk`).
+
+The gate itself reports the live total and the three tier tallies — read them off a
+run, do not memoize them here:
+
+```sh
+MEDAKA_REQUIRE_WASM=1 sh test/diff_compiler_engines.sh 2>&1 | grep -E '3-ENGINE DIFFERENTIAL|^ T[123] '
+```
+
+which prints a line shaped like `3-ENGINE DIFFERENTIAL — N fixtures (llvm ∪
+llvm_typed ∪ wasm ∪ wasm_typed ∪ engine ∪ llvm_modules)` followed by the `T1`/`T2`/`T3`
+agree/differ/n-a breakdown. (Drop `MEDAKA_REQUIRE_WASM=1` on a box without the wasm
+toolchain — the gate degrades to T1-only and says so; see §4.)
 
 > **The two TYPED corpora joined on 2026-07-14, and could not have before.** This gate is
 > a THREE-WAY differential, so a fixture must run on all three arms to be in the corpus at
@@ -68,18 +96,13 @@ Deterministic across repeated runs.
 > that needed the prelude could join, and **the gate structurally could not express a
 > type-directed bug** — it could not have caught the record-update miscompile (#38).
 > Moving the wasm arm onto `medaka build --target wasm` raised the ceiling and the typed
-> corpora walked in. T3 (all three agree) went 263 → 305.
+> corpora walked in — a one-time, dated structural change, unlike the ever-growing
+> counts above, which is why it stays as prose rather than a number to derive.
 
-```
- T1  eval   == native    329 agree   15 differ   60 n/a
- T2  native == wasm      336 agree    9 differ   59 n/a
- T3  all three agree     305 agree   22 differ   77 n/a
-```
-
-The tiers separate the bug classes cleanly: **T1's 15 are all one interpreter bug**
-(§3.1); **T2's 9 are all wasm codegen bugs** (§3.2) — 7 of them on fixtures from the
-*LLVM* corpus that the wasm backend had never been run on, plus 2 more that only became
-visible once the wasm arm became the shipping compiler.
+The tiers separate the bug classes cleanly: T1 disagreements are interpreter bugs
+(§3.1 — historically all one bug, #98, now resolved); T2 disagreements are wasm
+codegen bugs (§3.2) — the ones on fixtures from the *LLVM* corpus are ones the wasm
+backend had never been run on before this gate existed.
 
 ---
 
@@ -244,6 +267,24 @@ NOT promoted: the shipping compiler REJECTS it uniformly (`medaka run` AND `meda
 both error *"Ambiguous instance for Monoid"*) — only the lenient `eval_autoprint_main`
 oracle accepts it, so it is an oracle artifact, not a backend divergence. Its signatured
 twin `monoid_nested` IS promoted and clean.
+
+### 3.6 `#711` — promoting `eval_prelude`/`eval_list`: 1 more `wasm:codegen-bug`
+
+Issue #711 promoted the interpreter-only `test/eval_prelude/` + `test/eval_list/` fixtures
+into `test/engine_fixtures/` (reshaped tuple `main`s so each Display node is ≤5-arity, same
+values). Six of the seven agree cleanly across all three engines
+(`debug_dispatch`, `float_totalorder_nan`, `list_combinators`, `ord_eq`, `programs`,
+`string_interp`). One reproduces a real `run != build` divergence — the same
+`wasm:codegen-bug` shape as §3.4/§3.5 (eval == native, wasm build fails).
+
+| fixture | eval == native | wasm | issue | diagnosis |
+|---|---|---|---|---|
+| `engine/numeric_combinators` | `((-5, 7, 10, 0, 4), (7, 36, 9, (True, True, False), Lt))` | **validate fail** | #729 (S1) | wasm-tools **validate** rejects: *"type mismatch: expected i32, found (ref eq)"*. Bisected trigger: the prelude's own point-free `clamp lo hi = min hi >> max lo` (`stdlib/core.mdk`) — a top-level `Ord a =>` function whose body composes two dict-passed interface methods point-free leaves a value/dict on the WasmGC operand stack. In isolation the minimal `main = clamp 0 10 15` reports *"values remaining on stack at end of block"* (the #717/#718 phrasing); inside this fixture's larger tuple `main` it surfaces as the #713/#714 i32↔(ref eq) boxing signature. |
+
+Same WasmGC dict-forwarding/boxing family as #713/#714/#717/#718 — **likely one root
+cause** in `compiler/backend/wasm_emit.mdk`. Filed separately (#729) because the trigger is
+a **prelude function every user can call**, with a one-line reproducer, not a synthetic
+impl body or lists+HOF program. Native LLVM handles it correctly; the defect is WasmGC-only.
 
 ---
 

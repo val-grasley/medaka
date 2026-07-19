@@ -1,0 +1,10 @@
+-- Debug / Display dispatch through the real prelude (core.mdk), across builtin
+-- types and nested structure
+-- Reshaped for the engines corpus (#711, following #707): 11-tuple exceeds the
+-- <=5 tuple-Display arity, nested into three <=5 sub-tuples. Same values,
+-- autoprints identically across engines.
+main =
+  ( (debug 42, debug True, debug 'a', debug "hi", debug 3.5)
+  , (debug (1, "two", 'c'), debug [1, 2, 3], debug (Some 5), debug (None : Option Int))
+  , (display "raw", debug [Some 1, None])
+  )
