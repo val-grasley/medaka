@@ -1,0 +1,26 @@
+-- List combinators dispatched through core.mdk + list.mdk
+-- Reshaped for the engines corpus (#711, following #707): 13-tuple exceeds the
+-- <=5 tuple-Display arity, nested into three <=5 sub-tuples. Same values,
+-- autoprints identically across engines.
+--
+-- The eval_list_fixtures original runs through a special probe that PREPENDS
+-- core.mdk + list.mdk, so its top-level names are in scope with no import. The
+-- shipping CLI used by the three-engine differential does not do that -- an
+-- explicit import is needed for the names list.mdk (not core.mdk) exports.
+import list.{reverse, take, drop, zip, zipWith, head, tail, sortBy}
+isOdd n = n % 2 == 1
+main =
+  ( ( map (x => x * x) [1, 2, 3, 4]
+    , filter isOdd [1, 2, 3, 4, 5, 6]
+    , length [10, 20, 30]
+    , reverse [1, 2, 3]
+    , sum [1, 2, 3, 4, 5]
+    )
+  , ( take 3 [1, 2, 3, 4, 5]
+    , drop 2 [1, 2, 3, 4, 5]
+    , elem 3 [1, 2, 3]
+    , zip [1, 2, 3] ["a", "b"]
+    , zipWith (x y => x + y) [1, 2, 3] [10, 20, 30]
+    )
+  , (head [1, 2, 3], tail [1, 2, 3], sortBy compare [3, 1, 4, 1, 5, 9, 2])
+  )

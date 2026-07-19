@@ -1,0 +1,19 @@
+-- Eq / Ord dispatch through the prelude on builtin + derived types
+-- Reshaped for the engines corpus (#711, following #707): 10-tuple exceeds the
+-- <=5 tuple-Display arity, nested into two <=5 sub-tuples. Same values,
+-- autoprints identically across engines.
+data Suit = Clubs | Diamonds | Hearts | Spades deriving (Eq, Ord, Debug, Display)
+main =
+  ( ( compare 3 5
+    , compare "abd" "abc"
+    , max 3 7
+    , min 'a' 'z'
+    , compare Hearts Spades
+    )
+  , ( max Clubs Diamonds
+    , Hearts == Hearts
+    , Clubs == Spades
+    , debug (compare Spades Clubs)
+    , [Clubs, Diamonds] == [Clubs, Diamonds]
+    )
+  )
