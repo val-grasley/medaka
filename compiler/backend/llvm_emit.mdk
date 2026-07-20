@@ -7144,7 +7144,10 @@ emitRefutMatch e env (PTuple ps) v body failL =
 -- `n*2+1`); String literal via @mdk_string_eq (tagged Bool result); Bool literal
 -- compares the immediate (3/1).
 emitRefutMatch e env (PLit (LInt k)) v _ failL =
-  let _ = emitWordEqTest e v (intToString (k * 2 + 1)) failL
+  -- full-width tag via emitLit (see emitLitChain / #759): a `k*2+1` head wraps for
+  -- |k| >= 2^61 and bakes the wrong comparison constant.
+  let (kw, _) = emitLit e (LInt k)
+  let _ = emitWordEqTest e v kw failL
   env
 emitRefutMatch e env (PLit (LChar c)) v _ failL =
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
@@ -7215,8 +7218,11 @@ emitWordEqTest e word k failL =
 -- (incl ? `v <= hiWord` : `v < hiWord`); any failing comparison branches to failL.
 emitRangeTest : Emit -> String -> Int -> Int -> Bool -> String -> Unit
 emitRangeTest e v lo hi incl failL =
-  let loW = intToString (lo * 2 + 1)
-  let hiW = intToString (hi * 2 + 1)
+  -- full-width tag via emitLit (see emitLitChain / #759): a `bound*2+1` bound wraps
+  -- for |bound| >= 2^61 and bakes the wrong range endpoint.  Both shl/or land in the
+  -- entry block, which dominates the mid block that consumes hiW — SSA-valid.
+  let (loW, _) = emitLit e (LInt lo)
+  let (hiW, _) = emitLit e (LInt hi)
   let n = intToString (freshLocal e)
   let cLo = freshReg e
   let _ = emit e "  \{cLo} = icmp sge i64 \{v}, \{loW}"
@@ -7324,8 +7330,13 @@ emitLitChain : Emit -> List (String, (String, LTy)) -> List String -> List CArm 
 emitLitChain e env roots arms _ rest [] dft slot endL ftL rty =
   emitTree e env roots arms rest slot endL ftL rty dft
 emitLitChain e env roots arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft slot endL ftL rty =
+  -- Tag the pattern head with the SAME full-width lowering the value-construction
+  -- path uses (emitLit): for |k| >= 2^61 the `k*2+1` tag overflows the emitter's own
+  -- 63-bit Medaka Int and bakes a WRONG comparison constant (#759, an S0 wrong-arm
+  -- miscompile). emitLit shifts at full i64 width via LLVM so the head can't wrap.
+  let (kw, _) = emitLit e (LInt k)
   let cmp = freshReg e
-  let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{intToString (k * 2 + 1)}"
+  let _ = emit e "  \{cmp} = icmp eq i64 \{foc}, \{kw}"
   let n = intToString (freshLocal e)
   let yes = "lityes" ++ n
   let next = "litnext" ++ n

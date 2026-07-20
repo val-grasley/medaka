@@ -1,0 +1,28 @@
+-- #759: Int literal PATTERNS in [2^61, 2^62-1] must select the SAME arm under every
+-- engine (eval == native-run == native-build == wasm).  The native emitter used to bake
+-- an OVERFLOWED pattern-comparison constant — it computed the tagged head `k*2+1` with
+-- its own 63-bit Int arithmetic, which wraps for k >= 2^61 — so a `build` binary
+-- silently fell through to the wildcard while `run` hit the literal arm (a wrong-arm S0
+-- at exit 0).  The value-CONSTRUCTION path already tagged at full i64 width via `shl`;
+-- the fix routes the pattern-COMPARISON path through the same lowering.  The WasmGC
+-- backend had the sibling bug (`i31.get_s` + `i32.const k` truncated to 31 bits and
+-- rejected/ trapped for |k| >= 2^30); it now unboxes through `$mdk_unbox_int` to i64.
+f n = match n
+  2305843009213693952 => "hit-2p61"     -- 2^61  (first affected magnitude)
+  4611686018427387903 => "hit-intmax"   -- intMaxBound = 2^62 - 1
+  2305843009213693951 => "hit-2p61m1"   -- 2^61 - 1 (boundary, always matched pre-fix)
+  _                    => "miss"
+
+-- range patterns share the same tag-width hazard (native emitRangeTest / wasm rngCmpW).
+g n = match n
+  2305843009213693952 ..= 4611686018427387903 => "in-range"
+  _                                            => "out-range"
+
+main : <IO> Unit
+main =
+  println (f 2305843009213693952)
+  println (f 4611686018427387903)
+  println (f 2305843009213693951)
+  println (f 100)
+  println (g 3000000000000000000)
+  println (g 100)

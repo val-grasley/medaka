@@ -3109,12 +3109,15 @@ patTestBind : Prog -> Pat -> List String -> String -> List String -> (List Strin
 patTestBind prog PWild occ clLabel env = ([], [], env)
 patTestBind prog (PVar x) occ clLabel env =
   ([], occ ++ ["local.set $" ++ gname x], x::env)
+-- #759: unbox the scrutinee through the $mdk_unbox_int seam (i31 OR $boxint) and
+-- compare at full i64 width.  The old `i31.get_s` + `i32.const n` path truncated to
+-- 31 bits — for |n| >= 2^30 the `i32.const` overflows (wasm-tools REJECTS the module)
+-- and a boxed scrutinee ref.casts to i31 and TRAPS.
 patTestBind prog (PLit (LInt n)) occ clLabel env = (
   occ ++ [
-    "ref.cast (ref i31)",
-    "i31.get_s",
-    "i32.const " ++ intToString n,
-    "i32.ne",
+    "call $mdk_unbox_int",
+    "i64.const " ++ intToString n,
+    "i64.ne",
     "br_if " ++ clLabel,
   ],
   [],
@@ -3208,27 +3211,30 @@ patTestBind prog (PTuple ps) occ clLabel env =
 -- decision matrix (core_ir_lower's canonPat), so the tree routes to this arm
 -- UNCONDITIONALLY and marks it patNeedsGuard — the actual comparison must happen here,
 -- in the guarded-arm re-match.  Peer of llvm_emit's `emitRefutMatch (PRng ...)`.
--- Both Int and Char are plain i31 immediates (Char = its codepoint, cf. the PLit LChar
--- arm above), so one signed test serves both — `i31.get_s` keeps NEGATIVE bounds
--- (`-1..1`) correct.  Fail-fast, mirroring eval.mdk's inIntRange/inCharRange:
+-- One signed i64 test serves both Int and Char (Char = its codepoint, cf. the PLit
+-- LChar arm above); rngCmpW unboxes via $mdk_unbox_int so NEGATIVE bounds (`-1..1`) and
+-- Int bounds >= 2^30 are both correct.  Fail-fast, mirroring eval.mdk's inIntRange/inCharRange:
 -- `v < lo` fails; then `v > hi` (incl) / `v >= hi` (exclusive `..`) fails.
 patTestBind prog (PRng lo hi incl) occ clLabel env = (
-  rngCmpW occ (rngBound lo) "i32.lt_s" clLabel ++ rngCmpW occ (rngBound hi) (if incl then "i32.gt_s" else "i32.ge_s") clLabel,
+  rngCmpW occ (rngBound lo) "i64.lt_s" clLabel ++ rngCmpW occ (rngBound hi) (if incl then "i64.gt_s" else "i64.ge_s") clLabel,
   [],
   env,
 )
 patTestBind prog other occ clLabel env =
   gapL3 ("ref-mode: unsupported clause parameter pattern " ++ ptag other)
 
--- one half of a range test: read `occ` as a signed i31 and `br_if clLabel` when `cmp`
--- against `bound` holds (i.e. when the value is OUT of range).  `occ` is re-embedded
--- per half — patTestBind's contract already requires it be a cheap re-runnable read.
+-- one half of a range test: unbox `occ` to i64 and `br_if clLabel` when `cmp` against
+-- `bound` holds (i.e. when the value is OUT of range).  `occ` is re-embedded per half —
+-- patTestBind's contract already requires it be a cheap re-runnable read.  #759: the
+-- $mdk_unbox_int seam (i31 OR $boxint) at full i64 width so an Int bound >= 2^30 neither
+-- overflows `i32.const` nor traps a boxed scrutinee's i31 cast; a Char is a small i31
+-- codepoint, which $mdk_unbox_int sign-extends exactly as `i31.get_s` did.  `cmp` is the
+-- i64 comparator (`i64.lt_s`/`i64.gt_s`/`i64.ge_s`).
 rngCmpW : List String -> Int -> String -> String -> List String
 rngCmpW occ bound cmp clLabel = occ
   ++ [
-    "ref.cast (ref i31)",
-    "i31.get_s",
-    "i32.const " ++ intToString bound,
+    "call $mdk_unbox_int",
+    "i64.const " ++ intToString bound,
     cmp,
     "br_if " ++ clLabel,
   ]
@@ -7114,7 +7120,10 @@ emitOrdinalSlotTail prog env arity d root svRead rest arms branches ty sd k = ma
 emitLitSwitchTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> List CTBranch -> CTree -> Int -> List String
 emitLitSwitchTail prog env arity d root foc rest arms [] dft idt =
   indentBy idt (emitTreeTail prog env arity d root rest arms dft)
-emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft idt = indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeTail prog env arity d root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchTail prog env arity d root foc rest arms more dft (idt + 1) ++ indentBy idt ["end", "unreachable"]
+-- #759: unbox to i64 ($mdk_unbox_int handles i31 immediate OR $boxint) and compare at
+-- full width, so a head |k| >= 2^30 neither overflows `i32.const` (module rejected) nor
+-- ref.casts a boxed scrutinee to i31 (trap).
+emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LInt k)) sub)::more) dft idt = indentBy idt (foc ++ ["call $mdk_unbox_int", "i64.const " ++ intToString k, "i64.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeTail prog env arity d root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchTail prog env arity d root foc rest arms more dft (idt + 1) ++ indentBy idt ["end", "unreachable"]
 -- W6: Char-literal switch head — a Char is an i31 codepoint immediate (cf.
 -- `PLit (LChar)`); compare the i31 against the codepoint constant.
 emitLitSwitchTail prog env arity d root foc rest arms ((CTBranch (HLit (LChar c)) sub)::more) dft idt = indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_u", "i32.const " ++ intToString (charCode (arrayGetUnsafe 0 (stringToChars c))), "i32.eq"] ++ ["if"]) ++ indentBy (idt + 1) (emitTreeTail prog env arity d root rest arms sub) ++ indentBy idt ["else"] ++ emitLitSwitchTail prog env arity d root foc rest arms more dft (idt + 1) ++ indentBy idt ["end", "unreachable"]
@@ -8068,7 +8077,9 @@ emitLitSwitchRef prog env d decLabel root foc rest arms ((CTBranch (HLit (LInt k
   -- close with `unreachable`: the fall-out goes stack-polymorphic and validates under
   -- BOTH a result-typed head and an untyped con-tower slot.  This is exactly what the
   -- `emitLitSwitchTail` twin already does — the fix was ported to only one of the pair.
-  indentBy idt (foc ++ ["ref.cast (ref i31)", "i31.get_s", "i32.const " ++ intToString k, "i32.eq"] ++ ["if"])
+  -- #759: unbox to i64 ($mdk_unbox_int handles i31 immediate OR $boxint); see
+  -- emitLitSwitchTail — the i31/i32 path truncated/trapped for |k| >= 2^30.
+  indentBy idt (foc ++ ["call $mdk_unbox_int", "i64.const " ++ intToString k, "i64.eq"] ++ ["if"])
     ++ indentBy (idt + 1) (emitTreeRef prog env d decLabel root rest arms sub)
     ++ indentBy idt ["else"]
     ++ emitLitSwitchRef prog env d decLabel root foc rest arms more dft (idt + 1)
