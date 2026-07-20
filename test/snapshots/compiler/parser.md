@@ -1,5 +1,5 @@
 # META
-source_lines=4196
+source_lines=4222
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -125,6 +125,23 @@ failP msg = Parser (toks pos => PErr msg pos)
 -- the user, so a wrong one cannot be backtracked away.
 fatalP : String -> Parser a
 fatalP msg = Parser (toks pos => PFatal msg pos)
+
+-- A COMMITTED failure reported at an EXPLICIT, previously-captured token index
+-- rather than the current position — for when the offending construct starts
+-- earlier than where the parser actually notices the problem (e.g. `public` on
+-- a non-`data` decl: the mistake is the leading `public` token, not whatever
+-- follows `public export`).  `pos0` comes from a `getPos` taken before the
+-- construct was consumed; the current position is discarded (never consumes).
+-- Must be `PFatal`, not `PErr`: a `PErr` reported at `pos0` (the decl's own
+-- start position) is indistinguishable from "no progress" to `many`'s
+-- swallow-and-retry / `deepenLeftover` recovery (`pos2 > pos` fails when
+-- pos2 == the decl start), which discards the message for a generic
+-- "unexpected `public`" instead.  `PFatal` bypasses that recovery machinery
+-- entirely (`manyGo`'s `PFatal e q => PFatal e q` propagates straight out),
+-- so it is only safe where — as here — no alternative production could ever
+-- have claimed this token (see `fatalP` above).
+fatalAtP : String -> Int -> Parser a
+fatalAtP msg pos0 = Parser (toks _pos => PFatal msg pos0)
 
 peekP : Parser Token
 peekP = Parser (toks pos => POk (peekTok toks pos) pos)
@@ -2113,16 +2130,25 @@ afterExport = do
 
 afterPublic : Parser Decl
 afterPublic = do
+  pubPos <- getPos
   expectTok TPublic
   skipNewlines
   expectTok TExport
   skipNewlines
   t <- peekP
-  afterPublicFor t
+  afterPublicFor pubPos t
 
-afterPublicFor : Token -> Parser Decl
-afterPublicFor TData = parseData VisPublic
-afterPublicFor _ = failP "expected data after public export"
+-- `public` is meaningful only in front of `data` (it selects `VisPublic`
+-- instead of the plain-`export` `VisAbstract`); anything else is a user
+-- mistake, not a grammar gap.  The error is reported at `pubPos` — the
+-- `public` token itself, captured before it was consumed — rather than at
+-- whatever token follows `public export`, so the caret lands on the actual
+-- problem and `parseErrHelpFix` (`compiler/driver/diagnostics.mdk`) can offer
+-- a `fix` that deletes exactly the `public` token at that same location.
+afterPublicFor : Int -> Token -> Parser Decl
+afterPublicFor _ TData = parseData VisPublic
+afterPublicFor pubPos _ =
+  fatalAtP "`public` only applies to `data` declarations" pubPos
 
 parseFunOrSig : Bool -> Parser Decl
 parseFunOrSig pub = do
@@ -4224,6 +4250,8 @@ parseResultWith src tokList offList =
 (DFunDef false "failP" ((PVar "msg")) (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "PErr") (EVar "msg")) (EVar "pos")))))
 (DTypeSig false "fatalP" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyVar "a"))))
 (DFunDef false "fatalP" ((PVar "msg")) (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "PFatal") (EVar "msg")) (EVar "pos")))))
+(DTypeSig false "fatalAtP" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyApp (TyCon "Parser") (TyVar "a")))))
+(DFunDef false "fatalAtP" ((PVar "msg") (PVar "pos0")) (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "_pos")) (EApp (EApp (EVar "PFatal") (EVar "msg")) (EVar "pos0")))))
 (DTypeSig false "peekP" (TyApp (TyCon "Parser") (TyCon "Token")))
 (DFunDef false "peekP" () (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "POk") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "pos"))) (EVar "pos")))))
 (DTypeSig false "peek2P" (TyApp (TyCon "Parser") (TyCon "Token")))
@@ -4938,10 +4966,10 @@ parseResultWith src tokList offList =
 (DTypeSig false "afterExport" (TyApp (TyCon "Parser") (TyCon "Decl")))
 (DFunDef false "afterExport" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TExport"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TImport") () (EApp (EVar "parseImport") (EVar "True"))) (arm (PCon "TData") () (EApp (EVar "parseData") (EVar "VisAbstract"))) (arm (PCon "TExtern") () (EApp (EVar "parseExtern") (EVar "True"))) (arm (PCon "TProp") () (EApp (EVar "parseProp") (EVar "True"))) (arm (PCon "TTest") () (EApp (EVar "parseTest") (EVar "True"))) (arm (PCon "TBench") () (EApp (EVar "parseBench") (EVar "True"))) (arm (PCon "TEffect") () (EApp (EVar "parseEffect") (EVar "True"))) (arm (PCon "TInterface") () (EApp (EApp (EVar "parseInterface") (EVar "True")) (EVar "False"))) (arm (PCon "TImpl") () (EApp (EVar "parseImpl") (EVar "True"))) (arm (PCon "TDefault") () (EApp (EVar "afterDefault") (EVar "True"))) (arm (PCon "TType") () (EApp (EVar "parseTypeAlias") (EVar "True"))) (arm (PCon "TNewtype") () (EApp (EVar "parseNewtype") (EVar "True"))) (arm (PCon "TLet") () (EApp (EVar "parseLetGroupDecl") (EVar "True"))) (arm PWild () (EApp (EVar "parseFunOrSig") (EVar "True")))))))))))
 (DTypeSig false "afterPublic" (TyApp (TyCon "Parser") (TyCon "Decl")))
-(DFunDef false "afterPublic" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TPublic"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TExport"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "afterPublicFor") (EVar "t")))))))))))))
-(DTypeSig false "afterPublicFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Decl"))))
-(DFunDef false "afterPublicFor" ((PCon "TData")) (EApp (EVar "parseData") (EVar "VisPublic")))
-(DFunDef false "afterPublicFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected data after public export"))))
+(DFunDef false "afterPublic" () (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "pubPos")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TPublic"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TExport"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "afterPublicFor") (EVar "pubPos")) (EVar "t")))))))))))))))
+(DTypeSig false "afterPublicFor" (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Decl")))))
+(DFunDef false "afterPublicFor" (PWild (PCon "TData")) (EApp (EVar "parseData") (EVar "VisPublic")))
+(DFunDef false "afterPublicFor" ((PVar "pubPos") PWild) (EApp (EApp (EVar "fatalAtP") (ELit (LString "`public` only applies to `data` declarations"))) (EVar "pubPos")))
 (DTypeSig false "parseFunOrSig" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "Decl"))))
 (DFunDef false "parseFunOrSig" ((PVar "pub")) (EApp (EApp (EVar "andThen") (EVar "identNameP")) (ELam ((PVar "name")) (EApp (EApp (EVar "andThen") (EApp (EVar "many") (EVar "parseParamPat"))) (ELam ((PVar "params")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TColon") () (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseTy")) (ELam ((PVar "ty")) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EVar "DTypeSig") (EVar "pub")) (EVar "name")) (EVar "ty")))))))))) (arm (PCon "TEqual") () (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseBody")) (ELam ((PVar "body")) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "pub")) (EVar "name")) (EVar "params")) (EVar "body")))))))))) (arm (PCon "TIndent") () (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseGuardArms")) (ELam ((PVar "arms")) (EApp (EApp (EVar "andThen") (EApp (EVar "guardArmsWhereOpt") (EVar "arms"))) (ELam ((PVar "body")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TDedent"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "pub")) (EVar "name")) (EVar "params")) (EVar "body")))))))))))))) (arm (PCon "TPipe") () (EApp (EApp (EVar "andThen") (EVar "parseGuardArm")) (ELam ((PVar "arm")) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EVar "pure") (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "pub")) (EVar "name")) (EVar "params")) (EApp (EVar "EGuards") (EListLit (EVar "arm")))))))))) (arm PWild () (EApp (EVar "failP") (ELit (LString "expected : or = in definition"))))))))))))
 (DTypeSig false "parseExtern" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "Decl"))))
@@ -5578,6 +5606,8 @@ parseResultWith src tokList offList =
 (DFunDef false "failP" ((PVar "msg")) (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "PErr") (EVar "msg")) (EVar "pos")))))
 (DTypeSig false "fatalP" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyVar "a"))))
 (DFunDef false "fatalP" ((PVar "msg")) (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "PFatal") (EVar "msg")) (EVar "pos")))))
+(DTypeSig false "fatalAtP" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyApp (TyCon "Parser") (TyVar "a")))))
+(DFunDef false "fatalAtP" ((PVar "msg") (PVar "pos0")) (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "_pos")) (EApp (EApp (EVar "PFatal") (EVar "msg")) (EVar "pos0")))))
 (DTypeSig false "peekP" (TyApp (TyCon "Parser") (TyCon "Token")))
 (DFunDef false "peekP" () (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "POk") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "pos"))) (EVar "pos")))))
 (DTypeSig false "peek2P" (TyApp (TyCon "Parser") (TyCon "Token")))
@@ -6292,10 +6322,10 @@ parseResultWith src tokList offList =
 (DTypeSig false "afterExport" (TyApp (TyCon "Parser") (TyCon "Decl")))
 (DFunDef false "afterExport" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TExport"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TImport") () (EApp (EVar "parseImport") (EVar "True"))) (arm (PCon "TData") () (EApp (EVar "parseData") (EVar "VisAbstract"))) (arm (PCon "TExtern") () (EApp (EVar "parseExtern") (EVar "True"))) (arm (PCon "TProp") () (EApp (EVar "parseProp") (EVar "True"))) (arm (PCon "TTest") () (EApp (EVar "parseTest") (EVar "True"))) (arm (PCon "TBench") () (EApp (EVar "parseBench") (EVar "True"))) (arm (PCon "TEffect") () (EApp (EVar "parseEffect") (EVar "True"))) (arm (PCon "TInterface") () (EApp (EApp (EVar "parseInterface") (EVar "True")) (EVar "False"))) (arm (PCon "TImpl") () (EApp (EVar "parseImpl") (EVar "True"))) (arm (PCon "TDefault") () (EApp (EVar "afterDefault") (EVar "True"))) (arm (PCon "TType") () (EApp (EVar "parseTypeAlias") (EVar "True"))) (arm (PCon "TNewtype") () (EApp (EVar "parseNewtype") (EVar "True"))) (arm (PCon "TLet") () (EApp (EVar "parseLetGroupDecl") (EVar "True"))) (arm PWild () (EApp (EVar "parseFunOrSig") (EVar "True")))))))))))
 (DTypeSig false "afterPublic" (TyApp (TyCon "Parser") (TyCon "Decl")))
-(DFunDef false "afterPublic" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TPublic"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TExport"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "afterPublicFor") (EVar "t")))))))))))))
-(DTypeSig false "afterPublicFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Decl"))))
-(DFunDef false "afterPublicFor" ((PCon "TData")) (EApp (EVar "parseData") (EVar "VisPublic")))
-(DFunDef false "afterPublicFor" (PWild) (EApp (EVar "failP") (ELit (LString "expected data after public export"))))
+(DFunDef false "afterPublic" () (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "pubPos")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TPublic"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TExport"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "afterPublicFor") (EVar "pubPos")) (EVar "t")))))))))))))))
+(DTypeSig false "afterPublicFor" (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Decl")))))
+(DFunDef false "afterPublicFor" (PWild (PCon "TData")) (EApp (EVar "parseData") (EVar "VisPublic")))
+(DFunDef false "afterPublicFor" ((PVar "pubPos") PWild) (EApp (EApp (EVar "fatalAtP") (ELit (LString "`public` only applies to `data` declarations"))) (EVar "pubPos")))
 (DTypeSig false "parseFunOrSig" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "Decl"))))
 (DFunDef false "parseFunOrSig" ((PVar "pub")) (EApp (EApp (EMethodRef "andThen") (EVar "identNameP")) (ELam ((PVar "name")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "many") (EVar "parseParamPat"))) (ELam ((PVar "params")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EMatch (EVar "t") (arm (PCon "TColon") () (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseTy")) (ELam ((PVar "ty")) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EVar "DTypeSig") (EVar "pub")) (EVar "name")) (EVar "ty")))))))))) (arm (PCon "TEqual") () (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseBody")) (ELam ((PVar "body")) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "pub")) (EVar "name")) (EVar "params")) (EVar "body")))))))))) (arm (PCon "TIndent") () (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseGuardArms")) (ELam ((PVar "arms")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "guardArmsWhereOpt") (EVar "arms"))) (ELam ((PVar "body")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TDedent"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "pub")) (EVar "name")) (EVar "params")) (EVar "body")))))))))))))) (arm (PCon "TPipe") () (EApp (EApp (EMethodRef "andThen") (EVar "parseGuardArm")) (ELam ((PVar "arm")) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EMethodRef "pure") (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "pub")) (EVar "name")) (EVar "params")) (EApp (EVar "EGuards") (EListLit (EVar "arm")))))))))) (arm PWild () (EApp (EVar "failP") (ELit (LString "expected : or = in definition"))))))))))))
 (DTypeSig false "parseExtern" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "Decl"))))
