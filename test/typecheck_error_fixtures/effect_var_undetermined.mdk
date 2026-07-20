@@ -1,0 +1,6 @@
+-- #784 (Option A): an interface method with a free return-position effect var
+-- pinned by no argument is under-determined — rejected at the declaration to
+-- prevent effect laundering (a caller instantiating <e> := <> over a dispatched
+-- impl that performs the effect). Argument-carried effect vars are unaffected.
+interface Speak a where
+  speak : a -> <e> String

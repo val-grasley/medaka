@@ -1,0 +1,7 @@
+-- #677: a bare `.` immediately followed by a digit is never valid Medaka — a
+-- member-access field name is an identifier, never a digit — so `.5` can only
+-- be a float missing its leading digit. Before the fix the lexer split this
+-- into TDot + TInt 5, and the parser's leftover-token path reported the
+-- phantom "unexpected `.`" instead of naming the malformed literal.
+-- Self-hosted reference: malformed float literal `.5`: a float needs a digit before the decimal point — write `0.5`
+x = .5

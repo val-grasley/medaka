@@ -1,0 +1,2 @@
+runr : a -> Async b c -> c
+runIt : Runner a => a -> Async <> b -> b

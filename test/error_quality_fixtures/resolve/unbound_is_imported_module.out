@@ -1,0 +1,4 @@
+cmd: medaka check
+exit: 1
+---
+test/error_quality_fixtures/resolve/unbound_is_imported_module.mdk:3:16: Unbound variable: string. 'string' is an imported module, not a value — a bare 'import string' binds no names. Bind what you need: 'import string.{name, ...}', or 'import string as M' then 'M.name'

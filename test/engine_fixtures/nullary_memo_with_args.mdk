@@ -3,7 +3,7 @@
 -- NULLARY return-position impl method is a per-instance CAF (see
 -- return_pos_memoised.mdk); this fixture pins that the args case is untouched.
 interface Speak a where
-  speak : a -> String
+  speak : a -> <Stdout> String
 
 data Dog = Dog
 

@@ -1,5 +1,5 @@
 # META
-source_lines=2528
+source_lines=2572
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
@@ -74,6 +74,7 @@ import support.util.{
   initList,
   joinDot,
   filterList,
+  anyList,
 }
 
 -- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
@@ -93,6 +94,13 @@ public export data ResError =
   -- typo correction, and a fuzzy edit-distance match against an unrelated name
   -- is actively misleading here.
   | UnboundVariableExported String String (Option Loc)
+  -- an unbound name that is itself the id of a module this file `import`s
+  -- bare (#514): `import string` then a reference to bare `string` — there is
+  -- no qualified access for a bare import, so the generic edit-distance
+  -- fallback would otherwise grab an unrelated same-case name.  name only;
+  -- the message is a static how-to (ERROR-QUALITY: point at the fix, not a
+  -- guess).
+  | UnboundVariableIsModule String (Option Loc)
   -- trailing `Option String` = suggested constructor name: today ONLY a
   -- curated Haskell-alias exact match (`Just`→`Some`, …; see
   -- `haskellCtorAliases`), None otherwise — there is no general edit-distance
@@ -181,6 +189,7 @@ resErrorDidYouMean _ = None
 export resErrorLoc : ResError -> Option Loc
 resErrorLoc (UnboundVariable _ l _) = l
 resErrorLoc (UnboundVariableExported _ _ l) = l
+resErrorLoc (UnboundVariableIsModule _ l) = l
 resErrorLoc (UnknownConstructor _ l _) = l
 resErrorLoc (UnknownType _ l _) = l
 resErrorLoc (UnknownEffect _ l) = l
@@ -526,7 +535,11 @@ checkVar cur env scope n
 unboundVarErrors : Option Loc -> Env -> List String -> String -> List ResError
 unboundVarErrors cur env scope n = match modulesExportingName env n
   m::_ => [UnboundVariableExported n m cur]
-  [] => [UnboundVariable n cur (suggestName env scope n)]
+  [] =>
+    if isImportedModuleName env n then
+      [UnboundVariableIsModule n cur]
+    else
+      [UnboundVariable n cur (suggestName env scope n)]
 
 -- module ids (of modules this file already imports) that export `n` as a
 -- value — deliberately NOT scope/local-shadow aware, since `unboundVarErrors`
@@ -537,6 +550,16 @@ modulesExportingName env n = flatMap (matchesExport n) env.importedModuleValues
 
 matchesExport : String -> (String, List String) -> List String
 matchesExport n (mid, vals) = if contains n vals then [mid] else []
+
+-- is `n` itself the module id of something this file `import`s (#514) —
+-- e.g. `import string` then a bare reference to `string`.  Checked only
+-- after `modulesExportingName` already failed, so `n` is not a value any
+-- imported module exports.
+isImportedModuleName : Env -> String -> Bool
+isImportedModuleName env n = anyList (isModId n) env.importedModuleValues
+
+isModId : String -> (String, List String) -> Bool
+isModId n (mid, _) = mid == n
 
 isAmbiguous : Env -> String -> Bool
 isAmbiguous env n = match lookupAssoc n env.ambiguous
@@ -688,10 +711,25 @@ suggestCtor n = lookupAssoc n haskellCtorAliases
 bestOf : String -> Int -> List String -> Option String
 bestOf n lim cands = map ((best, _) => best) (bestCandidate n lim cands None)
 
+-- Medaka's naming convention makes leading case a structural signal
+-- (constructors start uppercase, values/types-in-scope-of-a-value-query start
+-- lowercase), so a candidate whose case class differs from the query's is
+-- never the intended correction — surfacing one is worse than suggesting
+-- nothing (#514 sub-finding: `string`/`toString`, both lowercase queries,
+-- surfaced the unrelated prelude constructor `RString`).
+startsUpper : String -> Bool
+startsUpper s = stringLength s > 0
+  && stringSlice 0 1 s >= "A"
+  && stringSlice 0 1 s <= "Z"
+
+sameCaseClass : String -> String -> Bool
+sameCaseClass a b = startsUpper a == startsUpper b
+
 bestCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
 bestCandidate _ _ [] acc = acc
 bestCandidate n lim (c::cs) acc
   | c == n = bestCandidate n lim cs acc
+  | not (sameCaseClass n c) = bestCandidate n lim cs acc
   | editDistance n c > lim = bestCandidate n lim cs acc
   | otherwise = bestCandidate n lim cs (keepBetter c (editDistance n c) acc)
 
@@ -1477,6 +1515,8 @@ export resErrorSexp : ResError -> String
 resErrorSexp (UnboundVariable n _ _) = "(UnboundVariable " ++ escStr n ++ ")"
 resErrorSexp (UnboundVariableExported n m _) =
   "(UnboundVariableExported \{escStr n} \{escStr m})"
+resErrorSexp (UnboundVariableIsModule n _) =
+  "(UnboundVariableIsModule \{escStr n})"
 resErrorSexp (UnknownConstructor n _ _) = "(UnknownConstructor "
   ++ escStr n
   ++ ")"
@@ -1583,6 +1623,9 @@ ppResError (UnboundVariable n _ s) = match s
   None => "Unbound variable: \{n}"
 ppResError (UnboundVariableExported n m _) =
   "Unbound variable: \{n}. (Did you forget to 'import \{m}.{\{n}}'?)"
+ppResError (UnboundVariableIsModule n _) = "Unbound variable: \{n}. '\{n}' is an imported module, not a value — a bare "
+  ++ "'import \{n}' binds no names. Bind what you need: 'import \{n}.{name, "
+  ++ "...}', or 'import \{n} as M' then 'M.name'"
 ppResError (UnknownConstructor n _ s) = match s
   Some sug => "Unknown constructor: \{n}. Did you mean '\{sug}'"
     ++ haskellNote n sug
@@ -1635,6 +1678,7 @@ ppResError (ReassignImmutable n _) = "Cannot reassign '\{n}' — bindings are im
 export resErrorCode : ResError -> String
 resErrorCode (UnboundVariable _ _ _) = "R-UNBOUND"
 resErrorCode (UnboundVariableExported _ _ _) = "R-UNBOUND"
+resErrorCode (UnboundVariableIsModule _ _) = "R-UNBOUND"
 resErrorCode (UnknownConstructor _ _ _) = "R-UNKNOWN-CTOR"
 resErrorCode (UnknownType _ _ _) = "R-UNKNOWN-TYPE"
 resErrorCode (UnknownEffect _ _) = "R-UNKNOWN-EFFECT"
@@ -2533,8 +2577,8 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omKeys" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false))))
-(DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false))))
+(DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnboundVariableIsModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig true "resErrorDidYouMean" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "resErrorDidYouMean" ((PCon "UnboundVariable" (PVar "n") PWild (PCon "Some" (PVar "sug")))) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "sug"))))
 (DFunDef false "resErrorDidYouMean" ((PCon "UnknownConstructor" (PVar "n") PWild (PCon "Some" (PVar "sug")))) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "sug"))))
@@ -2543,6 +2587,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "resErrorLoc" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyCon "Loc"))))
 (DFunDef false "resErrorLoc" ((PCon "UnboundVariable" PWild (PVar "l") PWild)) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnboundVariableExported" PWild PWild (PVar "l"))) (EVar "l"))
+(DFunDef false "resErrorLoc" ((PCon "UnboundVariableIsModule" PWild (PVar "l"))) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnknownConstructor" PWild (PVar "l") PWild)) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnknownType" PWild (PVar "l") PWild)) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnknownEffect" PWild (PVar "l"))) (EVar "l"))
@@ -2676,11 +2721,15 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig false "checkVar" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "checkVar" ((PVar "cur") (PVar "env") (PVar "scope") (PVar "n")) (EIf (EApp (EVar "isHint") (EVar "n")) (EListLit) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "scope"))) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EFieldAccess (EVar "env") "internalGuard"))) (EListLit (EApp (EApp (EVar "InternalExternAccess") (EVar "n")) (EVar "cur"))) (EIf (EApp (EVar "not") (EApp (EApp (EApp (EVar "lookupValue") (EVar "env")) (EVar "scope")) (EVar "n"))) (EApp (EApp (EApp (EApp (EVar "unboundVarErrors") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "n")) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "scope"))) (EApp (EApp (EVar "isAmbiguous") (EVar "env")) (EVar "n"))) (EListLit (EApp (EApp (EApp (EVar "AmbiguousOccurrence") (EVar "n")) (EApp (EApp (EVar "ambigMods") (EVar "env")) (EVar "n"))) (EVar "cur"))) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "scope"))) (EApp (EApp (EVar "isCtorAmbiguous") (EVar "env")) (EVar "n"))) (EListLit (EApp (EApp (EApp (EVar "AmbiguousConstructor") (EVar "n")) (EApp (EApp (EVar "ctorAmbigMods") (EVar "env")) (EVar "n"))) (EVar "cur"))) (EIf (EVar "otherwise") (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))))
 (DTypeSig false "unboundVarErrors" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError")))))))
-(DFunDef false "unboundVarErrors" ((PVar "cur") (PVar "env") (PVar "scope") (PVar "n")) (EMatch (EApp (EApp (EVar "modulesExportingName") (EVar "env")) (EVar "n")) (arm (PCons (PVar "m") PWild) () (EListLit (EApp (EApp (EApp (EVar "UnboundVariableExported") (EVar "n")) (EVar "m")) (EVar "cur")))) (arm (PList) () (EListLit (EApp (EApp (EApp (EVar "UnboundVariable") (EVar "n")) (EVar "cur")) (EApp (EApp (EApp (EVar "suggestName") (EVar "env")) (EVar "scope")) (EVar "n")))))))
+(DFunDef false "unboundVarErrors" ((PVar "cur") (PVar "env") (PVar "scope") (PVar "n")) (EMatch (EApp (EApp (EVar "modulesExportingName") (EVar "env")) (EVar "n")) (arm (PCons (PVar "m") PWild) () (EListLit (EApp (EApp (EApp (EVar "UnboundVariableExported") (EVar "n")) (EVar "m")) (EVar "cur")))) (arm (PList) () (EIf (EApp (EApp (EVar "isImportedModuleName") (EVar "env")) (EVar "n")) (EListLit (EApp (EApp (EVar "UnboundVariableIsModule") (EVar "n")) (EVar "cur"))) (EListLit (EApp (EApp (EApp (EVar "UnboundVariable") (EVar "n")) (EVar "cur")) (EApp (EApp (EApp (EVar "suggestName") (EVar "env")) (EVar "scope")) (EVar "n"))))))))
 (DTypeSig false "modulesExportingName" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "modulesExportingName" ((PVar "env") (PVar "n")) (EApp (EApp (EVar "flatMap") (EApp (EVar "matchesExport") (EVar "n"))) (EFieldAccess (EVar "env") "importedModuleValues")))
 (DTypeSig false "matchesExport" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "matchesExport" ((PVar "n") (PTuple (PVar "mid") (PVar "vals"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "vals")) (EListLit (EVar "mid")) (EListLit)))
+(DTypeSig false "isImportedModuleName" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyCon "Bool"))))
+(DFunDef false "isImportedModuleName" ((PVar "env") (PVar "n")) (EApp (EApp (EVar "anyList") (EApp (EVar "isModId") (EVar "n"))) (EFieldAccess (EVar "env") "importedModuleValues")))
+(DTypeSig false "isModId" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Bool"))))
+(DFunDef false "isModId" ((PVar "n") (PTuple (PVar "mid") PWild)) (EBinOp "==" (EVar "mid") (EVar "n")))
 (DTypeSig false "isAmbiguous" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "isAmbiguous" ((PVar "env") (PVar "n")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EFieldAccess (EVar "env") "ambiguous")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "ambigMods" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
@@ -2720,9 +2769,13 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "suggestCtor" ((PVar "n")) (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "haskellCtorAliases")))
 (DTypeSig false "bestOf" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "String"))))))
 (DFunDef false "bestOf" ((PVar "n") (PVar "lim") (PVar "cands")) (EApp (EApp (EVar "map") (ELam ((PTuple (PVar "best") PWild)) (EVar "best"))) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cands")) (EVar "None"))))
+(DTypeSig false "startsUpper" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "startsUpper" ((PVar "s")) (EBinOp "&&" (EBinOp "&&" (EBinOp ">" (EApp (EVar "stringLength") (EVar "s")) (ELit (LInt 0))) (EBinOp ">=" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 1))) (EVar "s")) (ELit (LString "A")))) (EBinOp "<=" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 1))) (EVar "s")) (ELit (LString "Z")))))
+(DTypeSig false "sameCaseClass" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
+(DFunDef false "sameCaseClass" ((PVar "a") (PVar "b")) (EBinOp "==" (EApp (EVar "startsUpper") (EVar "a")) (EApp (EVar "startsUpper") (EVar "b"))))
 (DTypeSig false "bestCandidate" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int"))))))))
 (DFunDef false "bestCandidate" (PWild PWild (PList) (PVar "acc")) (EVar "acc"))
-(DFunDef false "bestCandidate" ((PVar "n") (PVar "lim") (PCons (PVar "c") (PVar "cs")) (PVar "acc")) (EIf (EBinOp "==" (EVar "c") (EVar "n")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EBinOp ">" (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c")) (EVar "lim")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EApp (EApp (EApp (EVar "keepBetter") (EVar "c")) (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DFunDef false "bestCandidate" ((PVar "n") (PVar "lim") (PCons (PVar "c") (PVar "cs")) (PVar "acc")) (EIf (EBinOp "==" (EVar "c") (EVar "n")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EApp (EVar "not") (EApp (EApp (EVar "sameCaseClass") (EVar "n")) (EVar "c"))) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EBinOp ">" (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c")) (EVar "lim")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EApp (EApp (EApp (EVar "keepBetter") (EVar "c")) (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "keepBetter" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int")))))))
 (DFunDef false "keepBetter" ((PVar "c") (PVar "d") (PCon "None")) (EApp (EVar "Some") (ETuple (EVar "c") (EVar "d"))))
 (DFunDef false "keepBetter" ((PVar "c") (PVar "d") (PCon "Some" (PTuple (PVar "bc") (PVar "bd")))) (EIf (EBinOp "<" (EVar "d") (EVar "bd")) (EApp (EVar "Some") (ETuple (EVar "c") (EVar "d"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "d") (EVar "bd")) (EBinOp "<" (EVar "c") (EVar "bc"))) (EApp (EVar "Some") (ETuple (EVar "c") (EVar "d"))) (EIf (EVar "otherwise") (EApp (EVar "Some") (ETuple (EVar "bc") (EVar "bd"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
@@ -3069,6 +3122,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "resErrorSexp" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariable" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariable ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariableExported" (PVar "n") (PVar "m") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariableExported ")) (EApp (EVar "display") (EApp (EVar "escStr") (EVar "n")))) (ELit (LString " "))) (EApp (EVar "display") (EApp (EVar "escStr") (EVar "m")))) (ELit (LString ")"))))
+(DFunDef false "resErrorSexp" ((PCon "UnboundVariableIsModule" (PVar "n") PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariableIsModule ")) (EApp (EVar "display") (EApp (EVar "escStr") (EVar "n")))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnknownConstructor" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnknownConstructor ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnknownType" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnknownType ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnknownEffect" (PVar "n") PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnknownEffect ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
@@ -3107,6 +3161,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "ppResError" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "ppResError" ((PCon "UnboundVariable" (PVar "n") PWild (PVar "s"))) (EMatch (EVar "s") (arm (PCon "Some" (PVar "sug")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString ". Did you mean '"))) (EApp (EVar "display") (EVar "sug"))) (ELit (LString "'"))) (EApp (EApp (EVar "haskellNote") (EVar "n")) (EVar "sug")))) (arm (PCon "None") () (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString ""))))))
 (DFunDef false "ppResError" ((PCon "UnboundVariableExported" (PVar "n") (PVar "m") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString ". (Did you forget to 'import "))) (EApp (EVar "display") (EVar "m"))) (ELit (LString ".{"))) (EApp (EVar "display") (EVar "n"))) (ELit (LString "}'?)"))))
+(DFunDef false "ppResError" ((PCon "UnboundVariableIsModule" (PVar "n") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString ". '"))) (EApp (EVar "display") (EVar "n"))) (ELit (LString "' is an imported module, not a value — a bare "))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "'import ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString "' binds no names. Bind what you need: 'import "))) (EApp (EVar "display") (EVar "n"))) (ELit (LString ".{name, ")))) (EBinOp "++" (EBinOp "++" (ELit (LString "...}', or 'import ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString " as M' then 'M.name'")))))
 (DFunDef false "ppResError" ((PCon "UnknownConstructor" (PVar "n") PWild (PVar "s"))) (EMatch (EVar "s") (arm (PCon "Some" (PVar "sug")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown constructor: ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString ". Did you mean '"))) (EApp (EVar "display") (EVar "sug"))) (ELit (LString "'"))) (EApp (EApp (EVar "haskellNote") (EVar "n")) (EVar "sug")))) (arm (PCon "None") () (EBinOp "++" (ELit (LString "Unknown constructor: ")) (EVar "n")))))
 (DFunDef false "ppResError" ((PCon "UnknownType" (PVar "n") PWild (PVar "s"))) (EMatch (EVar "s") (arm (PCon "Some" (PVar "sug")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown type: ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString ". Did you mean '"))) (EApp (EVar "display") (EVar "sug"))) (ELit (LString "'"))) (EApp (EApp (EVar "haskellNote") (EVar "n")) (EVar "sug")))) (arm (PCon "None") () (EBinOp "++" (ELit (LString "Unknown type: ")) (EVar "n")))))
 (DFunDef false "ppResError" ((PCon "UnknownEffect" (PVar "n") PWild)) (EIf (EBinOp "||" (EBinOp "==" (EVar "n") (ELit (LString "Mut"))) (EBinOp "==" (EVar "n") (ELit (LString "Panic")))) (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown effect: ")) (EApp (EVar "display") (EVar "n"))) (ELit (LString " — the `Mut`/`Panic` purity labels were removed. Delete the annotation: purity is no longer tracked as an effect label, and effect labels now name host capabilities (`IO`, `Rand`, `FileRead`, …)"))) (EBinOp "++" (ELit (LString "Unknown effect: ")) (EVar "n"))))
@@ -3134,6 +3189,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "resErrorCode" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "resErrorCode" ((PCon "UnboundVariable" PWild PWild PWild)) (ELit (LString "R-UNBOUND")))
 (DFunDef false "resErrorCode" ((PCon "UnboundVariableExported" PWild PWild PWild)) (ELit (LString "R-UNBOUND")))
+(DFunDef false "resErrorCode" ((PCon "UnboundVariableIsModule" PWild PWild)) (ELit (LString "R-UNBOUND")))
 (DFunDef false "resErrorCode" ((PCon "UnknownConstructor" PWild PWild PWild)) (ELit (LString "R-UNKNOWN-CTOR")))
 (DFunDef false "resErrorCode" ((PCon "UnknownType" PWild PWild PWild)) (ELit (LString "R-UNKNOWN-TYPE")))
 (DFunDef false "resErrorCode" ((PCon "UnknownEffect" PWild PWild)) (ELit (LString "R-UNKNOWN-EFFECT")))
@@ -3423,8 +3479,8 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omKeys" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false))))
-(DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false))))
+(DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnboundVariableIsModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig true "resErrorDidYouMean" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "resErrorDidYouMean" ((PCon "UnboundVariable" (PVar "n") PWild (PCon "Some" (PVar "sug")))) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "sug"))))
 (DFunDef false "resErrorDidYouMean" ((PCon "UnknownConstructor" (PVar "n") PWild (PCon "Some" (PVar "sug")))) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "sug"))))
@@ -3433,6 +3489,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "resErrorLoc" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyCon "Loc"))))
 (DFunDef false "resErrorLoc" ((PCon "UnboundVariable" PWild (PVar "l") PWild)) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnboundVariableExported" PWild PWild (PVar "l"))) (EVar "l"))
+(DFunDef false "resErrorLoc" ((PCon "UnboundVariableIsModule" PWild (PVar "l"))) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnknownConstructor" PWild (PVar "l") PWild)) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnknownType" PWild (PVar "l") PWild)) (EVar "l"))
 (DFunDef false "resErrorLoc" ((PCon "UnknownEffect" PWild (PVar "l"))) (EVar "l"))
@@ -3566,11 +3623,15 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig false "checkVar" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "checkVar" ((PVar "cur") (PVar "env") (PVar "scope") (PVar "n")) (EIf (EApp (EVar "isHint") (EVar "n")) (EListLit) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "scope"))) (EApp (EApp (EVar "omHasKey") (EVar "n")) (EFieldAccess (EVar "env") "internalGuard"))) (EListLit (EApp (EApp (EVar "InternalExternAccess") (EVar "n")) (EVar "cur"))) (EIf (EApp (EVar "not") (EApp (EApp (EApp (EVar "lookupValue") (EVar "env")) (EVar "scope")) (EVar "n"))) (EApp (EApp (EApp (EApp (EVar "unboundVarErrors") (EVar "cur")) (EVar "env")) (EVar "scope")) (EVar "n")) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "scope"))) (EApp (EApp (EVar "isAmbiguous") (EVar "env")) (EVar "n"))) (EListLit (EApp (EApp (EApp (EVar "AmbiguousOccurrence") (EVar "n")) (EApp (EApp (EVar "ambigMods") (EVar "env")) (EVar "n"))) (EVar "cur"))) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "scope"))) (EApp (EApp (EVar "isCtorAmbiguous") (EVar "env")) (EVar "n"))) (EListLit (EApp (EApp (EApp (EVar "AmbiguousConstructor") (EVar "n")) (EApp (EApp (EVar "ctorAmbigMods") (EVar "env")) (EVar "n"))) (EVar "cur"))) (EIf (EVar "otherwise") (EListLit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))))
 (DTypeSig false "unboundVarErrors" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError")))))))
-(DFunDef false "unboundVarErrors" ((PVar "cur") (PVar "env") (PVar "scope") (PVar "n")) (EMatch (EApp (EApp (EVar "modulesExportingName") (EVar "env")) (EVar "n")) (arm (PCons (PVar "m") PWild) () (EListLit (EApp (EApp (EApp (EVar "UnboundVariableExported") (EVar "n")) (EVar "m")) (EVar "cur")))) (arm (PList) () (EListLit (EApp (EApp (EApp (EVar "UnboundVariable") (EVar "n")) (EVar "cur")) (EApp (EApp (EApp (EVar "suggestName") (EVar "env")) (EVar "scope")) (EVar "n")))))))
+(DFunDef false "unboundVarErrors" ((PVar "cur") (PVar "env") (PVar "scope") (PVar "n")) (EMatch (EApp (EApp (EVar "modulesExportingName") (EVar "env")) (EVar "n")) (arm (PCons (PVar "m") PWild) () (EListLit (EApp (EApp (EApp (EVar "UnboundVariableExported") (EVar "n")) (EVar "m")) (EVar "cur")))) (arm (PList) () (EIf (EApp (EApp (EVar "isImportedModuleName") (EVar "env")) (EVar "n")) (EListLit (EApp (EApp (EVar "UnboundVariableIsModule") (EVar "n")) (EVar "cur"))) (EListLit (EApp (EApp (EApp (EVar "UnboundVariable") (EVar "n")) (EVar "cur")) (EApp (EApp (EApp (EVar "suggestName") (EVar "env")) (EVar "scope")) (EVar "n"))))))))
 (DTypeSig false "modulesExportingName" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "modulesExportingName" ((PVar "env") (PVar "n")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "matchesExport") (EVar "n"))) (EFieldAccess (EVar "env") "importedModuleValues")))
 (DTypeSig false "matchesExport" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "matchesExport" ((PVar "n") (PTuple (PVar "mid") (PVar "vals"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "vals")) (EListLit (EVar "mid")) (EListLit)))
+(DTypeSig false "isImportedModuleName" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyCon "Bool"))))
+(DFunDef false "isImportedModuleName" ((PVar "env") (PVar "n")) (EApp (EApp (EVar "anyList") (EApp (EVar "isModId") (EVar "n"))) (EFieldAccess (EVar "env") "importedModuleValues")))
+(DTypeSig false "isModId" (TyFun (TyCon "String") (TyFun (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))) (TyCon "Bool"))))
+(DFunDef false "isModId" ((PVar "n") (PTuple (PVar "mid") PWild)) (EBinOp "==" (EVar "mid") (EVar "n")))
 (DTypeSig false "isAmbiguous" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "isAmbiguous" ((PVar "env") (PVar "n")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EFieldAccess (EVar "env") "ambiguous")) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "ambigMods" (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
@@ -3610,9 +3671,13 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "suggestCtor" ((PVar "n")) (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "haskellCtorAliases")))
 (DTypeSig false "bestOf" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "String"))))))
 (DFunDef false "bestOf" ((PVar "n") (PVar "lim") (PVar "cands")) (EApp (EApp (EMethodRef "map") (ELam ((PTuple (PVar "best") PWild)) (EVar "best"))) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cands")) (EVar "None"))))
+(DTypeSig false "startsUpper" (TyFun (TyCon "String") (TyCon "Bool")))
+(DFunDef false "startsUpper" ((PVar "s")) (EBinOp "&&" (EBinOp "&&" (EBinOp ">" (EApp (EVar "stringLength") (EVar "s")) (ELit (LInt 0))) (EBinOp ">=" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 1))) (EVar "s")) (ELit (LString "A")))) (EBinOp "<=" (EApp (EApp (EApp (EVar "stringSlice") (ELit (LInt 0))) (ELit (LInt 1))) (EVar "s")) (ELit (LString "Z")))))
+(DTypeSig false "sameCaseClass" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Bool"))))
+(DFunDef false "sameCaseClass" ((PVar "a") (PVar "b")) (EBinOp "==" (EApp (EVar "startsUpper") (EVar "a")) (EApp (EVar "startsUpper") (EVar "b"))))
 (DTypeSig false "bestCandidate" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int"))))))))
 (DFunDef false "bestCandidate" (PWild PWild (PList) (PVar "acc")) (EVar "acc"))
-(DFunDef false "bestCandidate" ((PVar "n") (PVar "lim") (PCons (PVar "c") (PVar "cs")) (PVar "acc")) (EIf (EBinOp "==" (EVar "c") (EVar "n")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EBinOp ">" (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c")) (EVar "lim")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EApp (EApp (EApp (EVar "keepBetter") (EVar "c")) (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DFunDef false "bestCandidate" ((PVar "n") (PVar "lim") (PCons (PVar "c") (PVar "cs")) (PVar "acc")) (EIf (EBinOp "==" (EVar "c") (EVar "n")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EApp (EVar "not") (EApp (EApp (EVar "sameCaseClass") (EVar "n")) (EVar "c"))) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EBinOp ">" (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c")) (EVar "lim")) (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EVar "acc")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "bestCandidate") (EVar "n")) (EVar "lim")) (EVar "cs")) (EApp (EApp (EApp (EVar "keepBetter") (EVar "c")) (EApp (EApp (EVar "editDistance") (EVar "n")) (EVar "c"))) (EVar "acc"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))
 (DTypeSig false "keepBetter" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int"))) (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Int")))))))
 (DFunDef false "keepBetter" ((PVar "c") (PVar "d") (PCon "None")) (EApp (EVar "Some") (ETuple (EVar "c") (EVar "d"))))
 (DFunDef false "keepBetter" ((PVar "c") (PVar "d") (PCon "Some" (PTuple (PVar "bc") (PVar "bd")))) (EIf (EBinOp "<" (EVar "d") (EVar "bd")) (EApp (EVar "Some") (ETuple (EVar "c") (EVar "d"))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "d") (EVar "bd")) (EBinOp "<" (EVar "c") (EVar "bc"))) (EApp (EVar "Some") (ETuple (EVar "c") (EVar "d"))) (EIf (EVar "otherwise") (EApp (EVar "Some") (ETuple (EVar "bc") (EVar "bd"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
@@ -3959,6 +4024,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "resErrorSexp" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariable" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariable ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariableExported" (PVar "n") (PVar "m") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariableExported ")) (EApp (EMethodRef "display") (EApp (EVar "escStr") (EVar "n")))) (ELit (LString " "))) (EApp (EMethodRef "display") (EApp (EVar "escStr") (EVar "m")))) (ELit (LString ")"))))
+(DFunDef false "resErrorSexp" ((PCon "UnboundVariableIsModule" (PVar "n") PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariableIsModule ")) (EApp (EMethodRef "display") (EApp (EVar "escStr") (EVar "n")))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnknownConstructor" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnknownConstructor ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnknownType" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnknownType ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnknownEffect" (PVar "n") PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnknownEffect ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
@@ -3997,6 +4063,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "ppResError" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "ppResError" ((PCon "UnboundVariable" (PVar "n") PWild (PVar "s"))) (EMatch (EVar "s") (arm (PCon "Some" (PVar "sug")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ". Did you mean '"))) (EApp (EMethodRef "display") (EVar "sug"))) (ELit (LString "'"))) (EApp (EApp (EVar "haskellNote") (EVar "n")) (EVar "sug")))) (arm (PCon "None") () (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ""))))))
 (DFunDef false "ppResError" ((PCon "UnboundVariableExported" (PVar "n") (PVar "m") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ". (Did you forget to 'import "))) (EApp (EMethodRef "display") (EVar "m"))) (ELit (LString ".{"))) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString "}'?)"))))
+(DFunDef false "ppResError" ((PCon "UnboundVariableIsModule" (PVar "n") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unbound variable: ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ". '"))) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString "' is an imported module, not a value — a bare "))) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "'import ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString "' binds no names. Bind what you need: 'import "))) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ".{name, ")))) (EBinOp "++" (EBinOp "++" (ELit (LString "...}', or 'import ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString " as M' then 'M.name'")))))
 (DFunDef false "ppResError" ((PCon "UnknownConstructor" (PVar "n") PWild (PVar "s"))) (EMatch (EVar "s") (arm (PCon "Some" (PVar "sug")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown constructor: ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ". Did you mean '"))) (EApp (EMethodRef "display") (EVar "sug"))) (ELit (LString "'"))) (EApp (EApp (EVar "haskellNote") (EVar "n")) (EVar "sug")))) (arm (PCon "None") () (EBinOp "++" (ELit (LString "Unknown constructor: ")) (EVar "n")))))
 (DFunDef false "ppResError" ((PCon "UnknownType" (PVar "n") PWild (PVar "s"))) (EMatch (EVar "s") (arm (PCon "Some" (PVar "sug")) () (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown type: ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ". Did you mean '"))) (EApp (EMethodRef "display") (EVar "sug"))) (ELit (LString "'"))) (EApp (EApp (EVar "haskellNote") (EVar "n")) (EVar "sug")))) (arm (PCon "None") () (EBinOp "++" (ELit (LString "Unknown type: ")) (EVar "n")))))
 (DFunDef false "ppResError" ((PCon "UnknownEffect" (PVar "n") PWild)) (EIf (EBinOp "||" (EBinOp "==" (EVar "n") (ELit (LString "Mut"))) (EBinOp "==" (EVar "n") (ELit (LString "Panic")))) (EBinOp "++" (EBinOp "++" (ELit (LString "Unknown effect: ")) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString " — the `Mut`/`Panic` purity labels were removed. Delete the annotation: purity is no longer tracked as an effect label, and effect labels now name host capabilities (`IO`, `Rand`, `FileRead`, …)"))) (EBinOp "++" (ELit (LString "Unknown effect: ")) (EVar "n"))))
@@ -4024,6 +4091,7 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DTypeSig true "resErrorCode" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "resErrorCode" ((PCon "UnboundVariable" PWild PWild PWild)) (ELit (LString "R-UNBOUND")))
 (DFunDef false "resErrorCode" ((PCon "UnboundVariableExported" PWild PWild PWild)) (ELit (LString "R-UNBOUND")))
+(DFunDef false "resErrorCode" ((PCon "UnboundVariableIsModule" PWild PWild)) (ELit (LString "R-UNBOUND")))
 (DFunDef false "resErrorCode" ((PCon "UnknownConstructor" PWild PWild PWild)) (ELit (LString "R-UNKNOWN-CTOR")))
 (DFunDef false "resErrorCode" ((PCon "UnknownType" PWild PWild PWild)) (ELit (LString "R-UNKNOWN-TYPE")))
 (DFunDef false "resErrorCode" ((PCon "UnknownEffect" PWild PWild)) (ELit (LString "R-UNKNOWN-EFFECT")))
