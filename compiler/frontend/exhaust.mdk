@@ -659,6 +659,10 @@ renderClauseWitness 1 (PCon _ (inner::_)) = renderWitness inner
 renderClauseWitness _ w = renderWitness w
 
 -- Per-group loc: the first clause body carries the parser's `ELoc` wrapper.
+-- A guarded clause's body is the `EGuards` node itself — it carries no `Loc` of
+-- its own (the parser never wraps `EGuards [...]`/`arms` with `located`), so
+-- recover a representative span by drilling into its arms: the first arm whose
+-- body or guard condition carries an `ELoc`/`EDoOrigin` wrapper (#99).
 groupLoc : List (List Pat, Expr) -> Option Loc
 groupLoc [] = None
 groupLoc ((_, body)::_) = clauseBodyLoc body
@@ -666,7 +670,25 @@ groupLoc ((_, body)::_) = clauseBodyLoc body
 clauseBodyLoc : Expr -> Option Loc
 clauseBodyLoc (ELoc l _) = Some l
 clauseBodyLoc (EDoOrigin l _) = Some l
+clauseBodyLoc (EGuards arms) = guardArmsLoc arms
 clauseBodyLoc _ = None
+
+guardArmsLoc : List GuardArm -> Option Loc
+guardArmsLoc [] = None
+guardArmsLoc ((GuardArm guards body)::rest) = match clauseBodyLoc body
+  Some l => Some l
+  None => match guardCondsLoc guards
+    Some l => Some l
+    None => guardArmsLoc rest
+
+guardCondsLoc : List Guard -> Option Loc
+guardCondsLoc [] = None
+guardCondsLoc ((GBool e)::rest) = match clauseBodyLoc e
+  Some l => Some l
+  None => guardCondsLoc rest
+guardCondsLoc ((GBind _ e)::rest) = match clauseBodyLoc e
+  Some l => Some l
+  None => guardCondsLoc rest
 
 groupArity : List (List Pat, Expr) -> Int
 groupArity [] = 0

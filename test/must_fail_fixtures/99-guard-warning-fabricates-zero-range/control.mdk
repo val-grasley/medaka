@@ -1,6 +1,0 @@
-classify : Int -> Int
-classify n
-  | n > 0 = 1
-  | otherwise = 0
-
-main = println (classify 5)

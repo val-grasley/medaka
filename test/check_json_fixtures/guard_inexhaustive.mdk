@@ -1,0 +1,5 @@
+f : Int -> Int
+f x
+  | x > 0 = 1
+
+main = println (debug (f 1))
