@@ -3671,6 +3671,26 @@ parseWithPositions src = match parseWithPositionsOpt src
   Some r => r
   None => panic "parse error"
 
+-- `parseWithPositions` PLUS real per-expression `ELoc` locations (#649).  Plain
+-- `parseWithPositions` never calls `setLocState`, so every `located` atom in the
+-- returned tree carries `located`'s zero-loc placeholder, NOT a real span — fine
+-- for callers that only need the decl-level `Positions` side-channel (fmt, doc,
+-- codemod, the LSP's line-based lookups), but wrong for a caller that reports a
+-- finding at a SPECIFIC sub-expression's own location (`medaka lint`'s
+-- `exprRuleFindings` driver: it used to collapse every hit onto the decl's
+-- location because the hit's own `ELoc` was never anything but the placeholder).
+-- Primes the SAME loc-state `parseLocated`/`parseLocatedResult` use, from a
+-- token stream `tokenizeWithOffsetPairs` documents as byte-identical to
+-- `tokenizeWithLines`'s (so the offsets line up with the token indices
+-- `parseWithPositions`'s OWN re-tokenize will see), then defers to
+-- `parseWithPositions` for the rest.  Costs one extra tokenize pass — linear,
+-- and only paid by callers that opt in.
+export parseWithPositionsLocated : String -> (List Decl, Positions)
+parseWithPositionsLocated src = match tokenizeWithOffsetPairs src
+  (_, offPairs) =>
+    let _ = setLocState src (arrayFromList offPairs)
+    parseWithPositions src
+
 -- Non-panicking positions parse for the LSP.  Returns `None` when the source
 -- doesn't parse (instead of `panic "parse error"`), so documentSymbol / definition
 -- / inlayHint degrade to empty results rather than crashing the whole server —

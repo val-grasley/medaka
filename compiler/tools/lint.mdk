@@ -40,6 +40,7 @@ import frontend.parser.{
   declPosLine,
   declPosEndLine,
   parseWithPositions,
+  parseWithPositionsLocated,
 }
 import driver.diagnostics.{Severity(..), Diag(..), ppSeverity, readFileSafe}
 import support.util.{
@@ -646,11 +647,13 @@ findingToDiag f =
 -- `readFileSafe` (the same "" -on-read-error helper `checkJsonFile` uses), so
 -- an unreadable path parses as empty source and yields `(path, "", [])` —
 -- total, no crash, and consistent with `check --json`'s own file-variant
--- behaviour on a missing target.
+-- behaviour on a missing target.  Uses `parseWithPositionsLocated` (#649) so a
+-- `Finding` at a nested sub-expression (`exprRuleFindings`) carries THAT
+-- expression's own location, not the enclosing decl's.
 export lintFileDiagTriple : List String -> List String -> List String -> String -> <IO> (String, String, List Diag)
 lintFileDiagTriple disable only deny path =
   let src = readFileSafe path
-  let (decls, pos) = parseWithPositions src
+  let (decls, pos) = parseWithPositionsLocated src
   let allFindings = applySuppressions src (lintProgram allRules path src pos decls)
   let findings = applyFindingFilters disable only deny allFindings
   (path, src, map findingToDiag findings)
@@ -2550,32 +2553,47 @@ detApply det e = match det e
 -- Collect one finding per detector hit anywhere in a decl body, skipping decls
 -- whose name the exclusion predicate rejects.  `mkFinding loc rewritten` builds
 -- the rule's message from the rewritten node (for a helpful "prefer …" hint).
+-- `loc` here is the HIT's own location (#649) — the nearest `ELoc` enclosing the
+-- matched expression, tracked by `collectRewrites` as it descends — falling back
+-- to the decl's location only for a hit with no enclosing `ELoc` on its path at
+-- all (the decl-level `loc` threaded in as the initial "nearest so far").
 exprRuleFindings : (String -> Bool) -> (Expr -> Option Expr) -> (Option Loc -> Expr -> Finding) -> Positions -> List Decl -> List Finding
 exprRuleFindings excl det mkFinding pos prog =
   flatMap (exprRuleDeclL excl det mkFinding) (declLocList pos prog)
 
 exprRuleDeclL : (String -> Bool) -> (Expr -> Option Expr) -> (Option Loc -> Expr -> Finding) -> (Decl, Option Loc) -> List Finding
 exprRuleDeclL excl det mkFinding (d, loc) =
-  map (mkFinding loc) (declRewriteHits excl det d)
+  map ((hitLoc, hit) => mkFinding hitLoc hit) (declRewriteHits excl det loc d)
 
-declRewriteHits : (String -> Bool) -> (Expr -> Option Expr) -> Decl -> List Expr
-declRewriteHits excl det (DFunDef _ name _ body)
+declRewriteHits : (String -> Bool) -> (Expr -> Option Expr) -> Option Loc -> Decl -> List (Option Loc, Expr)
+declRewriteHits excl det loc (DFunDef _ name _ body)
   | excl name = []
-  | otherwise = collectRewrites det body
-declRewriteHits _ det (DImpl { methods, ... }) =
-  flatMap (implMethodRewriteHits det) methods
-declRewriteHits excl det (DAttrib _ d) = declRewriteHits excl det d
-declRewriteHits _ _ _ = []
+  | otherwise = collectRewrites loc det body
+declRewriteHits _ det loc (DImpl { methods, ... }) =
+  flatMap (implMethodRewriteHits loc det) methods
+declRewriteHits excl det loc (DAttrib _ d) = declRewriteHits excl det loc d
+declRewriteHits _ _ _ _ = []
 
-implMethodRewriteHits : (Expr -> Option Expr) -> ImplMethod -> List Expr
-implMethodRewriteHits det (ImplMethod _ _ body) = collectRewrites det body
+implMethodRewriteHits : Option Loc -> (Expr -> Option Expr) -> ImplMethod -> List (Option Loc, Expr)
+implMethodRewriteHits loc det (ImplMethod _ _ body) =
+  collectRewrites loc det body
 
--- every detector hit anywhere in the tree.  The detector matches the RAW node, so
--- an `ELoc`-wrapped node contributes nothing here and `childExprs` descends into
--- it — each real node is counted exactly once (mirrors `collectLamSections`).
-collectRewrites : (Expr -> Option Expr) -> Expr -> List Expr
-collectRewrites det e = optExprToList (det e)
-  ++ flatMap (collectRewrites det) (childExprs e)
+-- every detector hit anywhere in the tree, paired with ITS OWN location (#649).
+-- `curLoc` tracks the nearest enclosing `ELoc` seen so far as we descend,
+-- starting from the decl's location (the fallback for a hit with no `ELoc` on
+-- its path).  The detector matches the RAW node — an `ELoc`-wrapped node
+-- contributes nothing here, `childExprs` descends into it, and its `Loc`
+-- becomes the new `curLoc` for everything beneath it — so each real node is
+-- counted exactly once, now stamped with the location of the innermost `ELoc`
+-- that actually wraps it (mirrors `collectLamSections`).
+collectRewrites : Option Loc -> (Expr -> Option Expr) -> Expr -> List (Option Loc, Expr)
+collectRewrites _ det (ELoc l e) = collectRewrites (Some l) det e
+collectRewrites curLoc det e = optExprToLocList curLoc (det e)
+  ++ flatMap (collectRewrites curLoc det) (childExprs e)
+
+optExprToLocList : Option Loc -> Option Expr -> List (Option Loc, Expr)
+optExprToLocList _ None = []
+optExprToLocList loc (Some x) = [(loc, x)]
 
 -- ── generic fix driver ────────────────────────────────────────────────────────
 -- Rebuild the decl body applying `f` bottom-up; return `Some [newDecl]` only when
