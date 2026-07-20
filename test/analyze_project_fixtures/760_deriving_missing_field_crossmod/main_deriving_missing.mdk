@@ -1,0 +1,8 @@
+-- #760 (S1) multi-module: `deriving (Eq)` over an IMPORTED field type lacking Eq.
+-- The derived Eq body calls `eq` on the Inner field, so the obligation `Eq Inner`
+-- must be surfaced at check on the MULTI-MODULE path (it reproduced through the
+-- loader while single-file check already caught it): check must REJECT, not
+-- accept-then-build-panic (`no impl of method 'eq' for type 'Inner'`).
+import inner.{Inner(..)}
+data Outer = Outer Inner deriving (Eq)
+main = println (Outer (Inner 1) == Outer (Inner 2))
