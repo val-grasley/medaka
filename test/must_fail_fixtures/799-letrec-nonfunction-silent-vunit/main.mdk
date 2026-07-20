@@ -1,3 +1,0 @@
-main =
-  let rec loop = loop
-  println "reached"

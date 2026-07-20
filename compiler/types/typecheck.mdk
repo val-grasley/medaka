@@ -4347,6 +4347,7 @@ inferStmt _ _ = panic "typecheck: unsupported block statement"
 
 blockRecLet : TcEnv -> String -> Expr -> TcEnv
 blockRecLet env x e =
+  let _ = checkRecBindNonFunction x e  -- #799
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
   let placeholder = freshVar ()
@@ -6846,6 +6847,7 @@ inferLet env _ isFun pat e1 e2
 -- arm): placeholder pre-bind, infer body, unify, generalize through the body.
 inferRecLet : TcEnv -> String -> Expr -> Expr -> Mono
 inferRecLet env x e1 e2 =
+  let _ = checkRecBindNonFunction x e1  -- #799
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
   let placeholder = freshVar ()
@@ -7156,6 +7158,7 @@ inferArmGuards env ((GBind p e)::rest) =
 
 inferLetGroup : TcEnv -> List LetBind -> Expr -> Mono
 inferLetGroup env binds body =
+  let _ = checkLetGroupBindsLocated binds  -- #799
   let env2 = processLetGroup env binds
   infer env2 body
 
@@ -7374,6 +7377,164 @@ letRecNonFunctionMsg : String -> String
 letRecNonFunctionMsg name = "'"
   ++ name
   ++ "' is bound by 'let rec' but its right-hand side is not a function"
+
+-- #799: the guard above (checkLetRecDecls/checkLetBind) only walks TOP-LEVEL
+-- DLetGroup declarations. BLOCK-level (`let rec x = v` as a DoStmt) and
+-- EXPRESSION-level (`let rec x = v in e2`, an ELetGroup) `let rec` reach
+-- blockRecLet/inferRecLet/inferLetGroup directly, with no non-function check at
+-- all — a non-function binding (e.g. `let rec loop = loop`) silently pre-binds
+-- the name to a placeholder Ref and evaluates to it, never erroring.
+
+-- blockRecLet/inferRecLet already have the bound name's (possibly-curried) RHS
+-- expr in hand: `curryLam pats e1` for a function-form clause is always an
+-- ELam, so this only ever flags the genuinely zero-param, non-lambda case —
+-- identical discrimination to clauseIsNonFunction, just on the curried form.
+-- Both call sites are ELet, produced ONLY from a singleton binding (a plain
+-- `let f a… = e1 [in e2]` or an explicit `let rec` — "with" mutual-grouping was
+-- removed), so — unlike ELetGroup below — there is no risk of an innocent
+-- bystander binding riding along; mirroring the top-level "not a syntactic
+-- lambda ⇒ reject" rule verbatim is safe here. Unlike the top-level call site
+-- (which has no expression in hand to locate against), push a LOCATED
+-- diagnostic — a block/expr let-rec always carries its RHS expr (ERROR-QUALITY.md).
+checkRecBindNonFunction : String -> Expr -> Unit
+checkRecBindNonFunction name e
+  | isSyntacticLambda e = ()
+  | otherwise = pushTypeErrorAt "T-NONREC-VALUE-LET" (exprLoc e) (letRecNonFunctionMsg name)
+
+-- inferLetGroup's ELetGroup is DIFFERENT: it is the SAME node `where` clauses
+-- desugar to (parser.mdk whereEol/whereTail/guard-arm-where — verified: no
+-- `rec` keyword involved, no AST field distinguishing the two), and a `where`
+-- group routinely bundles plain, NON-recursive value helpers alongside real
+-- functions (e.g. stdlib/list.mdk's `split`: `where sepLen = length sep; go
+-- ys = …` — sepLen never mentions itself or any sibling). Applying
+-- checkRecBindNonFunction's blunt "not a lambda ⇒ reject" rule here false-
+-- positived on exactly that (confirmed against the tree before landing this).
+--
+-- So this check is narrower and more precise instead of broader: a zero-param,
+-- non-lambda clause is illegal only if its RHS EAGERLY (i.e. not deferred
+-- behind a nested lambda) mentions itself or ANY sibling in the same group —
+-- the actual hazard (evalLetGroup pre-binds every member's cell to Ref VUnit
+-- and installs each member's value in source order, so an eager cross-
+-- reference to any not-yet-installed cell reads stale VUnit). A plain
+-- `where`-bound value that never mentions a sibling is provably safe and
+-- passes untouched, regardless of "looks like a function".
+checkLetGroupBindsLocated : List LetBind -> Unit
+checkLetGroupBindsLocated binds =
+  checkLetGroupBindsGo (map letBindName binds) binds
+
+letBindName : LetBind -> String
+letBindName (LetBind name _) = name
+
+checkLetGroupBindsGo : List String -> List LetBind -> Unit
+checkLetGroupBindsGo _ [] = ()
+checkLetGroupBindsGo names ((LetBind name clauses)::rest) =
+  let _ = checkClausesNonFunctionLocated names name clauses
+  checkLetGroupBindsGo names rest
+
+checkClausesNonFunctionLocated : List String -> String -> List FunClause -> Unit
+checkClausesNonFunctionLocated names name clauses
+  | allList clauseIsNonFunction clauses && anyClauseEagerlyRefsGroup names clauses = pushTypeErrorAt "T-NONREC-VALUE-LET" (clausesLoc clauses) (letRecNonFunctionMsg name)
+  | otherwise = ()
+
+anyClauseEagerlyRefsGroup : List String -> List FunClause -> Bool
+anyClauseEagerlyRefsGroup names clauses =
+  anyList (clauseEagerlyRefsGroup names) clauses
+
+clauseEagerlyRefsGroup : List String -> FunClause -> Bool
+clauseEagerlyRefsGroup names (FunClause _ rhs) = anyMember names (eagerRefs rhs)
+
+clausesLoc : List FunClause -> Option Loc
+clausesLoc [] = None
+clausesLoc ((FunClause _ rhs)::_) = exprLoc rhs
+
+-- Names `e` reads WITHOUT first going under a lambda (a lambda DEFERS
+-- evaluation, so a reference inside one cannot observe a still-uninstalled
+-- letrec-group cell). Deliberately UNDER-approximates: an Expr shape not
+-- explicitly handled falls to the catch-all `[]` (no eager reference
+-- detected) rather than guessing — that can only make this check MORE
+-- permissive than exhaustive coverage would, never less, so an unhandled
+-- shape is a missed catch (no worse than status quo before #799's fix), not a
+-- new false positive. Mirrors marker.mdk's collectVars (the DCE reference
+-- walk) with ONE change: collectVars descends into ELam bodies (DCE needs
+-- every eventually-reachable name); this stops at ELam (its body is deferred,
+-- not eager).
+eagerRefs : Expr -> List String
+eagerRefs (EVar x) = [x]
+eagerRefs (EApp a b) = eagerRefs a ++ eagerRefs b
+eagerRefs (ELam _ _) = []
+eagerRefs (ELet _ _ _ e1 e2) = eagerRefs e1 ++ eagerRefs e2
+eagerRefs (ELetGroup bs e2) = flatMap eagerRefsLetBind bs ++ eagerRefs e2
+eagerRefs (EMatch e0 arms) = eagerRefs e0 ++ flatMap eagerRefsArm arms
+eagerRefs (EIf c t el) = eagerRefs c ++ eagerRefs t ++ eagerRefs el
+eagerRefs (EBinOp _ a b _) = eagerRefs a ++ eagerRefs b
+eagerRefs (EUnOp _ a _) = eagerRefs a
+eagerRefs (EInfix op a b) = op :: eagerRefs a ++ eagerRefs b
+eagerRefs (EFieldAccess e0 _ _) = eagerRefs e0
+eagerRefs (ERecordCreate _ fs) = flatMap eagerRefsFieldAssign fs
+eagerRefs (ERecordUpdate e0 fs _) = eagerRefs e0
+  ++ flatMap eagerRefsFieldAssign fs
+eagerRefs (EVariantUpdate _ e0 fs) = eagerRefs e0
+  ++ flatMap eagerRefsFieldAssign fs
+eagerRefs (EArrayLit es) = flatMap eagerRefs es
+eagerRefs (EListLit es) = flatMap eagerRefs es
+eagerRefs (ETuple es) = flatMap eagerRefs es
+eagerRefs (EIndex e0 i _) = eagerRefs e0 ++ eagerRefs i
+eagerRefs (ERangeList lo hi _) = eagerRefs lo ++ eagerRefs hi
+eagerRefs (ERangeArray lo hi _) = eagerRefs lo ++ eagerRefs hi
+eagerRefs (ESlice e0 lo hi _ _) = eagerRefs e0 ++ eagerRefs lo ++ eagerRefs hi
+eagerRefs (EBlock stmts) = flatMap eagerRefsDoStmt stmts
+eagerRefs (EDo stmts) = flatMap eagerRefsDoStmt stmts
+eagerRefs (EAnnot e0 _) = eagerRefs e0
+eagerRefs (EHeadAnnot e0 _) = eagerRefs e0
+eagerRefs (EStringInterp parts) = flatMap eagerRefsInterp parts
+eagerRefs (EGuards arms) = flatMap eagerRefsGuardArm arms
+eagerRefs (ESection (SecRight _ e0)) = eagerRefs e0
+eagerRefs (ESection (SecLeft e0 _)) = eagerRefs e0
+eagerRefs (EAsPat _ e0) = eagerRefs e0
+eagerRefs (EMapLit _ kvs) = flatMap eagerRefsPair kvs
+eagerRefs (ESetLit _ es) = flatMap eagerRefs es
+eagerRefs (ELoc _ e) = eagerRefs e
+eagerRefs (EDoOrigin _ e) = eagerRefs e
+eagerRefs _ = []
+
+eagerRefsLetBind : LetBind -> List String
+eagerRefsLetBind (LetBind _ clauses) = flatMap eagerRefsClauseAllPats clauses
+
+-- Unlike the group-membership test above (which only examines zero-param
+-- clauses), a NESTED ELetGroup's own function-form members are legitimately
+-- deferred (their body only runs once applied) — so only fold in a nested
+-- zero-param clause's refs eagerly; a nested function clause's body is safe
+-- to skip, matching the ELam short-circuit above.
+eagerRefsClauseAllPats : FunClause -> List String
+eagerRefsClauseAllPats (FunClause [] rhs) = eagerRefs rhs
+eagerRefsClauseAllPats (FunClause _ _) = []
+
+eagerRefsArm : Arm -> List String
+eagerRefsArm (Arm _ gs body) = flatMap eagerRefsGuard gs ++ eagerRefs body
+
+eagerRefsGuard : Guard -> List String
+eagerRefsGuard (GBool e) = eagerRefs e
+eagerRefsGuard (GBind _ e) = eagerRefs e
+
+eagerRefsGuardArm : GuardArm -> List String
+eagerRefsGuardArm (GuardArm gs body) = flatMap eagerRefsGuard gs
+  ++ eagerRefs body
+
+eagerRefsFieldAssign : FieldAssign -> List String
+eagerRefsFieldAssign (FieldAssign _ e) = eagerRefs e
+
+eagerRefsDoStmt : DoStmt -> List String
+eagerRefsDoStmt (DoExpr e) = eagerRefs e
+eagerRefsDoStmt (DoBind _ e) = eagerRefs e
+eagerRefsDoStmt (DoLet _ _ _ e) = eagerRefs e
+eagerRefsDoStmt _ = []
+
+eagerRefsInterp : InterpPart -> List String
+eagerRefsInterp (InterpExpr e) = eagerRefs e
+eagerRefsInterp _ = []
+
+eagerRefsPair : (Expr, Expr) -> List String
+eagerRefsPair (k, v) = eagerRefs k ++ eagerRefs v
 
 groupNames : List (String, (List Pat, Expr)) -> OrdMap Unit -> List String
 groupNames [] _ = []

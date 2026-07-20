@@ -1,0 +1,9 @@
+-- #799: a BLOCK-level `let rec` binding whose right-hand side is not a function
+-- (zero params, no syntactic lambda) used to be SILENTLY ACCEPTED — it pre-bound
+-- the name to Ref VUnit and evaluated to that, with no diagnostic, no panic, no
+-- hang. checkRecBindNonFunction now mirrors the top-level checkLetRecDecls guard
+-- (T-NONREC-VALUE-LET) at this call site (blockRecLet). check == run == build all
+-- REJECT via a clean, LOCATED diagnostic, never a runtime panic.
+main =
+  let rec loop = loop
+  println "unreachable"

@@ -1,3 +1,0 @@
-main =
-  let rec loop n = if n <= 0 then 0 else loop (n - 1)
-  println (loop 3)

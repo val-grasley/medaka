@@ -1,0 +1,6 @@
+-- #799: an EXPRESSION-level `let rec x = v in e2` (ELetGroup) with a non-function
+-- RHS used to be SILENTLY ACCEPTED for the same reason as the block-level case —
+-- inferLetGroup ran processLetGroup with no non-function check at all. Now
+-- checkLetGroupBindsLocated mirrors the top-level guard here too. check == run ==
+-- build all REJECT via a clean, LOCATED diagnostic, never a runtime panic.
+main = println (let rec loop = loop in "unreachable")

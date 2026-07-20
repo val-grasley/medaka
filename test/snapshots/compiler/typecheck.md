@@ -1,5 +1,5 @@
 # META
-source_lines=16116
+source_lines=16277
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -4351,6 +4351,7 @@ inferStmt _ _ = panic "typecheck: unsupported block statement"
 
 blockRecLet : TcEnv -> String -> Expr -> TcEnv
 blockRecLet env x e =
+  let _ = checkRecBindNonFunction x e  -- #799
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
   let placeholder = freshVar ()
@@ -6850,6 +6851,7 @@ inferLet env _ isFun pat e1 e2
 -- arm): placeholder pre-bind, infer body, unify, generalize through the body.
 inferRecLet : TcEnv -> String -> Expr -> Expr -> Mono
 inferRecLet env x e1 e2 =
+  let _ = checkRecBindNonFunction x e1  -- #799
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
   let placeholder = freshVar ()
@@ -7160,6 +7162,7 @@ inferArmGuards env ((GBind p e)::rest) =
 
 inferLetGroup : TcEnv -> List LetBind -> Expr -> Mono
 inferLetGroup env binds body =
+  let _ = checkLetGroupBindsLocated binds  -- #799
   let env2 = processLetGroup env binds
   infer env2 body
 
@@ -7378,6 +7381,164 @@ letRecNonFunctionMsg : String -> String
 letRecNonFunctionMsg name = "'"
   ++ name
   ++ "' is bound by 'let rec' but its right-hand side is not a function"
+
+-- #799: the guard above (checkLetRecDecls/checkLetBind) only walks TOP-LEVEL
+-- DLetGroup declarations. BLOCK-level (`let rec x = v` as a DoStmt) and
+-- EXPRESSION-level (`let rec x = v in e2`, an ELetGroup) `let rec` reach
+-- blockRecLet/inferRecLet/inferLetGroup directly, with no non-function check at
+-- all — a non-function binding (e.g. `let rec loop = loop`) silently pre-binds
+-- the name to a placeholder Ref and evaluates to it, never erroring.
+
+-- blockRecLet/inferRecLet already have the bound name's (possibly-curried) RHS
+-- expr in hand: `curryLam pats e1` for a function-form clause is always an
+-- ELam, so this only ever flags the genuinely zero-param, non-lambda case —
+-- identical discrimination to clauseIsNonFunction, just on the curried form.
+-- Both call sites are ELet, produced ONLY from a singleton binding (a plain
+-- `let f a… = e1 [in e2]` or an explicit `let rec` — "with" mutual-grouping was
+-- removed), so — unlike ELetGroup below — there is no risk of an innocent
+-- bystander binding riding along; mirroring the top-level "not a syntactic
+-- lambda ⇒ reject" rule verbatim is safe here. Unlike the top-level call site
+-- (which has no expression in hand to locate against), push a LOCATED
+-- diagnostic — a block/expr let-rec always carries its RHS expr (ERROR-QUALITY.md).
+checkRecBindNonFunction : String -> Expr -> Unit
+checkRecBindNonFunction name e
+  | isSyntacticLambda e = ()
+  | otherwise = pushTypeErrorAt "T-NONREC-VALUE-LET" (exprLoc e) (letRecNonFunctionMsg name)
+
+-- inferLetGroup's ELetGroup is DIFFERENT: it is the SAME node `where` clauses
+-- desugar to (parser.mdk whereEol/whereTail/guard-arm-where — verified: no
+-- `rec` keyword involved, no AST field distinguishing the two), and a `where`
+-- group routinely bundles plain, NON-recursive value helpers alongside real
+-- functions (e.g. stdlib/list.mdk's `split`: `where sepLen = length sep; go
+-- ys = …` — sepLen never mentions itself or any sibling). Applying
+-- checkRecBindNonFunction's blunt "not a lambda ⇒ reject" rule here false-
+-- positived on exactly that (confirmed against the tree before landing this).
+--
+-- So this check is narrower and more precise instead of broader: a zero-param,
+-- non-lambda clause is illegal only if its RHS EAGERLY (i.e. not deferred
+-- behind a nested lambda) mentions itself or ANY sibling in the same group —
+-- the actual hazard (evalLetGroup pre-binds every member's cell to Ref VUnit
+-- and installs each member's value in source order, so an eager cross-
+-- reference to any not-yet-installed cell reads stale VUnit). A plain
+-- `where`-bound value that never mentions a sibling is provably safe and
+-- passes untouched, regardless of "looks like a function".
+checkLetGroupBindsLocated : List LetBind -> Unit
+checkLetGroupBindsLocated binds =
+  checkLetGroupBindsGo (map letBindName binds) binds
+
+letBindName : LetBind -> String
+letBindName (LetBind name _) = name
+
+checkLetGroupBindsGo : List String -> List LetBind -> Unit
+checkLetGroupBindsGo _ [] = ()
+checkLetGroupBindsGo names ((LetBind name clauses)::rest) =
+  let _ = checkClausesNonFunctionLocated names name clauses
+  checkLetGroupBindsGo names rest
+
+checkClausesNonFunctionLocated : List String -> String -> List FunClause -> Unit
+checkClausesNonFunctionLocated names name clauses
+  | allList clauseIsNonFunction clauses && anyClauseEagerlyRefsGroup names clauses = pushTypeErrorAt "T-NONREC-VALUE-LET" (clausesLoc clauses) (letRecNonFunctionMsg name)
+  | otherwise = ()
+
+anyClauseEagerlyRefsGroup : List String -> List FunClause -> Bool
+anyClauseEagerlyRefsGroup names clauses =
+  anyList (clauseEagerlyRefsGroup names) clauses
+
+clauseEagerlyRefsGroup : List String -> FunClause -> Bool
+clauseEagerlyRefsGroup names (FunClause _ rhs) = anyMember names (eagerRefs rhs)
+
+clausesLoc : List FunClause -> Option Loc
+clausesLoc [] = None
+clausesLoc ((FunClause _ rhs)::_) = exprLoc rhs
+
+-- Names `e` reads WITHOUT first going under a lambda (a lambda DEFERS
+-- evaluation, so a reference inside one cannot observe a still-uninstalled
+-- letrec-group cell). Deliberately UNDER-approximates: an Expr shape not
+-- explicitly handled falls to the catch-all `[]` (no eager reference
+-- detected) rather than guessing — that can only make this check MORE
+-- permissive than exhaustive coverage would, never less, so an unhandled
+-- shape is a missed catch (no worse than status quo before #799's fix), not a
+-- new false positive. Mirrors marker.mdk's collectVars (the DCE reference
+-- walk) with ONE change: collectVars descends into ELam bodies (DCE needs
+-- every eventually-reachable name); this stops at ELam (its body is deferred,
+-- not eager).
+eagerRefs : Expr -> List String
+eagerRefs (EVar x) = [x]
+eagerRefs (EApp a b) = eagerRefs a ++ eagerRefs b
+eagerRefs (ELam _ _) = []
+eagerRefs (ELet _ _ _ e1 e2) = eagerRefs e1 ++ eagerRefs e2
+eagerRefs (ELetGroup bs e2) = flatMap eagerRefsLetBind bs ++ eagerRefs e2
+eagerRefs (EMatch e0 arms) = eagerRefs e0 ++ flatMap eagerRefsArm arms
+eagerRefs (EIf c t el) = eagerRefs c ++ eagerRefs t ++ eagerRefs el
+eagerRefs (EBinOp _ a b _) = eagerRefs a ++ eagerRefs b
+eagerRefs (EUnOp _ a _) = eagerRefs a
+eagerRefs (EInfix op a b) = op :: eagerRefs a ++ eagerRefs b
+eagerRefs (EFieldAccess e0 _ _) = eagerRefs e0
+eagerRefs (ERecordCreate _ fs) = flatMap eagerRefsFieldAssign fs
+eagerRefs (ERecordUpdate e0 fs _) = eagerRefs e0
+  ++ flatMap eagerRefsFieldAssign fs
+eagerRefs (EVariantUpdate _ e0 fs) = eagerRefs e0
+  ++ flatMap eagerRefsFieldAssign fs
+eagerRefs (EArrayLit es) = flatMap eagerRefs es
+eagerRefs (EListLit es) = flatMap eagerRefs es
+eagerRefs (ETuple es) = flatMap eagerRefs es
+eagerRefs (EIndex e0 i _) = eagerRefs e0 ++ eagerRefs i
+eagerRefs (ERangeList lo hi _) = eagerRefs lo ++ eagerRefs hi
+eagerRefs (ERangeArray lo hi _) = eagerRefs lo ++ eagerRefs hi
+eagerRefs (ESlice e0 lo hi _ _) = eagerRefs e0 ++ eagerRefs lo ++ eagerRefs hi
+eagerRefs (EBlock stmts) = flatMap eagerRefsDoStmt stmts
+eagerRefs (EDo stmts) = flatMap eagerRefsDoStmt stmts
+eagerRefs (EAnnot e0 _) = eagerRefs e0
+eagerRefs (EHeadAnnot e0 _) = eagerRefs e0
+eagerRefs (EStringInterp parts) = flatMap eagerRefsInterp parts
+eagerRefs (EGuards arms) = flatMap eagerRefsGuardArm arms
+eagerRefs (ESection (SecRight _ e0)) = eagerRefs e0
+eagerRefs (ESection (SecLeft e0 _)) = eagerRefs e0
+eagerRefs (EAsPat _ e0) = eagerRefs e0
+eagerRefs (EMapLit _ kvs) = flatMap eagerRefsPair kvs
+eagerRefs (ESetLit _ es) = flatMap eagerRefs es
+eagerRefs (ELoc _ e) = eagerRefs e
+eagerRefs (EDoOrigin _ e) = eagerRefs e
+eagerRefs _ = []
+
+eagerRefsLetBind : LetBind -> List String
+eagerRefsLetBind (LetBind _ clauses) = flatMap eagerRefsClauseAllPats clauses
+
+-- Unlike the group-membership test above (which only examines zero-param
+-- clauses), a NESTED ELetGroup's own function-form members are legitimately
+-- deferred (their body only runs once applied) — so only fold in a nested
+-- zero-param clause's refs eagerly; a nested function clause's body is safe
+-- to skip, matching the ELam short-circuit above.
+eagerRefsClauseAllPats : FunClause -> List String
+eagerRefsClauseAllPats (FunClause [] rhs) = eagerRefs rhs
+eagerRefsClauseAllPats (FunClause _ _) = []
+
+eagerRefsArm : Arm -> List String
+eagerRefsArm (Arm _ gs body) = flatMap eagerRefsGuard gs ++ eagerRefs body
+
+eagerRefsGuard : Guard -> List String
+eagerRefsGuard (GBool e) = eagerRefs e
+eagerRefsGuard (GBind _ e) = eagerRefs e
+
+eagerRefsGuardArm : GuardArm -> List String
+eagerRefsGuardArm (GuardArm gs body) = flatMap eagerRefsGuard gs
+  ++ eagerRefs body
+
+eagerRefsFieldAssign : FieldAssign -> List String
+eagerRefsFieldAssign (FieldAssign _ e) = eagerRefs e
+
+eagerRefsDoStmt : DoStmt -> List String
+eagerRefsDoStmt (DoExpr e) = eagerRefs e
+eagerRefsDoStmt (DoBind _ e) = eagerRefs e
+eagerRefsDoStmt (DoLet _ _ _ e) = eagerRefs e
+eagerRefsDoStmt _ = []
+
+eagerRefsInterp : InterpPart -> List String
+eagerRefsInterp (InterpExpr e) = eagerRefs e
+eagerRefsInterp _ = []
+
+eagerRefsPair : (Expr, Expr) -> List String
+eagerRefsPair (k, v) = eagerRefs k ++ eagerRefs v
 
 groupNames : List (String, (List Pat, Expr)) -> OrdMap Unit -> List String
 groupNames [] _ = []
@@ -17129,7 +17290,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferStmt" ((PVar "env") (PCon "DoBind" (PVar "pat") (PVar "e"))) (EBlock (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-BIND-OUTSIDE-DO"))) (EVar "bindOutsideDoMsg"))) (DoLet false false (PVar "pr") (EApp (EApp (EVar "inferPat") (EVar "env")) (EVar "pat"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EVar "fst") (EVar "pr"))) (EVar "t"))) (DoExpr (EApp (EApp (EVar "extendVars") (EVar "env")) (EApp (EVar "snd") (EVar "pr"))))))
 (DFunDef false "inferStmt" (PWild PWild) (EApp (EVar "panic") (ELit (LString "typecheck: unsupported block statement"))))
 (DTypeSig false "blockRecLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "TcEnv")))))
-(DFunDef false "blockRecLet" ((PVar "env") (PVar "x") (PVar "e")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e")))))
+(DFunDef false "blockRecLet" ((PVar "env") (PVar "x") (PVar "e")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "checkRecBindNonFunction") (EVar "x")) (EVar "e"))) (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e")))))
 (DTypeSig false "blockLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyCon "TcEnv")))))
 (DFunDef false "blockLet" ((PVar "env") (PCon "PVar" (PVar "x")) (PVar "e")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t"))) (DoLet false false (PVar "env1") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EApp (EVar "genRestricted") (EApp (EVar "isNonexpansive") (EVar "e"))) (EVar "t")))) (DoExpr (EApp (EApp (EApp (EVar "seedAlphaLets") (EVar "env1")) (EVar "x")) (EVar "e")))))
 (DFunDef false "blockLet" ((PVar "env") (PVar "pat") (PVar "e")) (EBlock (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false (PVar "pr") (EApp (EApp (EVar "inferPat") (EVar "env")) (EVar "pat"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EVar "fst") (EVar "pr"))) (EVar "t"))) (DoExpr (EApp (EApp (EVar "extendVars") (EVar "env")) (EApp (EVar "snd") (EVar "pr"))))))
@@ -17595,7 +17756,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "inferLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))))
 (DFunDef false "inferLet" ((PVar "env") PWild (PVar "isFun") (PVar "pat") (PVar "e1") (PVar "e2")) (EIf (EVar "isFun") (EMatch (EVar "pat") (arm (PCon "PVar" (PVar "x")) () (EApp (EApp (EApp (EApp (EVar "inferRecLet") (EVar "env")) (EVar "x")) (EVar "e1")) (EVar "e2"))) (arm PWild () (EApp (EApp (EApp (EApp (EVar "inferLetSimple") (EVar "env")) (EVar "pat")) (EVar "e1")) (EVar "e2")))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "inferLetSimple") (EVar "env")) (EVar "pat")) (EVar "e1")) (EVar "e2")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "inferRecLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
-(DFunDef false "inferRecLet" ((PVar "env") (PVar "x") (PVar "e1") (PVar "e2")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e1"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EVar "infer") (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e1"))) (EVar "e2")))))
+(DFunDef false "inferRecLet" ((PVar "env") (PVar "x") (PVar "e1") (PVar "e2")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "checkRecBindNonFunction") (EVar "x")) (EVar "e1"))) (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e1"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EVar "infer") (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e1"))) (EVar "e2")))))
 (DTypeSig false "inferLetSimple" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
 (DFunDef false "inferLetSimple" ((PVar "env") (PVar "pat") (PVar "e1") (PVar "e2")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "inferLetBody") (EVar "env")) (EVar "pat")) (EVar "t1")) (EVar "e1")) (EVar "e2")))))
 (DTypeSig false "inferLetBody" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Pat") (TyFun (TyCon "Mono") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono")))))))
@@ -17667,7 +17828,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferArmGuards" ((PVar "env") (PCons (PCon "GBool" (PVar "g")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "g"))) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoExpr (EApp (EApp (EVar "inferArmGuards") (EVar "env")) (EVar "rest")))))
 (DFunDef false "inferArmGuards" ((PVar "env") (PCons (PCon "GBind" (PVar "p") (PVar "e")) (PVar "rest"))) (EBlock (DoLet false false (PVar "te") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false (PVar "pr") (EApp (EApp (EVar "inferPat") (EVar "env")) (EVar "p"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EVar "fst") (EVar "pr"))) (EVar "te"))) (DoExpr (EApp (EApp (EVar "inferArmGuards") (EApp (EApp (EVar "extendVars") (EVar "env")) (EApp (EVar "snd") (EVar "pr")))) (EVar "rest")))))
 (DTypeSig false "inferLetGroup" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyFun (TyCon "Expr") (TyCon "Mono")))))
-(DFunDef false "inferLetGroup" ((PVar "env") (PVar "binds") (PVar "body")) (EBlock (DoLet false false (PVar "env2") (EApp (EApp (EVar "processLetGroup") (EVar "env")) (EVar "binds"))) (DoExpr (EApp (EApp (EVar "infer") (EVar "env2")) (EVar "body")))))
+(DFunDef false "inferLetGroup" ((PVar "env") (PVar "binds") (PVar "body")) (EBlock (DoLet false false PWild (EApp (EVar "checkLetGroupBindsLocated") (EVar "binds"))) (DoLet false false (PVar "env2") (EApp (EApp (EVar "processLetGroup") (EVar "env")) (EVar "binds"))) (DoExpr (EApp (EApp (EVar "infer") (EVar "env2")) (EVar "body")))))
 (DTypeSig false "registerData" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Decl") (TyCon "TcEnv"))))
 (DFunDef false "registerData" ((PVar "env") (PCon "DData" PWild (PVar "name") (PVar "params") (PVar "variants") PWild)) (EApp (EApp (EApp (EApp (EVar "registerVariants") (EVar "env")) (EVar "name")) (EVar "params")) (EVar "variants")))
 (DFunDef false "registerData" ((PVar "env") (PCon "DTypeAlias" PWild (PVar "name") (PVar "params") (PVar "rhs"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "aliasTableRef")) (EBinOp "::" (ETuple (EVar "name") (ETuple (EVar "params") (EVar "rhs"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "aliasTableRef") "value")))) (DoExpr (EVar "env"))))
@@ -17767,6 +17928,84 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "clauseIsNonFunction" ((PCon "FunClause" PWild PWild)) (EVar "False"))
 (DTypeSig false "letRecNonFunctionMsg" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "letRecNonFunctionMsg" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "'")) (EVar "name")) (ELit (LString "' is bound by 'let rec' but its right-hand side is not a function"))))
+(DTypeSig false "checkRecBindNonFunction" (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "Unit"))))
+(DFunDef false "checkRecBindNonFunction" ((PVar "name") (PVar "e")) (EIf (EApp (EVar "isSyntacticLambda") (EVar "e")) (ELit LUnit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "exprLoc") (EVar "e"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "checkLetGroupBindsLocated" (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit")))
+(DFunDef false "checkLetGroupBindsLocated" ((PVar "binds")) (EApp (EApp (EVar "checkLetGroupBindsGo") (EApp (EApp (EVar "map") (EVar "letBindName")) (EVar "binds"))) (EVar "binds")))
+(DTypeSig false "letBindName" (TyFun (TyCon "LetBind") (TyCon "String")))
+(DFunDef false "letBindName" ((PCon "LetBind" (PVar "name") PWild)) (EVar "name"))
+(DTypeSig false "checkLetGroupBindsGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit"))))
+(DFunDef false "checkLetGroupBindsGo" (PWild (PList)) (ELit LUnit))
+(DFunDef false "checkLetGroupBindsGo" ((PVar "names") (PCons (PCon "LetBind" (PVar "name") (PVar "clauses")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "checkClausesNonFunctionLocated") (EVar "names")) (EVar "name")) (EVar "clauses"))) (DoExpr (EApp (EApp (EVar "checkLetGroupBindsGo") (EVar "names")) (EVar "rest")))))
+(DTypeSig false "checkClausesNonFunctionLocated" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Unit")))))
+(DFunDef false "checkClausesNonFunctionLocated" ((PVar "names") (PVar "name") (PVar "clauses")) (EIf (EBinOp "&&" (EApp (EApp (EVar "allList") (EVar "clauseIsNonFunction")) (EVar "clauses")) (EApp (EApp (EVar "anyClauseEagerlyRefsGroup") (EVar "names")) (EVar "clauses"))) (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "clausesLoc") (EVar "clauses"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "anyClauseEagerlyRefsGroup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Bool"))))
+(DFunDef false "anyClauseEagerlyRefsGroup" ((PVar "names") (PVar "clauses")) (EApp (EApp (EVar "anyList") (EApp (EVar "clauseEagerlyRefsGroup") (EVar "names"))) (EVar "clauses")))
+(DTypeSig false "clauseEagerlyRefsGroup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "FunClause") (TyCon "Bool"))))
+(DFunDef false "clauseEagerlyRefsGroup" ((PVar "names") (PCon "FunClause" PWild (PVar "rhs"))) (EApp (EApp (EVar "anyMember") (EVar "names")) (EApp (EVar "eagerRefs") (EVar "rhs"))))
+(DTypeSig false "clausesLoc" (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "clausesLoc" ((PList)) (EVar "None"))
+(DFunDef false "clausesLoc" ((PCons (PCon "FunClause" PWild (PVar "rhs")) PWild)) (EApp (EVar "exprLoc") (EVar "rhs")))
+(DTypeSig false "eagerRefs" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefs" ((PCon "EVar" (PVar "x"))) (EListLit (EVar "x")))
+(DFunDef false "eagerRefs" ((PCon "EApp" (PVar "a") (PVar "b"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "a")) (EApp (EVar "eagerRefs") (EVar "b"))))
+(DFunDef false "eagerRefs" ((PCon "ELam" PWild PWild)) (EListLit))
+(DFunDef false "eagerRefs" ((PCon "ELet" PWild PWild PWild (PVar "e1") (PVar "e2"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e1")) (EApp (EVar "eagerRefs") (EVar "e2"))))
+(DFunDef false "eagerRefs" ((PCon "ELetGroup" (PVar "bs") (PVar "e2"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EVar "eagerRefsLetBind")) (EVar "bs")) (EApp (EVar "eagerRefs") (EVar "e2"))))
+(DFunDef false "eagerRefs" ((PCon "EMatch" (PVar "e0") (PVar "arms"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsArm")) (EVar "arms"))))
+(DFunDef false "eagerRefs" ((PCon "EIf" (PVar "c") (PVar "t") (PVar "el"))) (EBinOp "++" (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "c")) (EApp (EVar "eagerRefs") (EVar "t"))) (EApp (EVar "eagerRefs") (EVar "el"))))
+(DFunDef false "eagerRefs" ((PCon "EBinOp" PWild (PVar "a") (PVar "b") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "a")) (EApp (EVar "eagerRefs") (EVar "b"))))
+(DFunDef false "eagerRefs" ((PCon "EUnOp" PWild (PVar "a") PWild)) (EApp (EVar "eagerRefs") (EVar "a")))
+(DFunDef false "eagerRefs" ((PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EBinOp "::" (EVar "op") (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "a")) (EApp (EVar "eagerRefs") (EVar "b")))))
+(DFunDef false "eagerRefs" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsFieldAssign")) (EVar "fs")))
+(DFunDef false "eagerRefs" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsFieldAssign")) (EVar "fs"))))
+(DFunDef false "eagerRefs" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsFieldAssign")) (EVar "fs"))))
+(DFunDef false "eagerRefs" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "ETuple" (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "EIndex" (PVar "e0") (PVar "i") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EVar "eagerRefs") (EVar "i"))))
+(DFunDef false "eagerRefs" ((PCon "ERangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "lo")) (EApp (EVar "eagerRefs") (EVar "hi"))))
+(DFunDef false "eagerRefs" ((PCon "ERangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "lo")) (EApp (EVar "eagerRefs") (EVar "hi"))))
+(DFunDef false "eagerRefs" ((PCon "ESlice" (PVar "e0") (PVar "lo") (PVar "hi") PWild PWild)) (EBinOp "++" (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EVar "eagerRefs") (EVar "lo"))) (EApp (EVar "eagerRefs") (EVar "hi"))))
+(DFunDef false "eagerRefs" ((PCon "EBlock" (PVar "stmts"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsDoStmt")) (EVar "stmts")))
+(DFunDef false "eagerRefs" ((PCon "EDo" (PVar "stmts"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsDoStmt")) (EVar "stmts")))
+(DFunDef false "eagerRefs" ((PCon "EAnnot" (PVar "e0") PWild)) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EHeadAnnot" (PVar "e0") PWild)) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsInterp")) (EVar "parts")))
+(DFunDef false "eagerRefs" ((PCon "EGuards" (PVar "arms"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsGuardArm")) (EVar "arms")))
+(DFunDef false "eagerRefs" ((PCon "ESection" (PCon "SecRight" PWild (PVar "e0")))) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "ESection" (PCon "SecLeft" (PVar "e0") PWild))) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EAsPat" PWild (PVar "e0"))) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EMapLit" PWild (PVar "kvs"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsPair")) (EVar "kvs")))
+(DFunDef false "eagerRefs" ((PCon "ESetLit" PWild (PVar "es"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefs" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefs" (PWild) (EListLit))
+(DTypeSig false "eagerRefsLetBind" (TyFun (TyCon "LetBind") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsLetBind" ((PCon "LetBind" PWild (PVar "clauses"))) (EApp (EApp (EVar "flatMap") (EVar "eagerRefsClauseAllPats")) (EVar "clauses")))
+(DTypeSig false "eagerRefsClauseAllPats" (TyFun (TyCon "FunClause") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsClauseAllPats" ((PCon "FunClause" (PList) (PVar "rhs"))) (EApp (EVar "eagerRefs") (EVar "rhs")))
+(DFunDef false "eagerRefsClauseAllPats" ((PCon "FunClause" PWild PWild)) (EListLit))
+(DTypeSig false "eagerRefsArm" (TyFun (TyCon "Arm") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsArm" ((PCon "Arm" PWild (PVar "gs") (PVar "body"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EVar "eagerRefsGuard")) (EVar "gs")) (EApp (EVar "eagerRefs") (EVar "body"))))
+(DTypeSig false "eagerRefsGuard" (TyFun (TyCon "Guard") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsGuard" ((PCon "GBool" (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsGuard" ((PCon "GBind" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DTypeSig false "eagerRefsGuardArm" (TyFun (TyCon "GuardArm") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsGuardArm" ((PCon "GuardArm" (PVar "gs") (PVar "body"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EVar "eagerRefsGuard")) (EVar "gs")) (EApp (EVar "eagerRefs") (EVar "body"))))
+(DTypeSig false "eagerRefsFieldAssign" (TyFun (TyCon "FieldAssign") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsFieldAssign" ((PCon "FieldAssign" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DTypeSig false "eagerRefsDoStmt" (TyFun (TyCon "DoStmt") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsDoStmt" ((PCon "DoExpr" (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsDoStmt" ((PCon "DoBind" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsDoStmt" ((PCon "DoLet" PWild PWild PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsDoStmt" (PWild) (EListLit))
+(DTypeSig false "eagerRefsInterp" (TyFun (TyCon "InterpPart") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsInterp" ((PCon "InterpExpr" (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsInterp" (PWild) (EListLit))
+(DTypeSig false "eagerRefsPair" (TyFun (TyTuple (TyCon "Expr") (TyCon "Expr")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsPair" ((PTuple (PVar "k") (PVar "v"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "k")) (EApp (EVar "eagerRefs") (EVar "v"))))
 (DTypeSig false "groupNames" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr")))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "groupNames" ((PList) PWild) (EListLit))
 (DFunDef false "groupNames" ((PCons (PTuple (PVar "n") PWild) (PVar "rest")) (PVar "seen")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "seen")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "groupNames") (EVar "rest")) (EVar "seen"))) (arm (PCon "None") () (EBinOp "::" (EVar "n") (EApp (EApp (EVar "groupNames") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (ELit LUnit)) (EVar "seen")))))))
@@ -20812,7 +21051,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferStmt" ((PVar "env") (PCon "DoBind" (PVar "pat") (PVar "e"))) (EBlock (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-BIND-OUTSIDE-DO"))) (EVar "bindOutsideDoMsg"))) (DoLet false false (PVar "pr") (EApp (EApp (EVar "inferPat") (EVar "env")) (EVar "pat"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EVar "fst") (EVar "pr"))) (EVar "t"))) (DoExpr (EApp (EApp (EVar "extendVars") (EVar "env")) (EApp (EVar "snd") (EVar "pr"))))))
 (DFunDef false "inferStmt" (PWild PWild) (EApp (EVar "panic") (ELit (LString "typecheck: unsupported block statement"))))
 (DTypeSig false "blockRecLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "TcEnv")))))
-(DFunDef false "blockRecLet" ((PVar "env") (PVar "x") (PVar "e")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e")))))
+(DFunDef false "blockRecLet" ((PVar "env") (PVar "x") (PVar "e")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "checkRecBindNonFunction") (EVar "x")) (EVar "e"))) (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e")))))
 (DTypeSig false "blockLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyCon "TcEnv")))))
 (DFunDef false "blockLet" ((PVar "env") (PCon "PVar" (PVar "x")) (PVar "e")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t"))) (DoLet false false (PVar "env1") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EApp (EVar "genRestricted") (EApp (EVar "isNonexpansive") (EVar "e"))) (EVar "t")))) (DoExpr (EApp (EApp (EApp (EVar "seedAlphaLets") (EVar "env1")) (EVar "x")) (EVar "e")))))
 (DFunDef false "blockLet" ((PVar "env") (PVar "pat") (PVar "e")) (EBlock (DoLet false false (PVar "t") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false (PVar "pr") (EApp (EApp (EVar "inferPat") (EVar "env")) (EVar "pat"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EVar "fst") (EVar "pr"))) (EVar "t"))) (DoExpr (EApp (EApp (EVar "extendVars") (EVar "env")) (EApp (EVar "snd") (EVar "pr"))))))
@@ -21278,7 +21517,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "inferLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))))
 (DFunDef false "inferLet" ((PVar "env") PWild (PVar "isFun") (PVar "pat") (PVar "e1") (PVar "e2")) (EIf (EVar "isFun") (EMatch (EVar "pat") (arm (PCon "PVar" (PVar "x")) () (EApp (EApp (EApp (EApp (EVar "inferRecLet") (EVar "env")) (EVar "x")) (EVar "e1")) (EVar "e2"))) (arm PWild () (EApp (EApp (EApp (EApp (EVar "inferLetSimple") (EVar "env")) (EVar "pat")) (EVar "e1")) (EVar "e2")))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "inferLetSimple") (EVar "env")) (EVar "pat")) (EVar "e1")) (EVar "e2")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "inferRecLet" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
-(DFunDef false "inferRecLet" ((PVar "env") (PVar "x") (PVar "e1") (PVar "e2")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e1"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EVar "infer") (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e1"))) (EVar "e2")))))
+(DFunDef false "inferRecLet" ((PVar "env") (PVar "x") (PVar "e1") (PVar "e2")) (EBlock (DoLet false false PWild (EApp (EApp (EVar "checkRecBindNonFunction") (EVar "x")) (EVar "e1"))) (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "placeholder") (EApp (EVar "freshVar") (ELit LUnit))) (DoLet false false (PVar "envSelf") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "monoScheme") (EVar "placeholder")))) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "envSelf")) (EVar "e1"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EVar "placeholder")) (EVar "t1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoLet false false PWild (EApp (EApp (EVar "recordLocalBind") (EVar "x")) (EVar "t1"))) (DoExpr (EApp (EApp (EVar "infer") (EApp (EApp (EApp (EVar "seedAlphaLets") (EApp (EApp (EApp (EVar "extendVar") (EVar "env")) (EVar "x")) (EApp (EVar "generalize") (EVar "t1")))) (EVar "x")) (EVar "e1"))) (EVar "e2")))))
 (DTypeSig false "inferLetSimple" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono"))))))
 (DFunDef false "inferLetSimple" ((PVar "env") (PVar "pat") (PVar "e1") (PVar "e2")) (EBlock (DoLet false false PWild (EApp (EVar "enterLevel") (ELit LUnit))) (DoLet false false (PVar "oblN0") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "t1") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e1"))) (DoLet false false PWild (EApp (EVar "exitLevel") (ELit LUnit))) (DoLet false false (PVar "addedObls") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value") (EVar "oblN0"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value"))) (DoLet false false PWild (EApp (EApp (EVar "defaultAmbiguousNum") (EVar "addedObls")) (EVar "t1"))) (DoLet false false PWild (EApp (EApp (EVar "registerAmbiguousConstraints") (EVar "addedObls")) (EListLit (EVar "t1")))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "inferLetBody") (EVar "env")) (EVar "pat")) (EVar "t1")) (EVar "e1")) (EVar "e2")))))
 (DTypeSig false "inferLetBody" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Pat") (TyFun (TyCon "Mono") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Mono")))))))
@@ -21350,7 +21589,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferArmGuards" ((PVar "env") (PCons (PCon "GBool" (PVar "g")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "g"))) (EApp (EVar "TCon") (ELit (LString "Bool"))))) (DoExpr (EApp (EApp (EVar "inferArmGuards") (EVar "env")) (EVar "rest")))))
 (DFunDef false "inferArmGuards" ((PVar "env") (PCons (PCon "GBind" (PVar "p") (PVar "e")) (PVar "rest"))) (EBlock (DoLet false false (PVar "te") (EApp (EApp (EVar "infer") (EVar "env")) (EVar "e"))) (DoLet false false (PVar "pr") (EApp (EApp (EVar "inferPat") (EVar "env")) (EVar "p"))) (DoLet false false PWild (EApp (EApp (EVar "unify") (EApp (EVar "fst") (EVar "pr"))) (EVar "te"))) (DoExpr (EApp (EApp (EVar "inferArmGuards") (EApp (EApp (EVar "extendVars") (EVar "env")) (EApp (EVar "snd") (EVar "pr")))) (EVar "rest")))))
 (DTypeSig false "inferLetGroup" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyFun (TyCon "Expr") (TyCon "Mono")))))
-(DFunDef false "inferLetGroup" ((PVar "env") (PVar "binds") (PVar "body")) (EBlock (DoLet false false (PVar "env2") (EApp (EApp (EVar "processLetGroup") (EVar "env")) (EVar "binds"))) (DoExpr (EApp (EApp (EVar "infer") (EVar "env2")) (EVar "body")))))
+(DFunDef false "inferLetGroup" ((PVar "env") (PVar "binds") (PVar "body")) (EBlock (DoLet false false PWild (EApp (EVar "checkLetGroupBindsLocated") (EVar "binds"))) (DoLet false false (PVar "env2") (EApp (EApp (EVar "processLetGroup") (EVar "env")) (EVar "binds"))) (DoExpr (EApp (EApp (EVar "infer") (EVar "env2")) (EVar "body")))))
 (DTypeSig false "registerData" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Decl") (TyCon "TcEnv"))))
 (DFunDef false "registerData" ((PVar "env") (PCon "DData" PWild (PVar "name") (PVar "params") (PVar "variants") PWild)) (EApp (EApp (EApp (EApp (EVar "registerVariants") (EVar "env")) (EVar "name")) (EVar "params")) (EVar "variants")))
 (DFunDef false "registerData" ((PVar "env") (PCon "DTypeAlias" PWild (PVar "name") (PVar "params") (PVar "rhs"))) (EBlock (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "aliasTableRef")) (EBinOp "::" (ETuple (EVar "name") (ETuple (EVar "params") (EVar "rhs"))) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "aliasTableRef") "value")))) (DoExpr (EVar "env"))))
@@ -21450,6 +21689,84 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "clauseIsNonFunction" ((PCon "FunClause" PWild PWild)) (EVar "False"))
 (DTypeSig false "letRecNonFunctionMsg" (TyFun (TyCon "String") (TyCon "String")))
 (DFunDef false "letRecNonFunctionMsg" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "'")) (EVar "name")) (ELit (LString "' is bound by 'let rec' but its right-hand side is not a function"))))
+(DTypeSig false "checkRecBindNonFunction" (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "Unit"))))
+(DFunDef false "checkRecBindNonFunction" ((PVar "name") (PVar "e")) (EIf (EApp (EVar "isSyntacticLambda") (EVar "e")) (ELit LUnit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "exprLoc") (EVar "e"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "checkLetGroupBindsLocated" (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit")))
+(DFunDef false "checkLetGroupBindsLocated" ((PVar "binds")) (EApp (EApp (EVar "checkLetGroupBindsGo") (EApp (EApp (EMethodRef "map") (EVar "letBindName")) (EVar "binds"))) (EVar "binds")))
+(DTypeSig false "letBindName" (TyFun (TyCon "LetBind") (TyCon "String")))
+(DFunDef false "letBindName" ((PCon "LetBind" (PVar "name") PWild)) (EVar "name"))
+(DTypeSig false "checkLetGroupBindsGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit"))))
+(DFunDef false "checkLetGroupBindsGo" (PWild (PList)) (ELit LUnit))
+(DFunDef false "checkLetGroupBindsGo" ((PVar "names") (PCons (PCon "LetBind" (PVar "name") (PVar "clauses")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "checkClausesNonFunctionLocated") (EVar "names")) (EVar "name")) (EVar "clauses"))) (DoExpr (EApp (EApp (EVar "checkLetGroupBindsGo") (EVar "names")) (EVar "rest")))))
+(DTypeSig false "checkClausesNonFunctionLocated" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Unit")))))
+(DFunDef false "checkClausesNonFunctionLocated" ((PVar "names") (PVar "name") (PVar "clauses")) (EIf (EBinOp "&&" (EApp (EApp (EVar "allList") (EVar "clauseIsNonFunction")) (EVar "clauses")) (EApp (EApp (EVar "anyClauseEagerlyRefsGroup") (EVar "names")) (EVar "clauses"))) (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "clausesLoc") (EVar "clauses"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "anyClauseEagerlyRefsGroup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Bool"))))
+(DFunDef false "anyClauseEagerlyRefsGroup" ((PVar "names") (PVar "clauses")) (EApp (EApp (EVar "anyList") (EApp (EVar "clauseEagerlyRefsGroup") (EVar "names"))) (EVar "clauses")))
+(DTypeSig false "clauseEagerlyRefsGroup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "FunClause") (TyCon "Bool"))))
+(DFunDef false "clauseEagerlyRefsGroup" ((PVar "names") (PCon "FunClause" PWild (PVar "rhs"))) (EApp (EApp (EVar "anyMember") (EVar "names")) (EApp (EVar "eagerRefs") (EVar "rhs"))))
+(DTypeSig false "clausesLoc" (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "clausesLoc" ((PList)) (EVar "None"))
+(DFunDef false "clausesLoc" ((PCons (PCon "FunClause" PWild (PVar "rhs")) PWild)) (EApp (EVar "exprLoc") (EVar "rhs")))
+(DTypeSig false "eagerRefs" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefs" ((PCon "EVar" (PVar "x"))) (EListLit (EVar "x")))
+(DFunDef false "eagerRefs" ((PCon "EApp" (PVar "a") (PVar "b"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "a")) (EApp (EVar "eagerRefs") (EVar "b"))))
+(DFunDef false "eagerRefs" ((PCon "ELam" PWild PWild)) (EListLit))
+(DFunDef false "eagerRefs" ((PCon "ELet" PWild PWild PWild (PVar "e1") (PVar "e2"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e1")) (EApp (EVar "eagerRefs") (EVar "e2"))))
+(DFunDef false "eagerRefs" ((PCon "ELetGroup" (PVar "bs") (PVar "e2"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsLetBind")) (EVar "bs")) (EApp (EVar "eagerRefs") (EVar "e2"))))
+(DFunDef false "eagerRefs" ((PCon "EMatch" (PVar "e0") (PVar "arms"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsArm")) (EVar "arms"))))
+(DFunDef false "eagerRefs" ((PCon "EIf" (PVar "c") (PVar "t") (PVar "el"))) (EBinOp "++" (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "c")) (EApp (EVar "eagerRefs") (EVar "t"))) (EApp (EVar "eagerRefs") (EVar "el"))))
+(DFunDef false "eagerRefs" ((PCon "EBinOp" PWild (PVar "a") (PVar "b") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "a")) (EApp (EVar "eagerRefs") (EVar "b"))))
+(DFunDef false "eagerRefs" ((PCon "EUnOp" PWild (PVar "a") PWild)) (EApp (EVar "eagerRefs") (EVar "a")))
+(DFunDef false "eagerRefs" ((PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EBinOp "::" (EVar "op") (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "a")) (EApp (EVar "eagerRefs") (EVar "b")))))
+(DFunDef false "eagerRefs" ((PCon "EFieldAccess" (PVar "e0") PWild PWild)) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "ERecordCreate" PWild (PVar "fs"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsFieldAssign")) (EVar "fs")))
+(DFunDef false "eagerRefs" ((PCon "ERecordUpdate" (PVar "e0") (PVar "fs") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsFieldAssign")) (EVar "fs"))))
+(DFunDef false "eagerRefs" ((PCon "EVariantUpdate" PWild (PVar "e0") (PVar "fs"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsFieldAssign")) (EVar "fs"))))
+(DFunDef false "eagerRefs" ((PCon "EArrayLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "EListLit" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "ETuple" (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "EIndex" (PVar "e0") (PVar "i") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EVar "eagerRefs") (EVar "i"))))
+(DFunDef false "eagerRefs" ((PCon "ERangeList" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "lo")) (EApp (EVar "eagerRefs") (EVar "hi"))))
+(DFunDef false "eagerRefs" ((PCon "ERangeArray" (PVar "lo") (PVar "hi") PWild)) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "lo")) (EApp (EVar "eagerRefs") (EVar "hi"))))
+(DFunDef false "eagerRefs" ((PCon "ESlice" (PVar "e0") (PVar "lo") (PVar "hi") PWild PWild)) (EBinOp "++" (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "e0")) (EApp (EVar "eagerRefs") (EVar "lo"))) (EApp (EVar "eagerRefs") (EVar "hi"))))
+(DFunDef false "eagerRefs" ((PCon "EBlock" (PVar "stmts"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsDoStmt")) (EVar "stmts")))
+(DFunDef false "eagerRefs" ((PCon "EDo" (PVar "stmts"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsDoStmt")) (EVar "stmts")))
+(DFunDef false "eagerRefs" ((PCon "EAnnot" (PVar "e0") PWild)) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EHeadAnnot" (PVar "e0") PWild)) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EStringInterp" (PVar "parts"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsInterp")) (EVar "parts")))
+(DFunDef false "eagerRefs" ((PCon "EGuards" (PVar "arms"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsGuardArm")) (EVar "arms")))
+(DFunDef false "eagerRefs" ((PCon "ESection" (PCon "SecRight" PWild (PVar "e0")))) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "ESection" (PCon "SecLeft" (PVar "e0") PWild))) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EAsPat" PWild (PVar "e0"))) (EApp (EVar "eagerRefs") (EVar "e0")))
+(DFunDef false "eagerRefs" ((PCon "EMapLit" PWild (PVar "kvs"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsPair")) (EVar "kvs")))
+(DFunDef false "eagerRefs" ((PCon "ESetLit" PWild (PVar "es"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefs")) (EVar "es")))
+(DFunDef false "eagerRefs" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefs" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefs" (PWild) (EListLit))
+(DTypeSig false "eagerRefsLetBind" (TyFun (TyCon "LetBind") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsLetBind" ((PCon "LetBind" PWild (PVar "clauses"))) (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsClauseAllPats")) (EVar "clauses")))
+(DTypeSig false "eagerRefsClauseAllPats" (TyFun (TyCon "FunClause") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsClauseAllPats" ((PCon "FunClause" (PList) (PVar "rhs"))) (EApp (EVar "eagerRefs") (EVar "rhs")))
+(DFunDef false "eagerRefsClauseAllPats" ((PCon "FunClause" PWild PWild)) (EListLit))
+(DTypeSig false "eagerRefsArm" (TyFun (TyCon "Arm") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsArm" ((PCon "Arm" PWild (PVar "gs") (PVar "body"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsGuard")) (EVar "gs")) (EApp (EVar "eagerRefs") (EVar "body"))))
+(DTypeSig false "eagerRefsGuard" (TyFun (TyCon "Guard") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsGuard" ((PCon "GBool" (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsGuard" ((PCon "GBind" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DTypeSig false "eagerRefsGuardArm" (TyFun (TyCon "GuardArm") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsGuardArm" ((PCon "GuardArm" (PVar "gs") (PVar "body"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EVar "eagerRefsGuard")) (EVar "gs")) (EApp (EVar "eagerRefs") (EVar "body"))))
+(DTypeSig false "eagerRefsFieldAssign" (TyFun (TyCon "FieldAssign") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsFieldAssign" ((PCon "FieldAssign" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DTypeSig false "eagerRefsDoStmt" (TyFun (TyCon "DoStmt") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsDoStmt" ((PCon "DoExpr" (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsDoStmt" ((PCon "DoBind" PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsDoStmt" ((PCon "DoLet" PWild PWild PWild (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsDoStmt" (PWild) (EListLit))
+(DTypeSig false "eagerRefsInterp" (TyFun (TyCon "InterpPart") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsInterp" ((PCon "InterpExpr" (PVar "e"))) (EApp (EVar "eagerRefs") (EVar "e")))
+(DFunDef false "eagerRefsInterp" (PWild) (EListLit))
+(DTypeSig false "eagerRefsPair" (TyFun (TyTuple (TyCon "Expr") (TyCon "Expr")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "eagerRefsPair" ((PTuple (PVar "k") (PVar "v"))) (EBinOp "++" (EApp (EVar "eagerRefs") (EVar "k")) (EApp (EVar "eagerRefs") (EVar "v"))))
 (DTypeSig false "groupNames" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr")))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "groupNames" ((PList) PWild) (EListLit))
 (DFunDef false "groupNames" ((PCons (PTuple (PVar "n") PWild) (PVar "rest")) (PVar "seen")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "seen")) (arm (PCon "Some" PWild) () (EApp (EApp (EVar "groupNames") (EVar "rest")) (EVar "seen"))) (arm (PCon "None") () (EBinOp "::" (EVar "n") (EApp (EApp (EVar "groupNames") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (ELit LUnit)) (EVar "seen")))))))
