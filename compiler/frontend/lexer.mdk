@@ -672,7 +672,44 @@ radixTok src len pos e k depth id
 scanNumber : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanNumber src len pos depth id
   | isRadixPrefix src len pos = scanRadix src len pos depth id
+  | isMalformedRadixPrefix src len pos = malformedRadixTok src len pos
   | otherwise = numFinish src len pos (digitsEnd src len pos) depth id
+
+-- `0x`/`0b`/`0o` immediately followed by the digit separator `_` (#677):
+-- `isRadixPrefix` already requires a VALID digit right after the prefix, so
+-- this is exactly its complementary malformed shape — the prefix is right,
+-- but `_` (only legal BETWEEN digits, e.g. `0xD_EAD`) sits where the first
+-- digit must be. Caught here, at the source, instead of falling through to
+-- `numFinish` (which stops at the lone `0`, leaving `x_FF` to be re-lexed as
+-- an ordinary identifier and misreported downstream as "Unbound variable:
+-- x_FF").
+isMalformedRadixPrefix : Array Char -> Int -> Int -> Bool
+isMalformedRadixPrefix src len pos = at src pos == '0'
+  && pos + 2 < len
+  && radixKind (at src (pos + 1))
+  && at src (pos + 2) == '_'
+
+malformedRadixTok : Array Char -> Int -> Int -> List RawTok
+malformedRadixTok src len pos =
+  let k = at src (pos + 1)
+  let e = radixEnd src len (pos + 2) k
+  let bad = substr src pos e
+  let digits = stripLeadingUs src (pos + 2) e
+  malformedRadixErr pos bad (substr src pos (pos + 2)) digits
+
+-- Skip a leading run of `_` (there may be more than one, `0x__FF`) to find
+-- where the real digits start; `""` when the literal has no digits at all
+-- (`0x_`, `0x___`) — that shape gets a fix-less diagnostic, since there is no
+-- safe spelling to suggest.
+stripLeadingUs : Array Char -> Int -> Int -> String
+stripLeadingUs src p e
+  | p < e && at src p == '_' = stripLeadingUs src (p + 1) e
+  | otherwise = substr src p e
+
+malformedRadixErr : Int -> String -> String -> String -> List RawTok
+malformedRadixErr pos bad prefix digits
+  | stringLength digits == 0 = lexErrorTok pos "malformed radix literal `\{bad}`: '_' cannot immediately follow the radix prefix '\{prefix}', and no digit follows it either"
+  | otherwise = lexErrorTok pos "malformed radix literal `\{bad}`: '_' cannot immediately follow the radix prefix — write `\{prefix}\{digits}`"
 
 isFloatAt : Array Char -> Int -> Int -> Bool
 isFloatAt src len e1 = e1 < len
@@ -703,9 +740,56 @@ numFinish src len pos e1 depth id
   | isFloatAt src len e1 = floatTok src len pos e1 depth id
   | expEnd src len e1 > e1 =
     floatTokEnd src len pos (expEnd src len e1) depth id
+  | isMalformedExpDot src len e1 = malformedExpDotTok src len pos e1
+  | isMalformedTrailingDot src len e1 = malformedTrailingDotTok src pos e1
   | intLitOverflows src pos e1 =
     lexErrorTok pos "integer literal too large for Int (max magnitude 2^62)"
   | otherwise = RTok (TInt (parseIntFrom src pos e1 0) (substr src pos e1)) pos e1 :: scan src len e1 depth id
+
+-- `<digits>.e<exp>`-shaped (#677, e.g. `5.e3`): a bare `.` right after a
+-- just-scanned digit run, immediately followed by something that reads as a
+-- decimal exponent (`isFloatAt` already ruled out a fractional digit here).
+-- An `Int`/`Float` literal can never have a REAL field named `e3`, so —
+-- unlike a generic trailing dot — there is no legitimate reading to protect;
+-- this is always the fractional digit missing before the exponent.
+isMalformedExpDot : Array Char -> Int -> Int -> Bool
+isMalformedExpDot src len e1 = e1 < len
+  && at src e1 == '.'
+  && expEnd src len (e1 + 1) > e1 + 1
+
+malformedExpDotTok : Array Char -> Int -> Int -> Int -> List RawTok
+malformedExpDotTok src len pos e1 =
+  let expE = expEnd src len (e1 + 1)
+  let bad = substr src pos expE
+  let good = "\{substr src pos (e1 + 1)}0\{substr src (e1 + 1) expE}"
+  lexErrorTok
+    pos
+    "malformed float literal `\{bad}`: a float needs a digit after the decimal point — write `\{good}`"
+
+-- `<digits>.`-shaped (#677, e.g. `5.`): a bare `.` right after a just-scanned
+-- digit run with nothing after it that could continue a (possibly ill-typed
+-- but syntactically legal) postfix — a lowercase/underscore field name, `[`
+-- for `.[i]` indexing, or another dot-led token (`..`, `..=`, `...`, `.{`,
+-- `.*`, all matched upstream in `scanOp` before a bare `.` ever reaches here).
+-- Emitted only from a FRESH number scan (never for a dot following an
+-- already-completed literal several tokens back), so there is no risk of
+-- misreading a legitimate chained `(1.5).toString` — that dot is preceded by
+-- `)`, not a digit run this call is currently scanning.
+isMalformedTrailingDot : Array Char -> Int -> Int -> Bool
+isMalformedTrailingDot src len e1 = e1 < len
+  && at src e1 == '.'
+  && not (dotContinuesAccess src len e1)
+
+dotContinuesAccess : Array Char -> Int -> Int -> Bool
+dotContinuesAccess src len p = p + 1 < len
+  && (isLower (at src (p + 1)) || isUpper (at src (p + 1)) || at src (p + 1) == '_' || at src (p + 1) == '[' || at src (p + 1) == '.' || at src (p + 1) == '{' || at src (p + 1) == '*')
+
+malformedTrailingDotTok : Array Char -> Int -> Int -> List RawTok
+malformedTrailingDotTok src pos e1 =
+  let bad = substr src pos (e1 + 1)
+  lexErrorTok
+    pos
+    "malformed float literal `\{bad}`: a float needs a digit after the decimal point — write `\{bad}0`"
 
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTok src len pos e1 depth id =
@@ -1225,7 +1309,9 @@ singleOp src len pos depth id '>' = emit src len pos depth id TGt 1 0
 singleOp src len pos depth id '=' = emit src len pos depth id TEqual 1 0
 singleOp src len pos depth id ':' = emit src len pos depth id TColon 1 0
 singleOp src len pos depth id ',' = emit src len pos depth id TComma 1 0
-singleOp src len pos depth id '.' = emit src len pos depth id TDot 1 0
+singleOp src len pos depth id '.'
+  | isMalformedLeadingDot src len pos = malformedLeadingDotTok src len pos
+  | otherwise = emit src len pos depth id TDot 1 0
 singleOp src len pos depth id '|' = emit src len pos depth id TPipe 1 0
 singleOp src len pos depth id '(' = emit src len pos depth id TLParen 1 1
 singleOp src len pos depth id ')' = emit src len pos depth id TRParen 1 (0 - 1)
@@ -1268,6 +1354,29 @@ bracketTok src pos
 
 isExprEnd : Char -> Bool
 isExprEnd c = isAlnum c || c == ')' || c == ']' || c == '"'
+
+-- `.5`-shaped (#677): a bare `.` immediately followed by a digit is never
+-- valid Medaka — a member-access field name is an identifier (starts with a
+-- lowercase letter/`_`), never a digit — so this can only be a float missing
+-- its leading digit.  Skipped when the dot is itself glued to the END of an
+-- expression (`isExprEnd`: alnum/`)`/`]`/`"`) — `x.5`, `arr[0].5`,
+-- `f().5` — since there `.5` is ambiguous enough (could be read as a
+-- botched field access on an arbitrary receiver, not obviously a float) that
+-- the existing downstream diagnostic is left in place rather than risk a
+-- wrong root cause.
+isMalformedLeadingDot : Array Char -> Int -> Int -> Bool
+isMalformedLeadingDot src len pos = pos + 1 < len
+  && isDigit (at src (pos + 1))
+  && (pos == 0 || not (isExprEnd (at src (pos - 1))))
+
+malformedLeadingDotTok : Array Char -> Int -> Int -> List RawTok
+malformedLeadingDotTok src len pos =
+  let d = digitsEnd src len (pos + 1)
+  let e = expEnd src len d
+  let bad = substr src pos e
+  lexErrorTok
+    pos
+    "malformed float literal `\{bad}`: a float needs a digit before the decimal point — write `0\{bad}`"
 
 -- `@` is the as-pattern operator (AS_AT) when it immediately follows an
 -- identifier (no intervening space), else the impl-hint prefix (AT).  Mirrors
