@@ -1,5 +1,5 @@
 # META
-source_lines=4251
+source_lines=4268
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -3183,8 +3183,25 @@ letKind : Token -> Parser DoStmt
 -- beta mutability model: `let mut` has been removed — rejected at the parser
 -- (see `letMutRemovedMsg`), so no `mut` flag is ever built downstream.
 letKind TMut = failP letMutRemovedMsg
+letKind TRec = letRecStmt
 letKind (TIdent name) = letIdent name
 letKind _ = letPat
+
+-- REC-led: block-level `let rec f a… = e [in/else]` (#645). A plain
+-- function-let is already self-recursive (`letFunTailFor` always builds an
+-- `isRec=True` node), so `rec` here only matters for the zero-param value
+-- form (`let rec x = …`, otherwise non-recursive) — but both shapes are
+-- accepted, mirroring top-level `let rec`/expr-level `letRecExpr`. Reuses
+-- `letFunTailFor` rather than duplicating its `in`/no-`in` tail dispatch.
+letRecStmt : Parser DoStmt
+letRecStmt = do
+  expectTok TRec
+  name <- identNameP
+  pats <- many parseParamPat
+  expectTok TEqual
+  e1 <- parseRhsExpr
+  t <- peekP
+  letFunTailFor name pats e1 t
 
 -- IDENT-led: function-let `let f a… = e` (params present), annotated
 -- `let x : ty = e`, or plain `let x = e [in/else]`
@@ -5312,8 +5329,11 @@ parseResultWith src tokList offList =
 (DFunDef false "parseLetStmt" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TLet"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "letKind") (EVar "t")))))))
 (DTypeSig false "letKind" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "DoStmt"))))
 (DFunDef false "letKind" ((PCon "TMut")) (EApp (EVar "failP") (EVar "letMutRemovedMsg")))
+(DFunDef false "letKind" ((PCon "TRec")) (EVar "letRecStmt"))
 (DFunDef false "letKind" ((PCon "TIdent" (PVar "name"))) (EApp (EVar "letIdent") (EVar "name")))
 (DFunDef false "letKind" (PWild) (EVar "letPat"))
+(DTypeSig false "letRecStmt" (TyApp (TyCon "Parser") (TyCon "DoStmt")))
+(DFunDef false "letRecStmt" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TRec"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "identNameP")) (ELam ((PVar "name")) (EApp (EApp (EVar "andThen") (EApp (EVar "many") (EVar "parseParamPat"))) (ELam ((PVar "pats")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TEqual"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseRhsExpr")) (ELam ((PVar "e1")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EApp (EVar "letFunTailFor") (EVar "name")) (EVar "pats")) (EVar "e1")) (EVar "t")))))))))))))))
 (DTypeSig false "letIdent" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "DoStmt"))))
 (DFunDef false "letIdent" ((PVar "name")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EVar "many") (EVar "parseParamPat"))) (ELam ((PVar "pats")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EVar "letIdentBody") (EVar "name")) (EVar "pats")) (EVar "t")))))))))
 (DTypeSig false "letIdentBody" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "DoStmt"))))))
@@ -6674,8 +6694,11 @@ parseResultWith src tokList offList =
 (DFunDef false "parseLetStmt" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TLet"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "letKind") (EVar "t")))))))
 (DTypeSig false "letKind" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "DoStmt"))))
 (DFunDef false "letKind" ((PCon "TMut")) (EApp (EVar "failP") (EVar "letMutRemovedMsg")))
+(DFunDef false "letKind" ((PCon "TRec")) (EVar "letRecStmt"))
 (DFunDef false "letKind" ((PCon "TIdent" (PVar "name"))) (EApp (EVar "letIdent") (EVar "name")))
 (DFunDef false "letKind" (PWild) (EVar "letPat"))
+(DTypeSig false "letRecStmt" (TyApp (TyCon "Parser") (TyCon "DoStmt")))
+(DFunDef false "letRecStmt" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TRec"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "identNameP")) (ELam ((PVar "name")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "many") (EVar "parseParamPat"))) (ELam ((PVar "pats")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TEqual"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseRhsExpr")) (ELam ((PVar "e1")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EApp (EVar "letFunTailFor") (EVar "name")) (EVar "pats")) (EVar "e1")) (EVar "t")))))))))))))))
 (DTypeSig false "letIdent" (TyFun (TyCon "String") (TyApp (TyCon "Parser") (TyCon "DoStmt"))))
 (DFunDef false "letIdent" ((PVar "name")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "many") (EVar "parseParamPat"))) (ELam ((PVar "pats")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EApp (EVar "letIdentBody") (EVar "name")) (EVar "pats")) (EVar "t")))))))))
 (DTypeSig false "letIdentBody" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "DoStmt"))))))
