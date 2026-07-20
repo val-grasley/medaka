@@ -1,5 +1,5 @@
 # META
-source_lines=16023
+source_lines=16086
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -949,7 +949,70 @@ checkEffectParamsDecl : Decl -> Unit
 checkEffectParamsDecl (DTypeSig _ _ t) = checkEffectParamsTy t
 checkEffectParamsDecl (DExtern _ _ t) = checkEffectParamsTy t
 checkEffectParamsDecl (DAttrib _ d) = checkEffectParamsDecl d
+-- #784 (Option A): an interface method whose signature has a free effect tail
+-- var in RETURN position but in NO argument position is under-determined —
+-- nothing at a call site lower-bounds it, so a caller can instantiate it to `<>`
+-- and LAUNDER the dispatched impl's real effect (a pure-typed wrapper silently
+-- performs it). Reject it as ill-formed at the interface declaration.
+checkEffectParamsDecl (DInterface { name, methods, ... }) =
+  checkIfaceMethodEffs name methods
 checkEffectParamsDecl _ = ()
+
+-- #784: per-method well-formedness — reject an under-determined return-only
+-- effect var. SCOPED to interface methods (the ratified scope); a top-level
+-- return-only effect var is #797's separate territory.
+checkIfaceMethodEffs : String -> List IfaceMethod -> Unit
+checkIfaceMethodEffs _ [] = ()
+checkIfaceMethodEffs iface ((IfaceMethod mname mty _)::rest) =
+  let _ = match undeterminedRetEffVars mty
+    [] => ()
+    bad => pushTypeErrorOnceAt "T-EFFECT-UNDETERMINED" (firstTyConLoc mty) (effectUndeterminedMsg iface mname bad)
+  checkIfaceMethodEffs iface rest
+
+-- The predicate: return-position effect tail vars minus argument-carried ones.
+-- An effect var is argument-carried — hence soundly pinned at every call site —
+-- if its name occurs anywhere in an argument type: as a callback's latent arrow
+-- effect (`(a -> <e> b)`, captured by effTailNames over each arg) or as a
+-- row-kinded type-constructor argument (`r e a` / `Async e a`, captured by
+-- tyVarNames, since the row var appears there as a bare TyVar node — its Row
+-- kind is fixed by the very `<e>` in the return, so kind-consistency guarantees
+-- the argument occurrence is the same row variable). Only an effect tail var
+-- that appears in the RETURN row and NOWHERE in an argument is the laundering
+-- hazard (map/fold/traverse are all pinned; `speak : a -> <e> String` is not).
+undeterminedRetEffVars : Ty -> List String
+undeterminedRetEffVars sig =
+  let args = methodArgs sig
+  let argCarried = dedup (flatMap effTailNames args ++ flatMap tyVarNames args)
+  let retTail = dedup (effTailNames (methodRet sig))
+  removeAllS argCarried retTail
+
+-- return type of a method: strip leading constraint wrappers and arrows, but
+-- KEEP a trailing effect row so its tail var is visible (unlike methodArgs,
+-- which peels it).
+methodRet : Ty -> Ty
+methodRet (TyConstrained _ t) = methodRet t
+methodRet (TyFun _ b) = methodRet b
+methodRet t = t
+
+renderEffTailVars : List String -> String
+renderEffTailVars vs = joinWith ", " (map (v => "<\{v}>") vs)
+
+effectUndeterminedMsg : String -> String -> List String -> String
+effectUndeterminedMsg iface mname vars = "Under-determined effect variable \{renderEffTailVars vars} in method '\{mname}' of interface '\{iface}': the effect appears only in the method's return type, pinned by no argument, so a caller can instantiate it to <> and launder the real effect (a function typed pure would silently perform it). Use a concrete effect row (e.g. `<Stdout>`) or thread the effect through an argument (e.g. a callback `a -> <e> b`)."
+
+-- first available source loc in a signature, for locating the diagnostic.
+firstTyConLoc : Ty -> Option Loc
+firstTyConLoc (TyCon _ ml) = ml
+firstTyConLoc (TyApp a b) = orElseLoc (firstTyConLoc a) (firstTyConLoc b)
+firstTyConLoc (TyFun a b) = orElseLoc (firstTyConLoc a) (firstTyConLoc b)
+firstTyConLoc (TyTuple ts) = firstTyConLocList ts
+firstTyConLoc (TyEffect _ _ t) = firstTyConLoc t
+firstTyConLoc (TyConstrained _ t) = firstTyConLoc t
+firstTyConLoc _ = None
+
+firstTyConLocList : List Ty -> Option Loc
+firstTyConLocList [] = None
+firstTyConLocList (t::ts) = orElseLoc (firstTyConLoc t) (firstTyConLocList ts)
 
 checkEffectParamsTy : Ty -> Unit
 checkEffectParamsTy (TyFun a b) =
@@ -16324,7 +16387,32 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "checkEffectParamsDecl" ((PCon "DTypeSig" PWild PWild (PVar "t"))) (EApp (EVar "checkEffectParamsTy") (EVar "t")))
 (DFunDef false "checkEffectParamsDecl" ((PCon "DExtern" PWild PWild (PVar "t"))) (EApp (EVar "checkEffectParamsTy") (EVar "t")))
 (DFunDef false "checkEffectParamsDecl" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "checkEffectParamsDecl") (EVar "d")))
+(DFunDef false "checkEffectParamsDecl" ((PRec "DInterface" ((rf "name" None) (rf "methods" None)) true)) (EApp (EApp (EVar "checkIfaceMethodEffs") (EVar "name")) (EVar "methods")))
 (DFunDef false "checkEffectParamsDecl" (PWild) (ELit LUnit))
+(DTypeSig false "checkIfaceMethodEffs" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyCon "Unit"))))
+(DFunDef false "checkIfaceMethodEffs" (PWild (PList)) (ELit LUnit))
+(DFunDef false "checkIfaceMethodEffs" ((PVar "iface") (PCons (PCon "IfaceMethod" (PVar "mname") (PVar "mty") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EMatch (EApp (EVar "undeterminedRetEffVars") (EVar "mty")) (arm (PList) () (ELit LUnit)) (arm (PVar "bad") () (EApp (EApp (EApp (EVar "pushTypeErrorOnceAt") (ELit (LString "T-EFFECT-UNDETERMINED"))) (EApp (EVar "firstTyConLoc") (EVar "mty"))) (EApp (EApp (EApp (EVar "effectUndeterminedMsg") (EVar "iface")) (EVar "mname")) (EVar "bad")))))) (DoExpr (EApp (EApp (EVar "checkIfaceMethodEffs") (EVar "iface")) (EVar "rest")))))
+(DTypeSig false "undeterminedRetEffVars" (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "undeterminedRetEffVars" ((PVar "sig")) (EBlock (DoLet false false (PVar "args") (EApp (EVar "methodArgs") (EVar "sig"))) (DoLet false false (PVar "argCarried") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EVar "flatMap") (EVar "effTailNames")) (EVar "args")) (EApp (EApp (EVar "flatMap") (EVar "tyVarNames")) (EVar "args"))))) (DoLet false false (PVar "retTail") (EApp (EVar "dedup") (EApp (EVar "effTailNames") (EApp (EVar "methodRet") (EVar "sig"))))) (DoExpr (EApp (EApp (EVar "removeAllS") (EVar "argCarried")) (EVar "retTail")))))
+(DTypeSig false "methodRet" (TyFun (TyCon "Ty") (TyCon "Ty")))
+(DFunDef false "methodRet" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "methodRet") (EVar "t")))
+(DFunDef false "methodRet" ((PCon "TyFun" PWild (PVar "b"))) (EApp (EVar "methodRet") (EVar "b")))
+(DFunDef false "methodRet" ((PVar "t")) (EVar "t"))
+(DTypeSig false "renderEffTailVars" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))
+(DFunDef false "renderEffTailVars" ((PVar "vs")) (EApp (EApp (EVar "joinWith") (ELit (LString ", "))) (EApp (EApp (EVar "map") (ELam ((PVar "v")) (EBinOp "++" (EBinOp "++" (ELit (LString "<")) (EApp (EVar "display") (EVar "v"))) (ELit (LString ">"))))) (EVar "vs"))))
+(DTypeSig false "effectUndeterminedMsg" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))))
+(DFunDef false "effectUndeterminedMsg" ((PVar "iface") (PVar "mname") (PVar "vars")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Under-determined effect variable ")) (EApp (EVar "display") (EApp (EVar "renderEffTailVars") (EVar "vars")))) (ELit (LString " in method '"))) (EApp (EVar "display") (EVar "mname"))) (ELit (LString "' of interface '"))) (EApp (EVar "display") (EVar "iface"))) (ELit (LString "': the effect appears only in the method's return type, pinned by no argument, so a caller can instantiate it to <> and launder the real effect (a function typed pure would silently perform it). Use a concrete effect row (e.g. `<Stdout>`) or thread the effect through an argument (e.g. a callback `a -> <e> b`)."))))
+(DTypeSig false "firstTyConLoc" (TyFun (TyCon "Ty") (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "firstTyConLoc" ((PCon "TyCon" PWild (PVar "ml"))) (EVar "ml"))
+(DFunDef false "firstTyConLoc" ((PCon "TyApp" (PVar "a") (PVar "b"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "firstTyConLoc") (EVar "a"))) (EApp (EVar "firstTyConLoc") (EVar "b"))))
+(DFunDef false "firstTyConLoc" ((PCon "TyFun" (PVar "a") (PVar "b"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "firstTyConLoc") (EVar "a"))) (EApp (EVar "firstTyConLoc") (EVar "b"))))
+(DFunDef false "firstTyConLoc" ((PCon "TyTuple" (PVar "ts"))) (EApp (EVar "firstTyConLocList") (EVar "ts")))
+(DFunDef false "firstTyConLoc" ((PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EVar "firstTyConLoc") (EVar "t")))
+(DFunDef false "firstTyConLoc" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "firstTyConLoc") (EVar "t")))
+(DFunDef false "firstTyConLoc" (PWild) (EVar "None"))
+(DTypeSig false "firstTyConLocList" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "firstTyConLocList" ((PList)) (EVar "None"))
+(DFunDef false "firstTyConLocList" ((PCons (PVar "t") (PVar "ts"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "firstTyConLoc") (EVar "t"))) (EApp (EVar "firstTyConLocList") (EVar "ts"))))
 (DTypeSig false "checkEffectParamsTy" (TyFun (TyCon "Ty") (TyCon "Unit")))
 (DFunDef false "checkEffectParamsTy" ((PCon "TyFun" (PVar "a") (PVar "b"))) (EBlock (DoLet false false PWild (EApp (EVar "checkEffectParamsTy") (EVar "a"))) (DoExpr (EApp (EVar "checkEffectParamsTy") (EVar "b")))))
 (DFunDef false "checkEffectParamsTy" ((PCon "TyApp" (PVar "a") (PVar "b"))) (EBlock (DoLet false false PWild (EApp (EVar "checkEffectParamsTy") (EVar "a"))) (DoExpr (EApp (EVar "checkEffectParamsTy") (EVar "b")))))
@@ -19976,7 +20064,32 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "checkEffectParamsDecl" ((PCon "DTypeSig" PWild PWild (PVar "t"))) (EApp (EVar "checkEffectParamsTy") (EVar "t")))
 (DFunDef false "checkEffectParamsDecl" ((PCon "DExtern" PWild PWild (PVar "t"))) (EApp (EVar "checkEffectParamsTy") (EVar "t")))
 (DFunDef false "checkEffectParamsDecl" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "checkEffectParamsDecl") (EVar "d")))
+(DFunDef false "checkEffectParamsDecl" ((PRec "DInterface" ((rf "name" None) (rf "methods" None)) true)) (EApp (EApp (EVar "checkIfaceMethodEffs") (EVar "name")) (EVar "methods")))
 (DFunDef false "checkEffectParamsDecl" (PWild) (ELit LUnit))
+(DTypeSig false "checkIfaceMethodEffs" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyCon "Unit"))))
+(DFunDef false "checkIfaceMethodEffs" (PWild (PList)) (ELit LUnit))
+(DFunDef false "checkIfaceMethodEffs" ((PVar "iface") (PCons (PCon "IfaceMethod" (PVar "mname") (PVar "mty") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EMatch (EApp (EVar "undeterminedRetEffVars") (EVar "mty")) (arm (PList) () (ELit LUnit)) (arm (PVar "bad") () (EApp (EApp (EApp (EVar "pushTypeErrorOnceAt") (ELit (LString "T-EFFECT-UNDETERMINED"))) (EApp (EVar "firstTyConLoc") (EVar "mty"))) (EApp (EApp (EApp (EVar "effectUndeterminedMsg") (EVar "iface")) (EVar "mname")) (EVar "bad")))))) (DoExpr (EApp (EApp (EVar "checkIfaceMethodEffs") (EVar "iface")) (EVar "rest")))))
+(DTypeSig false "undeterminedRetEffVars" (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "undeterminedRetEffVars" ((PVar "sig")) (EBlock (DoLet false false (PVar "args") (EApp (EVar "methodArgs") (EVar "sig"))) (DoLet false false (PVar "argCarried") (EApp (EVar "dedup") (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EVar "effTailNames")) (EVar "args")) (EApp (EApp (EDictApp "flatMap") (EVar "tyVarNames")) (EVar "args"))))) (DoLet false false (PVar "retTail") (EApp (EVar "dedup") (EApp (EVar "effTailNames") (EApp (EVar "methodRet") (EVar "sig"))))) (DoExpr (EApp (EApp (EVar "removeAllS") (EVar "argCarried")) (EVar "retTail")))))
+(DTypeSig false "methodRet" (TyFun (TyCon "Ty") (TyCon "Ty")))
+(DFunDef false "methodRet" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "methodRet") (EVar "t")))
+(DFunDef false "methodRet" ((PCon "TyFun" PWild (PVar "b"))) (EApp (EVar "methodRet") (EVar "b")))
+(DFunDef false "methodRet" ((PVar "t")) (EVar "t"))
+(DTypeSig false "renderEffTailVars" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))
+(DFunDef false "renderEffTailVars" ((PVar "vs")) (EApp (EApp (EVar "joinWith") (ELit (LString ", "))) (EApp (EApp (EMethodRef "map") (ELam ((PVar "v")) (EBinOp "++" (EBinOp "++" (ELit (LString "<")) (EApp (EMethodRef "display") (EVar "v"))) (ELit (LString ">"))))) (EVar "vs"))))
+(DTypeSig false "effectUndeterminedMsg" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))))
+(DFunDef false "effectUndeterminedMsg" ((PVar "iface") (PVar "mname") (PVar "vars")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "Under-determined effect variable ")) (EApp (EMethodRef "display") (EApp (EVar "renderEffTailVars") (EVar "vars")))) (ELit (LString " in method '"))) (EApp (EMethodRef "display") (EVar "mname"))) (ELit (LString "' of interface '"))) (EApp (EMethodRef "display") (EVar "iface"))) (ELit (LString "': the effect appears only in the method's return type, pinned by no argument, so a caller can instantiate it to <> and launder the real effect (a function typed pure would silently perform it). Use a concrete effect row (e.g. `<Stdout>`) or thread the effect through an argument (e.g. a callback `a -> <e> b`)."))))
+(DTypeSig false "firstTyConLoc" (TyFun (TyCon "Ty") (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "firstTyConLoc" ((PCon "TyCon" PWild (PVar "ml"))) (EVar "ml"))
+(DFunDef false "firstTyConLoc" ((PCon "TyApp" (PVar "a") (PVar "b"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "firstTyConLoc") (EVar "a"))) (EApp (EVar "firstTyConLoc") (EVar "b"))))
+(DFunDef false "firstTyConLoc" ((PCon "TyFun" (PVar "a") (PVar "b"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "firstTyConLoc") (EVar "a"))) (EApp (EVar "firstTyConLoc") (EVar "b"))))
+(DFunDef false "firstTyConLoc" ((PCon "TyTuple" (PVar "ts"))) (EApp (EVar "firstTyConLocList") (EVar "ts")))
+(DFunDef false "firstTyConLoc" ((PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EVar "firstTyConLoc") (EVar "t")))
+(DFunDef false "firstTyConLoc" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "firstTyConLoc") (EVar "t")))
+(DFunDef false "firstTyConLoc" (PWild) (EVar "None"))
+(DTypeSig false "firstTyConLocList" (TyFun (TyApp (TyCon "List") (TyCon "Ty")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "firstTyConLocList" ((PList)) (EVar "None"))
+(DFunDef false "firstTyConLocList" ((PCons (PVar "t") (PVar "ts"))) (EApp (EApp (EVar "orElseLoc") (EApp (EVar "firstTyConLoc") (EVar "t"))) (EApp (EVar "firstTyConLocList") (EVar "ts"))))
 (DTypeSig false "checkEffectParamsTy" (TyFun (TyCon "Ty") (TyCon "Unit")))
 (DFunDef false "checkEffectParamsTy" ((PCon "TyFun" (PVar "a") (PVar "b"))) (EBlock (DoLet false false PWild (EApp (EVar "checkEffectParamsTy") (EVar "a"))) (DoExpr (EApp (EVar "checkEffectParamsTy") (EVar "b")))))
 (DFunDef false "checkEffectParamsTy" ((PCon "TyApp" (PVar "a") (PVar "b"))) (EBlock (DoLet false false PWild (EApp (EVar "checkEffectParamsTy") (EVar "a"))) (DoExpr (EApp (EVar "checkEffectParamsTy") (EVar "b")))))

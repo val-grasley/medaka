@@ -403,6 +403,31 @@ positions per §5) so a generalized `μ` cannot be captured at two incompatible
 instantiations. This is the effect analogue of the type-system value restriction
 and is what keeps `gen` + open-row unification sound together.
 
+**Well-formedness of interface-method effect variables (the no-laundering side
+condition).** A quantified effect variable that occurs in an interface method's
+**return-position** row must **also** occur in an **argument** position of that
+method's signature — either as a callback's latent arrow effect (`(a →^e b)`) or as
+a row-kinded type-constructor argument (`Async e a`, §"effect-polymorphic data"
+below). An effect variable that appears **only** in the return row, determined by no
+argument, is **ill-formed** (an ambiguous / under-determined quantified variable, the
+effect analogue of a class method whose return type mentions a type variable pinned
+by nothing). It is rejected at the interface declaration.
+
+The reason is soundness, not taste. If `speak : a →^e String` quantifies `e` with
+nothing to pin it, a caller instantiates `e := ⟨ ⟩` at the use site and obtains a
+value the effect system certifies **pure** — yet the *dispatched* impl of `speak`
+may perform `<Stdout>`, selected by the dictionary at the call site, invisibly to
+the caller's effect. The effect would be **laundered** away (§5's no-laundering law
+violated with no error). Contrast argument-carried polymorphism (`map`, `andThen`,
+`fold`, `traverse`): there `e` is pinned by the *actual* effect of the supplied
+callback, so instantiation cannot lie. This side condition is what makes the
+generalization of a method effect variable sound in the presence of dictionary
+dispatch — and it does so **without** consulting the dictionary (it is a purely
+syntactic property of the *declared* signature), so it preserves the
+dictionary/effect orthogonality restated below: the alternative of lower-bounding a
+return-only effect var by the *dispatched* impl's latent effect was rejected because
+it would make the effect depend on dispatch, violating that orthogonality.
+
 **Effect-polymorphic data (effects as type-constructor arguments).** A row may
 occupy a **type-constructor argument** position, so a data type can be parameterized
 *by an effect*:
