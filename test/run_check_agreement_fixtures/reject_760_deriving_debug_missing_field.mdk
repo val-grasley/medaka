@@ -5,8 +5,9 @@
 -- an Int", and `build` panicked "no impl of method 'debug' for type 'Inner'".
 -- Now `check`/`run`/`build` all reject with "No impl of Debug for Inner".
 -- (The scrutinee is bound with `let` so the derived obligation grounds
--- independently of the caller's dispatch — an inline `debug (Outer (Inner 7))`
--- with a bare Num literal trips a separate pre-existing receiver-grounding path.)
+-- independently of the caller's dispatch.  An inline `debug (Outer (Inner 7))`
+-- with a bare Num literal also rejects correctly as of the #772 rework — this
+-- fixture keeps the `let`-bound form as the caller-independent repro.)
 data Inner = Inner Int
 data Outer = Outer Inner deriving (Debug)
 main =

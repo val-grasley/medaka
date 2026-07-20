@@ -1,5 +1,5 @@
 # META
-source_lines=267
+source_lines=271
 stages=DESUGAR,MARK
 # SOURCE
 -- Built-in extern declarations.
@@ -184,8 +184,12 @@ extern trunc : Float -> Float
 extern pow : Float -> Float -> Float
 extern atan2 : Float -> Float -> Float
 extern hypot : Float -> Float -> Float
--- Bit-level reinterpretation of a 64-bit Int as an IEEE 754 double.
--- Inverse of Int64.bits_of_float / C memcpy(&bits,&d,8).  Pure.
+-- Bit-level reinterpretation of a 63-bit Int as an IEEE 754 double.
+-- Medaka Int is 63-bit (see intMaxBound), so this can only construct floats
+-- whose bit pattern fits in 63 bits; arbitrary 64-bit patterns (bit 62/63
+-- set: negative floats, large exponents, top-bit NaN/inf) must go through
+-- `bytesToFloat64` instead.  Inverse of Int64.bits_of_float / C
+-- memcpy(&bits,&d,8) for the patterns it can represent.  Pure.
 extern intBitsToFloat : Int -> Float
 -- Read 8 bytes big-endian from `arr` starting at byte index `off` and
 -- reinterpret as an IEEE 754 double.  Bytes in `arr` are Int values 0..255.
