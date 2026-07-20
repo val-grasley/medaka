@@ -5,7 +5,7 @@ afterDefaultFor : Bool -> Token -> Parser Decl
 afterExport : Parser Decl
 afterNoise : Parser Unit
 afterPublic : Parser Decl
-afterPublicFor : Token -> Parser Decl
+afterPublicFor : Int -> Token -> Parser Decl
 aliasName : Parser String
 aliasNameFor : Token -> Parser String
 allChainLines : Array Token -> Array Int -> List (Decl, Int, Int) -> List (List Int)
@@ -126,6 +126,7 @@ externNameFor : Token -> Parser String
 extractConstraints : Ty -> List Constraint
 failIfAliasedMember : List UseMember -> Parser Unit
 failP : String -> Parser a
+fatalAtP : String -> Int -> Parser a
 fatalP : String -> Parser a
 fieldPathExtend : Option (String, List String) -> String -> Option (String, List String)
 firstBacktickIdx : Array Token -> Int -> Int

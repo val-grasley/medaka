@@ -122,6 +122,23 @@ failP msg = Parser (toks pos => PErr msg pos)
 fatalP : String -> Parser a
 fatalP msg = Parser (toks pos => PFatal msg pos)
 
+-- A COMMITTED failure reported at an EXPLICIT, previously-captured token index
+-- rather than the current position — for when the offending construct starts
+-- earlier than where the parser actually notices the problem (e.g. `public` on
+-- a non-`data` decl: the mistake is the leading `public` token, not whatever
+-- follows `public export`).  `pos0` comes from a `getPos` taken before the
+-- construct was consumed; the current position is discarded (never consumes).
+-- Must be `PFatal`, not `PErr`: a `PErr` reported at `pos0` (the decl's own
+-- start position) is indistinguishable from "no progress" to `many`'s
+-- swallow-and-retry / `deepenLeftover` recovery (`pos2 > pos` fails when
+-- pos2 == the decl start), which discards the message for a generic
+-- "unexpected `public`" instead.  `PFatal` bypasses that recovery machinery
+-- entirely (`manyGo`'s `PFatal e q => PFatal e q` propagates straight out),
+-- so it is only safe where — as here — no alternative production could ever
+-- have claimed this token (see `fatalP` above).
+fatalAtP : String -> Int -> Parser a
+fatalAtP msg pos0 = Parser (toks _pos => PFatal msg pos0)
+
 peekP : Parser Token
 peekP = Parser (toks pos => POk (peekTok toks pos) pos)
 
@@ -2109,16 +2126,25 @@ afterExport = do
 
 afterPublic : Parser Decl
 afterPublic = do
+  pubPos <- getPos
   expectTok TPublic
   skipNewlines
   expectTok TExport
   skipNewlines
   t <- peekP
-  afterPublicFor t
+  afterPublicFor pubPos t
 
-afterPublicFor : Token -> Parser Decl
-afterPublicFor TData = parseData VisPublic
-afterPublicFor _ = failP "expected data after public export"
+-- `public` is meaningful only in front of `data` (it selects `VisPublic`
+-- instead of the plain-`export` `VisAbstract`); anything else is a user
+-- mistake, not a grammar gap.  The error is reported at `pubPos` — the
+-- `public` token itself, captured before it was consumed — rather than at
+-- whatever token follows `public export`, so the caret lands on the actual
+-- problem and `parseErrHelpFix` (`compiler/driver/diagnostics.mdk`) can offer
+-- a `fix` that deletes exactly the `public` token at that same location.
+afterPublicFor : Int -> Token -> Parser Decl
+afterPublicFor _ TData = parseData VisPublic
+afterPublicFor pubPos _ =
+  fatalAtP "`public` only applies to `data` declarations" pubPos
 
 parseFunOrSig : Bool -> Parser Decl
 parseFunOrSig pub = do
