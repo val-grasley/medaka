@@ -2794,6 +2794,38 @@ constNanFold op l r =
     _ => None
   else None
 
+-- ── #762: NaN-sign fold barrier (run==build on the same box) ────────────────
+-- #672 (above) neutralises the case where BOTH operands are emit-time-constant
+-- floats: constNanFold computes the NaN on the host and emits its exact bits.  But
+-- when an operand is only constant AFTER clang's own optimisations — e.g.
+-- `idf 0.0 / idf 0.0` where `idf` is a pure identity clang INLINES — the emitter
+-- sees a runtime call, emits a real `fdiv double %a, %b`, and clang then folds the
+-- inlined `fdiv 0.0, 0.0` to APFloat's canonical +NaN (0x7FF8…).  The runtime
+-- `divsd` and the tree-walk interpreter both yield the host's −NaN (0xFFF8… on
+-- x86), and under the sign-dependent totalOrder (N6) a +NaN sorts/compares/hashes
+-- OPPOSITELY — a same-box run≠build divergence (#762: compare Gt vs Lt).
+--
+-- Fix: pass ONE operand of the float op through `llvm.arithmetic.fence.f64`, which
+-- returns its argument unchanged but is opaque to the constant folder — so clang
+-- can no longer fold the op to a wrong-signed NaN and must keep the runtime
+-- instruction, which yields the host NaN sign matching run/eval.  Breaking a single
+-- operand's constant-ness is enough: a binary fold needs BOTH operands constant.
+--
+-- SCOPED so it does NOT defeat ordinary float folding: skipped when BOTH operands
+-- are emit-time constants (constNanFold already handles the NaN sub-case, and a
+-- non-NaN literal fold is bit-identical to hardware — nothing to defend).  So the
+-- only folds it blocks are of operands clang would discover constant by inlining,
+-- and for a non-NaN result the runtime op is bit-identical anyway.  `arithmetic.fence`
+-- lowers to a no-op, so a genuinely-runtime float op pays ZERO runtime cost — the
+-- barrier is a compile-time-only constraint on the folder.
+fenceFloatOperand : Emit -> CExpr -> CExpr -> String -> String
+fenceFloatOperand e l r ld = match (constFoldFloat l, constFoldFloat r)
+  (Some _, Some _) => ld
+  _ =>
+    let fr = freshReg e
+    let _ = emit e "  \{fr} = call double @llvm.arithmetic.fence.f64(double \{ld})"
+    fr
+
 -- LLVM `double` hex literal of a host Float's exact 64-bit pattern.  floatToBytes64
 -- gives 8 big-endian bytes (byte 0 = MSB), so their concatenated hex IS the i64 bit
 -- pattern — the form LLVM requires to spell a NaN double constant.
@@ -2822,8 +2854,9 @@ emitFloatD e env (ex@(CBinPrim op l r _)) =
       None =>
         let ld = emitFloatD e env l
         let rd = emitFloatD e env r
+        let ldf = fenceFloatOperand e l r ld
         let res = freshReg e
-        let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+        let _ = emit e "  \{res} = \{floatOp op} double \{ldf}, \{rd}"
         res
   else emitFloatLeaf e env ex
 emitFloatD e env ex = emitFloatLeaf e env ex
@@ -2959,8 +2992,9 @@ emitFloatArith e env op l r = match constNanFold op l r
   None =>
     let ld = emitFloatD e env l
     let rd = emitFloatD e env r
+    let ldf = fenceFloatOperand e l r ld
     let res = freshReg e
-    let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+    let _ = emit e "  \{res} = \{floatOp op} double \{ldf}, \{rd}"
     (boxFloat e res, LTFloat)
 
 -- the boxing fallback path (left operand not statically float): unchanged from the
@@ -2974,8 +3008,9 @@ emitArithW e env op l r =
     LTFloat =>
       let ld = unboxFloat e lv
       let rd = unboxFloat e rv
+      let ldf = fenceFloatOperand e l r ld
       let res = freshReg e
-      let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+      let _ = emit e "  \{res} = \{floatOp op} double \{ldf}, \{rd}"
       (boxFloat e res, LTFloat)
     LTNum =>
       let res = freshReg e
@@ -2985,8 +3020,9 @@ emitArithW e env op l r =
       LTFloat =>
         let ld = unboxFloat e lv
         let rd = unboxFloat e rv
+        let ldf = fenceFloatOperand e l r ld
         let res = freshReg e
-        let _ = emit e "  \{res} = \{floatOp op} double \{ld}, \{rd}"
+        let _ = emit e "  \{res} = \{floatOp op} double \{ldf}, \{rd}"
         (boxFloat e res, LTFloat)
       LTNum =>
         let res = freshReg e

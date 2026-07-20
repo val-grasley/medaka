@@ -1,0 +1,31 @@
+-- #762 (S0 residual of #672): a NaN produced by a RUNTIME float op whose operands
+-- clang can inline+const-fold -- here `idf 0.0 / idf 0.0` with `idf` a pure identity
+-- clang INLINES -- must carry the SAME NaN sign the host hardware yields at run
+-- time, so `compare`/`hashFloat` (sign-dependent totalOrder, N6/#360) agree
+-- run==build on the same box.  Before the fix clang folded the inlined
+-- `fdiv 0.0,0.0` to APFloat's canonical +NaN (0x7FF8..) while `run`/native yield the
+-- host -NaN (0xFFF8.. on x86), flipping `compare nanRT 1.0` (build Gt vs run Lt) at
+-- exit 0.  The fix passes one operand through `llvm.arithmetic.fence.f64` so clang
+-- cannot fold the op to a wrong-signed NaN (see fenceFloatOperand in llvm_emit.mdk).
+--
+-- PLATFORM-INDEPENDENT BY CONSTRUCTION.  A hardware NaN's sign bit is target-
+-- dependent (x86 -NaN, arm +NaN), so nothing here pins an absolute Lt/Gt.  Every
+-- line instead asserts the RUNTIME-fold NaN behaves IDENTICALLY to the LITERAL-fold
+-- NaN (`0.0/0.0`, already host-signed via #672's emit-time fold) -- an invariant
+-- that prints True on every conforming target once run==build holds, and that the
+-- run==check==build agreement gate additionally pins run-stdout == build-stdout.
+idf : Float -> Float
+idf x = x
+
+nanRT = idf 0.0 / idf 0.0 -- runtime fdiv; clang inlines idf and could fold it
+nanLit = 0.0 / 0.0 -- literal; #672 emits the host NaN bits at emit time
+
+main =
+  -- compare agrees between the two NaNs at both operand positions ...
+  println (debug (compare nanRT 1.0 == compare nanLit 1.0))
+  println (debug (compare 1.0 nanRT == compare 1.0 nanLit))
+  println (debug (compare nanRT (-1.0) == compare nanLit (-1.0)))
+  -- ... hashFloat hashes them identically (same host bit pattern => same hash) ...
+  println (debug (hashFloat nanRT == hashFloat nanLit))
+  -- ... and both are NaN by IEEE self-inequality regardless of sign.
+  println (debug (nanRT != nanRT))
