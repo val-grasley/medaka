@@ -11460,6 +11460,25 @@ inferImplBodiesIfEnabledIn env allProg decls
 -- newly enforcing them here would reject latent-but-working programs unrelated to #760
 -- (it flagged the effectful `impl Speak Dog` in test/engine_fixtures/nullary_memo_with_args).
 -- Keeping the scope to missing instances leaves effect/mismatch enforcement exactly as it was.
+-- #777 (S0, silent wrongness): a GENUINE type mismatch inside a ground impl-method
+-- body (`sig _ = idInt "str"` where `idInt : Int -> Int` but `sig`'s declared return
+-- is `String`) is a `unify`/`typeMismatch` error pushed DURING body inference, not an
+-- obligation.  Blanket-restoring `typeErrors` here (as this did before #777) discarded
+-- it, and because `medaka build`'s soundness gate (medaka_cli.typecheckGate) runs this
+-- SAME check path, both `check` and `build` accepted the program — the built binary
+-- then printed a wrong value at exit 0 or SEGFAULTED (an impl method returning a
+-- differently-typed field/value).  We now KEEP those body clash errors so both paths
+-- reject.  Effect-leak / effect-param errors (`T-EFFECT-LEAK` / `T-EFFECT-PARAM`) stay
+-- a SEPARATE axis and are still restored: newly enforcing them here would reject the
+-- latent-but-working effectful `impl Speak Dog`
+-- (test/engine_fixtures/nullary_memo_with_args) — see the comment above and the code
+-- that program relies on.  Missing-instance rejects are unaffected regardless: they
+-- are recorded as pendingImpl/CallObligations (side channel) and gated LATER, so they
+-- were never in this window.
+isSuppressedImplBodyErr : String -> Bool
+isSuppressedImplBodyErr code = code == "T-EFFECT-LEAK"
+  || code == "T-EFFECT-PARAM"
+
 inferUserImplBodies : TcEnv -> List Decl -> List Decl -> Unit
 inferUserImplBodies env allProg decls =
   let savedErrs = perRun.value.typeErrors.value
@@ -11467,8 +11486,14 @@ inferUserImplBodies env allProg decls =
   let _ = setRef useFastIfaceMethodTy True
   let _ = inferImplBodies env allProg (returnPosMethodNames allProg) (filterList implHeadGround decls)
   let _ = setRef useFastIfaceMethodTy False
-  let _ = setRef perRun.value.typeErrors savedErrs
-  setRef typeErrorsSticky savedSticky
+  -- The errors pushed DURING inference are the head of the list (consed); savedErrs is
+  -- the tail.  Keep every added error except the suppressed effect axis, then drop the
+  -- rest by rebuilding the list as (kept ++ savedErrs).
+  let curErrs = perRun.value.typeErrors.value
+  let added = takeFirst (listLen curErrs - listLen savedErrs) curErrs
+  let kept = filterList (e => not (isSuppressedImplBodyErr (tcCode e))) added
+  let _ = setRef perRun.value.typeErrors (kept ++ savedErrs)
+  setRef typeErrorsSticky (savedSticky || isNonEmptyL kept)
 
 -- True for a DImpl whose head types carry NO type variable (a monomorphic receiver like
 -- `Eq Outer` / `Debug (List Int)`); False for a parametric head (`Eq (List a)`) and every

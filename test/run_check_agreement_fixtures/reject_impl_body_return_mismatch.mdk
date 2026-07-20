@@ -1,0 +1,18 @@
+-- #777 (S0): a GENUINE type mismatch inside a ground impl-method body was
+-- unenforced end-to-end — check + build both exited 0 and the binary printed the
+-- String value "str" at exit 0 (an Int->Int helper "returned" a String, satisfying
+-- the declared String return BY ACCIDENT).  All three engines must now REJECT it
+-- via a DIAGNOSTIC (the impl-body unify mismatch is no longer swallowed by
+-- inferUserImplBodies).  See test/must_fail_fixtures history: this drained #777.
+idInt : Int -> Int
+idInt x = x
+
+interface Sig a where
+  sig : a -> String
+
+data D = D
+
+impl Sig D where
+  sig _ = idInt "str"
+
+main = println (sig D)

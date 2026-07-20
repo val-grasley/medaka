@@ -1,0 +1,18 @@
+-- #777 (S0, memory safety): a ground impl-method body storing a Bool into a
+-- String-typed constructor field (`Box True`) was unenforced end-to-end — check +
+-- build both exited 0 and the native binary SEGFAULTED (rc=139) reading the Bool as
+-- a String.  All three engines must now REJECT it via a DIAGNOSTIC before eval/emit.
+data Box = Box String
+
+interface Mk a where
+  mk : a -> Box
+
+data K = K
+
+impl Mk K where
+  mk _ = Box True
+
+toStr : Box -> String
+toStr (Box s) = s
+
+main = println (toStr (mk K))
