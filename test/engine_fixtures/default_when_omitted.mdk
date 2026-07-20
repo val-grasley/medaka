@@ -1,0 +1,19 @@
+-- #728-2 companion (DICT-SEMANTICS §5, the case the fix must LEAVE ALONE): the
+-- interface default is STILL used when the selected instance OMITS the method.
+-- `extra` has a default; neither the concrete Int impl nor the general `impl Two a`
+-- defines it, so every dispatch of `extra` — including through a covered-only-by-
+-- general type and the polymorphic caller — must land on the default (42), never on
+-- the general's `base`.  Reordering general-before-default must not shadow this.
+--   base True / useExtra True -> 7 (general provides base) / 42 (extra omitted -> default)
+--   base 5    / useExtra 5     -> 5 (concrete) / 42 (extra omitted -> default)
+interface Two a where
+  base : a -> Int
+  extra : a -> Int
+  extra _ = 42
+impl Two Int where
+  base _ = 5
+impl Two a where
+  base _ = 7
+useExtra : Two a => a -> Int
+useExtra x = extra x
+main = println "\{base True} \{extra True} \{useExtra True} \{base (5 : Int)} \{extra (5 : Int)} \{useExtra (5 : Int)}"
