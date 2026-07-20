@@ -1,0 +1,22 @@
+-- #782 (S2, ratified 2026-07-20): the "and effect-leak" half of #777's direction,
+-- deliberately descoped by #780.  An impl-method body that PERFORMS an effect its
+-- (pure) interface signature does not declare — here `putStr` (<Stdout>) under
+-- `speak : a -> String` — was ACCEPTED end-to-end (check/run/build exit 0 and the
+-- program ran the leaked effect), asymmetric with a top-level pure-signatured function
+-- performing the same effect, which is REJECTED (T-EFFECT-LEAK).  #780 suppressed the
+-- effect axis inside impl bodies (isSuppressedImplBodyErr) to spare an intentional
+-- fixture; #782 stops suppressing, so the leak is now a real error, symmetric with
+-- top-level and matching EFFECTS-SEMANTICS §method (an impl's latent row is bounded by
+-- the signature).  check == run == build all REJECT via a DIAGNOSTIC, never a runtime
+-- panic.  This drained #782.
+interface Speak a where
+  speak : a -> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d =
+    let _ = putStr "[call] "
+    "woof"
+
+main = putStrLn (speak Dog)
