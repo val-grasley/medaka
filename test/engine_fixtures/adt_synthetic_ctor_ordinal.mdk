@@ -1,0 +1,17 @@
+-- REGRESSION GUARD (#712, S0): a USER constructor named `Cons`/`Nil` (the names the
+-- built-in list syntax canonicalises to) among >=3 ctors must take its DECLARATION-
+-- ORDER ordinal, NOT the built-in list synthetic ordinal (Cons=0/Nil=1).  The WasmGC
+-- backend's `ctorOrdinal` used to short-circuit on the ctor NAME before consulting the
+-- ctor table, so `data T = Extra | Cons Int T | Nil` gave the user `Cons` ordinal 0 —
+-- COLLIDING with `Extra` (legitimately 0) — and wasm `br_table` silently sent a `Cons`
+-- value to `Extra`'s arm.  eval + native (table/declaration-order) were always correct;
+-- the fix makes wasm agree.  This is the S0 that #712's dup-type-id fix would otherwise
+-- have UNMASKED (pre-#712 such a program failed to build on wasm at all).
+data T = Extra | Cons Int T | Nil
+
+tagT t = match t
+  Extra => 100
+  Cons _ _ => 200
+  Nil => 300
+
+main = (tagT Extra, tagT (Cons 5 (Cons 6 Nil)), tagT Nil)

@@ -1,5 +1,5 @@
 # META
-source_lines=1133
+source_lines=1142
 stages=DESUGAR,MARK
 # SOURCE
 -- TRMC eligibility analysis (TRMC-DESIGN.md §"Phase 1 scope" + §"Backend portability").
@@ -609,6 +609,15 @@ ctorTailName (CBinPrim "::" _ _ _) = "Cons"
 ctorTailName ex = match flattenApp ex []
   (CVar ctor _, _) => ctor
   _ => ""
+
+-- #712: is this ctor-tail leaf the BUILT-IN list cons (`h :: t`), as opposed to a
+-- user ctor application?  Both yield ctorTailName "Cons" when the user names a ctor
+-- `Cons`, but only the `::` form is the reserved list cell (`$C_Cons`); a user
+-- `Cons` resolves to the remapped `$CU_Cons`.  The WasmGC emitter's TRMC loop keys
+-- the cons-cell struct id off this, since the ctor name alone can't distinguish them.
+export ctorTailIsCons : CExpr -> Bool
+ctorTailIsCons (CBinPrim "::" _ _ _) = True
+ctorTailIsCons _ = False
 
 -- the LEADING (non-last) field exprs of an eligible ctor-tail leaf — the fields
 -- that get stored into the cell (the last field is the destination link, not
@@ -1406,6 +1415,9 @@ anyListM p (x::rest) =
 (DTypeSig true "ctorTailName" (TyFun (TyCon "CExpr") (TyCon "String")))
 (DFunDef false "ctorTailName" ((PCon "CBinPrim" (PLit (LString "::")) PWild PWild PWild)) (ELit (LString "Cons")))
 (DFunDef false "ctorTailName" ((PVar "ex")) (EMatch (EApp (EApp (EVar "flattenApp") (EVar "ex")) (EListLit)) (arm (PTuple (PCon "CVar" (PVar "ctor") PWild) PWild) () (EVar "ctor")) (arm PWild () (ELit (LString "")))))
+(DTypeSig true "ctorTailIsCons" (TyFun (TyCon "CExpr") (TyCon "Bool")))
+(DFunDef false "ctorTailIsCons" ((PCon "CBinPrim" (PLit (LString "::")) PWild PWild PWild)) (EVar "True"))
+(DFunDef false "ctorTailIsCons" (PWild) (EVar "False"))
 (DTypeSig true "ctorTailLeadFields" (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CExpr"))))
 (DFunDef false "ctorTailLeadFields" ((PCon "CBinPrim" (PLit (LString "::")) (PVar "head") PWild PWild)) (EListLit (EVar "head")))
 (DFunDef false "ctorTailLeadFields" ((PVar "ex")) (EMatch (EApp (EApp (EVar "flattenApp") (EVar "ex")) (EListLit)) (arm (PTuple PWild (PVar "fields")) () (EMatch (EApp (EVar "splitLastF") (EVar "fields")) (arm (PCon "Some" (PTuple (PVar "lead") PWild)) () (EVar "lead")) (arm (PCon "None") () (EListLit))))))
@@ -1853,6 +1865,9 @@ anyListM p (x::rest) =
 (DTypeSig true "ctorTailName" (TyFun (TyCon "CExpr") (TyCon "String")))
 (DFunDef false "ctorTailName" ((PCon "CBinPrim" (PLit (LString "::")) PWild PWild PWild)) (ELit (LString "Cons")))
 (DFunDef false "ctorTailName" ((PVar "ex")) (EMatch (EApp (EApp (EVar "flattenApp") (EVar "ex")) (EListLit)) (arm (PTuple (PCon "CVar" (PVar "ctor") PWild) PWild) () (EVar "ctor")) (arm PWild () (ELit (LString "")))))
+(DTypeSig true "ctorTailIsCons" (TyFun (TyCon "CExpr") (TyCon "Bool")))
+(DFunDef false "ctorTailIsCons" ((PCon "CBinPrim" (PLit (LString "::")) PWild PWild PWild)) (EVar "True"))
+(DFunDef false "ctorTailIsCons" (PWild) (EVar "False"))
 (DTypeSig true "ctorTailLeadFields" (TyFun (TyCon "CExpr") (TyApp (TyCon "List") (TyCon "CExpr"))))
 (DFunDef false "ctorTailLeadFields" ((PCon "CBinPrim" (PLit (LString "::")) (PVar "head") PWild PWild)) (EListLit (EVar "head")))
 (DFunDef false "ctorTailLeadFields" ((PVar "ex")) (EMatch (EApp (EApp (EVar "flattenApp") (EVar "ex")) (EListLit)) (arm (PTuple PWild (PVar "fields")) () (EMatch (EApp (EVar "splitLastF") (EVar "fields")) (arm (PCon "Some" (PTuple (PVar "lead") PWild)) () (EVar "lead")) (arm (PCon "None") () (EListLit))))))

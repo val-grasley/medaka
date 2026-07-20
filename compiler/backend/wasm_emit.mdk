@@ -218,6 +218,7 @@ import backend.trmc_analysis.{
   isSelfSatApp,
   consTailArgs,
   ctorTailName,
+  ctorTailIsCons,
   ctorTailLeadFields,
   ctorTailSelfIdx,
   DispGroup(..),
@@ -6083,9 +6084,13 @@ emitArgsArray prog env d args =
 -- WHICH ctor the current dest cell is in the i32 local $__tmc_dctor (its index
 -- into ctorSet) and link sites dispatch on it (ref.cast to that ctor's struct +
 -- struct.set at its recursive field).
+-- #712: `isBuiltinList` (the 5th field) records whether this fn's cons leaves are
+-- the built-in `h :: t` (→ reserved `$C_Cons`) vs a user ctor named `Cons`
+-- (→ `$CU_Cons`).  Homogeneous per fn, so the base leaf's parent-link
+-- (emitWasmTrmcBase) reads it from here rather than re-deriving from the ctor name.
 data WTrmcCtx =
   | WTrmcOff
-  | WTrmcOn SelfRef Int (List String) (List (String, Int)) String String
+  | WTrmcOn SelfRef Int (List String) (List (String, Int)) Bool String String
 
 wTrmcCtxRef : Ref WTrmcCtx
 wTrmcCtxRef = Ref WTrmcOff
@@ -6134,7 +6139,7 @@ wTrmcDctorL = "$__tmc_dctor"
 -- the LLVM self-call walk).
 emitRefTail : Prog -> List String -> Int -> CExpr -> List String
 emitRefTail prog env arity e = match wTrmcCtxRef.value
-  WTrmcOn self sarity pslots ctorSet loopLbl exitLbl =>
+  WTrmcOn self sarity pslots ctorSet _ loopLbl exitLbl =>
     -- TMC active: descend the structural tail wrappers (if/let/block/decision) with the
     -- context STILL LIVE so their inner leaves re-enter here; redirect every LEAF
     -- (cons/ctor-tail, plain self-call, or base) to the destination-passing emit.
@@ -6236,7 +6241,11 @@ isWTrmcWrapper _ = False
 emitWasmTrmcLeaf : Prog -> List String -> SelfRef -> Int -> List String -> List (String, Int) -> String -> String -> CExpr -> List String
 emitWasmTrmcLeaf prog env self arity pslots ctorSet loopLbl exitLbl e =
   if isCtorTail (c => isCtor prog c) (c => ctorArity prog c) self arity e then
-    emitWasmTrmcCtor prog env self arity pslots ctorSet (ctorTailName e) (ctorTailSelfIdx e) loopLbl (ctorTailLeadFields e) (consTailArgs e)
+    -- #712: `ctorTailIsCons e` distinguishes the built-in `h :: t` (reserved
+    -- `$C_Cons`) from a user ctor named `Cons` (remapped `$CU_Cons`); a whole TRMC
+    -- function's cons-cell leaves are homogeneous (one return type), so this leaf's
+    -- verdict also governs the parent link.
+    emitWasmTrmcCtor prog env self arity pslots ctorSet (ctorTailIsCons e) (ctorTailName e) (ctorTailSelfIdx e) loopLbl (ctorTailLeadFields e) (consTailArgs e)
   else if isSelfSatApp self arity e then
     emitWasmTrmcTailCall prog env pslots loopLbl e
   else
@@ -6256,10 +6265,12 @@ emitWasmTrmcLeaf prog env self arity pslots ctorSet loopLbl exitLbl e =
 -- The recursive slot is `(mut (ref eq))` (Stage 0), seeded here with a safe i31 nil
 -- placeholder (never dereferenced — it is overwritten by the next iteration's struct.set,
 -- or stays as the cell's tail which the BASE leaf fills before exit).
-emitWasmTrmcCtor : Prog -> List String -> SelfRef -> Int -> List String -> List (String, Int) -> String -> Int -> String -> List CExpr -> List CExpr -> List String
-emitWasmTrmcCtor prog env self arity pslots ctorSet ctorName selfIdx loopLbl leadFields args =
-  let cellStruct = ctorStructName ctorName
-  let tag = ["i32.const " ++ intToString (ctorOrdinal prog ctorName)]
+emitWasmTrmcCtor : Prog -> List String -> SelfRef -> Int -> List String -> List (String, Int) -> Bool -> String -> Int -> String -> List CExpr -> List CExpr -> List String
+emitWasmTrmcCtor prog env self arity pslots ctorSet isBuiltinList ctorName selfIdx loopLbl leadFields args =
+  let cellStruct = trmcCellStruct isBuiltinList ctorName
+  -- #712/S0: a built-in `::` leaf pins the reserved Cons ordinal; a user ctor leaf
+  -- keys off the table (declaration order), same split as the cell struct id above.
+  let tag = ["i32.const " ++ intToString (trmcCellOrdinal isBuiltinList prog ctorName)]
   let leadInstrs = flatMap (a => emitRefExpr prog env 0 a) leadFields
   -- placeholder for the recursive slot (overwritten next iter / by the base leaf).
   let placeholder = ["i32.const 1", "ref.i31"]
@@ -6267,7 +6278,7 @@ emitWasmTrmcCtor prog env self arity pslots ctorSet ctorName selfIdx loopLbl lea
   -- stash new cell in temp 0; link into prev dest (or seed head); advance dest := new.
   let stashNew = buildCell ++ ["local.set " ++ wTrmcTempL 0]
   let cellVal = ["local.get " ++ wTrmcTempL 0, "ref.as_non_null"]
-  let linkSet = wTrmcLinkParent ctorSet cellVal
+  let linkSet = wTrmcLinkParent isBuiltinList ctorSet cellVal
   let linkSeed = ["local.get " ++ wTrmcTempL 0, "local.set " ++ wTrmcHeadL, "i32.const 0", "local.set " ++ wTrmcFirstL]
   let linkInstrs = ["local.get " ++ wTrmcFirstL, "if"] ++ indent linkSeed ++ ["else"] ++ indent linkSet ++ ["end"]
   let advance = ["local.get " ++ wTrmcTempL 0, "local.set " ++ wTrmcDestL]
@@ -6285,26 +6296,41 @@ emitWasmTrmcCtor prog env self arity pslots ctorSet ctorName selfIdx loopLbl lea
 -- leaf-ctor set: the parent's type is static — exactly the historical uniform
 -- emit.  Mixed set: dispatch on $__tmc_dctor (the parent ctor's set-index) with
 -- an if/else chain; the LAST entry needs no test (the index is exhaustive).
-wTrmcLinkParent : List (String, Int) -> List String -> List String
-wTrmcLinkParent [(ctorName, selfIdx)] valInstrs =
-  wTrmcLinkOne ctorName selfIdx valInstrs
-wTrmcLinkParent ctorSet valInstrs = wTrmcLinkChain ctorSet 0 valInstrs
+-- #712: the cons-cell struct id for a TRMC leaf.  A built-in `::` leaf is the
+-- reserved `$C_Cons`; any user ctor keys off its name via ctorStructName (so a user
+-- `Cons` becomes `$CU_Cons`).  A function's TRMC leaves are homogeneous, so one
+-- `isBuiltinList` flag governs both the leaf and its parent link.
+trmcCellStruct : Bool -> String -> String
+trmcCellStruct True _ = "C_Cons"
+trmcCellStruct False ctorName = ctorStructName ctorName
 
-wTrmcLinkOne : String -> Int -> List String -> List String
-wTrmcLinkOne ctorName selfIdx valInstrs =
-  let cellStruct = ctorStructName ctorName
+-- the cons-cell tag for a TRMC leaf (#712/S0): the reserved list ordinal for a
+-- built-in `::` leaf, the table (declaration-order) ordinal for a user ctor leaf.
+trmcCellOrdinal : Bool -> Prog -> String -> Int
+trmcCellOrdinal True _ ctorName = syntheticCtorOrdinal ctorName
+trmcCellOrdinal False prog ctorName = ctorOrdinal prog ctorName
+
+wTrmcLinkParent : Bool -> List (String, Int) -> List String -> List String
+wTrmcLinkParent isBuiltinList [(ctorName, selfIdx)] valInstrs =
+  wTrmcLinkOne isBuiltinList ctorName selfIdx valInstrs
+wTrmcLinkParent isBuiltinList ctorSet valInstrs =
+  wTrmcLinkChain isBuiltinList ctorSet 0 valInstrs
+
+wTrmcLinkOne : Bool -> String -> Int -> List String -> List String
+wTrmcLinkOne isBuiltinList ctorName selfIdx valInstrs =
+  let cellStruct = trmcCellStruct isBuiltinList ctorName
   ["local.get " ++ wTrmcDestL, "ref.cast (ref $" ++ cellStruct ++ ")"]
     ++ valInstrs
     ++ ["struct.set $\{cellStruct} \{intToString (selfIdx + 1)}"]
 
-wTrmcLinkChain : List (String, Int) -> Int -> List String -> List String
-wTrmcLinkChain [] _ _ = []
-wTrmcLinkChain [(ctorName, selfIdx)] _ valInstrs =
-  wTrmcLinkOne ctorName selfIdx valInstrs
-wTrmcLinkChain ((ctorName, selfIdx)::rest) k valInstrs = ["local.get " ++ wTrmcDctorL, "i32.const " ++ intToString k, "i32.eq", "if"]
-  ++ indent (wTrmcLinkOne ctorName selfIdx valInstrs)
+wTrmcLinkChain : Bool -> List (String, Int) -> Int -> List String -> List String
+wTrmcLinkChain _ [] _ _ = []
+wTrmcLinkChain isBuiltinList [(ctorName, selfIdx)] _ valInstrs =
+  wTrmcLinkOne isBuiltinList ctorName selfIdx valInstrs
+wTrmcLinkChain isBuiltinList ((ctorName, selfIdx)::rest) k valInstrs = ["local.get " ++ wTrmcDctorL, "i32.const " ++ intToString k, "i32.eq", "if"]
+  ++ indent (wTrmcLinkOne isBuiltinList ctorName selfIdx valInstrs)
   ++ ["else"]
-  ++ indent (wTrmcLinkChain rest (k + 1) valInstrs)
+  ++ indent (wTrmcLinkChain isBuiltinList rest (k + 1) valInstrs)
   ++ ["end"]
 
 -- record which ctor the NEW dest cell is (mixed sets only; a singleton set needs
@@ -6346,8 +6372,8 @@ emitWasmTrmcBase prog env exitLbl e =
   -- is static for a singleton leaf-ctor set; a mixed set dispatches on
   -- $__tmc_dctor — wTrmcLinkParent).  Fetch the set from the ctx.
   match wTrmcCtxRef.value
-    WTrmcOn _ _ _ ctorSet _ _ =>
-      let storeBranch = wTrmcLinkParent ctorSet valInstrs
+    WTrmcOn _ _ _ ctorSet isBuiltinList _ _ =>
+      let storeBranch = wTrmcLinkParent isBuiltinList ctorSet valInstrs
       let seedBranch = valInstrs ++ ["local.set " ++ wTrmcHeadL]
       ["local.get " ++ wTrmcFirstL, "if"] ++ indent seedBranch ++ ["else"] ++ indent storeBranch ++ ["end", "br " ++ exitLbl]
     WTrmcOff => valInstrs ++ ["return"]
@@ -6482,6 +6508,32 @@ wTrmcCtorTailsOf prog self arity ex =
   else
     []
 
+-- #712: the ctor-tail LEAF exprs (same descent as wTrmcCtorTailsOf), so the caller
+-- can ask `ctorTailIsCons` per leaf.  Used to decide whether a fn builds the
+-- built-in list (`::` → `$C_Cons`) or a user ADT (`$C_<ctor>` / `$CU_Cons`).
+wTrmcCtorTailExprs : Prog -> SelfRef -> Int -> CExpr -> List CExpr
+wTrmcCtorTailExprs prog self arity (CIf _ t f) = wTrmcCtorTailExprs prog self arity t
+  ++ wTrmcCtorTailExprs prog self arity f
+wTrmcCtorTailExprs prog self arity (CLet _ _ _ b) =
+  wTrmcCtorTailExprs prog self arity b
+wTrmcCtorTailExprs prog self arity (CBlock stmts) = match lastStmtExpr stmts
+  Some ex => wTrmcCtorTailExprs prog self arity ex
+  None => []
+wTrmcCtorTailExprs prog self arity (CDecision _ arms _) =
+  flatMap (a => wTrmcCtorTailExprs prog self arity (armBody a)) arms
+wTrmcCtorTailExprs prog self arity ex =
+  if isCtorTail (c => isCtor prog c) (c => ctorArity prog c) self arity ex then
+    [ex]
+  else
+    []
+
+-- whether an eligible TRMC fn's cons leaves are the built-in `h :: t` (homogeneous
+-- per fn — a fn returns one type).  Governs the cons-cell struct id (#712).
+wTrmcBuildsBuiltinList : Prog -> SelfRef -> Int -> List CClause -> Bool
+wTrmcBuildsBuiltinList prog self arity clauses = anyList
+  ctorTailIsCons
+  (flatMap (c => wTrmcCtorTailExprs prog self arity (clauseBodyOf c)) clauses)
+
 -- emit the eligible function as a destination-passing loop.  Scaffold:
 --   (func $name (param $a0 …) (result (ref eq))
 --     <tmc locals> <clause locals> <scratch> <w7 locals>
@@ -6506,8 +6558,9 @@ emitWasmTrmcCore prog funcSym self lblRoot arity clauses ctorSet =
   let pslots = map gname params
   let loopLbl = "$tmcloop"
   let exitLbl = "$tmcexit"
+  let isBuiltinList = wTrmcBuildsBuiltinList prog self arity clauses
   let saved = wTrmcCtxRef.value
-  let _ = setRef wTrmcCtxRef (WTrmcOn self arity pslots ctorSet loopLbl exitLbl)
+  let _ = setRef wTrmcCtxRef (WTrmcOn self arity pslots ctorSet isBuiltinList loopLbl exitLbl)
   -- Single all-PVar clause (no fallthrough): the fast path — alias params to the
   -- synthetic positions and TMC-emit the body directly.  Otherwise (multi-clause OR
   -- a clause carries a list/ctor pattern, e.g. `stripComments`/the `map` impl): route
@@ -6755,7 +6808,9 @@ emitWDispSpineCons prog env root target heads args = flatMap (h => emitWDispCell
 emitWDispCell : Prog -> List String -> String -> CExpr -> List String
 emitWDispCell prog env root head =
   let cellStruct = "C_Cons"
-  let tag = ["i32.const " ++ intToString (ctorOrdinal prog "Cons")]
+  -- #712/S0: this is the built-in list `::` spine — pin the reserved Cons ordinal,
+  -- not `ctorOrdinal "Cons"` (which a coexisting user `Cons` ctor would poison).
+  let tag = ["i32.const " ++ intToString (syntheticCtorOrdinal "Cons")]
   let headInstrs = emitRefExpr prog env 0 head
   let placeholder = ["i32.const 1", "ref.i31"]
   let buildCell = tag ++ headInstrs ++ placeholder ++ ["struct.new $" ++ cellStruct]
@@ -7020,10 +7075,14 @@ towerBodiesTail prog env arity d root svRead rest arms branches dft ty sd k =
 emitOrdinalSlotTail : Prog -> List String -> Int -> Int -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> String -> Int -> Int -> List String
 emitOrdinalSlotTail prog env arity d root svRead rest arms branches ty sd k = match branchForOrdinal branches k
   Some (CTBranch h sub) =>
-    let (c, a) = conHeadInfoUnsafe h
+    -- #712: key the field-extract cast off the CHead (headCtorStructName), not the
+    -- bare ctor name — so a built-in `HCons` stays on the reserved `$C_Cons` even when
+    -- a user ADT also declares a `Cons` (which resolves to `$CU_Cons`).
+    let cs = headCtorStructName h
+    let a = snd (conHeadInfoUnsafe h)
     let fieldOccs = map (i => svRead ++ [
-      "ref.cast (ref $" ++ ctorStructName c ++ ")",
-      "struct.get $\{ctorStructName c} \{intToString (i + 1)}",
+      "ref.cast (ref $" ++ cs ++ ")",
+      "struct.get $\{cs} \{intToString (i + 1)}",
     ]) (rangeList 0 a)
     emitTreeTail prog env arity d root (fieldOccs ++ rest) arms sub
   None => ["br $swdt" ++ intToString sd]
@@ -7463,8 +7522,12 @@ emitTupleRef prog env d es =
 
 -- a list literal: a right-nested cons spine ending in the Nil i31.  Built
 -- back-to-front so the emitted struct.news nest correctly (Cons head tail).
+-- #712/S0: the `[]` terminator is the BUILT-IN list Nil — emit its reserved ordinal
+-- i31 directly, not `emitCtorConstruct "Nil"` (whose `ctorOrdinal "Nil"` a coexisting
+-- user `Nil` ctor would poison to the user's declaration-order ordinal).
 emitListRef : Prog -> List String -> Int -> List CExpr -> List String
-emitListRef prog env d [] = emitCtorConstruct prog env d "Nil" []
+emitListRef prog env d [] =
+  ["i32.const " ++ intToString (syntheticCtorOrdinal "Nil"), "ref.i31"]
 emitListRef prog env d (x::xs) =
   let hd = emitRefExpr prog env d x
   let tl = emitListRef prog env d xs
@@ -7943,10 +8006,14 @@ towerBodies prog env d decLabel root svRead rest arms branches dft ty sd k =
 emitOrdinalSlot : Prog -> List String -> Int -> String -> List String -> List String -> List (List String) -> List CArm -> OrdMap CTBranch -> String -> Int -> Int -> List String
 emitOrdinalSlot prog env d decLabel root svRead rest arms branches ty sd k = match branchForOrdinal branches k
   Some (CTBranch h sub) =>
-    let (c, a) = conHeadInfoUnsafe h
+    -- #712: key the field-extract cast off the CHead (headCtorStructName), not the
+    -- bare ctor name — so a built-in `HCons` stays on the reserved `$C_Cons` even when
+    -- a user ADT also declares a `Cons` (which resolves to `$CU_Cons`).
+    let cs = headCtorStructName h
+    let a = snd (conHeadInfoUnsafe h)
     let fieldOccs = map (i => svRead ++ [
-      "ref.cast (ref $" ++ ctorStructName c ++ ")",
-      "struct.get $\{ctorStructName c} \{intToString (i + 1)}",
+      "ref.cast (ref $" ++ cs ++ ")",
+      "struct.get $\{cs} \{intToString (i + 1)}",
     ]) (rangeList 0 a)
     emitTreeRef prog env d decLabel root (fieldOccs ++ rest) arms sub
   None => ["br $swd" ++ intToString sd]
@@ -8378,7 +8445,8 @@ orEmptyCtors None = []
 --     ordinal from the first one, as `lookupAssoc` + `indexOfL` did;
 --   * the `omHasKey` guard keeps the FIRST index on a name repeated within one
 --     type, matching `indexOfL`'s first-match.
--- A ctor absent from the map yields 0 at the call site, matching `orZeroIdx (-1)`.
+-- A ctor absent from the map is not a user ctor, so `userCtorOrdinalW` returns None
+-- and `ctorOrdinal` falls through to the reserved/synthetic ordinal (#712/S0).
 ctorOrdsOfW : List String -> OrdMap String -> OrdMap (List String) -> OrdMap Int -> OrdMap Int
 ctorOrdsOfW [] _ _ m = m
 ctorOrdsOfW (ty::rest) tym tcm m =
@@ -8455,21 +8523,45 @@ ctorTyLookupW ctorTypes name = match ctorTyMapW.value
   None => lookupAssoc name ctorTypes
 
 -- the per-type dense ordinal of a ctor (0-based index in its type's declaration
--- order).  Reserved + synthetic ctors have fixed ordinals.
+-- order).  Reserved ctors have fixed ordinals.
+--
+-- #712/S0: a USER ctor is looked up in the ctor TABLE **before** the name-based
+-- `syntheticCtorOrdinal` short-circuit — mirroring `ctorArity`/`ctorTypeName` (both
+-- table-first) and native `llvm_emit.mdk`'s `ctorOrdinal`.  The old order took the
+-- synthetic short-circuit FIRST, so a user ctor literally named `Cons`/`Nil` got the
+-- built-in list ordinal (Cons=0/Nil=1) instead of its DECLARATION-ORDER index.  In a
+-- ≥3-ctor ADT like `data T = Extra | Cons Int T | Nil` that collides the user `Cons`
+-- (wrongly 0) with `Extra` (legitimately 0) → wasm `br_table` sent `Cons` to `Extra`'s
+-- arm = SILENT wrong dispatch.  `ctorOrdMapW` holds only USER ctors, so a genuine
+-- built-in list ctor (absent) still falls through to `syntheticCtorOrdinal`; a user
+-- ctor and the built-in list are told apart at CALL sites via the CHead / tail expr
+-- (see `ordinalOfHead`, `emitWDispCell`, the TRMC `isBuiltinList` flag, `emitListRef`),
+-- the same discipline the struct-id fix uses.
 ctorOrdinal : Prog -> String -> Int
 ctorOrdinal prog name = match reservedCtorOrdinal name
   Some o => o
-  None =>
-    if isSyntheticCtor name then
-      syntheticCtorOrdinal name
-    else match ctorOrdMapW.value
-      -- absent → 0, exactly what `orZeroIdx (indexOfL … = -1)` returned.
-      Some m => orZeroIdx (orNeg1Ord (omLookup name m))
-      None => orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
+  None => match userCtorOrdinalW prog name
+    Some o => o
+    None => syntheticCtorOrdinal name
 
-orNeg1Ord : Option Int -> Int
-orNeg1Ord (Some o) = o
-orNeg1Ord None = -1
+-- the DECLARATION-ORDER ordinal of a name IFF it is a user-declared ctor (present in
+-- the ctor table), else None so the caller falls back to a synthetic/reserved ordinal.
+userCtorOrdinalW : Prog -> String -> Option Int
+userCtorOrdinalW prog name = match ctorOrdMapW.value
+  Some m => omLookup name m
+  None =>
+    let idx = indexOfL name (ctorsOfType prog (ctorTypeName prog name))
+    if idx < 0 then None else Some idx
+
+-- the ordinal to discriminate a decision-tree switch HEAD against.  Built-in list
+-- heads keep their reserved ordinal (Cons=0/Nil=1) regardless of a poisoning user
+-- ctor of the same name; every other head keys off `ctorOrdinal` (a user `HCon
+-- "Cons"` thus gets its declaration-order ordinal).  Distinguished by the CHead
+-- (`HCons`/`HNil` vs `HCon`), the only signal that survives the bare-name ctor table.
+ordinalOfHead : Prog -> CHead -> Int
+ordinalOfHead _ HCons = syntheticCtorOrdinal "Cons"
+ordinalOfHead _ HNil = syntheticCtorOrdinal "Nil"
+ordinalOfHead prog h = ctorOrdinal prog (fstConHead h)
 
 -- the declaration-ordered ctor list of a user type (the ctor→type map lists each
 -- type's ctors consecutively in declaration order — filter to this type).
@@ -8504,6 +8596,11 @@ typeCtorCount prog ty = listLen (ctorsOfType prog ty)
 -- first ADT head's ctor's owning type).
 switchTypeName : Prog -> List CTBranch -> String
 switchTypeName prog [] = gapS "ref-mode: empty constructor switch"
+-- #712: the built-in list heads discriminate type "List" (root `$T_List`) — pin
+-- them off the CHead, NOT `ctorTypeName "Cons"`, which the bare-name ctor table
+-- would (mis)route to a user type "T" the moment `data T = Cons … | Nil` exists.
+switchTypeName _ ((CTBranch HCons _)::_) = "List"
+switchTypeName _ ((CTBranch HNil _)::_) = "List"
 switchTypeName prog ((CTBranch h _)::rest) = match conHeadInfo h
   Some (c, _) => ctorTypeName prog c
   None => switchTypeName prog rest
@@ -8520,8 +8617,10 @@ branchOrdMapW prog bs = branchOrdMapGoW prog bs omEmpty
 branchOrdMapGoW : Prog -> List CTBranch -> OrdMap CTBranch -> OrdMap CTBranch
 branchOrdMapGoW _ [] m = m
 branchOrdMapGoW prog ((CTBranch h sub)::rest) m = match conHeadInfo h
-  Some (c, _) =>
-    let k = intToString (ctorOrdinal prog c)
+  Some _ =>
+    -- #712/S0: key off the HEAD (ordinalOfHead), so a built-in `HCons`/`HNil` keeps
+    -- its reserved ordinal while a user `HCon "Cons"` gets its declaration-order one.
+    let k = intToString (ordinalOfHead prog h)
     branchOrdMapGoW
       prog
       rest
@@ -8593,8 +8692,57 @@ reservedCtorArity _ = 0
 typeRootName : String -> String
 typeRootName ty = "T_" ++ ty
 
+-- The per-ctor WasmGC struct type identifier.
+--
+-- #712: a USER constructor whose bare name coincides with a built-in list head
+-- (`Cons`/`Nil` — the names the built-in list SYNTAX canonicalises to) would mint
+-- the SAME id as the reserved built-in list cons cell (`$C_Cons`), so
+-- `data T = Cons Int T | Nil` declares `$C_Cons` TWICE (once `(sub $T_List)` for the
+-- built-in list, once `(sub $T_T)` for the user ctor) and wasm-tools rejects the
+-- module with "duplicate type identifier".  `Cons`/`Nil` are NOT prelude `data`
+-- ctors (they are pure list SYNTAX with no `data` decl), so resolve lets a user
+-- reuse them.  Disambiguate the USER ctor with a `U` (user) prefix → `$CU_Cons`,
+-- keeping the reserved built-in `$C_Cons` bare.  This mirrors, on the WasmGC side,
+-- native's universal-ctor discipline (private_mangle.mdk): the reserved built-in id
+-- stays fixed and the user-defined same-name ctor gets a collision-free key.  Native
+-- needs no analogue — its LLVM value rep is a uniform boxed cell with no per-ctor
+-- NOMINAL struct type, so the two never collide there.
+--
+-- The remap is keyed on the ctor NAME, so it fires for a USER `Cons`/`Nil` at EVERY
+-- construct / match-field-extract / decl site uniformly (they all route through
+-- here).  The built-in list's OWN generic paths — the decision-tree switch on an
+-- `HCons` head and the TRMC `::`-spine loop — must NOT be remapped (they build the
+-- reserved `$C_Cons`); they force the bare id via `headCtorStructName` / the
+-- `isBuiltinList` flag rather than calling this with the bare name.
 ctorStructName : String -> String
-ctorStructName ctor = "C_" ++ ctor
+ctorStructName ctor
+  | isBuiltinListHeadName ctor = "CU_" ++ ctor
+  | otherwise = "C_" ++ ctor
+
+-- the two ctor names the built-in list syntax canonicalises to.  A user ctor of
+-- either name is remapped away from the reserved list type id (see ctorStructName).
+isBuiltinListHeadName : String -> Bool
+isBuiltinListHeadName name = name == "Cons" || name == "Nil"
+
+-- the struct id to `ref.cast` / `struct.get` against for a decision-tree switch
+-- HEAD.  The built-in list head `HCons` is the RESERVED `$C_Cons` cell (never the
+-- user remap), regardless of whether a user ADT also declares a `Cons` ctor; every
+-- other head keys off its ctor name via ctorStructName (so a user `HCon "Cons"`
+-- correctly resolves to the remapped `$CU_Cons`).  This is what keeps the built-in
+-- list's generic switch/field-extract on `$C_Cons` while the user ctor's is on
+-- `$CU_Cons`, the two being distinguished by the CHead (`HCons` vs `HCon "Cons"`),
+-- the only signal that survives once the bare-name ctor table maps `Cons` → the
+-- user type.
+headCtorStructName : CHead -> String
+headCtorStructName HCons = "C_Cons"
+headCtorStructName HNil = "C_Nil"
+headCtorStructName h = ctorStructName (fstConHead h)
+
+fstConHead : CHead -> String
+fstConHead h = match conHeadInfo h
+  Some (c, _) => c
+  None =>
+    gapS "ref-mode: non-constructor head where a ctor struct id was needed"
 
 -- ── distinct type names (declaration order) ──────────────────────────────────
 -- the ctor→type map lists each type's ctors consecutively, so dedup-preserving-

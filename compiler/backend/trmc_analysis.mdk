@@ -606,6 +606,15 @@ ctorTailName ex = match flattenApp ex []
   (CVar ctor _, _) => ctor
   _ => ""
 
+-- #712: is this ctor-tail leaf the BUILT-IN list cons (`h :: t`), as opposed to a
+-- user ctor application?  Both yield ctorTailName "Cons" when the user names a ctor
+-- `Cons`, but only the `::` form is the reserved list cell (`$C_Cons`); a user
+-- `Cons` resolves to the remapped `$CU_Cons`.  The WasmGC emitter's TRMC loop keys
+-- the cons-cell struct id off this, since the ctor name alone can't distinguish them.
+export ctorTailIsCons : CExpr -> Bool
+ctorTailIsCons (CBinPrim "::" _ _ _) = True
+ctorTailIsCons _ = False
+
 -- the LEADING (non-last) field exprs of an eligible ctor-tail leaf — the fields
 -- that get stored into the cell (the last field is the destination link, not
 -- stored).  For `::` this is `[head]`.
