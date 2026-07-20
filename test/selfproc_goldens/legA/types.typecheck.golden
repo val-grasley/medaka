@@ -706,7 +706,6 @@ isMangledFor : String -> String -> Bool
 isNonexpansive : Expr -> Bool
 isShadowStandalone : String -> Bool
 isSubTop : Param -> Bool
-isSuppressedImplBodyErr : String -> Bool
 isSyntacticLambda : Expr -> Bool
 isTupleTyName : String -> Bool
 joinAxis : List (String, Param) -> List (String, Param) -> String -> (String, Param)
