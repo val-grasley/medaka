@@ -2495,14 +2495,31 @@ propParam = do
   expectTok TRParen
   pure (PropParam name ty)
 
+-- `TTest` at a decl head is ambiguous between the two things `test` can mean:
+-- the start of a `test "…" = …` block, or an ordinary (but reserved, so
+-- illegal) declaration name (`test = 2`, #646).  Capture the keyword's own
+-- position BEFORE consuming it, then peek: a string literal confirms the
+-- block production and we proceed as before; anything else means the user
+-- wrote `test` as a plain name, so report it the same way #532/#630 report
+-- every other reserved-word collision — `fatalP` (not `failP`) so the
+-- message survives the enclosing `many`'s swallow-and-retry recovery, at the
+-- captured `testPos` so the caret lands on `test`, not on whatever token
+-- (`=`) happened to be where the string label was expected.
 parseTest : Bool -> Parser Decl
 parseTest pub = do
+  testPos <- getPos
   expectTok TTest
+  t <- peekP
+  parseTestRest pub testPos t
+
+parseTestRest : Bool -> Int -> Token -> Parser Decl
+parseTestRest pub _ (TString _) = do
   name <- stringLitP
   expectTok TEqual
   body <- parseBody
   skipNewlines
   pure (DTest pub name body)
+parseTestRest _ testPos _ = fatalAtP (reservedKeywordMsg "test") testPos
 
 parseBench : Bool -> Parser Decl
 parseBench pub = do

@@ -392,6 +392,7 @@ parseSectionOp : String -> Parser Expr
 parseStmt : Parser (List DoStmt)
 parseStmts : Parser (List DoStmt)
 parseTest : Bool -> Parser Decl
+parseTestRest : Bool -> Int -> Token -> Parser Decl
 parseTupleCtorTail : Int -> Parser Ty
 parseTy : Parser Ty
 parseTyApp : Parser Ty
