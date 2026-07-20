@@ -1,0 +1,26 @@
+-- #784 (S0, ratified 2026-07-20, Option A): an interface method whose signature
+-- carries a FREE, RETURN-POSITION effect var — `speak : a -> <e> String`, where
+-- `e` is determined only by which impl DISPATCH picks, not by any argument —
+-- LAUNDERS its effect. `pureUse` below is declared PURE (no `<e>`) yet its body
+-- calls `speak`, which dispatches to `Speak Dog`'s impl that performs <Stdout>
+-- (`putStr`). Pre-fix, check/run/build ACCEPTED (exit 0) and running printed
+-- "[call] woof" — IO from a function the type system certifies pure, the silent
+-- effect-laundering hole. Option A rejects the under-determined return-only
+-- effect var as ill-formed at the INTERFACE DECLARATION (T-EFFECT-UNDETERMINED),
+-- upstream of any impl, so check == run == build all REJECT via a DIAGNOSTIC
+-- (never a runtime panic). This drained #784. Argument-carried effect vars
+-- (map/fold/traverse) are pinned by a callback and are NOT rejected.
+interface Speak a where
+  speak : a -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d =
+    let _ = putStr "[call] "
+    "woof"
+
+pureUse : Speak a => a -> String
+pureUse x = speak x
+
+main = putStrLn (pureUse Dog)

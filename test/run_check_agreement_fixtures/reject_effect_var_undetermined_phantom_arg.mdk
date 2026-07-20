@@ -1,0 +1,21 @@
+-- #784 (S0, review follow-up): phantom-parameter variant of the kind-aware case.
+-- `Box`'s param is Type-kinded (it appears in no effect-tail position), so a
+-- `Box e` argument does NOT pin the Row-kinded return effect `<e>` — the two `e`s
+-- are unrelated. Must reject T-EFFECT-UNDETERMINED at the interface, symmetric
+-- with the `List e` variant. check == run == build all REJECT via a diagnostic.
+data Box a = Box
+
+interface Speak a where
+  speak : a -> Box e -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d b =
+    let _ = putStr "[call] "
+    "woof"
+
+pureUse : Speak a => a -> Box b -> String
+pureUse x b = speak x b
+
+main = putStrLn (pureUse Dog Box)

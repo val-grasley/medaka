@@ -149,6 +149,7 @@ kinds (enumerated from the message families):
 | alias arity | `Type alias \`x\` expects N argument(s), got M` (`:2793`) | `T-ALIAS-ARITY` |
 | effect leak | effect-leak message (`:906`) | `T-EFFECT-LEAK` |
 | effect param | `Invalid effect parameter on <L>: …` / host-pattern (`:972`,`:993`) | `T-EFFECT-PARAM` |
+| under-determined effect var | `Under-determined effect variable <e> in method 'm' of interface 'I': …` — an interface method with a free effect tail var in RETURN position but no argument position (#784 Option A; dispatch could launder the effect) | `T-EFFECT-UNDETERMINED` |
 | non-recursive value let | `'x' is not in scope on the RHS of its own binding …` (`:4923`) | `T-NONREC-VALUE-LET` |
 | do not a monad | `do requires a monad` | `T-DO-NOT-MONAD` |
 | `<-` bind outside do | `bindOutsideDoMsg` — `<-` in a bare (non-`do`) block | `T-BIND-OUTSIDE-DO` |
