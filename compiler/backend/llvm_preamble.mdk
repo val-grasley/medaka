@@ -40,6 +40,8 @@ preambleLines = [
   "declare i64 @mdk_int_to_string(i64)",
   "declare i64 @mdk_float_to_string(double)",
   "declare i64 @llvm.fptosi.sat.i64.f64(double)",
+  -- #762: NaN-sign fold barrier.  See fenceFloatOperand in llvm_emit.mdk.
+  "declare double @llvm.arithmetic.fence.f64(double)",
   "declare i64 @mdk_string_concat(i64)",
   "declare i64 @mdk_string_append(i64, i64)",
   "declare i64 @mdk_string_eq(i64, i64)",

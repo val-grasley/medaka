@@ -24,6 +24,7 @@ declare void @mdk_print_str(i64)
 declare i64 @mdk_int_to_string(i64)
 declare i64 @mdk_float_to_string(double)
 declare i64 @llvm.fptosi.sat.i64.f64(double)
+declare double @llvm.arithmetic.fence.f64(double)
 declare i64 @mdk_string_concat(i64)
 declare i64 @mdk_string_append(i64, i64)
 declare i64 @mdk_string_eq(i64, i64)
@@ -168,16 +169,17 @@ entry:
   %t4 = inttoptr i64 %t3 to ptr
   %t5 = getelementptr i8, ptr %t4, i64 8
   %t6 = load double, ptr %t5
-  %t7 = fadd double %t6, 1.0
-  %t8 = call ptr @mdk_alloc_atomic(i64 16)
-  store i64 2, ptr %t8
-  %t9 = getelementptr i8, ptr %t8, i64 8
-  store double %t7, ptr %t9
-  %t10 = ptrtoint ptr %t8 to i64
-  %t11 = inttoptr i64 %t10 to ptr
-  %t12 = getelementptr i8, ptr %t11, i64 8
-  %t13 = load double, ptr %t12
-  call void @mdk_print_float(double %t13)
+  %t7 = call double @llvm.arithmetic.fence.f64(double %t6)
+  %t8 = fadd double %t7, 1.0
+  %t9 = call ptr @mdk_alloc_atomic(i64 16)
+  store i64 2, ptr %t9
+  %t10 = getelementptr i8, ptr %t9, i64 8
+  store double %t8, ptr %t10
+  %t11 = ptrtoint ptr %t9 to i64
+  %t12 = inttoptr i64 %t11 to ptr
+  %t13 = getelementptr i8, ptr %t12, i64 8
+  %t14 = load double, ptr %t13
+  call void @mdk_print_float(double %t14)
   ret i32 0
 }
 define i64 @mdk_force_cell() {
