@@ -34,6 +34,8 @@ buildMethodReqCounts : List Decl -> List ((String, String), Int)
 buildModInfos : List (String, Ref (Value a)) -> List (String, List (String, Ref (Value a))) -> List (String, List Decl) -> List (ModInfo (Value a))
 buildWith : Value a -> Int -> Int -> List (Value a)
 bytesBEToU64 : Array Int -> (Int, Int, Int, Int)
+canonHashFloat : Float -> Float
+canonNaN : Float
 cellOf : (String, Value a) -> (String, Ref (Value a))
 cellResult : (String, Ref (Value a)) -> (String, Value a)
 charFromCodeUnsafe : Int -> Char
@@ -219,6 +221,7 @@ modImplEntries : List ((String, String), List Int) -> ModInfo (Value a) -> List 
 moduleMethodNames : List Decl -> List String
 moduleMethodNamesOf : Decl -> List String
 narrowMethod : Value a -> String -> Value a
+negFloatIEEE : Float -> Float
 noMainMsg : String
 oneOrMulti : List (Value a) -> Value a
 oneOrMultiV : List (Value a) -> List (Value a) -> Value a

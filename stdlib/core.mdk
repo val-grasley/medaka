@@ -203,9 +203,9 @@ export impl Ord Int where
 floatSignBit : Float -> Bool
 floatSignBit x = arrayGetUnsafe 0 (floatToBytes64 x) >= 128
 
--- | totalOrder tie-break for two Floats that are EQUAL under IEEE `==`.  The
--- only such pair that totalOrder separates is −0.0 < +0.0; every other equal
--- pair shares a sign and stays `Eq`.
+-- | totalOrder sign tie-break, used ONLY by `compareNaN` to place −NaN below
+-- +NaN (issue #758): `compare` no longer separates −0.0 from +0.0 — the zero
+-- sign is normalised away so `compare (−0.0) (+0.0) = Eq`, matching `Eq Float`.
 compareBySign : Float -> Float -> Ordering
 compareBySign a b = match (floatSignBit a, floatSignBit b)
   (True, False) => Lt
@@ -234,9 +234,12 @@ compareNaN a b
    transitivity (`nan Eq 1.0` and `nan Eq 3.0`, yet `1.0 != 3.0`), so a sorted
    result was only an accident of the algorithm.
 
-   Deliberate divergence: `compare x y == Eq` no longer coincides with `x == y`
-   at NaN and −0.0.  `Ord`'s total order and `Eq`'s IEEE equality genuinely
-   disagree at those two points — the trade Rust's `f64::total_cmp` and Java's
+   Deliberate divergence: `compare x y == Eq` coincides with `x == y` for every
+   non-NaN value — in particular `compare (−0.0) (+0.0) = Eq`, matching
+   `-0.0 == 0.0` (issue #758): the equal-branch normalises the zero sign away
+   rather than tie-breaking it.  NaN is the SOLE residual: `compare nan nan = Eq`
+   while `nan == nan = False`, because IEEE `==` is non-reflexive at NaN and no
+   total order can be — the trade Rust's `f64::total_cmp` and Java's
    `Double.compare` make too.
 
    ⚠️  The four relational overrides below are LOAD-BEARING, do not delete them.
@@ -255,7 +258,9 @@ export impl Ord Float where
     else if a > b then
       Gt
     else if a == b then
-      compareBySign a b
+      -- IEEE-equal: the only sign-differing equal pair is ±0.0, and #758 rules
+      -- it `Eq` (normalise the zero sign away) so `compare` agrees with `Eq`.
+      Eq
     else
       compareNaN a b
   lt a b = a < b

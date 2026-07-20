@@ -1,0 +1,11 @@
+-- #761 (S0, run != build): a `-0.0` LITERAL printed `0.0` under `medaka run`
+-- (the tree-walker's `evalUnop "-"` did `0.0 - f`, and `0.0 - 0.0 = +0.0`, dropping
+-- the sign) while `medaka build` emitted `fneg` and kept a true -0.0.  This fixture
+-- pins run == build == core-ir on the literal's SIGN and its display.  The computed
+-- `-1.0 * 0.0` path already agreed pre-fix; both must render "-0.0" now.
+main =
+  println (-0.0) -- -0.0 : the literal (the actual #761 repro)
+  println (-1.0 * 0.0) -- -0.0 : the computed twin (agreed before the fix too)
+  println 0.0 -- 0.0  : positive zero literal, unchanged
+  println (0.0 - 0.0) -- 0.0  : IEEE subtraction of zeros is +0.0, unchanged
+  println (1.0 / -0.0) -- -inf : sign-observable proof the literal is truly -0.0

@@ -1,5 +1,5 @@
 # META
-source_lines=1638
+source_lines=1643
 stages=DESUGAR,MARK
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -207,9 +207,9 @@ export impl Ord Int where
 floatSignBit : Float -> Bool
 floatSignBit x = arrayGetUnsafe 0 (floatToBytes64 x) >= 128
 
--- | totalOrder tie-break for two Floats that are EQUAL under IEEE `==`.  The
--- only such pair that totalOrder separates is −0.0 < +0.0; every other equal
--- pair shares a sign and stays `Eq`.
+-- | totalOrder sign tie-break, used ONLY by `compareNaN` to place −NaN below
+-- +NaN (issue #758): `compare` no longer separates −0.0 from +0.0 — the zero
+-- sign is normalised away so `compare (−0.0) (+0.0) = Eq`, matching `Eq Float`.
 compareBySign : Float -> Float -> Ordering
 compareBySign a b = match (floatSignBit a, floatSignBit b)
   (True, False) => Lt
@@ -238,9 +238,12 @@ compareNaN a b
    transitivity (`nan Eq 1.0` and `nan Eq 3.0`, yet `1.0 != 3.0`), so a sorted
    result was only an accident of the algorithm.
 
-   Deliberate divergence: `compare x y == Eq` no longer coincides with `x == y`
-   at NaN and −0.0.  `Ord`'s total order and `Eq`'s IEEE equality genuinely
-   disagree at those two points — the trade Rust's `f64::total_cmp` and Java's
+   Deliberate divergence: `compare x y == Eq` coincides with `x == y` for every
+   non-NaN value — in particular `compare (−0.0) (+0.0) = Eq`, matching
+   `-0.0 == 0.0` (issue #758): the equal-branch normalises the zero sign away
+   rather than tie-breaking it.  NaN is the SOLE residual: `compare nan nan = Eq`
+   while `nan == nan = False`, because IEEE `==` is non-reflexive at NaN and no
+   total order can be — the trade Rust's `f64::total_cmp` and Java's
    `Double.compare` make too.
 
    ⚠️  The four relational overrides below are LOAD-BEARING, do not delete them.
@@ -259,7 +262,9 @@ export impl Ord Float where
     else if a > b then
       Gt
     else if a == b then
-      compareBySign a b
+      -- IEEE-equal: the only sign-differing equal pair is ±0.0, and #758 rules
+      -- it `Eq` (normalise the zero sign away) so `compare` agrees with `Eq`.
+      Eq
     else
       compareNaN a b
   lt a b = a < b
@@ -1680,7 +1685,7 @@ prop "foldThen with Some agrees with a pure fold" (xs : List Int) = eq
 (DFunDef false "compareBySign" ((PVar "a") (PVar "b")) (EMatch (ETuple (EApp (EVar "floatSignBit") (EVar "a")) (EApp (EVar "floatSignBit") (EVar "b"))) (arm (PTuple (PCon "True") (PCon "False")) () (EVar "Lt")) (arm (PTuple (PCon "False") (PCon "True")) () (EVar "Gt")) (arm PWild () (EVar "Eq"))))
 (DTypeSig false "compareNaN" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Ordering"))))
 (DFunDef false "compareNaN" ((PVar "a") (PVar "b")) (EIf (EBinOp "&&" (EBinOp "!=" (EVar "a") (EVar "a")) (EBinOp "!=" (EVar "b") (EVar "b"))) (EApp (EApp (EVar "compareBySign") (EVar "a")) (EVar "b")) (EIf (EBinOp "!=" (EVar "a") (EVar "a")) (EIf (EApp (EVar "floatSignBit") (EVar "a")) (EVar "Lt") (EVar "Gt")) (EIf (EVar "otherwise") (EIf (EApp (EVar "floatSignBit") (EVar "b")) (EVar "Gt") (EVar "Lt")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DImpl true "Ord" ((TyCon "Float")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EIf (EBinOp "==" (EVar "a") (EVar "b")) (EApp (EApp (EVar "compareBySign") (EVar "a")) (EVar "b")) (EApp (EApp (EVar "compareNaN") (EVar "a")) (EVar "b")))))) (im "lt" ((PVar "a") (PVar "b")) (EBinOp "<" (EVar "a") (EVar "b"))) (im "gt" ((PVar "a") (PVar "b")) (EBinOp ">" (EVar "a") (EVar "b"))) (im "lte" ((PVar "a") (PVar "b")) (EBinOp "<=" (EVar "a") (EVar "b"))) (im "gte" ((PVar "a") (PVar "b")) (EBinOp ">=" (EVar "a") (EVar "b"))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
+(DImpl true "Ord" ((TyCon "Float")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EIf (EBinOp "==" (EVar "a") (EVar "b")) (EVar "Eq") (EApp (EApp (EVar "compareNaN") (EVar "a")) (EVar "b")))))) (im "lt" ((PVar "a") (PVar "b")) (EBinOp "<" (EVar "a") (EVar "b"))) (im "gt" ((PVar "a") (PVar "b")) (EBinOp ">" (EVar "a") (EVar "b"))) (im "lte" ((PVar "a") (PVar "b")) (EBinOp "<=" (EVar "a") (EVar "b"))) (im "gte" ((PVar "a") (PVar "b")) (EBinOp ">=" (EVar "a") (EVar "b"))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
 (DImpl true "Ord" ((TyCon "String")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EVar "Eq")))) (im "lt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "gt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "lte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "gte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
 (DImpl true "Ord" ((TyCon "Char")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EVar "Eq")))) (im "lt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "gt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "lte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "gte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EVar "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
 (DTypeSig false "thenCmp" (TyFun (TyCon "Ordering") (TyFun (TyCon "Ordering") (TyCon "Ordering"))))
@@ -2011,7 +2016,7 @@ prop "foldThen with Some agrees with a pure fold" (xs : List Int) = eq
 (DFunDef false "compareBySign" ((PVar "a") (PVar "b")) (EMatch (ETuple (EApp (EVar "floatSignBit") (EVar "a")) (EApp (EVar "floatSignBit") (EVar "b"))) (arm (PTuple (PCon "True") (PCon "False")) () (EVar "Lt")) (arm (PTuple (PCon "False") (PCon "True")) () (EVar "Gt")) (arm PWild () (EVar "Eq"))))
 (DTypeSig false "compareNaN" (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyCon "Ordering"))))
 (DFunDef false "compareNaN" ((PVar "a") (PVar "b")) (EIf (EBinOp "&&" (EBinOp "!=" (EVar "a") (EVar "a")) (EBinOp "!=" (EVar "b") (EVar "b"))) (EApp (EApp (EVar "compareBySign") (EVar "a")) (EVar "b")) (EIf (EBinOp "!=" (EVar "a") (EVar "a")) (EIf (EApp (EVar "floatSignBit") (EVar "a")) (EVar "Lt") (EVar "Gt")) (EIf (EVar "otherwise") (EIf (EApp (EVar "floatSignBit") (EVar "b")) (EVar "Gt") (EVar "Lt")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DImpl true "Ord" ((TyCon "Float")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EIf (EBinOp "==" (EVar "a") (EVar "b")) (EApp (EApp (EVar "compareBySign") (EVar "a")) (EVar "b")) (EApp (EApp (EVar "compareNaN") (EVar "a")) (EVar "b")))))) (im "lt" ((PVar "a") (PVar "b")) (EBinOp "<" (EVar "a") (EVar "b"))) (im "gt" ((PVar "a") (PVar "b")) (EBinOp ">" (EVar "a") (EVar "b"))) (im "lte" ((PVar "a") (PVar "b")) (EBinOp "<=" (EVar "a") (EVar "b"))) (im "gte" ((PVar "a") (PVar "b")) (EBinOp ">=" (EVar "a") (EVar "b"))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
+(DImpl true "Ord" ((TyCon "Float")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EIf (EBinOp "==" (EVar "a") (EVar "b")) (EVar "Eq") (EApp (EApp (EVar "compareNaN") (EVar "a")) (EVar "b")))))) (im "lt" ((PVar "a") (PVar "b")) (EBinOp "<" (EVar "a") (EVar "b"))) (im "gt" ((PVar "a") (PVar "b")) (EBinOp ">" (EVar "a") (EVar "b"))) (im "lte" ((PVar "a") (PVar "b")) (EBinOp "<=" (EVar "a") (EVar "b"))) (im "gte" ((PVar "a") (PVar "b")) (EBinOp ">=" (EVar "a") (EVar "b"))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
 (DImpl true "Ord" ((TyCon "String")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EVar "Eq")))) (im "lt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "gt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "lte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "gte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
 (DImpl true "Ord" ((TyCon "Char")) () ((im "compare" ((PVar "a") (PVar "b")) (EIf (EBinOp "<" (EVar "a") (EVar "b")) (EVar "Lt") (EIf (EBinOp ">" (EVar "a") (EVar "b")) (EVar "Gt") (EVar "Eq")))) (im "lt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "gt" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "True")) (arm PWild () (EVar "False")))) (im "lte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "gte" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "False")) (arm PWild () (EVar "True")))) (im "min" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Gt") () (EVar "y")) (arm PWild () (EVar "x")))) (im "max" ((PVar "x") (PVar "y")) (EMatch (EApp (EApp (EMethodRef "compare") (EVar "x")) (EVar "y")) (arm (PCon "Lt") () (EVar "y")) (arm PWild () (EVar "x"))))))
 (DTypeSig false "thenCmp" (TyFun (TyCon "Ordering") (TyFun (TyCon "Ordering") (TyCon "Ordering"))))

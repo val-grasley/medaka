@@ -1,0 +1,40 @@
+-- #758 + #761 regression (S0, was a silent-wrongness cluster).  CONVERTED from
+-- test/must_fail_fixtures/758-negzero-float-set-key-collision/ when #758 was fixed,
+-- and extended with #761's literal-sign facet.  Every fact here must hold on ALL
+-- THREE engines (eval == native == wasm) — the whole point of the fix was that the
+-- normalisation runs in lockstep in `compare`/`hashFloat` across the engines.
+--
+-- The mandate (issue #758, owner 2026-07-20 = Option 1):
+--   * `Ord Float.compare` normalises the zero sign away, so `compare (±0.0) = Eq`.
+--   * `hashFloat` hashes -0.0 as +0.0, and canonicalises every NaN to one bucket.
+--   * `Eq Float` stays IEEE: `-0.0 == 0.0` is True, `nan == nan` is False.
+--   * NaN remains the SOLE compare != eq / container-key residual (not fixed here).
+-- And #761: a `-0.0` LITERAL keeps its IEEE sign in the tree-walker (it used to
+-- collapse to +0.0 because `evalUnop "-"` did `0.0 - f`; native/wasm emit `fneg`).
+import set as S
+import map as M
+
+neg = -0.0 -- the #761 literal — used to collapse to +0.0 under `medaka run`
+comp = -1.0 * 0.0 -- a computed -0.0 (already agreed across engines pre-fix)
+ninf = -1.0 / 0.0
+nan = 0.0 / 0.0
+nan2 = 0.0 % 0.0
+
+main = debug
+  ( -- #758 laws (every element True):
+    [ S.size (S.fromList [0.0, neg]) == 1 -- ±0.0 dedup to ONE ordered-Set key
+    , S.size (S.fromList [0.0, comp, 1.0]) == 2 -- (distinct values still distinct)
+    , M.size (M.fromList [(0.0, 1), (neg, 2)]) == 1 -- … and ONE Map key
+    , compare neg 0.0 == Eq -- compare AGREES with Eq at ±0.0 now
+    , compare 0.0 comp == Eq
+    , hashFloat neg == hashFloat 0.0 -- equal values MUST hash equal
+    , hashFloat comp == hashFloat 0.0
+    , hashFloat nan == hashFloat nan2 -- all NaNs share one hash bucket
+    , neg == 0.0 -- Eq stays IEEE: -0.0 == 0.0 is True …
+    , not (nan == nan) -- … and nan == nan is False (unchanged)
+    , 1.0 / neg == ninf -- #761: the -0.0 LITERAL kept its sign (1/-0.0 = -inf)
+    , 1.0 / comp == ninf
+    ]
+  , -- #761 DISPLAY: a -0.0 literal renders "-0.0", identically on every engine.
+    [neg, comp, 0.0, 0.0 - 0.0]
+  )
