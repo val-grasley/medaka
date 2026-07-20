@@ -496,7 +496,7 @@ checkRoute typesMode allowInternal trusted _ _ rsrc csrc tsrc target [(mid, decl
       let warns = filter isDiagWarn diags
       let dump = stripWarningLines (runCheck rsrc csrc tsrc)
       let report = if typesMode then dump else userSchemeLines decls dump
-      let _ = putStr report
+      let _ = putStrLn report
       -- 0.1.0 beginner-footgun warning (main-shape, see below): reuse the same
       -- elaborateModules the multi-module route calls just for mainSchemeRef —
       -- runCheck's own single-file path never populates it.
@@ -533,7 +533,7 @@ checkRoute typesMode allowInternal trusted pathMap roots rsrc csrc tsrc target m
           let _ = putStr errText
           exit 1
         None =>
-          let _ = putStr (runCheckModules allowInternal trusted rtD coreD modsD)
+          let _ = putStrLn (runCheckModules allowInternal trusted rtD coreD modsD)
           -- 0.1.0 main-shape warning (see below): runCheckModules/
           -- checkModulesHasErrors never call elaborateModules, so mainSchemeRef
           -- is never populated on this route either — mainShapeWarnings runs
