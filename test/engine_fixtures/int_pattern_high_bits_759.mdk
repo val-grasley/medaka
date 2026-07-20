@@ -18,6 +18,23 @@ g n = match n
   2305843009213693952 ..= 4611686018427387903 => "in-range"
   _                                            => "out-range"
 
+-- Multi-clause function equation with a high-bit literal PARAMETER.  This is a DISTINCT
+-- source shape from `match`: the WasmGC backend lowers clause params through
+-- `patTestBind`, NOT the decision-tree `emitLitSwitch`, so a `match`-only fixture leaves
+-- `patTestBind`'s `i31.get_s`/`i32.const k` truncation UNTESTED — this arm reddens the
+-- wasm arm (module rejected: `invalid i32 number`) pre-fix.  (Native lowers multi-clause
+-- via the same decision tree as `match`, so its native arm reddens through emitLitChain.)
+h 2305843009213693952 = "hit-eq"
+h _                   = "miss-eq"
+
+-- Refutable literal pattern-guard (`LIT <- e`) carrying a high-bit literal — the
+-- refutable-guard SURFACE form.  (Surface Medaka folds the literal into a decision-tree
+-- switch column, so native routes it through emitLitChain and wasm through emitLitSwitch,
+-- same emit sites as `f`; the LLVM `emitRefutMatch (PLit (LInt _))` arm is unreachable
+-- from source — see its comment.)  Kept as coverage of the guard surface at >= 2^61.
+p n | 2305843009213693952 <- n = "hit-guard"
+p _                            = "miss-guard"
+
 main : <IO> Unit
 main =
   println (f 2305843009213693952)
@@ -26,3 +43,7 @@ main =
   println (f 100)
   println (g 3000000000000000000)
   println (g 100)
+  println (h 2305843009213693952)
+  println (h 100)
+  println (p 2305843009213693952)
+  println (p 100)

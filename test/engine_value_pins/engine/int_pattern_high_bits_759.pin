@@ -4,3 +4,7 @@ hit-2p61m1
 miss
 in-range
 out-range
+hit-eq
+miss-eq
+hit-guard
+miss-guard

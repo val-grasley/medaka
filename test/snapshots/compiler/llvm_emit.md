@@ -1,5 +1,5 @@
 # META
-source_lines=10546
+source_lines=10550
 stages=DESUGAR,MARK
 # SOURCE
 -- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
@@ -7149,7 +7149,11 @@ emitRefutMatch e env (PTuple ps) v body failL =
 -- compares the immediate (3/1).
 emitRefutMatch e env (PLit (LInt k)) v _ failL =
   -- full-width tag via emitLit (see emitLitChain / #759): a `k*2+1` head wraps for
-  -- |k| >= 2^61 and bakes the wrong comparison constant.
+  -- |k| >= 2^61 and bakes the wrong comparison constant.  (NB: surface Medaka folds
+  -- every integer literal — guard binds, secondary binds, nested constructor binds,
+  -- guarded clause params — into a decision-tree switch column, so this literal arm of
+  -- the refutable re-match is not reached from source today; the guard is kept correct
+  -- for parity with emitLitChain should the lowering ever route a literal here.)
   let (kw, _) = emitLit e (LInt k)
   let _ = emitWordEqTest e v kw failL
   env
