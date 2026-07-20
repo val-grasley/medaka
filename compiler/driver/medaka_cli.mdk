@@ -298,8 +298,11 @@ usage _ = putStrLn (stringConcat
     "  medaka snapshot [--check|--new|--bless] [paths...]  Per-stage snapshot tests (--out <dir>, --stages <a,b,..>)\n",
     "  medaka fmt [paths...]     Format .mdk files in place (or --check)\n",
     "  medaka new <name>         Scaffold a new project directory\n",
+    "  medaka repl               Start an interactive REPL (reads stdin until EOF or :quit)\n",
     "  medaka lsp                Run the language server over stdio\n",
     "  medaka mcp                Run the MCP server over stdio (JSON-RPC for agents)\n",
+    "  medaka check-policy <file.mdk> [--allow L1,L2,...] [--fn name]  Check a plugin's inferred effects against an allow-list\n",
+    "  medaka manifest <file.mdk> [--fn name]  Emit the verified capability manifest as TOML\n",
     "  medaka help               Show this message\n",
     "  medaka --version          Show the compiler version\n",
   ])
