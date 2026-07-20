@@ -1,0 +1,44 @@
+issue: 777
+what: A general (non-literal) type mismatch inside a GROUND impl-method body is
+what: unenforced end-to-end. `impl Sig D`'s method body calls the top-level helper
+what: `idInt : Int -> Int` with a STRING LITERAL argument (`idInt "str"`), even though
+what: the method's own declared return type is `String`. `check` and `build` both
+what: accept the program (exit 0, no diagnostics) — the argument-type clash between
+what: `idInt`'s `Int` parameter and the `String` argument is silently swallowed during
+what: impl-body inference (compiler/types/typecheck.mdk's `inferUserImplBodies`,
+what: ~11463-11471, snapshots+restores `typeErrors`/`typeErrorsSticky` around body
+what: inference — discarding exactly this class of `unify` mismatch, per the code
+what: comment at 11452-11462). This is DISTINCT from the numeric-literal-mismatch
+what: channel, which IS caught (reframed as a `Num` obligation by
+what: `reportNumOrNoImpl`). The built binary AND the tree-walking interpreter both
+what: then print `str` at exit 0: `idInt` never actually converts anything — with no
+what: type enforcement at the call site it degenerates to passing the String value
+what: straight through untyped, so the method's declared `String` return type is
+what: satisfied BY ACCIDENT, not by a genuine `Int` result ever existing. Silent wrong
+what: value, not a crash, from a program the whole pipeline (check + build + run)
+what: calls clean.
+cmd: build-run main.mdk
+exit: 0
+stdout: str
+control: build-run control.mdk
+why-control: control.mdk is byte-for-byte the same SHAPE — same interface, same ground
+why-control: impl, same `String`-returning method body calling a same-arity helper —
+why-control: except the helper is `idStr : String -> String`, so the types genuinely
+why-control: agree. It must build and run clean, printing the same `str`. That proves
+why-control: the ENVIRONMENT (parse/typecheck/build/run pipeline, impl dispatch, `String`
+why-control: printing) is fine, and isolates the bug to the ARGUMENT-TYPE MISMATCH
+why-control: inside the impl-method body — not to impl-methods calling helpers, or to
+why-control: this program's shape, in general.
+why-note: This pin does NOT assert that `check`/`build` reject the program — they
+why-note: don't, and that IS the bug (see `what:` above). It asserts the OBSERVABLE
+why-note: end-to-end consequence instead: the actual bytes the built binary prints.
+why-note: A real fix must move this row — either `medaka build` starts rejecting
+why-note: main.mdk (build-run's build phase fails, graded as exit 126 by
+why-note: test/diff_compiler_must_fail.sh's run_verb, since a binary that never built
+why-note: cannot be executed), or the binary's runtime behavior changes — either way
+why-note: this exact (exit 0, stdout "str") pin stops holding and the row drains.
+why-note: Distinct from #564 (impl-body Num-literal defaulting, which IS caught via
+why-note: the obligation channel), #323 (parametric-impl RKey PAP — a different,
+why-note: literal-only path), and #508 (guard-in-impl-method parse, unrelated to
+why-note: typechecking). None of those covers a general NON-LITERAL impl-body type
+why-note: mismatch going unenforced end-to-end.
