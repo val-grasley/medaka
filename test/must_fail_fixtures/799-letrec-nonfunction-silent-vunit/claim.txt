@@ -1,0 +1,28 @@
+issue: 799
+what: a block-statement `let rec <name> = <non-function-value>` (zero params, RHS
+what: not a syntactic lambda — e.g. `let rec loop = loop`) is SILENTLY ACCEPTED by
+what: both `check` and `run`, instead of being rejected the way the equivalent
+what: top-level form is (`T-NONREC-VALUE-LET`). No diagnostic, no panic, no hang:
+what: `loop` binds to a still-`VUnit` Ref cell (the recursive-let implementation
+what: pre-binds the name to `Ref VUnit` before evaluating the RHS) and the program
+what: proceeds to print "reached" as if nothing were wrong. The identical hole is
+what: independently reachable via the pre-existing expression form
+what: `let rec loop = loop in e2` (#645's block-statement `TRec` arm just gave it
+what: a second entry point).
+cmd: run main.mdk
+exit: 0
+stdout: reached
+why-diag: THE ABSENCE OF ANY ERROR IS THE DEFECT. A correct implementation should
+why-diag: either reject this at check-time (T-NONREC-VALUE-LET, mirroring the
+why-diag: top-level guard in checkLetRecDecls/clauseIsNonFunction,
+why-diag: compiler/types/typecheck.mdk ~7257) or the genuinely-circular reference
+why-diag: should hang/panic at run-time — instead evalRecLet/blockRecLet silently
+why-diag: derefs the not-yet-set `Ref VUnit` cell and execution proceeds normally,
+why-diag: printing "reached" with exit 0.
+control: run control.mdk
+why-control: the SAME shape but a FUNCTION-form recursive let (`loop n = …`, one
+why-control: param) runs correctly and prints "0" (the countdown reaching its base
+why-control: case) — that isolates the bug to the zero-param / non-lambda-RHS case
+why-control: specifically, not to block-level `let rec` recursion in general (which
+why-control: #645 fixed and which works correctly for the function-form case
+why-control: exercised here).

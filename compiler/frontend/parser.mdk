@@ -3162,8 +3162,25 @@ letKind : Token -> Parser DoStmt
 -- beta mutability model: `let mut` has been removed — rejected at the parser
 -- (see `letMutRemovedMsg`), so no `mut` flag is ever built downstream.
 letKind TMut = failP letMutRemovedMsg
+letKind TRec = letRecStmt
 letKind (TIdent name) = letIdent name
 letKind _ = letPat
+
+-- REC-led: block-level `let rec f a… = e [in/else]` (#645). A plain
+-- function-let is already self-recursive (`letFunTailFor` always builds an
+-- `isRec=True` node), so `rec` here only matters for the zero-param value
+-- form (`let rec x = …`, otherwise non-recursive) — but both shapes are
+-- accepted, mirroring top-level `let rec`/expr-level `letRecExpr`. Reuses
+-- `letFunTailFor` rather than duplicating its `in`/no-`in` tail dispatch.
+letRecStmt : Parser DoStmt
+letRecStmt = do
+  expectTok TRec
+  name <- identNameP
+  pats <- many parseParamPat
+  expectTok TEqual
+  e1 <- parseRhsExpr
+  t <- peekP
+  letFunTailFor name pats e1 t
 
 -- IDENT-led: function-let `let f a… = e` (params present), annotated
 -- `let x : ty = e`, or plain `let x = e [in/else]`
