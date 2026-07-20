@@ -418,15 +418,33 @@ nothing to pin it, a caller instantiates `e := ⟨ ⟩` at the use site and obta
 value the effect system certifies **pure** — yet the *dispatched* impl of `speak`
 may perform `<Stdout>`, selected by the dictionary at the call site, invisibly to
 the caller's effect. The effect would be **laundered** away (§5's no-laundering law
-violated with no error). Contrast argument-carried polymorphism (`map`, `andThen`,
-`fold`, `traverse`): there `e` is pinned by the *actual* effect of the supplied
-callback, so instantiation cannot lie. This side condition is what makes the
-generalization of a method effect variable sound in the presence of dictionary
-dispatch — and it does so **without** consulting the dictionary (it is a purely
-syntactic property of the *declared* signature), so it preserves the
-dictionary/effect orthogonality restated below: the alternative of lower-bounding a
-return-only effect var by the *dispatched* impl's latent effect was rejected because
-it would make the effect depend on dispatch, violating that orthogonality.
+violated with no error). Argument-carried polymorphism (`map`, `andThen`, `fold`,
+`traverse`) at least *gives the caller a handle on* `e`: it appears in an argument
+(a callback's effect row, or a row-kinded constructor parameter), so the instantiated
+`e` is visible in the call's type rather than materialising out of nowhere. This
+well-formedness condition is what makes the *generalization* of a method effect
+variable meaningful in the presence of dictionary dispatch — and it is decided
+**without** consulting the dictionary (it is a purely syntactic property of the
+*declared* signature), so it preserves the dictionary/effect orthogonality restated
+below: the alternative of lower-bounding a return-only effect var by the *dispatched*
+impl's latent effect was rejected because it would make the effect depend on
+dispatch, violating that orthogonality.
+
+**Scope of Option A — what it does and does NOT guarantee.** This side condition is a
+*necessary* well-formedness rule, not a *sufficient* soundness proof. It is purely
+about the shape of the **declared signature**; it does **not** bound the **impl
+body's** latent effect. In particular, a method whose signature *does* carry `e` in
+an argument can still launder: an impl is free to **ignore** the callback (never
+invoke it) and perform its own intrinsic effect. For example
+`speak : a → (Unit →^e Unit) →^e String` is well-formed under this rule, yet an impl
+that runs `putStr` without ever calling the `Unit →^e Unit` argument performs
+`<Stdout>` while a caller instantiates `e := ⟨ ⟩` — the same laundering, now hidden
+behind an argument-shaped `e`. Ruling that out requires bounding an impl body's
+latent effect by the effect that actually *flows from its arguments* (effect
+inference over the body, the same shape as the value/`map`/`traverse` case, which is
+why it cannot be a blanket ban), and that is **not yet enforced** for effect-variable
+methods. It is tracked separately as **#803** and is out of scope for Option A, whose
+job is exactly the signature-level well-formedness above.
 
 **Effect-polymorphic data (effects as type-constructor arguments).** A row may
 occupy a **type-constructor argument** position, so a data type can be parameterized
