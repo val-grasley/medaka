@@ -1,0 +1,12 @@
+idStr : String -> String
+idStr x = x
+
+interface Sig a where
+  sig : a -> String
+
+data D = D
+
+impl Sig D where
+  sig _ = idStr "str"
+
+main = println (sig D)
