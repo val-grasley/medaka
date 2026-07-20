@@ -274,7 +274,7 @@ laws bind **all four engines** and every reflective helper (V6).
   not IEEE predicates, and #360 asks for them to be total.
 
   Sign-bit note: totalOrder distinguishes −NaN from +NaN (a NaN's sign *is*
-  observable through `compare`/`hashFloat` — that is #762/#509, still open), but
+  observable through `compare`/`hashFloat`), but
   it **normalizes −0.0 to +0.0** (#758): the zero sign is deliberately *not*
   observable through `compare`/`hash`, so they agree with `Eq` (`-0.0 == 0.0`)
   and keep containers coherent. The impl reads the sign out of the IEEE encoding
@@ -284,6 +284,23 @@ laws bind **all four engines** and every reflective helper (V6).
   (x86's `0.0/0.0` is −NaN, ARM's is +NaN), so under totalOrder a NaN's
   *position* is a platform fact. Pin totalOrder's laws, never a NaN's absolute
   position — see `test/eval_prelude_fixtures/float_totalorder_nan.mdk`.
+
+  ✅ **Same-box run≠build on that sign FIXED 2026-07-20 (#762/#774).** At
+  `-O2`, clang could inline a pure identity fn and const-fold the resulting
+  runtime-reachable NaN-producing float op (`fdiv 0.0, 0.0`) to APFloat's
+  canonical +NaN, while the host `divsd` (and eval) actually produce −NaN —
+  flipping `compare`'s totalOrder answer between `run` and the built binary
+  on the **same machine**. Fixed by routing one operand of each float-arith
+  op through `llvm.arithmetic.fence.f64` (`fenceFloatOperand`,
+  `compiler/backend/llvm_emit.mdk`), skipped when both operands are already
+  emit-time constants — so ordinary literal folding is untouched and the
+  fence is asm-free (Medaka has no fast-math flags and boxed floats, so the
+  optimizations `arithmetic.fence` blocks were already off). Pinned by
+  `test/run_check_agreement_fixtures/accept_nan_sign_runtime_fold`.
+  **#509 — the sign disagreeing *across* hosts (x86 −NaN vs arm +NaN in a
+  cross-built binary) — is a separate, still-open concern**: the fence makes
+  a build agree with its own runtime; it does not make a NaN's sign portable
+  between hosts.
 - **N7 — Conversions are total and defined.** `intToFloat` is IEEE
   round-to-nearest (63-bit ints above 2^53 round; that rounding is the
   semantics, identically everywhere). Float→Int conversions (`truncate`,
@@ -445,7 +462,7 @@ laws bind **all four engines** and every reflective helper (V6).
 | N1 wrap / N2 div-mod / N3 literals | ✅ CONFIRMED | bare `add/sub/mul` (no nsw/nuw, grep-clean), `sdiv/srem` guarded, trap codes match eval; literal tag-width guard at 2^61 handled via full-width shl for value CONSTRUCTION **and, as of #759/#768, the pattern-COMPARISON path** — the pattern emitter baked an overflowed Int literal head for heads ≥2^61 until fixed by reusing the same full-width `shl` lowering (LLVM `emitLitChain`/`emitRefutMatch`/`emitRangeTest`; wasm `patTestBind`/`rngCmpW`/`emitLitSwitchTail`/`emitLitSwitchRef` via `$mdk_unbox_int`) |
 | N4 IEEE ops | ✅ | inline paths ✅ (`fadd…frem`, no fast-math); the runtime-dispatch Float `%` arm is now fmod on every engine (#345 FIXED) |
 | N5 IEEE compare, uniformly | ✅ | inline `fcmp o*`/`une` ✅ both backends; `nan <= nan` on global Floats CONFIRMED correct (the `RScalar` stamp covers it — a suspected divergence DISPROVED by probe); the generic/HOF (type-lost) path **#305 FIXED** — per-op IEEE predicates `mdk_value_lt/le/gt/ge` + `$mdk_value_*` peers replace the 3-way derivation; eval==native==wasm pinned by `test/llvm_fixtures_typed/float_typelost_ord_nan.mdk` (engines gate + value pin) and `test/run_check_agreement_fixtures/accept_float_ne_nan.mdk` |
-| N6 total-order story | ✅ | **DECIDED + IMPLEMENTED 2026-07-16 (#360): IEEE-754 totalOrder** (−NaN < −inf … +inf < +NaN) for `compare`/`min`/`max`/`sort`. `impl Ord Float` (`stdlib/core.mdk`) reads the sign bit via `floatToBytes64` on the NaN cold path. Accepted cost: `compare x y == Eq` ≠ `x == y` at **NaN only** (`nan != nan` is inherent to IEEE). ✅ **±0.0 normalization SHIPPED 2026-07-20 (#758/#761, #769)** — `compare`+`hashFloat` normalize `-0.0→+0.0` so ordered/hash containers stay Eq-coherent at zero (and canonicalize NaN payloads to one bucket), in lockstep across eval/native/wasm; eval separately preserves the sign of a `-0.0` *literal* itself (#761). cf. Rust `total_cmp`, but Medaka keys BOTH ordered and hashed containers on the order, so the zero sign is not left observable. **N5 unaffected** — the impl explicitly overrides `lt`/`gt`/`lte`/`gte` back to the IEEE primitives, because Ord's DEFAULTS would otherwise derive them from `compare` and re-open #305; `min`/`max` keep the compare-derived defaults on purpose. Pinned by `test/eval_prelude_fixtures/float_totalorder_nan.mdk` (eval + Core IR), its `build_diff_fixtures` twin (native), and `run_check_agreement_fixtures/accept_float_totalorder` (run==build==`.out`). ⚠ A hardware NaN's sign is target-dependent (x86 −NaN, arm +NaN), so those fixtures pin totalOrder's LAWS, never a NaN's absolute position |
+| N6 total-order story | ✅ | **DECIDED + IMPLEMENTED 2026-07-16 (#360): IEEE-754 totalOrder** (−NaN < −inf … +inf < +NaN) for `compare`/`min`/`max`/`sort`. `impl Ord Float` (`stdlib/core.mdk`) reads the sign bit via `floatToBytes64` on the NaN cold path. Accepted cost: `compare x y == Eq` ≠ `x == y` at **NaN only** (`nan != nan` is inherent to IEEE). ✅ **±0.0 normalization SHIPPED 2026-07-20 (#758/#761, #769)** — `compare`+`hashFloat` normalize `-0.0→+0.0` so ordered/hash containers stay Eq-coherent at zero (and canonicalize NaN payloads to one bucket), in lockstep across eval/native/wasm; eval separately preserves the sign of a `-0.0` *literal* itself (#761). cf. Rust `total_cmp`, but Medaka keys BOTH ordered and hashed containers on the order, so the zero sign is not left observable. **N5 unaffected** — the impl explicitly overrides `lt`/`gt`/`lte`/`gte` back to the IEEE primitives, because Ord's DEFAULTS would otherwise derive them from `compare` and re-open #305; `min`/`max` keep the compare-derived defaults on purpose. Pinned by `test/eval_prelude_fixtures/float_totalorder_nan.mdk` (eval + Core IR), its `build_diff_fixtures` twin (native), and `run_check_agreement_fixtures/accept_float_totalorder` (run==build==`.out`). ⚠ A hardware NaN's sign is target-dependent (x86 −NaN, arm +NaN), so those fixtures pin totalOrder's LAWS, never a NaN's absolute position. ✅ **Same-box run≠build on that sign FIXED 2026-07-20 (#762/#774)** — clang could const-fold a runtime-reachable NaN-producing op to the wrong sign at `-O2`; fixed via `llvm.arithmetic.fence.f64` (`fenceFloatOperand`), skipped on already-constant operands, pinned by `accept_nan_sign_runtime_fold`. **#509 (cross-platform NaN sign) stays open** — a separate concern from same-box run≠build |
 | N7 conversions | ✅ **FIXED (#346/#372)** | `floatToInt` saturates (NaN→0, ±inf/range→`intMaxBound`/`intMinBound`), clamped to the 63-bit domain on both backends; `floor/ceil/round/trunc` ✅ (C library, Float→Float) |
 | N8 know-don't-guess | ✗ STATIC (architectural) | five accreted recovery heuristics (`staticIsFloat`, two-pass `inferSigs` w/ mutated `sigs`, `bodyFloatRet`/`closureRetTyRef`, `RScalar`, `mainKind`) — umbrella **#353**; the `RScalar` stamp is the done-right model |
 | N9 format/parse round-trip | ✅ CONFIRMED | shortest-round-trip lexeme (revised #57), `-0.0`/nan/inf pinned, `1e+300` re-lexes (#51 CLOSED; stale AGENTS.md row — #361); IR-text literal serialization round-trips via same formatter + `ensureFloatDot`; wasm JS-host copies UNVERIFIED — #361 |
