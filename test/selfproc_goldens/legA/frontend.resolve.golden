@@ -136,6 +136,8 @@ isCtorAmbiguous : Env -> String -> Bool
 isEmptyL : List a -> Bool
 isHaskellAliasPair : String -> String -> Bool
 isHint : String -> Bool
+isImportedModuleName : Env -> String -> Bool
+isModId : String -> (String, List String) -> Bool
 isNonEmpty : List a -> Bool
 isPubExp : ModuleExports -> String -> Bool
 isTransparentDecl : Decl -> Bool
@@ -226,8 +228,10 @@ resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
 resolveProgramG2 : List String -> List Decl -> List Decl -> List Decl -> List ResError
 resolveToLines : List Decl -> List Decl -> List Decl -> String
 rewriteNonRec : List String -> ResError -> ResError
+sameCaseClass : String -> String -> Bool
 selfBinding : String -> (String, String)
 singleFileImportErrors : List Decl -> List ResError
+startsUpper : String -> Bool
 startsWithAt : Array Char -> Bool
 stubOrUnknown : List ModuleExports -> UsePath -> String -> Loc -> ImportAdds
 suggestCtor : String -> Option String

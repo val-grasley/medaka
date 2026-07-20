@@ -70,6 +70,7 @@ import support.util.{
   initList,
   joinDot,
   filterList,
+  anyList,
 }
 
 -- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
@@ -89,6 +90,13 @@ public export data ResError =
   -- typo correction, and a fuzzy edit-distance match against an unrelated name
   -- is actively misleading here.
   | UnboundVariableExported String String (Option Loc)
+  -- an unbound name that is itself the id of a module this file `import`s
+  -- bare (#514): `import string` then a reference to bare `string` — there is
+  -- no qualified access for a bare import, so the generic edit-distance
+  -- fallback would otherwise grab an unrelated same-case name.  name only;
+  -- the message is a static how-to (ERROR-QUALITY: point at the fix, not a
+  -- guess).
+  | UnboundVariableIsModule String (Option Loc)
   -- trailing `Option String` = suggested constructor name: today ONLY a
   -- curated Haskell-alias exact match (`Just`→`Some`, …; see
   -- `haskellCtorAliases`), None otherwise — there is no general edit-distance
@@ -177,6 +185,7 @@ resErrorDidYouMean _ = None
 export resErrorLoc : ResError -> Option Loc
 resErrorLoc (UnboundVariable _ l _) = l
 resErrorLoc (UnboundVariableExported _ _ l) = l
+resErrorLoc (UnboundVariableIsModule _ l) = l
 resErrorLoc (UnknownConstructor _ l _) = l
 resErrorLoc (UnknownType _ l _) = l
 resErrorLoc (UnknownEffect _ l) = l
@@ -522,7 +531,11 @@ checkVar cur env scope n
 unboundVarErrors : Option Loc -> Env -> List String -> String -> List ResError
 unboundVarErrors cur env scope n = match modulesExportingName env n
   m::_ => [UnboundVariableExported n m cur]
-  [] => [UnboundVariable n cur (suggestName env scope n)]
+  [] =>
+    if isImportedModuleName env n then
+      [UnboundVariableIsModule n cur]
+    else
+      [UnboundVariable n cur (suggestName env scope n)]
 
 -- module ids (of modules this file already imports) that export `n` as a
 -- value — deliberately NOT scope/local-shadow aware, since `unboundVarErrors`
@@ -533,6 +546,16 @@ modulesExportingName env n = flatMap (matchesExport n) env.importedModuleValues
 
 matchesExport : String -> (String, List String) -> List String
 matchesExport n (mid, vals) = if contains n vals then [mid] else []
+
+-- is `n` itself the module id of something this file `import`s (#514) —
+-- e.g. `import string` then a bare reference to `string`.  Checked only
+-- after `modulesExportingName` already failed, so `n` is not a value any
+-- imported module exports.
+isImportedModuleName : Env -> String -> Bool
+isImportedModuleName env n = anyList (isModId n) env.importedModuleValues
+
+isModId : String -> (String, List String) -> Bool
+isModId n (mid, _) = mid == n
 
 isAmbiguous : Env -> String -> Bool
 isAmbiguous env n = match lookupAssoc n env.ambiguous
@@ -684,10 +707,25 @@ suggestCtor n = lookupAssoc n haskellCtorAliases
 bestOf : String -> Int -> List String -> Option String
 bestOf n lim cands = map ((best, _) => best) (bestCandidate n lim cands None)
 
+-- Medaka's naming convention makes leading case a structural signal
+-- (constructors start uppercase, values/types-in-scope-of-a-value-query start
+-- lowercase), so a candidate whose case class differs from the query's is
+-- never the intended correction — surfacing one is worse than suggesting
+-- nothing (#514 sub-finding: `string`/`toString`, both lowercase queries,
+-- surfaced the unrelated prelude constructor `RString`).
+startsUpper : String -> Bool
+startsUpper s = stringLength s > 0
+  && stringSlice 0 1 s >= "A"
+  && stringSlice 0 1 s <= "Z"
+
+sameCaseClass : String -> String -> Bool
+sameCaseClass a b = startsUpper a == startsUpper b
+
 bestCandidate : String -> Int -> List String -> Option (String, Int) -> Option (String, Int)
 bestCandidate _ _ [] acc = acc
 bestCandidate n lim (c::cs) acc
   | c == n = bestCandidate n lim cs acc
+  | not (sameCaseClass n c) = bestCandidate n lim cs acc
   | editDistance n c > lim = bestCandidate n lim cs acc
   | otherwise = bestCandidate n lim cs (keepBetter c (editDistance n c) acc)
 
@@ -1473,6 +1511,8 @@ export resErrorSexp : ResError -> String
 resErrorSexp (UnboundVariable n _ _) = "(UnboundVariable " ++ escStr n ++ ")"
 resErrorSexp (UnboundVariableExported n m _) =
   "(UnboundVariableExported \{escStr n} \{escStr m})"
+resErrorSexp (UnboundVariableIsModule n _) =
+  "(UnboundVariableIsModule \{escStr n})"
 resErrorSexp (UnknownConstructor n _ _) = "(UnknownConstructor "
   ++ escStr n
   ++ ")"
@@ -1579,6 +1619,9 @@ ppResError (UnboundVariable n _ s) = match s
   None => "Unbound variable: \{n}"
 ppResError (UnboundVariableExported n m _) =
   "Unbound variable: \{n}. (Did you forget to 'import \{m}.{\{n}}'?)"
+ppResError (UnboundVariableIsModule n _) = "Unbound variable: \{n}. '\{n}' is an imported module, not a value — a bare "
+  ++ "'import \{n}' binds no names. Bind what you need: 'import \{n}.{name, "
+  ++ "...}', or 'import \{n} as M' then 'M.name'"
 ppResError (UnknownConstructor n _ s) = match s
   Some sug => "Unknown constructor: \{n}. Did you mean '\{sug}'"
     ++ haskellNote n sug
@@ -1631,6 +1674,7 @@ ppResError (ReassignImmutable n _) = "Cannot reassign '\{n}' — bindings are im
 export resErrorCode : ResError -> String
 resErrorCode (UnboundVariable _ _ _) = "R-UNBOUND"
 resErrorCode (UnboundVariableExported _ _ _) = "R-UNBOUND"
+resErrorCode (UnboundVariableIsModule _ _) = "R-UNBOUND"
 resErrorCode (UnknownConstructor _ _ _) = "R-UNKNOWN-CTOR"
 resErrorCode (UnknownType _ _ _) = "R-UNKNOWN-TYPE"
 resErrorCode (UnknownEffect _ _) = "R-UNKNOWN-EFFECT"

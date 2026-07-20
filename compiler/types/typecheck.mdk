@@ -11449,17 +11449,15 @@ inferImplBodiesIfEnabledIn env allProg decls
 -- the abstract-element ambiguity.  A parametric impl over a concrete field (a rarer nesting)
 -- stays deferred to `build` exactly as it was before #760 — a residual, not a regression.
 --
--- DIAGNOSTICS PUSHED *DURING* body inference are DROPPED (snapshot + restore typeErrors /
--- typeErrorsSticky).  #760 surfaces missing INSTANCES, and those are recorded as
--- pendingImpl/CallObligations (side effects) that checkImplObligations/checkCallObligations
--- gate LATER — AFTER this returns — so restoring the error accumulators here does NOT drop a
--- single missing-instance reject.  What it DOES drop are the type/effect errors the body
--- inference itself raises (e.g. an EFFECT LEAK: `putStr` in a pure-typed method body, or a
--- body type mismatch).  Those are separate soundness axes with their own blast radius, they
--- were NOT checked on the check path before #760 (impl bodies weren't inferred at all), and
--- newly enforcing them here would reject latent-but-working programs unrelated to #760
--- (it flagged the effectful `impl Speak Dog` in test/engine_fixtures/nullary_memo_with_args).
--- Keeping the scope to missing instances leaves effect/mismatch enforcement exactly as it was.
+-- DIAGNOSTICS PUSHED *DURING* body inference: #760 originally DROPPED all of them (snapshot +
+-- restore typeErrors / typeErrorsSticky), because it only wanted the missing-INSTANCE rejects,
+-- which are recorded as pendingImpl/CallObligations (side effects) that
+-- checkImplObligations/checkCallObligations gate LATER — AFTER this returns — so dropping the
+-- error accumulators did not lose a single missing-instance reject.  #777 (type mismatch) and
+-- #782 (effect leak) then established that the type/effect errors the body inference itself
+-- raises (e.g. an EFFECT LEAK: `putStr` in a pure-typed method body, or a body type mismatch)
+-- are genuine soundness bugs that must reject symmetrically with top-level functions — so those
+-- are now KEPT (see the per-axis history and the filter rebuild below).
 -- #777 (S0, silent wrongness): a GENUINE type mismatch inside a ground impl-method
 -- body (`sig _ = idInt "str"` where `idInt : Int -> Int` but `sig`'s declared return
 -- is `String`) is a `unify`/`typeMismatch` error pushed DURING body inference, not an
@@ -11468,16 +11466,21 @@ inferImplBodiesIfEnabledIn env allProg decls
 -- SAME check path, both `check` and `build` accepted the program — the built binary
 -- then printed a wrong value at exit 0 or SEGFAULTED (an impl method returning a
 -- differently-typed field/value).  We now KEEP those body clash errors so both paths
--- reject.  Effect-leak / effect-param errors (`T-EFFECT-LEAK` / `T-EFFECT-PARAM`) stay
--- a SEPARATE axis and are still restored: newly enforcing them here would reject the
--- latent-but-working effectful `impl Speak Dog`
--- (test/engine_fixtures/nullary_memo_with_args) — see the comment above and the code
--- that program relies on.  Missing-instance rejects are unaffected regardless: they
--- are recorded as pendingImpl/CallObligations (side channel) and gated LATER, so they
--- were never in this window.
-isSuppressedImplBodyErr : String -> Bool
-isSuppressedImplBodyErr code = code == "T-EFFECT-LEAK"
-  || code == "T-EFFECT-PARAM"
+-- reject.
+-- #782 (S2, ratified 2026-07-20): the effect axis is now enforced HERE too, symmetric
+-- with top-level functions.  An effect leak in an impl-method body (`putStr` in a body
+-- whose method signature declares no effect row) is a `T-EFFECT-LEAK`/`T-EFFECT-PARAM`
+-- pushed DURING body inference, exactly like a body type mismatch.  Previously these two
+-- codes were SUPPRESSED here (isSuppressedImplBodyErr) to spare the intentionally-effectful
+-- `impl Speak Dog` in test/engine_fixtures/nullary_memo_with_args — but that made the
+-- effect discipline the spec commits to (EFFECTS-SEMANTICS §method: an impl's latent row is
+-- bounded by the signature) hold for top-level functions yet silently NOT for impl bodies.
+-- The ratified fix is to STOP suppressing: the fixture's method now declares its concrete
+-- `<Stdout>` row (`speak : a -> <Stdout> String`), so its body is bounded-by-signature and
+-- stays valid, while a pure-signatured method that leaks an effect is now a real error.
+-- Missing-instance rejects are unaffected regardless: they are recorded as
+-- pendingImpl/CallObligations (side channel) and gated LATER, so they were never in this
+-- window.
 
 inferUserImplBodies : TcEnv -> List Decl -> List Decl -> Unit
 inferUserImplBodies env allProg decls =
@@ -11518,13 +11521,13 @@ inferUserImplBodies env allProg decls =
   let _ = setRef perRun.value.pendingCallObligationsN callOblsN
   let _ = setRef useFastIfaceMethodTy False
   -- The errors pushed DURING inference are the head of the list (consed); savedErrs is
-  -- the tail.  Keep every added error except the suppressed effect axis, then drop the
-  -- rest by rebuilding the list as (kept ++ savedErrs).
+  -- the tail.  Keep every added error (#782: the effect axis is no longer suppressed —
+  -- an impl-body effect leak is a real error, symmetric with top-level), rebuilding the
+  -- list as (added ++ savedErrs).
   let curErrs = perRun.value.typeErrors.value
   let added = takeFirst (listLen curErrs - listLen savedErrs) curErrs
-  let kept = filterList (e => not (isSuppressedImplBodyErr (tcCode e))) added
-  let _ = setRef perRun.value.typeErrors (kept ++ savedErrs)
-  setRef typeErrorsSticky (savedSticky || isNonEmptyL kept)
+  let _ = setRef perRun.value.typeErrors (added ++ savedErrs)
+  setRef typeErrorsSticky (savedSticky || isNonEmptyL added)
 
 -- True for a DImpl whose head types carry NO type variable (a monomorphic receiver like
 -- `Eq Outer` / `Debug (List Int)`); False for a parametric head (`Eq (List a)`) and every
@@ -12474,7 +12477,16 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- (`Thenable m => …`) can be registered into activeDictVars below.
     let baseMap = zipL ifaceParams headMonos
     let extraMap = freshTvMap (removeAllS ifaceParams (dedup (tyVarNames mty)))
-    let expected = fromAstType (baseMap ++ extraMap) mty
+    -- #782/#784: build the method type's effect table the way sigToSchemeTvs does,
+    -- so a free return-position effect var (`speak : a -> <e> String`) becomes a
+    -- FRESH OPEN effvar that the impl body's actual effect instantiates (effect
+    -- polymorphism: `Speak Dog`'s <Stdout> body sets e := <Stdout>), rather than
+    -- collapsing to a CLOSED empty `<>` (fromAstType's empty etbl) and firing a
+    -- spurious T-EFFECT-LEAK against a bound the method never declared.  A CONCRETE
+    -- (`<Stdout>`) or PURE (`<>`) declared row still yields a closed row, so a genuine
+    -- impl-body effect leak past a non-var bound is still enforced (#782).  The free-var
+    -- laundering at the CALL site remains #784's concern.
+    let expected = fromAstTypeE (freshEffMap (dedup (effTailNames mty ++ rowArgNames mty))) (baseMap ++ extraMap) mty
     let actual = inferClauses env [(pats, body)]
     let _ = unify expected actual
     -- #518 (S0, silent wrongness): PLAN.md #11 Num defaulting NEVER RAN over an impl

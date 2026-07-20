@@ -451,9 +451,25 @@ data Event                                           -- named-field variant (blo
 
 data MyColor = MyRed | MyGreen deriving (Debug)      -- deriving
 
+data Multi                                           -- deriving MAY sit on its own indented
+  = Foo                                               -- line — but only because this `data`
+  | Bar                                               -- decl itself is multi-line (see below)
+  deriving (Debug)
+
 p = Pt { x = 1, y = 2 }
 p2 = Pt { p | y = 9 }                                -- variant functional update
                                                       -- (copy p, override y; p must be a Pt)
+```
+
+**`deriving` on its own line depends on whether the `data` decl is multi-line.** After a
+multi-line `data` decl (like `Multi` above), an own-line `deriving` works. After a
+**one-line** `data` decl, `deriving` must stay inline (as `MyColor` above) — on its own
+line it is a parse error that blames indentation, not `deriving` itself:
+
+```medaka-nocheck: parse error — after a one-line `data` decl, `deriving` must be inline, not on its own line
+data C = A | B
+  deriving (Eq)                -- unexpected `deriving`. Indentation (column 2)
+                                -- doesn't match the enclosing block
 ```
 
 ## Records
