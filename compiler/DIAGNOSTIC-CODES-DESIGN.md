@@ -207,7 +207,7 @@ kebab-case; never renumber (append only).
 ### Resolve (one per `ResError` constructor)
 | Code | Constructor |
 |---|---|
-| `R-UNBOUND` | `UnboundVariable` |
+| `R-UNBOUND` | `UnboundVariable` — also covers the sibling constructors `UnboundVariableExported` (the name is exported by an already-imported module; suggests the selective import) and `UnboundVariableIsModule` (#514: the name is itself an imported module's id, e.g. bare `import string` then a reference to `string`; a bare import binds no names, so this points at `import string.{…}`/`import string as M` instead of falling through to an unrelated edit-distance guess) |
 | `R-UNKNOWN-CTOR` | `UnknownConstructor` |
 | `R-UNKNOWN-TYPE` | `UnknownType` |
 | `R-UNKNOWN-EFFECT` | `UnknownEffect` — special-cases the removed `Mut`/`Panic` labels with a migration hint (same code) |

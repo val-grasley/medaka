@@ -1,0 +1,3 @@
+import string
+
+main = println (string.join ", " ["a", "b"])
