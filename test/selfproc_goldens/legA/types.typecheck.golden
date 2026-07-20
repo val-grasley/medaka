@@ -536,6 +536,7 @@ ifaceMethodName : String -> Bool
 ifaceMethodNames : List IfaceMethod -> List String
 ifaceMethodSchemes : List Decl -> List (String, Scheme)
 ifaceMethodTy : List Decl -> String -> String -> Option (List String, Ty)
+ifaceMethodTyResolved : List Decl -> String -> String -> Option (List String, Ty)
 ifaceOfMethodName : String -> Option String
 ifaceParamMonos : String -> Mono -> Option (List Mono)
 ifaceRegistered : String -> Bool
@@ -556,6 +557,7 @@ implEntryFromTys : String -> List Ty -> List Require -> List ImplMethod -> List 
 implEntryOf : Decl -> List ImplEntry
 implExistsForHead : Map String (List KeyEntry) -> String -> String -> Bool
 implExistsForHeadGo : List KeyEntry -> String -> String -> Bool
+implHeadGround : Decl -> Bool
 implHeadLoc : List Ty -> Option Loc
 implHeadMatchesArgs : List Ty -> List Mono -> Bool
 implHeadSubst : List Ty -> List Mono -> Option (List (String, Mono))
@@ -669,6 +671,7 @@ inferStmt : TcEnv -> DoStmt -> TcEnv
 inferTestBodies : TcEnv -> List Decl -> Unit
 inferUnop : String -> Mono -> Mono
 inferUnopE : TcEnv -> String -> Expr -> Ref Route -> Mono
+inferUserImplBodies : TcEnv -> List Decl -> List Decl -> Unit
 inferValueField : TcEnv -> Expr -> Mono
 inferVar : TcEnv -> String -> Mono
 inferVarPlain : TcEnv -> String -> Mono
@@ -1267,6 +1270,7 @@ unlocExpr : Expr -> Expr
 unopMethod : String -> Option String
 unopMethodApp : String -> Expr -> Ref Route -> Expr
 unreachableArmWarning : String
+useFastIfaceMethodTy : Ref Bool
 useModuleId : Decl -> List String
 usePathModuleId : UsePath -> String
 usesImplDict : String -> Int -> Expr -> Bool
