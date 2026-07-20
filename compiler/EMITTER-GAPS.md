@@ -1031,7 +1031,34 @@ Verified all five repros wasm build + validate + run correctly, matching eval ==
 out of `test/engine_divergence.txt` (their `.pin` values unchanged). Fixpoint C3a/C3b YES,
 `typecheck_compiler_source` clean.
 
-## Wasm user-`Cons`/`Nil` DUPLICATE TYPE ID — CLOSED (#712, S1, 2026-07-20, `wasm_emit.mdk`/`trmc_analysis.mdk` only)
+## Wasm user-`Cons`/`Nil` DUPLICATE TYPE ID + ORDINAL COLLISION — CLOSED (#712, S1+S0, 2026-07-20, `wasm_emit.mdk`/`trmc_analysis.mdk` only)
+
+Two coupled defects around a user ctor literally named `Cons`/`Nil` (the names built-in list syntax
+canonicalises to), both rooted in the WasmGC backend conflating the user ctor with the built-in list.
+The **S1** is the duplicate type identifier (below). The **S0** is an ordinal collision that the S1 fix
+would otherwise have UNMASKED: pre-fix, a `data T = Extra | Cons Int T | Nil` failed to wasm-build at
+all (the dup `$C_Cons`), so once the type-id was fixed the program BUILT and *silently miscompiled* —
+`ctorOrdinal` short-circuited on `isSyntheticCtor name → syntheticCtorOrdinal` (name-based: Cons=0/
+Nil=1) BEFORE consulting the ctor table, so the user `Cons` got ordinal **0**, colliding with `Extra`
+(legitimately 0), and wasm `br_table` sent every `Cons` value to `Extra`'s arm. eval + native (both
+table/declaration-order, like native `llvm_emit.mdk`'s `ctorOrdinal`) were always correct: `tag (Cons
+5 Nil)` → wasm `100` vs eval/native `200`. Silent wrong dispatch = S0.
+
+**Ordinal fix (same CHead/tail-expr discipline as the type-id fix):** `ctorOrdinal` now consults the
+ctor table FIRST (`userCtorOrdinalW` over `ctorOrdMapW`, which holds only USER ctors) and falls through
+to `syntheticCtorOrdinal` only for a name that is NOT a user ctor — matching the already-table-first
+`ctorArity`/`ctorTypeName` and native. A user ctor thus takes its declaration-order ordinal; a genuine
+built-in list ctor (absent from the table) keeps its reserved ordinal. The built-in list's OWN ordinal
+sites are pinned off the built-in signal so a coexisting user `Cons`/`Nil` can't poison them:
+`branchOrdMapGoW` keys the switch off `ordinalOfHead` (`HCons`→0/`HNil`→1, else `ctorOrdinal`); the
+TRMC cons leaf uses `trmcCellOrdinal isBuiltinList` (reserved for a `::` leaf); `emitWDispCell` (the
+`::` dispatch spine) and `emitListRef []` (the `[]` terminator) emit the reserved Cons/Nil ordinal
+directly instead of `ctorOrdinal`. Output-identical for every existing fixture (no ≥3-ctor
+synthetic-named ADT existed before); only the buggy shape changes. Regression guard:
+`test/engine_fixtures/adt_synthetic_ctor_ordinal.mdk` (`data T = Extra | Cons Int T | Nil` → `(100,
+200, 300)`, eval==native==wasm gated, `.pin` seeded).
+
+### The S1 (duplicate type identifier)
 
 `medaka build --target wasm` of a program with a USER ADT `data T = Cons Int T | Nil` failed
 `wasm-tools` PARSE with **"duplicate type identifier"** on `$C_Cons`, while eval == native == `(60, 3,

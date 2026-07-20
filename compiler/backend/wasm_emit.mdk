@@ -6268,7 +6268,9 @@ emitWasmTrmcLeaf prog env self arity pslots ctorSet loopLbl exitLbl e =
 emitWasmTrmcCtor : Prog -> List String -> SelfRef -> Int -> List String -> List (String, Int) -> Bool -> String -> Int -> String -> List CExpr -> List CExpr -> List String
 emitWasmTrmcCtor prog env self arity pslots ctorSet isBuiltinList ctorName selfIdx loopLbl leadFields args =
   let cellStruct = trmcCellStruct isBuiltinList ctorName
-  let tag = ["i32.const " ++ intToString (ctorOrdinal prog ctorName)]
+  -- #712/S0: a built-in `::` leaf pins the reserved Cons ordinal; a user ctor leaf
+  -- keys off the table (declaration order), same split as the cell struct id above.
+  let tag = ["i32.const " ++ intToString (trmcCellOrdinal isBuiltinList prog ctorName)]
   let leadInstrs = flatMap (a => emitRefExpr prog env 0 a) leadFields
   -- placeholder for the recursive slot (overwritten next iter / by the base leaf).
   let placeholder = ["i32.const 1", "ref.i31"]
@@ -6301,6 +6303,12 @@ emitWasmTrmcCtor prog env self arity pslots ctorSet isBuiltinList ctorName selfI
 trmcCellStruct : Bool -> String -> String
 trmcCellStruct True _ = "C_Cons"
 trmcCellStruct False ctorName = ctorStructName ctorName
+
+-- the cons-cell tag for a TRMC leaf (#712/S0): the reserved list ordinal for a
+-- built-in `::` leaf, the table (declaration-order) ordinal for a user ctor leaf.
+trmcCellOrdinal : Bool -> Prog -> String -> Int
+trmcCellOrdinal True _ ctorName = syntheticCtorOrdinal ctorName
+trmcCellOrdinal False prog ctorName = ctorOrdinal prog ctorName
 
 wTrmcLinkParent : Bool -> List (String, Int) -> List String -> List String
 wTrmcLinkParent isBuiltinList [(ctorName, selfIdx)] valInstrs =
@@ -6800,7 +6808,9 @@ emitWDispSpineCons prog env root target heads args = flatMap (h => emitWDispCell
 emitWDispCell : Prog -> List String -> String -> CExpr -> List String
 emitWDispCell prog env root head =
   let cellStruct = "C_Cons"
-  let tag = ["i32.const " ++ intToString (ctorOrdinal prog "Cons")]
+  -- #712/S0: this is the built-in list `::` spine — pin the reserved Cons ordinal,
+  -- not `ctorOrdinal "Cons"` (which a coexisting user `Cons` ctor would poison).
+  let tag = ["i32.const " ++ intToString (syntheticCtorOrdinal "Cons")]
   let headInstrs = emitRefExpr prog env 0 head
   let placeholder = ["i32.const 1", "ref.i31"]
   let buildCell = tag ++ headInstrs ++ placeholder ++ ["struct.new $" ++ cellStruct]
@@ -7512,8 +7522,12 @@ emitTupleRef prog env d es =
 
 -- a list literal: a right-nested cons spine ending in the Nil i31.  Built
 -- back-to-front so the emitted struct.news nest correctly (Cons head tail).
+-- #712/S0: the `[]` terminator is the BUILT-IN list Nil — emit its reserved ordinal
+-- i31 directly, not `emitCtorConstruct "Nil"` (whose `ctorOrdinal "Nil"` a coexisting
+-- user `Nil` ctor would poison to the user's declaration-order ordinal).
 emitListRef : Prog -> List String -> Int -> List CExpr -> List String
-emitListRef prog env d [] = emitCtorConstruct prog env d "Nil" []
+emitListRef prog env d [] =
+  ["i32.const " ++ intToString (syntheticCtorOrdinal "Nil"), "ref.i31"]
 emitListRef prog env d (x::xs) =
   let hd = emitRefExpr prog env d x
   let tl = emitListRef prog env d xs
@@ -8431,7 +8445,8 @@ orEmptyCtors None = []
 --     ordinal from the first one, as `lookupAssoc` + `indexOfL` did;
 --   * the `omHasKey` guard keeps the FIRST index on a name repeated within one
 --     type, matching `indexOfL`'s first-match.
--- A ctor absent from the map yields 0 at the call site, matching `orZeroIdx (-1)`.
+-- A ctor absent from the map is not a user ctor, so `userCtorOrdinalW` returns None
+-- and `ctorOrdinal` falls through to the reserved/synthetic ordinal (#712/S0).
 ctorOrdsOfW : List String -> OrdMap String -> OrdMap (List String) -> OrdMap Int -> OrdMap Int
 ctorOrdsOfW [] _ _ m = m
 ctorOrdsOfW (ty::rest) tym tcm m =
@@ -8508,21 +8523,45 @@ ctorTyLookupW ctorTypes name = match ctorTyMapW.value
   None => lookupAssoc name ctorTypes
 
 -- the per-type dense ordinal of a ctor (0-based index in its type's declaration
--- order).  Reserved + synthetic ctors have fixed ordinals.
+-- order).  Reserved ctors have fixed ordinals.
+--
+-- #712/S0: a USER ctor is looked up in the ctor TABLE **before** the name-based
+-- `syntheticCtorOrdinal` short-circuit — mirroring `ctorArity`/`ctorTypeName` (both
+-- table-first) and native `llvm_emit.mdk`'s `ctorOrdinal`.  The old order took the
+-- synthetic short-circuit FIRST, so a user ctor literally named `Cons`/`Nil` got the
+-- built-in list ordinal (Cons=0/Nil=1) instead of its DECLARATION-ORDER index.  In a
+-- ≥3-ctor ADT like `data T = Extra | Cons Int T | Nil` that collides the user `Cons`
+-- (wrongly 0) with `Extra` (legitimately 0) → wasm `br_table` sent `Cons` to `Extra`'s
+-- arm = SILENT wrong dispatch.  `ctorOrdMapW` holds only USER ctors, so a genuine
+-- built-in list ctor (absent) still falls through to `syntheticCtorOrdinal`; a user
+-- ctor and the built-in list are told apart at CALL sites via the CHead / tail expr
+-- (see `ordinalOfHead`, `emitWDispCell`, the TRMC `isBuiltinList` flag, `emitListRef`),
+-- the same discipline the struct-id fix uses.
 ctorOrdinal : Prog -> String -> Int
 ctorOrdinal prog name = match reservedCtorOrdinal name
   Some o => o
-  None =>
-    if isSyntheticCtor name then
-      syntheticCtorOrdinal name
-    else match ctorOrdMapW.value
-      -- absent → 0, exactly what `orZeroIdx (indexOfL … = -1)` returned.
-      Some m => orZeroIdx (orNeg1Ord (omLookup name m))
-      None => orZeroIdx (indexOfL name (ctorsOfType prog (ctorTypeName prog name)))
+  None => match userCtorOrdinalW prog name
+    Some o => o
+    None => syntheticCtorOrdinal name
 
-orNeg1Ord : Option Int -> Int
-orNeg1Ord (Some o) = o
-orNeg1Ord None = -1
+-- the DECLARATION-ORDER ordinal of a name IFF it is a user-declared ctor (present in
+-- the ctor table), else None so the caller falls back to a synthetic/reserved ordinal.
+userCtorOrdinalW : Prog -> String -> Option Int
+userCtorOrdinalW prog name = match ctorOrdMapW.value
+  Some m => omLookup name m
+  None =>
+    let idx = indexOfL name (ctorsOfType prog (ctorTypeName prog name))
+    if idx < 0 then None else Some idx
+
+-- the ordinal to discriminate a decision-tree switch HEAD against.  Built-in list
+-- heads keep their reserved ordinal (Cons=0/Nil=1) regardless of a poisoning user
+-- ctor of the same name; every other head keys off `ctorOrdinal` (a user `HCon
+-- "Cons"` thus gets its declaration-order ordinal).  Distinguished by the CHead
+-- (`HCons`/`HNil` vs `HCon`), the only signal that survives the bare-name ctor table.
+ordinalOfHead : Prog -> CHead -> Int
+ordinalOfHead _ HCons = syntheticCtorOrdinal "Cons"
+ordinalOfHead _ HNil = syntheticCtorOrdinal "Nil"
+ordinalOfHead prog h = ctorOrdinal prog (fstConHead h)
 
 -- the declaration-ordered ctor list of a user type (the ctor→type map lists each
 -- type's ctors consecutively in declaration order — filter to this type).
@@ -8578,8 +8617,10 @@ branchOrdMapW prog bs = branchOrdMapGoW prog bs omEmpty
 branchOrdMapGoW : Prog -> List CTBranch -> OrdMap CTBranch -> OrdMap CTBranch
 branchOrdMapGoW _ [] m = m
 branchOrdMapGoW prog ((CTBranch h sub)::rest) m = match conHeadInfo h
-  Some (c, _) =>
-    let k = intToString (ctorOrdinal prog c)
+  Some _ =>
+    -- #712/S0: key off the HEAD (ordinalOfHead), so a built-in `HCons`/`HNil` keeps
+    -- its reserved ordinal while a user `HCon "Cons"` gets its declaration-order one.
+    let k = intToString (ordinalOfHead prog h)
     branchOrdMapGoW
       prog
       rest
