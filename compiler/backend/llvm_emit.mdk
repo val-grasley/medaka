@@ -3872,7 +3872,7 @@ emitMethod e env name (RKey tag _) implRoutes methRoutes argOps = match implFor 
       (dictWords ++ argOps)
       (methodArityOf name + lengthS dictWords)
       resTy
-  None => emitDefaultRKey e env name tag methRoutes implRoutes argOps
+  None => emitGeneralRKey e env name tag methRoutes implRoutes argOps
 emitMethod e env name (RDict d) implRoutes methRoutes argOps =
   emitMethodDispatch e env name d methRoutes argOps
 emitMethod e env name (RDictFwd d) implRoutes methRoutes argOps =
@@ -4119,12 +4119,15 @@ emitMethodPapDefine e env lamName name route implRoutes methRoutes arity capName
   let _ = endDefine e scope
   setRef (bufRef e) saved
 
--- E19: an RKey route into a method with NO tagged impl for `tag` — the type's
--- `impl` did not override an interface DEFAULT.  Emit the default body as a
--- lifted `@mdk_default_<method>_<tag>` define (eta-expanded to full arity, inner
--- same-interface calls re-stamped to `RKey tag` so a partially-applied inner
--- method like `filterMap` lowers to a direct call), cache it, and call it
--- directly with the call-site args.  No default ⇒ the original missing-impl gap.
+-- E19: an RKey route into a method with NO tagged impl for `tag` AND no general
+-- instance — the type's `impl` did not override an interface DEFAULT.  Emit the
+-- default body as a lifted `@mdk_default_<method>_<tag>` define (eta-expanded to
+-- full arity, inner same-interface calls re-stamped to `RKey tag` so a
+-- partially-applied inner method like `filterMap` lowers to a direct call), cache
+-- it, and call it directly with the call-site args.  No default ⇒ the original
+-- missing-impl gap.  Reached from emitGeneralRKey's None arm — the general
+-- instance (if any) is consulted FIRST, so this default fires only when no general
+-- provides the method (DICT-SEMANTICS §5, #728-2).
 -- G7: a default-method body may call methods of a DIFFERENT interface whose dict
 -- is threaded per-call by the method's own `=>` constraint (foldMap's `empty`, a
 -- Monoid method routed by the RESULT type, not the Foldable container).  Those
@@ -4145,17 +4148,21 @@ emitDefaultRKey e env name tag methRoutes implRoutes argOps = match defaultFor e
     else
       LTInt
     emitImplCall e fname (dictWords ++ argOps) resTy
-  None => emitGeneralRKey e env name tag methRoutes implRoutes argOps
+  None => gapE "no impl of method '\{name}' for type '\{tag}' (slice 6)"
 
--- Last dispatch tier for an RKey route that matched neither a concrete impl nor an
--- interface default: a GENERAL instance (`impl Iface a`), whose head is a bare type
--- variable and so is registered under noneHeadTag ("__none__") — never under the
--- concrete receiver tag.  It is the `min⊑` match (DICT-SEMANTICS §3) when the
--- receiver's concrete type has no impl of its own, so we emit a direct call to its
--- lifted fn exactly as the concrete-hit path does (mirrors eval's pickTagFallback
--- general tier).  Only when there is no general instance either is it a real gap
--- (#666).  Concrete impls still win: emitMethod's implFor consults the concrete tag
--- first, so this fires only on a concrete miss.
+-- Dispatch tier for an RKey route that matched no concrete impl: a GENERAL instance
+-- (`impl Iface a`), whose head is a bare type variable and so is registered under
+-- noneHeadTag ("__none__") — never under the concrete receiver tag.  A general that
+-- PROVIDES the method is the `min⊑` match (DICT-SEMANTICS §3) when the receiver's
+-- concrete type has no impl of its own, so it WINS over the interface default
+-- (DICT-SEMANTICS §5, #728-2) — we emit a direct call to its lifted fn exactly as
+-- the concrete-hit path does (mirrors eval's pickTagFallback general tier).  Only
+-- when there is no general instance do we fall to the interface DEFAULT
+-- (emitDefaultRKey); when the general OMITS the method, desugar's fillImplDefaults
+-- has already synthesized the default body into it under noneHeadTag (same-module)
+-- or left no noneHeadTag entry (cross-module), so this order never shadows a
+-- legitimate default.  Concrete impls still win: emitMethod's implFor consults the
+-- concrete tag first, so this fires only on a concrete miss.
 emitGeneralRKey : Emit -> List (String, (String, LTy)) -> String -> String -> List Route -> List Route -> List String -> (String, LTy)
 emitGeneralRKey e env name tag methRoutes implRoutes argOps = match findByTag noneHeadTag (implsOf e name)
   Some entry =>
@@ -4171,7 +4178,7 @@ emitGeneralRKey e env name tag methRoutes implRoutes argOps = match findByTag no
       (dictWords ++ argOps)
       (methodArityOf name + lengthS dictWords)
       resTy
-  None => gapE "no impl of method '\{name}' for type '\{tag}' (slice 6)"
+  None => emitDefaultRKey e env name tag methRoutes implRoutes argOps
 -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a
 -- relational OPERATOR (`<`→`lt`/…) on a parametric Ord head (tuple/`List a`/
 -- `Box a`) carries the impl's element `requires` dicts on implRoutes (stamped by

@@ -1,0 +1,17 @@
+-- #728-2 (DICT-SEMANTICS §5): an interface with a per-method DEFAULT, a concrete
+-- impl, AND a GENERAL (`impl Iface a`) impl that PROVIDES the method.  For a type
+-- covered only by the general, the general is the min⊑ selection and must WIN over
+-- the interface default — on BOTH the direct and the dict-forwarded (via `use`) path.
+-- A concrete-covered type still resolves to its concrete impl (most-specific-wins).
+--   m True / use True  -> 999 (general, NOT the default 0)
+--   m 5    / use 5      -> 111 (concrete Int, NOT the general 999)
+interface Iface a where
+  m : a -> Int
+  m _ = 0
+impl Iface Int where
+  m _ = 111
+impl Iface a where
+  m _ = 999
+use : Iface a => a -> Int
+use x = m x
+main = println "\{m True} \{use True} \{m (5 : Int)} \{use (5 : Int)}"

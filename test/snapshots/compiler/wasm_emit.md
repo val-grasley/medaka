@@ -1,5 +1,5 @@
 # META
-source_lines=9067
+source_lines=9074
 stages=DESUGAR,MARK
 # SOURCE
 -- WasmGC backend emitter — WASMGC-DESIGN.md §7.  Peer of `backend.llvm_emit`:
@@ -4263,23 +4263,30 @@ findDefaultW method (_::rest) = findDefaultW method rest
 defaultFnNameW : String -> String -> String
 defaultFnNameW tag method = "mdk_default_\{gname method}_\{gname tag}"
 
--- the RKey-arm fallback: `defaultFor` finds a default ⇒ synthesize the per-(method,
--- tag) define once and emit a direct call to it (forwarding the same dict words +
--- args the concrete impl call would have taken).  No default ⇒ gap (the same
--- missing-impl error llvm_emit's `None => gapE` reports).
+-- the RKey-arm fallback (direct dispatch, concrete impl missed).  Consult a GENERAL
+-- instance (`impl Iface a`, registered under noneHeadTag) FIRST: a general that
+-- PROVIDES the method is the `min⊑` selection (DICT-SEMANTICS §3) for an uncovered
+-- concrete type, so it WINS over the interface default (DICT-SEMANTICS §5, #728-2) —
+-- call its lifted fn directly, exactly as the concrete-hit path does.  Only when no
+-- general instance exists do we fall to the interface DEFAULT: synthesize the
+-- per-(method, tag) define once and emit a direct call to it (forwarding the same
+-- dict words + args the concrete impl call would have taken).  When the general
+-- OMITS the method, desugar's fillImplDefaults has already synthesized the default
+-- body into it under noneHeadTag (same-module) or left no noneHeadTag entry
+-- (cross-module), so this order never shadows a legitimate default.  Neither general
+-- nor default ⇒ gap (the same missing-impl error llvm_emit's `None => gapE` reports).
+-- Concrete impls still win via the implForW check in the caller.  This mirrors llvm's
+-- emitGeneralRKey→emitDefaultRKey→gap chain and the forwarded path's general tail.
 emitDefaultRKeyRef : Prog -> List String -> List String -> String -> String -> List String
-emitDefaultRKeyRef prog dictWords argInstrs name tag = match defaultForW prog name
-  Some entry =>
-    let fname = defaultFnNameW tag name
-    let _ = ensureDefaultEmittedW prog fname tag name entry
-    dictWords ++ argInstrs ++ ["call $" ++ fname]
-  None => match findByTagW name noneHeadTag (progImpls prog)
-    -- a GENERAL instance (`impl Iface a`) is registered under noneHeadTag, never the
-    -- concrete receiver tag, so implForW/defaultForW both miss it.  It is the `min⊑`
-    -- match when the receiver type has no impl of its own — call its lifted fn
-    -- directly, exactly as the concrete-hit path does (mirrors llvm emitGeneralRKey /
-    -- eval pickTagFallback).  Concrete impls still win via the implForW check above.
-    Some _ => dictWords ++ argInstrs ++ ["call $" ++ implFnSym prog noneHeadTag name]
+emitDefaultRKeyRef prog dictWords argInstrs name tag = match findByTagW name noneHeadTag (progImpls prog)
+  Some _ => dictWords
+    ++ argInstrs
+    ++ ["call $" ++ implFnSym prog noneHeadTag name]
+  None => match defaultForW prog name
+    Some entry =>
+      let fname = defaultFnNameW tag name
+      let _ = ensureDefaultEmittedW prog fname tag name entry
+      dictWords ++ argInstrs ++ ["call $" ++ fname]
     None => gapL "wasm layer-15: no impl of method '\{name}' for type '\{tag}'"
 
 -- a module-level set of already-synthesized default symbols (dedup like
@@ -10059,7 +10066,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "defaultFnNameW" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "defaultFnNameW" ((PVar "tag") (PVar "method")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_default_")) (EApp (EVar "display") (EApp (EVar "gname") (EVar "method")))) (ELit (LString "_"))) (EApp (EVar "display") (EApp (EVar "gname") (EVar "tag")))) (ELit (LString ""))))
 (DTypeSig false "emitDefaultRKeyRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "emitDefaultRKeyRef" ((PVar "prog") (PVar "dictWords") (PVar "argInstrs") (PVar "name") (PVar "tag")) (EMatch (EApp (EApp (EVar "defaultForW") (EVar "prog")) (EVar "name")) (arm (PCon "Some" (PVar "entry")) () (EBlock (DoLet false false (PVar "fname") (EApp (EApp (EVar "defaultFnNameW") (EVar "tag")) (EVar "name"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "ensureDefaultEmittedW") (EVar "prog")) (EVar "fname")) (EVar "tag")) (EVar "name")) (EVar "entry"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EVar "fname"))))))) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "findByTagW") (EVar "name")) (EVar "noneHeadTag")) (EApp (EVar "progImpls") (EVar "prog"))) (arm (PCon "Some" PWild) () (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EApp (EApp (EVar "implFnSym") (EVar "prog")) (EVar "noneHeadTag")) (EVar "name")))))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "wasm layer-15: no impl of method '")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "' for type '"))) (EApp (EVar "display") (EVar "tag"))) (ELit (LString "'")))))))))
+(DFunDef false "emitDefaultRKeyRef" ((PVar "prog") (PVar "dictWords") (PVar "argInstrs") (PVar "name") (PVar "tag")) (EMatch (EApp (EApp (EApp (EVar "findByTagW") (EVar "name")) (EVar "noneHeadTag")) (EApp (EVar "progImpls") (EVar "prog"))) (arm (PCon "Some" PWild) () (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EApp (EApp (EVar "implFnSym") (EVar "prog")) (EVar "noneHeadTag")) (EVar "name")))))) (arm (PCon "None") () (EMatch (EApp (EApp (EVar "defaultForW") (EVar "prog")) (EVar "name")) (arm (PCon "Some" (PVar "entry")) () (EBlock (DoLet false false (PVar "fname") (EApp (EApp (EVar "defaultFnNameW") (EVar "tag")) (EVar "name"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "ensureDefaultEmittedW") (EVar "prog")) (EVar "fname")) (EVar "tag")) (EVar "name")) (EVar "entry"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EVar "fname"))))))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "wasm layer-15: no impl of method '")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "' for type '"))) (EApp (EVar "display") (EVar "tag"))) (ELit (LString "'")))))))))
 (DTypeSig false "emittedDefaultsWRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "emittedDefaultsWRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "defaultDefsWRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String")))))
@@ -12250,7 +12257,7 @@ gap msg = panic ("wasm_emit gap — " ++ msg)
 (DTypeSig false "defaultFnNameW" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "defaultFnNameW" ((PVar "tag") (PVar "method")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "mdk_default_")) (EApp (EMethodRef "display") (EApp (EVar "gname") (EVar "method")))) (ELit (LString "_"))) (EApp (EMethodRef "display") (EApp (EVar "gname") (EVar "tag")))) (ELit (LString ""))))
 (DTypeSig false "emitDefaultRKeyRef" (TyFun (TyCon "Prog") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "emitDefaultRKeyRef" ((PVar "prog") (PVar "dictWords") (PVar "argInstrs") (PVar "name") (PVar "tag")) (EMatch (EApp (EApp (EVar "defaultForW") (EVar "prog")) (EVar "name")) (arm (PCon "Some" (PVar "entry")) () (EBlock (DoLet false false (PVar "fname") (EApp (EApp (EVar "defaultFnNameW") (EVar "tag")) (EVar "name"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "ensureDefaultEmittedW") (EVar "prog")) (EVar "fname")) (EVar "tag")) (EVar "name")) (EVar "entry"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EVar "fname"))))))) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "findByTagW") (EVar "name")) (EVar "noneHeadTag")) (EApp (EVar "progImpls") (EVar "prog"))) (arm (PCon "Some" PWild) () (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EApp (EApp (EVar "implFnSym") (EVar "prog")) (EVar "noneHeadTag")) (EVar "name")))))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "wasm layer-15: no impl of method '")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "' for type '"))) (EApp (EMethodRef "display") (EVar "tag"))) (ELit (LString "'")))))))))
+(DFunDef false "emitDefaultRKeyRef" ((PVar "prog") (PVar "dictWords") (PVar "argInstrs") (PVar "name") (PVar "tag")) (EMatch (EApp (EApp (EApp (EVar "findByTagW") (EVar "name")) (EVar "noneHeadTag")) (EApp (EVar "progImpls") (EVar "prog"))) (arm (PCon "Some" PWild) () (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EApp (EApp (EApp (EVar "implFnSym") (EVar "prog")) (EVar "noneHeadTag")) (EVar "name")))))) (arm (PCon "None") () (EMatch (EApp (EApp (EVar "defaultForW") (EVar "prog")) (EVar "name")) (arm (PCon "Some" (PVar "entry")) () (EBlock (DoLet false false (PVar "fname") (EApp (EApp (EVar "defaultFnNameW") (EVar "tag")) (EVar "name"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "ensureDefaultEmittedW") (EVar "prog")) (EVar "fname")) (EVar "tag")) (EVar "name")) (EVar "entry"))) (DoExpr (EBinOp "++" (EBinOp "++" (EVar "dictWords") (EVar "argInstrs")) (EListLit (EBinOp "++" (ELit (LString "call $")) (EVar "fname"))))))) (arm (PCon "None") () (EApp (EVar "gapL") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "wasm layer-15: no impl of method '")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "' for type '"))) (EApp (EMethodRef "display") (EVar "tag"))) (ELit (LString "'")))))))))
 (DTypeSig false "emittedDefaultsWRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "emittedDefaultsWRef" () (EApp (EVar "Ref") (EListLit)))
 (DTypeSig false "defaultDefsWRef" (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "String")))))

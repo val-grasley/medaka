@@ -4259,23 +4259,30 @@ findDefaultW method (_::rest) = findDefaultW method rest
 defaultFnNameW : String -> String -> String
 defaultFnNameW tag method = "mdk_default_\{gname method}_\{gname tag}"
 
--- the RKey-arm fallback: `defaultFor` finds a default ⇒ synthesize the per-(method,
--- tag) define once and emit a direct call to it (forwarding the same dict words +
--- args the concrete impl call would have taken).  No default ⇒ gap (the same
--- missing-impl error llvm_emit's `None => gapE` reports).
+-- the RKey-arm fallback (direct dispatch, concrete impl missed).  Consult a GENERAL
+-- instance (`impl Iface a`, registered under noneHeadTag) FIRST: a general that
+-- PROVIDES the method is the `min⊑` selection (DICT-SEMANTICS §3) for an uncovered
+-- concrete type, so it WINS over the interface default (DICT-SEMANTICS §5, #728-2) —
+-- call its lifted fn directly, exactly as the concrete-hit path does.  Only when no
+-- general instance exists do we fall to the interface DEFAULT: synthesize the
+-- per-(method, tag) define once and emit a direct call to it (forwarding the same
+-- dict words + args the concrete impl call would have taken).  When the general
+-- OMITS the method, desugar's fillImplDefaults has already synthesized the default
+-- body into it under noneHeadTag (same-module) or left no noneHeadTag entry
+-- (cross-module), so this order never shadows a legitimate default.  Neither general
+-- nor default ⇒ gap (the same missing-impl error llvm_emit's `None => gapE` reports).
+-- Concrete impls still win via the implForW check in the caller.  This mirrors llvm's
+-- emitGeneralRKey→emitDefaultRKey→gap chain and the forwarded path's general tail.
 emitDefaultRKeyRef : Prog -> List String -> List String -> String -> String -> List String
-emitDefaultRKeyRef prog dictWords argInstrs name tag = match defaultForW prog name
-  Some entry =>
-    let fname = defaultFnNameW tag name
-    let _ = ensureDefaultEmittedW prog fname tag name entry
-    dictWords ++ argInstrs ++ ["call $" ++ fname]
-  None => match findByTagW name noneHeadTag (progImpls prog)
-    -- a GENERAL instance (`impl Iface a`) is registered under noneHeadTag, never the
-    -- concrete receiver tag, so implForW/defaultForW both miss it.  It is the `min⊑`
-    -- match when the receiver type has no impl of its own — call its lifted fn
-    -- directly, exactly as the concrete-hit path does (mirrors llvm emitGeneralRKey /
-    -- eval pickTagFallback).  Concrete impls still win via the implForW check above.
-    Some _ => dictWords ++ argInstrs ++ ["call $" ++ implFnSym prog noneHeadTag name]
+emitDefaultRKeyRef prog dictWords argInstrs name tag = match findByTagW name noneHeadTag (progImpls prog)
+  Some _ => dictWords
+    ++ argInstrs
+    ++ ["call $" ++ implFnSym prog noneHeadTag name]
+  None => match defaultForW prog name
+    Some entry =>
+      let fname = defaultFnNameW tag name
+      let _ = ensureDefaultEmittedW prog fname tag name entry
+      dictWords ++ argInstrs ++ ["call $" ++ fname]
     None => gapL "wasm layer-15: no impl of method '\{name}' for type '\{tag}'"
 
 -- a module-level set of already-synthesized default symbols (dedup like
