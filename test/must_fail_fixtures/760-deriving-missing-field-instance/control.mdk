@@ -1,0 +1,7 @@
+data Inner = Inner Int deriving (Eq)   -- the inner instance now exists
+data Outer = Outer Inner deriving (Eq)
+
+-- Valid: with Inner deriving Eq, check accepts CORRECTLY and run/build agree.
+main =
+  println (Outer (Inner 1) == Outer (Inner 1))
+  println (Outer (Inner 1) == Outer (Inner 2))

@@ -1,0 +1,15 @@
+issue: 758
+what: A Set built from +0.0 and a computed -0.0 (which are ==-equal) keeps BOTH keys,
+what: reporting size 2 instead of 1. impl Ord Float / hashFloat use IEEE-754 totalOrder,
+what: which distinguishes the zero sign bit, while impl Eq Float follows IEEE where
+what: -0.0 == 0.0 is True. compare/hash therefore disagree with ==, violating the
+what: Ord-vs-Eq and Hashable-vs-Eq laws and silently corrupting Set/Map/HashSet.
+what: BOTH engines agree (this is a semantic-law bug, not a run != build refinement bug).
+cmd: run main.mdk
+exit: 0
+stdout: 2
+control: run control.mdk
+why-control: two EQUAL +0.0 keys dedup to size 1, proving fromList/size work — the bug is
+why-control: purely the ±0.0 sign distinction, not general Set behaviour.
+why-note: drains when compare/hashFloat normalize -0.0 to +0.0 (size becomes 1, exit 0
+why-note: with stdout `1`, no longer matching the pinned `2`).
