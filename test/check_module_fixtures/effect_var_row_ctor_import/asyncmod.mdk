@@ -1,0 +1,6 @@
+-- #784: a row-kinded data ctor (its first param appears in an effect-tail
+-- position, so it is Row-kinded) defined in ITS OWN module, imported by the
+-- entry below.  Regression guard for the multi-module ACCEPT case: the
+-- under-determined-effect-var check must consult the IMPORTED ctor's kind
+-- (dataParamKindsRef loaded from the data universe), not just local ctors.
+public export data Async e a = Done a | Suspend (Unit -> <e> Async e a)

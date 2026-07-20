@@ -1212,7 +1212,7 @@ export impl Foldable (Result e) where
    Err 99 -}
 export interface Traversable t requires Mappable t, Foldable t where
   traverse : Thenable m => (a -> <e> m b) -> t a -> <e> m (t b)
-  sequence : Thenable m => t (m a) -> <e> m (t a)
+  sequence : Thenable m => t (m a) -> m (t a)
   sequence ta = traverse identity ta
 -- `sequence` is an interface DEFAULT: the desugar fill pass (fillImplDefaults)
 -- synthesizes a concrete-receiver per-impl copy of this body into every impl,

@@ -947,6 +947,94 @@ checkEffectParamsDecl (DExtern _ _ t) = checkEffectParamsTy t
 checkEffectParamsDecl (DAttrib _ d) = checkEffectParamsDecl d
 checkEffectParamsDecl _ = ()
 
+-- #784 (Option A): reject an interface method whose signature has a free effect
+-- tail var in RETURN position but in NO ROW-KINDED argument position — it is
+-- under-determined, so a caller can instantiate it to `<>` and LAUNDER the
+-- dispatched impl's real effect (a pure-typed wrapper silently performs it).
+-- SCOPED to interface methods (the ratified scope); a top-level return-only
+-- effect var is #797's separate territory.
+--
+-- ⚠️ This runs as a SEPARATE pass from checkEffectParams, deliberately AFTER
+-- registerAllData has populated `dataParamKindsRef` (see the call site in
+-- checkBodyImpl). The predicate's kind-awareness (rowArgNames) consults that
+-- table to tell a row-kinded ctor arg (`Async e a`) from a type-kinded one
+-- (`List e`); running it in the early checkEffectParams pre-pass — before data
+-- registration — would leave the table empty and spuriously reject `Async e a`.
+checkUndeterminedRetEffVars : List Decl -> Unit
+checkUndeterminedRetEffVars [] = ()
+checkUndeterminedRetEffVars (d::rest) =
+  let _ = checkUndeterminedRetEffVarsDecl d
+  checkUndeterminedRetEffVars rest
+
+checkUndeterminedRetEffVarsDecl : Decl -> Unit
+checkUndeterminedRetEffVarsDecl (DInterface { name, methods, ... }) =
+  checkIfaceMethodEffs name methods
+checkUndeterminedRetEffVarsDecl (DAttrib _ d) =
+  checkUndeterminedRetEffVarsDecl d
+checkUndeterminedRetEffVarsDecl _ = ()
+
+checkIfaceMethodEffs : String -> List IfaceMethod -> Unit
+checkIfaceMethodEffs _ [] = ()
+checkIfaceMethodEffs iface ((IfaceMethod mname mty _)::rest) =
+  let _ = match undeterminedRetEffVars mty
+    [] => ()
+    bad => pushTypeErrorOnceAt "T-EFFECT-UNDETERMINED" (firstTyConLoc mty) (effectUndeterminedMsg iface mname bad)
+  checkIfaceMethodEffs iface rest
+
+-- The predicate: return-position effect tail vars minus argument-carried ones.
+-- An effect var is argument-carried — hence soundly pinned at every call site —
+-- ONLY by a ROW-KINDED occurrence in an argument. The test is kind-aware, NOT
+-- name-based: a Row-kinded effect var and a Type-kinded type var may share a
+-- spelling yet be independent variables, so a Type-kinded `e` in `List e` /
+-- `Box e` pins NOTHING about the return row `<e>` — counting it would relaunder
+-- the effect (#784). The two sound argument-carriers:
+--   * a callback's latent arrow effect (`(a -> <e> b)`) — a Row-kinded effect
+--     row, captured by effTailNames over each arg;
+--   * a row-kinded type-CONSTRUCTOR argument (`Async e a`, where Async's first
+--     param has kind Row) — captured by rowArgNames, which consults the ctor's
+--     recorded param kinds (dataParamKindsRef) and takes ONLY the tyvars sitting
+--     in a KRow slot. `List e`/`Box e` (Type-kinded param) contribute nothing.
+-- An effect tail var in the RETURN row and in no such Row-kinded argument slot
+-- is the laundering hazard (map/fold/traverse/`Async e a` are pinned;
+-- `speak : a -> <e> String` and `speak : a -> List e -> <e> String` are not).
+-- An abstract row-ctor arg (`r e a`, `r` a type variable) is conservatively
+-- rejected — no real interface method has that shape, and matching it soundly
+-- would need per-argument kind inference we do not run here.
+undeterminedRetEffVars : Ty -> List String
+undeterminedRetEffVars sig =
+  let args = methodArgs sig
+  let argCarried = dedup (flatMap effTailNames args ++ flatMap rowArgNames args)
+  let retTail = dedup (effTailNames (methodRet sig))
+  removeAllS argCarried retTail
+
+-- return type of a method: strip leading constraint wrappers and arrows, but
+-- KEEP a trailing effect row so its tail var is visible (unlike methodArgs,
+-- which peels it).
+methodRet : Ty -> Ty
+methodRet (TyConstrained _ t) = methodRet t
+methodRet (TyFun _ b) = methodRet b
+methodRet t = t
+
+renderEffTailVars : List String -> String
+renderEffTailVars vs = joinWith ", " (map (v => "<\{v}>") vs)
+
+effectUndeterminedMsg : String -> String -> List String -> String
+effectUndeterminedMsg iface mname vars = "Under-determined effect variable \{renderEffTailVars vars} in method '\{mname}' of interface '\{iface}': the effect appears only in the method's return type, pinned by no argument, so a caller can instantiate it to <> and launder the real effect (a function typed pure would silently perform it). Use a concrete effect row (e.g. `<Stdout>`) or thread the effect through an argument (e.g. a callback `a -> <e> b`)."
+
+-- first available source loc in a signature, for locating the diagnostic.
+firstTyConLoc : Ty -> Option Loc
+firstTyConLoc (TyCon _ ml) = ml
+firstTyConLoc (TyApp a b) = orElseLoc (firstTyConLoc a) (firstTyConLoc b)
+firstTyConLoc (TyFun a b) = orElseLoc (firstTyConLoc a) (firstTyConLoc b)
+firstTyConLoc (TyTuple ts) = firstTyConLocList ts
+firstTyConLoc (TyEffect _ _ t) = firstTyConLoc t
+firstTyConLoc (TyConstrained _ t) = firstTyConLoc t
+firstTyConLoc _ = None
+
+firstTyConLocList : List Ty -> Option Loc
+firstTyConLocList [] = None
+firstTyConLocList (t::ts) = orElseLoc (firstTyConLoc t) (firstTyConLocList ts)
+
 checkEffectParamsTy : Ty -> Unit
 checkEffectParamsTy (TyFun a b) =
   let _ = checkEffectParamsTy a
@@ -11193,6 +11281,11 @@ checkBodyImpl seed mode prog0 =
       -- dead `[]` on the elaborate/emit path, #154 PR-C), so the overlay fires on the
       -- run/build gate too, not just `check`.
       registerAllData base (importedCtorTypeDecls prog0 crossRun.value.universeDataDecls.value)
+  -- #784: reject under-determined return-only effect vars on interface methods.
+  -- MUST run AFTER `dataEnv` above populated `dataParamKindsRef` — the kind-aware
+  -- predicate (rowArgNames) reads that table to distinguish a row-kinded ctor arg
+  -- (`Async e a`, pins the effect) from a type-kinded one (`List e`, does not).
+  let _ = checkUndeterminedRetEffVars prog
   let _ = rejectCyclicAliases ()
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   -- methodNames: FLAT's SECOND ifaceMethodSchemes call over prog — dedup-skipped by

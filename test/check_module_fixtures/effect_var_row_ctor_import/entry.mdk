@@ -1,0 +1,11 @@
+import asyncmod.{Async, Done, Suspend}
+
+-- `runr`'s effect var `e` is pinned by the Row-kinded slot of the IMPORTED
+-- `Async e a` argument, so it is well-formed and MUST typecheck (accept) — the
+-- effect is argument-carried, not under-determined. If the kind-aware #784 check
+-- failed to see the imported ctor's Row kind it would spuriously reject this.
+export interface Runner s where
+  runr : s -> Async e a -> <e> a
+
+runIt : Runner s => s -> Async b c -> c
+runIt s a = runr s a

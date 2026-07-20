@@ -143,6 +143,7 @@ checkEffectParamsDecl : Decl -> Unit
 checkEffectParamsTy : Ty -> Unit
 checkEffectParamsTys : List Ty -> Unit
 checkErrorsWithRuntime : List Decl -> List Decl -> List Decl -> Bool
+checkIfaceMethodEffs : String -> List IfaceMethod -> Unit
 checkImplCompleteness : List Decl -> List Decl -> Unit
 checkImplCompletenessMap : Map String (List String) -> List Decl -> Unit
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> Unit
@@ -192,6 +193,8 @@ checkToLines : List Decl -> String
 checkToLinesWithRuntime : List Decl -> List Decl -> List Decl -> String
 checkUndeterminedObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
 checkUndeterminedObligations : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkUndeterminedRetEffVars : List Decl -> Unit
+checkUndeterminedRetEffVarsDecl : Decl -> Unit
 clauseImplDictUser : Int -> ImplMethod -> List String
 clauseIsNonFunction : FunClause -> Bool
 clauseIsValue : FunClause -> Bool
@@ -372,6 +375,7 @@ effectEscapeMsg : String -> List Atom -> List Atom -> String
 effectLeakCheck : List Atom -> List Atom -> Unit
 effectLeakMsg : List Atom -> List Atom -> String
 effectParamMsg : String -> String -> String
+effectUndeterminedMsg : String -> String -> List String -> String
 effrowLabels : EffRow -> List Atom
 effrowNorm : EffRow -> EffRow
 effvarId : Ref Effvar -> Int
@@ -455,6 +459,8 @@ firstPredForEncl : String -> Mono -> String -> List (String, Mono, String) -> Op
 firstReqMatch : List (List Ty, List Require) -> List Mono -> Option (List (String, Mono), List Require)
 firstTupleCallHint : List Mono -> Option (String, Option (Loc, String))
 firstTvar : Mono -> Mono -> Int -> Option Mono
+firstTyConLoc : Ty -> Option Loc
+firstTyConLocList : List Ty -> Option Loc
 flatGroupIsCore : List String -> Bool
 foldAppFallback : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Ty -> Mono
 foldAppKinds : List (String, Ref Effvar) -> List (String, Mono) -> Mono -> List Kind -> List Ty -> Mono
@@ -796,6 +802,7 @@ methodDictArityOf : String -> Int
 methodDispatchIdx : String -> Option Int
 methodLevelConstraintVarNames : List String -> Ty -> List String
 methodMembersOf : List String -> Loc -> List UseMember
+methodRet : Ty -> Ty
 methodSchemes : List String -> List IfaceMethod -> List (String, Scheme)
 methodSchemesPure : List IfaceMethod -> List (String, Scheme)
 methodTyOf : String -> List IfaceMethod -> Option Ty
@@ -1028,6 +1035,7 @@ renderAxisVal : Param -> String
 renderCallArg : Expr -> Option String
 renderCallArgs : List Expr -> Option (List String)
 renderConstraintCtx : Ref (List (Int, String)) -> Ref Int -> List (String, List Int) -> List String
+renderEffTailVars : List String -> String
 renderLitArg : Expr -> Option String
 renderProductLit : List (String, Param) -> String
 reopenRow : Bool -> EffRow -> EffRow
@@ -1244,6 +1252,7 @@ tyvarLevel : Ref Tyvar -> Int
 unboundSpineHead : Mono -> Bool
 unboundVarFresh : String -> Mono
 unboundVarMsg : String -> String
+undeterminedRetEffVars : Ty -> List String
 undeterminedRoute : Map String (List ImplEntry) -> Map String (List KeyEntry) -> Undetermined -> Route
 unify : Mono -> Mono -> Unit
 unifyAll : Mono -> List Mono -> Unit
