@@ -153,7 +153,7 @@ checkImplObligationsU : ImplUniverse -> List (String, List String, Ty, Mono, Opt
 checkInterfaceCycles : List Decl -> Unit
 checkLetBind : String -> List FunClause -> Unit
 checkLetBinds : List LetBind -> Unit
-checkLetGroupBindsGo : List String -> List LetBind -> Unit
+checkLetGroupBindsGo : List LetBind -> Unit
 checkLetGroupBindsLocated : List LetBind -> Unit
 checkLetRecDecls : List Decl -> Unit
 checkMatchExhaustive : Mono -> List Arm -> Unit

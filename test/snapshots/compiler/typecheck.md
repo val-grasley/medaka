@@ -1,5 +1,5 @@
 # META
-source_lines=16277
+source_lines=16299
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -7345,6 +7345,12 @@ tcClauseDef n c = (n, funClausePair c)
 
 -- D2 fix: mirrors oracle is_syntactic_lambda (lib/typecheck.ml:2518-2521).
 -- True iff the expression is an explicit lambda at the top level.
+-- ⚠️ #807 (pre-existing, out of scope here): does NOT see through an ELoc
+-- wrapper, so a zero-param `let rec f = x => …` clause — whose RHS the parser
+-- wraps in ELoc — is WRONGLY rejected as non-function even though it plainly
+-- is one. Confirmed this predates #799's fix (reproduces identically against
+-- pre-#799 top-level `let rec`, the only call site old enough to hit it) —
+-- not something introduced by the block/expr-level guards added here.
 isSyntacticLambda : Expr -> Bool
 isSyntacticLambda (ELam _ _) = True
 isSyntacticLambda _ = False
@@ -7398,8 +7404,14 @@ letRecNonFunctionMsg name = "'"
 -- removed), so — unlike ELetGroup below — there is no risk of an innocent
 -- bystander binding riding along; mirroring the top-level "not a syntactic
 -- lambda ⇒ reject" rule verbatim is safe here. Unlike the top-level call site
--- (which has no expression in hand to locate against), push a LOCATED
--- diagnostic — a block/expr let-rec always carries its RHS expr (ERROR-QUALITY.md).
+-- (which has no expression in hand to locate against), this DOES have the RHS
+-- expr and passes it to pushTypeErrorAt via exprLoc (ERROR-QUALITY.md) — but
+-- that is a BEST-EFFORT location, not a guaranteed one: exprLoc only recognizes
+-- an ELoc/EDoOrigin wrapper, and not every Expr shape the parser produces is
+-- wrapped in one (e.g. a bare `EBinOp` RHS like `let rec x = x + 1` has no
+-- ELoc, so exprLoc returns None and the diagnostic falls back to the zero
+-- range — same as the top-level guard's own unlocated call). A wrapped RHS
+-- (the common case — most expressions ARE ELoc-wrapped) gets a real range.
 checkRecBindNonFunction : String -> Expr -> Unit
 checkRecBindNonFunction name e
   | isSyntacticLambda e = ()
@@ -7416,24 +7428,34 @@ checkRecBindNonFunction name e
 --
 -- So this check is narrower and more precise instead of broader: a zero-param,
 -- non-lambda clause is illegal only if its RHS EAGERLY (i.e. not deferred
--- behind a nested lambda) mentions itself or ANY sibling in the same group —
--- the actual hazard (evalLetGroup pre-binds every member's cell to Ref VUnit
--- and installs each member's value in source order, so an eager cross-
--- reference to any not-yet-installed cell reads stale VUnit). A plain
--- `where`-bound value that never mentions a sibling is provably safe and
--- passes untouched, regardless of "looks like a function".
+-- behind a nested lambda) mentions itself or a NOT-YET-INSTALLED sibling — the
+-- actual hazard (evalLetGroup pre-binds every member's cell to Ref VUnit and
+-- installs each member's value in SOURCE ORDER, so an eager reference to a
+-- cell installed BEFORE this one is already set — safe — while a reference to
+-- itself or a cell installed AFTER this one reads stale VUnit — unsafe).
+--
+-- Concretely: for the clause at index i, only a self-or-FORWARD reference
+-- (index >= i) is illegal; a BACKWARD reference (index < i) is the ordinary,
+-- safe `where`-clause shape (`f x = b where a = x + 1; b = a + 100` — `b`
+-- referencing the earlier `a` is fine, `a` referencing the later `b` would not
+-- be). checkLetGroupBindsGo threads exactly that suffix: at each step the
+-- current binding's own name is prepended to the REST of the list (every
+-- sibling that installs after it), so "names" passed down is always "self +
+-- forward", never "self + every sibling" — an earlier false-positive this
+-- fixed (confirmed against the tree: it rejected working `where`-bound values
+-- that only referenced an EARLIER sibling).
 checkLetGroupBindsLocated : List LetBind -> Unit
-checkLetGroupBindsLocated binds =
-  checkLetGroupBindsGo (map letBindName binds) binds
+checkLetGroupBindsLocated = checkLetGroupBindsGo
 
 letBindName : LetBind -> String
 letBindName (LetBind name _) = name
 
-checkLetGroupBindsGo : List String -> List LetBind -> Unit
-checkLetGroupBindsGo _ [] = ()
-checkLetGroupBindsGo names ((LetBind name clauses)::rest) =
-  let _ = checkClausesNonFunctionLocated names name clauses
-  checkLetGroupBindsGo names rest
+checkLetGroupBindsGo : List LetBind -> Unit
+checkLetGroupBindsGo [] = ()
+checkLetGroupBindsGo ((LetBind name clauses)::rest) =
+  let selfAndForward = name :: map letBindName rest
+  let _ = checkClausesNonFunctionLocated selfAndForward name clauses
+  checkLetGroupBindsGo rest
 
 checkClausesNonFunctionLocated : List String -> String -> List FunClause -> Unit
 checkClausesNonFunctionLocated names name clauses
@@ -17931,12 +17953,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "checkRecBindNonFunction" (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "Unit"))))
 (DFunDef false "checkRecBindNonFunction" ((PVar "name") (PVar "e")) (EIf (EApp (EVar "isSyntacticLambda") (EVar "e")) (ELit LUnit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "exprLoc") (EVar "e"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "checkLetGroupBindsLocated" (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit")))
-(DFunDef false "checkLetGroupBindsLocated" ((PVar "binds")) (EApp (EApp (EVar "checkLetGroupBindsGo") (EApp (EApp (EVar "map") (EVar "letBindName")) (EVar "binds"))) (EVar "binds")))
+(DFunDef false "checkLetGroupBindsLocated" () (EVar "checkLetGroupBindsGo"))
 (DTypeSig false "letBindName" (TyFun (TyCon "LetBind") (TyCon "String")))
 (DFunDef false "letBindName" ((PCon "LetBind" (PVar "name") PWild)) (EVar "name"))
-(DTypeSig false "checkLetGroupBindsGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit"))))
-(DFunDef false "checkLetGroupBindsGo" (PWild (PList)) (ELit LUnit))
-(DFunDef false "checkLetGroupBindsGo" ((PVar "names") (PCons (PCon "LetBind" (PVar "name") (PVar "clauses")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "checkClausesNonFunctionLocated") (EVar "names")) (EVar "name")) (EVar "clauses"))) (DoExpr (EApp (EApp (EVar "checkLetGroupBindsGo") (EVar "names")) (EVar "rest")))))
+(DTypeSig false "checkLetGroupBindsGo" (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit")))
+(DFunDef false "checkLetGroupBindsGo" ((PList)) (ELit LUnit))
+(DFunDef false "checkLetGroupBindsGo" ((PCons (PCon "LetBind" (PVar "name") (PVar "clauses")) (PVar "rest"))) (EBlock (DoLet false false (PVar "selfAndForward") (EBinOp "::" (EVar "name") (EApp (EApp (EVar "map") (EVar "letBindName")) (EVar "rest")))) (DoLet false false PWild (EApp (EApp (EApp (EVar "checkClausesNonFunctionLocated") (EVar "selfAndForward")) (EVar "name")) (EVar "clauses"))) (DoExpr (EApp (EVar "checkLetGroupBindsGo") (EVar "rest")))))
 (DTypeSig false "checkClausesNonFunctionLocated" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Unit")))))
 (DFunDef false "checkClausesNonFunctionLocated" ((PVar "names") (PVar "name") (PVar "clauses")) (EIf (EBinOp "&&" (EApp (EApp (EVar "allList") (EVar "clauseIsNonFunction")) (EVar "clauses")) (EApp (EApp (EVar "anyClauseEagerlyRefsGroup") (EVar "names")) (EVar "clauses"))) (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "clausesLoc") (EVar "clauses"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "anyClauseEagerlyRefsGroup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Bool"))))
@@ -21692,12 +21714,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "checkRecBindNonFunction" (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyCon "Unit"))))
 (DFunDef false "checkRecBindNonFunction" ((PVar "name") (PVar "e")) (EIf (EApp (EVar "isSyntacticLambda") (EVar "e")) (ELit LUnit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "exprLoc") (EVar "e"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "checkLetGroupBindsLocated" (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit")))
-(DFunDef false "checkLetGroupBindsLocated" ((PVar "binds")) (EApp (EApp (EVar "checkLetGroupBindsGo") (EApp (EApp (EMethodRef "map") (EVar "letBindName")) (EVar "binds"))) (EVar "binds")))
+(DFunDef false "checkLetGroupBindsLocated" () (EVar "checkLetGroupBindsGo"))
 (DTypeSig false "letBindName" (TyFun (TyCon "LetBind") (TyCon "String")))
 (DFunDef false "letBindName" ((PCon "LetBind" (PVar "name") PWild)) (EVar "name"))
-(DTypeSig false "checkLetGroupBindsGo" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit"))))
-(DFunDef false "checkLetGroupBindsGo" (PWild (PList)) (ELit LUnit))
-(DFunDef false "checkLetGroupBindsGo" ((PVar "names") (PCons (PCon "LetBind" (PVar "name") (PVar "clauses")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "checkClausesNonFunctionLocated") (EVar "names")) (EVar "name")) (EVar "clauses"))) (DoExpr (EApp (EApp (EVar "checkLetGroupBindsGo") (EVar "names")) (EVar "rest")))))
+(DTypeSig false "checkLetGroupBindsGo" (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyCon "Unit")))
+(DFunDef false "checkLetGroupBindsGo" ((PList)) (ELit LUnit))
+(DFunDef false "checkLetGroupBindsGo" ((PCons (PCon "LetBind" (PVar "name") (PVar "clauses")) (PVar "rest"))) (EBlock (DoLet false false (PVar "selfAndForward") (EBinOp "::" (EVar "name") (EApp (EApp (EMethodRef "map") (EVar "letBindName")) (EVar "rest")))) (DoLet false false PWild (EApp (EApp (EApp (EVar "checkClausesNonFunctionLocated") (EVar "selfAndForward")) (EVar "name")) (EVar "clauses"))) (DoExpr (EApp (EVar "checkLetGroupBindsGo") (EVar "rest")))))
 (DTypeSig false "checkClausesNonFunctionLocated" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Unit")))))
 (DFunDef false "checkClausesNonFunctionLocated" ((PVar "names") (PVar "name") (PVar "clauses")) (EIf (EBinOp "&&" (EApp (EApp (EVar "allList") (EVar "clauseIsNonFunction")) (EVar "clauses")) (EApp (EApp (EVar "anyClauseEagerlyRefsGroup") (EVar "names")) (EVar "clauses"))) (EApp (EApp (EApp (EVar "pushTypeErrorAt") (ELit (LString "T-NONREC-VALUE-LET"))) (EApp (EVar "clausesLoc") (EVar "clauses"))) (EApp (EVar "letRecNonFunctionMsg") (EVar "name"))) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "anyClauseEagerlyRefsGroup" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "FunClause")) (TyCon "Bool"))))

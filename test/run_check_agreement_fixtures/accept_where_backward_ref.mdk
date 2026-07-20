@@ -1,0 +1,15 @@
+-- #799 review follow-up: the ELetGroup/`where` eager-reference guard added for
+-- #799 must be SOURCE-ORDER-AWARE. `evalLetGroup` (eval.mdk) evaluates a
+-- nullary where-binding EAGERLY IN SOURCE ORDER, so a BACKWARD reference to an
+-- EARLIER sibling (`b` referencing `a`, `a` already installed) reads an
+-- already-set cell and is perfectly safe — only a self- or FORWARD reference
+-- (to a cell not yet installed) is the Ref-VUnit hazard. An earlier version of
+-- the guard flagged ANY sibling reference regardless of order and wrongly
+-- REJECTED this ordinary, working `where` shape. check == run == build all
+-- ACCEPT and agree on the value (106).
+f x = b
+  where
+    a = x + 1
+    b = a + 100
+
+main = println (f 5)
