@@ -1,12 +1,15 @@
 issue: 66
-what: a leading `->` continuing a multi-line signature is rejected with a MISLEADING
-what: INDENTATION error ("Indentation (column 2) doesn't match the enclosing block").
-what: The layout is fine; `->` is simply not in the leading-operator set.
+what: a leading `->` continuing a multi-line signature is STILL rejected (LAYOUT-SEMANTICS.md
+what: §5's leading-op set is deliberately `|> >> << && || ++ ::` — arrows are excluded on
+what: purpose, on both the leading AND trailing side, so this is not a layout bug to fix).
+what: PR that fixed the S2 in this issue's title made the diagnostic name the TRUE cause
+what: instead of blaming indentation, and suggest the supported form (trailing `->`).
 cmd: check-json main.mdk
 exit: 1
-diag: P-PARSE 1:2-1:3 unexpected `->`. Indentation (column 2) doesn't match the enclosing block
+diag: P-PARSE 1:2-1:3 unexpected `->`. A line can't start with `->` — it's not a supported continuation at any indentation; put `->` at the end of the previous line instead (e.g. `f : Int ->` then an indented `Int`)
 control: check-json control.mdk
-why-control: the SAME signature on one line must stay green. That isolates the bug to the
-why-control: multi-line/leading-`->` form, not to `f : Int -> Int` in general.
-why-diag: the MESSAGE is the defect here (it blames indentation), so it is pinned in full
-why-diag: rather than with diag-code.
+why-control: the SAME signature on one line must stay green. That isolates the observation to
+why-control: the multi-line/leading-`->` form, not to `f : Int -> Int` in general.
+why-diag: pinned in full (not diag-code) so a future accidental regression back to the
+why-diag: misleading "Indentation (column N) doesn't match the enclosing block" wording — the
+why-diag: original defect this issue reported — fails this gate immediately.

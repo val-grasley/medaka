@@ -3827,8 +3827,20 @@ unexpectedLeftoverMsg src toks offs srcLen pos =
   let base = "unexpected " ++ describeToken (peekTok toks pos)
   let offset = locateOffset toks offs srcLen pos
   match leadingIndentAt src offset
-    Some col if col > 0 => "\{base}. Indentation (column \{intToString col}) doesn't match the enclosing block"
+    Some col if col > 0 => leadingIndentMsg (peekTok toks pos) base col
     _ => base
+
+-- `->` is deliberately absent from the leading-operator continuation set
+-- (LAYOUT-SEMANTICS.md §5: the 7 leading ops are `|> >> << && || ++ ::`;
+-- arrows are excluded on both the leading AND trailing side). So a line that
+-- starts with `->` is rejected at ANY indentation — the generic
+-- "indentation doesn't match" message is false here (re-indenting can never
+-- fix it) and names the wrong root cause (#66). Name the true one and the
+-- real fix: put `->` at the end of the previous line instead, where it
+-- heralds the indented continuation the writer wanted.
+leadingIndentMsg : Token -> String -> Int -> String
+leadingIndentMsg TArrow base col = "\{base}. A line can't start with `->` — it's not a supported continuation at any indentation; put `->` at the end of the previous line instead (e.g. `f : Int ->` then an indented `Int`)"
+leadingIndentMsg _ base col = "\{base}. Indentation (column \{intToString col}) doesn't match the enclosing block"
 
 -- A lexer error (unterminated string / block comment, invalid escape, stray
 -- character) is surfaced as a terminal `TLexError msg` token carrying the

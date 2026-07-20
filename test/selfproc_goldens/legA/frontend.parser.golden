@@ -234,6 +234,7 @@ lastContentLineOf : Array Token -> Array Int -> List (Decl, Int, Int) -> Int
 leadingIndentAllBlank : Array Char -> Int -> Int -> Bool
 leadingIndentAt : String -> Int -> Option Int
 leadingIndentLineStart : Array Char -> Int -> Int
+leadingIndentMsg : Token -> String -> Int -> String
 leftSectionGo : Expr -> Expr -> Expr
 leftSectionOrExpr : Expr -> Expr
 leftSectionRhs : Expr -> String -> Expr -> Expr -> Expr
