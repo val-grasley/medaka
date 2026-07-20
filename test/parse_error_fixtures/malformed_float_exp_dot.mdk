@@ -1,0 +1,8 @@
+-- #677: `5.e3` — digits, a `.` with no fractional digit, then something that
+-- reads as a decimal exponent. Before the fix the lexer split this into
+-- TInt 5, TDot, TIdent "e3", so the parser read it as member access
+-- `5.e3` and typecheck reported a phantom "Field 'e3' does not belong to
+-- record '<unknown>'" (plus a spurious ambiguous-Display cascade) instead of
+-- naming the malformed float.
+-- Self-hosted reference: malformed float literal `5.e3`: a float needs a digit after the decimal point — write `5.0e3`
+x = 5.e3

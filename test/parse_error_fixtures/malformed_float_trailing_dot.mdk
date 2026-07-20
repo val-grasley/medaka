@@ -1,0 +1,7 @@
+-- #677: `5.` — digits followed by `.` with nothing after it that could
+-- continue a (possibly ill-typed but syntactically legal) postfix access —
+-- is a float missing its fractional digit. Before the fix the lexer emitted
+-- TInt 5 then a lone TDot, and the parser's leftover-token path reported the
+-- phantom "unexpected `.`" instead of naming the malformed literal.
+-- Self-hosted reference: malformed float literal `5.`: a float needs a digit after the decimal point — write `5.0`
+x = 5.

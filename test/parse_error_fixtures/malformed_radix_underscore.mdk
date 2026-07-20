@@ -1,0 +1,7 @@
+-- #677: `0x_FF` — the digit separator `_` immediately after the radix prefix
+-- is illegal (`_` may only appear BETWEEN digits, e.g. `0xD_EAD`). Before the
+-- fix `isRadixPrefix` rejected this literal outright, so the lexer emitted
+-- TInt 0 then re-lexed `x_FF` as a plain identifier, and resolve reported the
+-- phantom "Unbound variable: x_FF" instead of naming the malformed literal.
+-- Self-hosted reference: malformed radix literal `0x_FF`: '_' cannot immediately follow the radix prefix — write `0xFF`
+x = 0x_FF
