@@ -1,5 +1,5 @@
 # META
-source_lines=15971
+source_lines=16011
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -11487,8 +11487,39 @@ inferUserImplBodies : TcEnv -> List Decl -> List Decl -> Unit
 inferUserImplBodies env allProg decls =
   let savedErrs = perRun.value.typeErrors.value
   let savedSticky = typeErrorsSticky.value
+  let rpNames = returnPosMethodNames allProg
   let _ = setRef useFastIfaceMethodTy True
-  let _ = inferImplBodies env allProg (returnPosMethodNames allProg) (filterList implHeadGround decls)
+  -- GROUND heads (#760/#777): infer their bodies and KEEP the obligations they record
+  -- — a ground impl only calls methods on CONCRETE field types, so every obligation is
+  -- concrete and checkImplObligations either finds the impl or emits a genuine
+  -- `No impl of <iface> for <field>` reject.
+  let _ = inferImplBodies env allProg rpNames (filterList implHeadGround decls)
+  -- PARAMETRIC heads (#781, S0): a parametric impl head (`impl Sig (List a)`) is never
+  -- reached by the ground filter, so a genuine non-literal type mismatch inside its
+  -- method body (`sig _ = idInt "str"`, `idInt : Int -> Int` in a String-returning
+  -- method) went unenforced end-to-end — `check`/`build` exit 0 and the built binary
+  -- printed a wrong value.  Infer these bodies too so the `unify`/`typeMismatch` clash
+  -- is surfaced (it is pushed to `typeErrors`, kept by the filter below), mirroring the
+  -- ground-head fix.  BUT a parametric impl also records obligations on its ABSTRACT
+  -- element tyvar (`impl Eq (List a) requires Eq a` → an `Eq a` obligation over an
+  -- unground var); those never ground on the check path and would reach
+  -- checkUndeterminedObligation as a SPURIOUS `Ambiguous instance` for any iface with
+  -- >= 2 impls (it fired on every program the moment core's own parametric impls were
+  -- inferred — the prelude snapshot).  So WINDOW the obligation channel across this
+  -- pass and restore it afterward: the body-clash errors go through `typeErrors`, NOT
+  -- the obligation channel, so windowing keeps the #781 reject while dropping the
+  -- abstract-var false positives.  A parametric impl over a concrete field (a rarer
+  -- nesting) therefore stays deferred to `build` exactly as before — a residual, not a
+  -- regression, identical to the ground-only behaviour it replaces.
+  let implObls = perRun.value.pendingImplObligations.value
+  let implOblsN = perRun.value.pendingImplObligationsN.value
+  let callObls = perRun.value.pendingCallObligations.value
+  let callOblsN = perRun.value.pendingCallObligationsN.value
+  let _ = inferImplBodies env allProg rpNames (filterList implHeadParametric decls)
+  let _ = setRef perRun.value.pendingImplObligations implObls
+  let _ = setRef perRun.value.pendingImplObligationsN implOblsN
+  let _ = setRef perRun.value.pendingCallObligations callObls
+  let _ = setRef perRun.value.pendingCallObligationsN callOblsN
   let _ = setRef useFastIfaceMethodTy False
   -- The errors pushed DURING inference are the head of the list (consed); savedErrs is
   -- the tail.  Keep every added error except the suppressed effect axis, then drop the
@@ -11506,6 +11537,15 @@ implHeadGround : Decl -> Bool
 implHeadGround (DAttrib _ d) = implHeadGround d
 implHeadGround (DImpl { tys, ... }) = isEmptyL (flatMap tyVarNames tys)
 implHeadGround _ = False
+
+-- True for a DImpl whose head types carry AT LEAST ONE type variable (a parametric
+-- receiver like `Eq (List a)`); False for a ground head and every non-impl decl.  The
+-- exact complement of implHeadGround over DImpl decls, so the two filters partition the
+-- impls without double-inferring any (and both skip non-impl decls).
+implHeadParametric : Decl -> Bool
+implHeadParametric (DAttrib _ d) = implHeadParametric d
+implHeadParametric (DImpl { tys, ... }) = isNonEmptyL (flatMap tyVarNames tys)
+implHeadParametric _ = False
 
 -- C8b: default-body type-checking runs UNCONDITIONALLY (mirrors the oracle's
 -- register_interface default-body loop at lib/typecheck.ml:3122-3160 which checks
@@ -18616,11 +18656,15 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "isSuppressedImplBodyErr" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isSuppressedImplBodyErr" ((PVar "code")) (EBinOp "||" (EBinOp "==" (EVar "code") (ELit (LString "T-EFFECT-LEAK"))) (EBinOp "==" (EVar "code") (ELit (LString "T-EFFECT-PARAM")))))
 (DTypeSig false "inferUserImplBodies" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))
-(DFunDef false "inferUserImplBodies" ((PVar "env") (PVar "allProg") (PVar "decls")) (EBlock (DoLet false false (PVar "savedErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "savedSticky") (EFieldAccess (EVar "typeErrorsSticky") "value")) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EApp (EVar "returnPosMethodNames") (EVar "allProg"))) (EApp (EApp (EVar "filterList") (EVar "implHeadGround")) (EVar "decls")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "False"))) (DoLet false false (PVar "curErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "added") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EApp (EVar "listLen") (EVar "curErrs")) (EApp (EVar "listLen") (EVar "savedErrs")))) (EVar "curErrs"))) (DoLet false false (PVar "kept") (EApp (EApp (EVar "filterList") (ELam ((PVar "e")) (EApp (EVar "not") (EApp (EVar "isSuppressedImplBodyErr") (EApp (EVar "tcCode") (EVar "e")))))) (EVar "added"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "++" (EVar "kept") (EVar "savedErrs")))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EBinOp "||" (EVar "savedSticky") (EApp (EVar "isNonEmptyL") (EVar "kept")))))))
+(DFunDef false "inferUserImplBodies" ((PVar "env") (PVar "allProg") (PVar "decls")) (EBlock (DoLet false false (PVar "savedErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "savedSticky") (EFieldAccess (EVar "typeErrorsSticky") "value")) (DoLet false false (PVar "rpNames") (EApp (EVar "returnPosMethodNames") (EVar "allProg"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EVar "rpNames")) (EApp (EApp (EVar "filterList") (EVar "implHeadGround")) (EVar "decls")))) (DoLet false false (PVar "implObls") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value")) (DoLet false false (PVar "implOblsN") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "callObls") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligations") "value")) (DoLet false false (PVar "callOblsN") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligationsN") "value")) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EVar "rpNames")) (EApp (EApp (EVar "filterList") (EVar "implHeadParametric")) (EVar "decls")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations")) (EVar "implObls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN")) (EVar "implOblsN"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligations")) (EVar "callObls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligationsN")) (EVar "callOblsN"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "False"))) (DoLet false false (PVar "curErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "added") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EApp (EVar "listLen") (EVar "curErrs")) (EApp (EVar "listLen") (EVar "savedErrs")))) (EVar "curErrs"))) (DoLet false false (PVar "kept") (EApp (EApp (EVar "filterList") (ELam ((PVar "e")) (EApp (EVar "not") (EApp (EVar "isSuppressedImplBodyErr") (EApp (EVar "tcCode") (EVar "e")))))) (EVar "added"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "++" (EVar "kept") (EVar "savedErrs")))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EBinOp "||" (EVar "savedSticky") (EApp (EVar "isNonEmptyL") (EVar "kept")))))))
 (DTypeSig false "implHeadGround" (TyFun (TyCon "Decl") (TyCon "Bool")))
 (DFunDef false "implHeadGround" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "implHeadGround") (EVar "d")))
 (DFunDef false "implHeadGround" ((PRec "DImpl" ((rf "tys" None)) true)) (EApp (EVar "isEmptyL") (EApp (EApp (EVar "flatMap") (EVar "tyVarNames")) (EVar "tys"))))
 (DFunDef false "implHeadGround" (PWild) (EVar "False"))
+(DTypeSig false "implHeadParametric" (TyFun (TyCon "Decl") (TyCon "Bool")))
+(DFunDef false "implHeadParametric" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "implHeadParametric") (EVar "d")))
+(DFunDef false "implHeadParametric" ((PRec "DImpl" ((rf "tys" None)) true)) (EApp (EVar "isNonEmptyL") (EApp (EApp (EVar "flatMap") (EVar "tyVarNames")) (EVar "tys"))))
+(DFunDef false "implHeadParametric" (PWild) (EVar "False"))
 (DTypeSig false "inferDefaultBodiesIfEnabled" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))
 (DFunDef false "inferDefaultBodiesIfEnabled" ((PVar "env") (PVar "prog")) (EApp (EApp (EVar "inferDefaultBodies") (EVar "env")) (EVar "prog")))
 (DTypeSig false "dropSchemesNamed" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))
@@ -22266,11 +22310,15 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "isSuppressedImplBodyErr" (TyFun (TyCon "String") (TyCon "Bool")))
 (DFunDef false "isSuppressedImplBodyErr" ((PVar "code")) (EBinOp "||" (EBinOp "==" (EVar "code") (ELit (LString "T-EFFECT-LEAK"))) (EBinOp "==" (EVar "code") (ELit (LString "T-EFFECT-PARAM")))))
 (DTypeSig false "inferUserImplBodies" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))
-(DFunDef false "inferUserImplBodies" ((PVar "env") (PVar "allProg") (PVar "decls")) (EBlock (DoLet false false (PVar "savedErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "savedSticky") (EFieldAccess (EVar "typeErrorsSticky") "value")) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EApp (EVar "returnPosMethodNames") (EVar "allProg"))) (EApp (EApp (EVar "filterList") (EVar "implHeadGround")) (EVar "decls")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "False"))) (DoLet false false (PVar "curErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "added") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EApp (EVar "listLen") (EVar "curErrs")) (EApp (EVar "listLen") (EVar "savedErrs")))) (EVar "curErrs"))) (DoLet false false (PVar "kept") (EApp (EApp (EVar "filterList") (ELam ((PVar "e")) (EApp (EVar "not") (EApp (EVar "isSuppressedImplBodyErr") (EApp (EVar "tcCode") (EVar "e")))))) (EVar "added"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "++" (EVar "kept") (EVar "savedErrs")))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EBinOp "||" (EVar "savedSticky") (EApp (EVar "isNonEmptyL") (EVar "kept")))))))
+(DFunDef false "inferUserImplBodies" ((PVar "env") (PVar "allProg") (PVar "decls")) (EBlock (DoLet false false (PVar "savedErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "savedSticky") (EFieldAccess (EVar "typeErrorsSticky") "value")) (DoLet false false (PVar "rpNames") (EApp (EVar "returnPosMethodNames") (EVar "allProg"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "True"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EVar "rpNames")) (EApp (EApp (EVar "filterList") (EVar "implHeadGround")) (EVar "decls")))) (DoLet false false (PVar "implObls") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations") "value")) (DoLet false false (PVar "implOblsN") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN") "value")) (DoLet false false (PVar "callObls") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligations") "value")) (DoLet false false (PVar "callOblsN") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligationsN") "value")) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EVar "rpNames")) (EApp (EApp (EVar "filterList") (EVar "implHeadParametric")) (EVar "decls")))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligations")) (EVar "implObls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingImplObligationsN")) (EVar "implOblsN"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligations")) (EVar "callObls"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "pendingCallObligationsN")) (EVar "callOblsN"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EVar "useFastIfaceMethodTy")) (EVar "False"))) (DoLet false false (PVar "curErrs") (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors") "value")) (DoLet false false (PVar "added") (EApp (EApp (EVar "takeFirst") (EBinOp "-" (EApp (EVar "listLen") (EVar "curErrs")) (EApp (EVar "listLen") (EVar "savedErrs")))) (EVar "curErrs"))) (DoLet false false (PVar "kept") (EApp (EApp (EVar "filterList") (ELam ((PVar "e")) (EApp (EVar "not") (EApp (EVar "isSuppressedImplBodyErr") (EApp (EVar "tcCode") (EVar "e")))))) (EVar "added"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EFieldAccess (EVar "perRun") "value") "typeErrors")) (EBinOp "++" (EVar "kept") (EVar "savedErrs")))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "typeErrorsSticky")) (EBinOp "||" (EVar "savedSticky") (EApp (EVar "isNonEmptyL") (EVar "kept")))))))
 (DTypeSig false "implHeadGround" (TyFun (TyCon "Decl") (TyCon "Bool")))
 (DFunDef false "implHeadGround" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "implHeadGround") (EVar "d")))
 (DFunDef false "implHeadGround" ((PRec "DImpl" ((rf "tys" None)) true)) (EApp (EVar "isEmptyL") (EApp (EApp (EDictApp "flatMap") (EVar "tyVarNames")) (EVar "tys"))))
 (DFunDef false "implHeadGround" (PWild) (EVar "False"))
+(DTypeSig false "implHeadParametric" (TyFun (TyCon "Decl") (TyCon "Bool")))
+(DFunDef false "implHeadParametric" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "implHeadParametric") (EVar "d")))
+(DFunDef false "implHeadParametric" ((PRec "DImpl" ((rf "tys" None)) true)) (EApp (EVar "isNonEmptyL") (EApp (EApp (EDictApp "flatMap") (EVar "tyVarNames")) (EVar "tys"))))
+(DFunDef false "implHeadParametric" (PWild) (EVar "False"))
 (DTypeSig false "inferDefaultBodiesIfEnabled" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))
 (DFunDef false "inferDefaultBodiesIfEnabled" ((PVar "env") (PVar "prog")) (EApp (EApp (EVar "inferDefaultBodies") (EVar "env")) (EVar "prog")))
 (DTypeSig false "dropSchemesNamed" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))

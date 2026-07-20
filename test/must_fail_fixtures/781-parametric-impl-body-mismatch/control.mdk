@@ -1,7 +1,0 @@
-interface Sig a where
-  sig : a -> String
-idStr : String -> String
-idStr x = x
-impl Sig (List a) where
-  sig _ = idStr "str"
-main = println (sig ([1] : List Int))

@@ -560,6 +560,7 @@ implExistsForHeadGo : List KeyEntry -> String -> String -> Bool
 implHeadGround : Decl -> Bool
 implHeadLoc : List Ty -> Option Loc
 implHeadMatchesArgs : List Ty -> List Mono -> Bool
+implHeadParametric : Decl -> Bool
 implHeadSubst : List Ty -> List Mono -> Option (List (String, Mono))
 implHeadSubstGo : List Ty -> List Mono -> Option (List (String, Mono)) -> Option (List (String, Mono))
 implHeadTagForIface : String -> Decl -> List String
