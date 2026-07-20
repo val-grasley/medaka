@@ -251,6 +251,7 @@ letPatExpr : Parser Expr
 letRecDeclClause : Parser (String, List Pat, Expr)
 letRecExpr : Parser Expr
 letRecInlineClause : Parser (String, List Pat, Expr)
+letRecStmt : Parser DoStmt
 letRecWithRemovedMsg : String
 letTailFor : Pat -> Expr -> Token -> Parser DoStmt
 lineAt : Array Int -> Int -> Int

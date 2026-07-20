@@ -1,5 +1,5 @@
 # META
-source_lines=4239
+source_lines=4256
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
