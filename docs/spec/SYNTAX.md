@@ -53,11 +53,17 @@ p18 = (1, "hi")             -- Tuple
 64-bit machine word. An **integer literal** whose magnitude exceeds `2^62` is a
 lex error (`L-INT-OVERFLOW`) — `println 9223372036854775807` (a legal-looking
 64-bit-max literal) no longer silently prints `-1`, it is rejected. The lexer
-sees only the unsigned digits (the `-` is a separate token), so it admits
-magnitude `2^62` = `4611686018427387904` for the writable negative minimum
-`-4611686018427387904` and rejects `4611686018427387905` (= `2^62 + 1`) and
-above; a bare *positive* `4611686018427387904` therefore still wraps to the
-negative minimum (the lexer cannot see the sign). **Arithmetic** overflow wraps
+sees only the unsigned digits (the `-` is a separate token), so it must admit
+magnitude `2^62` = `4611686018427387904` to keep the negative minimum
+`-4611686018427387904` writable, and wraps that digit string to `intMinBound`
+on the spot; `4611686018427387905` (= `2^62 + 1`) and above are true lex
+errors. The remaining sign ambiguity is resolved one phase later, in the
+**parser**: a bare *positive* `4611686018427387904` is **rejected**
+(`integer literal too large for Int (max 4611686018427387903)`, same
+`L-INT-OVERFLOW` code) rather than silently wrapping to the negative minimum —
+`intMinBound` is reachable only through the adjacent-sign form
+`-4611686018427387904`, where the parser fuses the `-` and the digits into one
+negative literal. **Arithmetic** overflow wraps
 two's-complement-style **by design** — a documented footgun, not a bug (decided
 2026-07-15): `Int` is a fixed-width machine integer (as in C, Go, or Haskell's
 Int), not an arbitrary-precision bignum, so `4611686018427387903 + 1` wraps to a
@@ -67,8 +73,10 @@ RNG) depends on this; to detect it, bounds-check the operands against
 `intMinBound`/`intMaxBound`, or
 the polymorphic `minBound`/`maxBound : Bounded a => a` with a type annotation.)
 
-String escapes: `\n \t \r \0 \\ \" \{` and unicode `\u{48}` (char literals also take
-`\'`).
+String escapes: `\n \t \r \0 \\ \"` and unicode `\u{48}` (char literals also take
+`\'`). `\{` is **not** a literal-brace escape — it is the interpolation opener (see
+`## String interpolation` below); a literal `{` needs no escaping at all
+(`"a{b}c"` prints `a{b}c`).
 
 A `\u{HEX}` escape must name a **Unicode scalar value**: `\u{0}` through `\u{10FFFF}`,
 **excluding** the UTF-16 surrogate block `\u{D800}`–`\u{DFFF}` (those encode one half of
