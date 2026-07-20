@@ -1,5 +1,5 @@
 # META
-source_lines=3425
+source_lines=3450
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -1599,9 +1599,19 @@ evalIf env (VBool False) _ e = eval env e
 evalIf env (VCon "False" []) _ e = eval env e
 evalIf _ _ _ _ = panic "if condition is not a Bool"
 
+-- IEEE unary negation that FLIPS THE SIGN BIT — exactly what the native (`fneg`)
+-- and wasm (`f64.neg`) backends emit, so `run == build` on every input.  `0.0 - f`
+-- was WRONG at zero: `0.0 - 0.0 = +0.0`, dropping the sign of a `-0.0` literal
+-- (issue #761).  Flip byte 0's high bit (the sign, big-endian) and re-decode.
+negFloatIEEE : Float -> Float
+negFloatIEEE f =
+  let bs = floatToBytes64 f
+  let _ = arraySetUnsafe 0 (bitXor (arrayGetUnsafe 0 bs) 128) bs
+  bytesToFloat64 bs 0
+
 export evalUnop : String -> Value e -> Value e
 evalUnop "-" (VInt n) = VInt (0 - n)
-evalUnop "-" (VFloat f) = VFloat (0.0 - f)
+evalUnop "-" (VFloat f) = VFloat (negFloatIEEE f)
 evalUnop "-" _ = panic "unary minus on non-number"
 evalUnop "!" (VBool b) = VBool (not b)
 evalUnop "!" _ = panic "'!' on non-Bool"
@@ -2478,9 +2488,24 @@ pHashBool : Value e -> <e> Value e
 pHashBool (VBool b) = VInt (boolToInt b)
 pHashBool _ = panic "hashBool: not a Bool"
 
+-- canonical quiet NaN 0x7FF8000000000000, the SINGLE bit pattern every NaN folds
+-- to (positive sign, quiet bit set).  Built from explicit big-endian bytes
+-- (0x7F 0xF8 …) rather than `intBitsToFloat (shiftLeft 32760 48)` — that shift
+-- spuriously set bit 63 (a -NaN, 0xFFF8…), which hashes differently from the
+-- native/wasm `0x7FF8…` and reintroduced run != build.
+canonNaN : Float
+canonNaN = bytesToFloat64 (arrayFromList [127, 248, 0, 0, 0, 0, 0, 0]) 0
+
+-- #758: hash `-0.0` as `+0.0` (they are `Eq`, so must share a hash), and
+-- canonicalise every NaN to one bit pattern (all NaNs hash equal).  Both
+-- normalisations run in lockstep with `mdk_hash_float` (native) and
+-- `$mdk_hash_float` (wasm) — diverge and `run != build` returns.
+canonHashFloat : Float -> Float
+canonHashFloat f = if f == 0.0 then 0.0 else if f != f then canonNaN else f
+
 pHashFloat : Value e -> <e> Value e
 pHashFloat (VFloat f) =
-  VInt (u64Low30 (u64Mix (bytesBEToU64 (floatToBytes64 f))))
+  VInt (u64Low30 (u64Mix (bytesBEToU64 (floatToBytes64 (canonHashFloat f)))))
 pHashFloat _ = panic "hashFloat: not a Float"
 
 pHashString : Value e -> <e> Value e
@@ -4075,9 +4100,11 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "evalIf" ((PVar "env") (PCon "VBool" (PCon "False")) PWild (PVar "e")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "evalIf" ((PVar "env") (PCon "VCon" (PLit (LString "False")) (PList)) PWild (PVar "e")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "evalIf" (PWild PWild PWild PWild) (EApp (EVar "panic") (ELit (LString "if condition is not a Bool"))))
+(DTypeSig false "negFloatIEEE" (TyFun (TyCon "Float") (TyCon "Float")))
+(DFunDef false "negFloatIEEE" ((PVar "f")) (EBlock (DoLet false false (PVar "bs") (EApp (EVar "floatToBytes64") (EVar "f"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "arraySetUnsafe") (ELit (LInt 0))) (EApp (EApp (EVar "bitXor") (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EVar "bs"))) (ELit (LInt 128)))) (EVar "bs"))) (DoExpr (EApp (EApp (EVar "bytesToFloat64") (EVar "bs")) (ELit (LInt 0))))))
 (DTypeSig true "evalUnop" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalUnop" ((PLit (LString "-")) (PCon "VInt" (PVar "n"))) (EApp (EVar "VInt") (EBinOp "-" (ELit (LInt 0)) (EVar "n"))))
-(DFunDef false "evalUnop" ((PLit (LString "-")) (PCon "VFloat" (PVar "f"))) (EApp (EVar "VFloat") (EBinOp "-" (ELit (LFloat 0.0)) (EVar "f"))))
+(DFunDef false "evalUnop" ((PLit (LString "-")) (PCon "VFloat" (PVar "f"))) (EApp (EVar "VFloat") (EApp (EVar "negFloatIEEE") (EVar "f"))))
 (DFunDef false "evalUnop" ((PLit (LString "-")) PWild) (EApp (EVar "panic") (ELit (LString "unary minus on non-number"))))
 (DFunDef false "evalUnop" ((PLit (LString "!")) (PCon "VBool" (PVar "b"))) (EApp (EVar "VBool") (EApp (EVar "not") (EVar "b"))))
 (DFunDef false "evalUnop" ((PLit (LString "!")) PWild) (EApp (EVar "panic") (ELit (LString "'!' on non-Bool"))))
@@ -4428,8 +4455,12 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DTypeSig false "pHashBool" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pHashBool" ((PCon "VBool" (PVar "b"))) (EApp (EVar "VInt") (EApp (EVar "boolToInt") (EVar "b"))))
 (DFunDef false "pHashBool" (PWild) (EApp (EVar "panic") (ELit (LString "hashBool: not a Bool"))))
+(DTypeSig false "canonNaN" (TyCon "Float"))
+(DFunDef false "canonNaN" () (EApp (EApp (EVar "bytesToFloat64") (EApp (EVar "arrayFromList") (EListLit (ELit (LInt 127)) (ELit (LInt 248)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0))))) (ELit (LInt 0))))
+(DTypeSig false "canonHashFloat" (TyFun (TyCon "Float") (TyCon "Float")))
+(DFunDef false "canonHashFloat" ((PVar "f")) (EIf (EBinOp "==" (EVar "f") (ELit (LFloat 0.0))) (ELit (LFloat 0.0)) (EIf (EBinOp "!=" (EVar "f") (EVar "f")) (EVar "canonNaN") (EVar "f"))))
 (DTypeSig false "pHashFloat" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
-(DFunDef false "pHashFloat" ((PCon "VFloat" (PVar "f"))) (EApp (EVar "VInt") (EApp (EVar "u64Low30") (EApp (EVar "u64Mix") (EApp (EVar "bytesBEToU64") (EApp (EVar "floatToBytes64") (EVar "f")))))))
+(DFunDef false "pHashFloat" ((PCon "VFloat" (PVar "f"))) (EApp (EVar "VInt") (EApp (EVar "u64Low30") (EApp (EVar "u64Mix") (EApp (EVar "bytesBEToU64") (EApp (EVar "floatToBytes64") (EApp (EVar "canonHashFloat") (EVar "f"))))))))
 (DFunDef false "pHashFloat" (PWild) (EApp (EVar "panic") (ELit (LString "hashFloat: not a Float"))))
 (DTypeSig false "pHashString" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pHashString" ((PCon "VString" (PVar "s"))) (EApp (EVar "VInt") (EApp (EVar "u64Low30") (EApp (EApp (EVar "fnvFold64") (EApp (EVar "arrayToListG") (EApp (EVar "stringToUtf8Bytes") (EVar "s")))) (EVar "u64FnvBasis")))))
@@ -5469,9 +5500,11 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "evalIf" ((PVar "env") (PCon "VBool" (PCon "False")) PWild (PVar "e")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "evalIf" ((PVar "env") (PCon "VCon" (PLit (LString "False")) (PList)) PWild (PVar "e")) (EApp (EApp (EVar "eval") (EVar "env")) (EVar "e")))
 (DFunDef false "evalIf" (PWild PWild PWild PWild) (EApp (EVar "panic") (ELit (LString "if condition is not a Bool"))))
+(DTypeSig false "negFloatIEEE" (TyFun (TyCon "Float") (TyCon "Float")))
+(DFunDef false "negFloatIEEE" ((PVar "f")) (EBlock (DoLet false false (PVar "bs") (EApp (EVar "floatToBytes64") (EVar "f"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "arraySetUnsafe") (ELit (LInt 0))) (EApp (EApp (EVar "bitXor") (EApp (EApp (EVar "arrayGetUnsafe") (ELit (LInt 0))) (EVar "bs"))) (ELit (LInt 128)))) (EVar "bs"))) (DoExpr (EApp (EApp (EVar "bytesToFloat64") (EVar "bs")) (ELit (LInt 0))))))
 (DTypeSig true "evalUnop" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "evalUnop" ((PLit (LString "-")) (PCon "VInt" (PVar "n"))) (EApp (EVar "VInt") (EBinOp "-" (ELit (LInt 0)) (EVar "n"))))
-(DFunDef false "evalUnop" ((PLit (LString "-")) (PCon "VFloat" (PVar "f"))) (EApp (EVar "VFloat") (EBinOp "-" (ELit (LFloat 0.0)) (EVar "f"))))
+(DFunDef false "evalUnop" ((PLit (LString "-")) (PCon "VFloat" (PVar "f"))) (EApp (EVar "VFloat") (EApp (EVar "negFloatIEEE") (EVar "f"))))
 (DFunDef false "evalUnop" ((PLit (LString "-")) PWild) (EApp (EVar "panic") (ELit (LString "unary minus on non-number"))))
 (DFunDef false "evalUnop" ((PLit (LString "!")) (PCon "VBool" (PVar "b"))) (EApp (EVar "VBool") (EApp (EVar "not") (EVar "b"))))
 (DFunDef false "evalUnop" ((PLit (LString "!")) PWild) (EApp (EVar "panic") (ELit (LString "'!' on non-Bool"))))
@@ -5822,8 +5855,12 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DTypeSig false "pHashBool" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pHashBool" ((PCon "VBool" (PVar "b"))) (EApp (EVar "VInt") (EApp (EVar "boolToInt") (EVar "b"))))
 (DFunDef false "pHashBool" (PWild) (EApp (EVar "panic") (ELit (LString "hashBool: not a Bool"))))
+(DTypeSig false "canonNaN" (TyCon "Float"))
+(DFunDef false "canonNaN" () (EApp (EApp (EVar "bytesToFloat64") (EApp (EVar "arrayFromList") (EListLit (ELit (LInt 127)) (ELit (LInt 248)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0)) (ELit (LInt 0))))) (ELit (LInt 0))))
+(DTypeSig false "canonHashFloat" (TyFun (TyCon "Float") (TyCon "Float")))
+(DFunDef false "canonHashFloat" ((PVar "f")) (EIf (EBinOp "==" (EVar "f") (ELit (LFloat 0.0))) (ELit (LFloat 0.0)) (EIf (EBinOp "!=" (EVar "f") (EVar "f")) (EVar "canonNaN") (EVar "f"))))
 (DTypeSig false "pHashFloat" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
-(DFunDef false "pHashFloat" ((PCon "VFloat" (PVar "f"))) (EApp (EVar "VInt") (EApp (EVar "u64Low30") (EApp (EVar "u64Mix") (EApp (EVar "bytesBEToU64") (EApp (EVar "floatToBytes64") (EVar "f")))))))
+(DFunDef false "pHashFloat" ((PCon "VFloat" (PVar "f"))) (EApp (EVar "VInt") (EApp (EVar "u64Low30") (EApp (EVar "u64Mix") (EApp (EVar "bytesBEToU64") (EApp (EVar "floatToBytes64") (EApp (EVar "canonHashFloat") (EVar "f"))))))))
 (DFunDef false "pHashFloat" (PWild) (EApp (EVar "panic") (ELit (LString "hashFloat: not a Float"))))
 (DTypeSig false "pHashString" (TyFun (TyApp (TyCon "Value") (TyVar "e")) (TyEffect () (Some "e") (TyApp (TyCon "Value") (TyVar "e")))))
 (DFunDef false "pHashString" ((PCon "VString" (PVar "s"))) (EApp (EVar "VInt") (EApp (EVar "u64Low30") (EApp (EApp (EVar "fnvFold64") (EApp (EVar "arrayToListG") (EApp (EVar "stringToUtf8Bytes") (EVar "s")))) (EVar "u64FnvBasis")))))

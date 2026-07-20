@@ -67,11 +67,11 @@ main =
   println (debug ((compare pinf nan == Gt) == nanLow))
   -- REFLEXIVITY at NaN (Eq deliberately disagrees: `nan == nan` is False).
   println (debug (compare nan nan == Eq))
-  -- totalOrder SPLITS the zeros: −0.0 < +0.0 …
-  println (debug (compare nzero 0.0 == Lt))
-  println (debug (compare 0.0 nzero == Gt))
-  -- … while `Eq` still calls them equal.  THE ACCEPTED #360 COST: `compare x y ==
-  -- Eq` no longer coincides with `x == y` (cf. Rust total_cmp / Java Double.compare).
+  -- #758: `compare` now UNIFIES ±0.0 — the zero sign is normalised away, so it
+  -- AGREES with `Eq` (both call ±0.0 equal).  NaN is the sole compare != eq residual
+  -- (cf. Rust total_cmp / Java Double.compare, which also collapse ±0.0).
+  println (debug (compare nzero 0.0 == Eq))
+  println (debug (compare 0.0 nzero == Eq))
   println (debug (nzero == 0.0))
   println (debug (isN nan && not (nan == nan)))
   -- The ordered core is untouched.
@@ -88,7 +88,9 @@ main =
   -- Sorting is DETERMINISTIC on NaN data: permuting the input gives ONE answer.
   -- Compared through `debug` because `==` on List Float would compare the NaNs
   -- with IEEE equality and read False even for identical results.
-  println (debug (debug (sortF [3.0, nan, 1.0, nzero, 0.0, 2.0]) == debug (sortF [nan, 0.0, 2.0, nzero, 3.0, 1.0])))
+  -- (No ±0.0 here: post-#758 they compare `Eq`, so a stable sort keeps them in
+  -- INPUT order — permuting two differently-signed zeros is legitimately visible.)
+  println (debug (debug (sortF [3.0, nan, 1.0, 0.0, 2.0]) == debug (sortF [nan, 0.0, 2.0, 3.0, 1.0])))
   println (debug (debug (sortF [3.0, nan, 1.0]) == debug (sortF [1.0, nan, 3.0])))
   -- THE #305/N5 TRIPWIRE. `< <= > >=` at Float are primitive IEEE predicates on
   -- every path and are ALL False at a NaN operand. Ord's interface DEFAULTS derive

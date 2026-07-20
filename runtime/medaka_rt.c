@@ -1741,10 +1741,20 @@ long long mdk_hash_char(long long cp) {
 }
 /* hashBool : Bool -> Int.  `b` is 0/1 (already non-negative). */
 long long mdk_hash_bool(long long b) { return b ? 1 : 0; }
-/* hashFloat : Float -> Int.  `d` is the unboxed double; bit-cast to u64 then mix.
- * -0.0 and 0.0 have distinct bit patterns and so hash differently — acceptable. */
+/* hashFloat : Float -> Int.  `d` is the unboxed double; normalise then mix.
+ * #758: -0.0 and +0.0 are `Eq`, so they MUST hash alike — collapse both to
+ * +0.0's bits.  Every NaN (any sign/payload) is canonicalised to one qNaN bit
+ * pattern so all NaNs share a bucket.  Mirrors pHashFloat (eval) and
+ * $mdk_hash_float (wasm) exactly, or run != build reappears. */
 long long mdk_hash_float(double d) {
-  unsigned long long bits; memcpy(&bits, &d, 8);
+  unsigned long long bits;
+  if (d == 0.0) {              /* +0.0 and -0.0 */
+    bits = 0ULL;
+  } else if (d != d) {         /* NaN, any sign/payload */
+    bits = 0x7FF8000000000000ULL;
+  } else {
+    memcpy(&bits, &d, 8);
+  }
   return (long long)(mdk_hash_mix64(bits) & MDK_HASH_MASK);
 }
 /* hashString : String -> Int.  FNV-1a over the cell's raw UTF-8 bytes (byte_len@8,

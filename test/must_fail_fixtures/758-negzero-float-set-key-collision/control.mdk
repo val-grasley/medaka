@@ -1,8 +1,0 @@
-import set.{fromList, size}
-
-idf : Float -> Float
-idf x = x
-
--- Two EQUAL +0.0 keys must dedup to one -> size 1. Proves fromList/size work,
--- isolating the bug to the -0.0/+0.0 sign-bit distinction.
-main = println (size (fromList [idf 0.0, idf 0.0]))

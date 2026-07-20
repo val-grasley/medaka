@@ -1,9 +1,0 @@
-import set.{fromList, size}
-
-idf : Float -> Float
-idf x = x
-
--- +0.0 and a computed -0.0 are `==`-equal, so the Set should hold ONE key.
--- Because impl Ord Float uses totalOrder (distinguishes the zero sign bit)
--- while impl Eq Float follows IEEE (-0.0 == 0.0), the Set keeps BOTH -> size 2.
-main = println (size (fromList [idf 0.0, idf 0.0 * idf (0.0 - 1.0)]))

@@ -66,10 +66,10 @@ main =
   , (compare 1.0 nan == Gt) == nanLow
   -- REFLEXIVITY at NaN (Eq deliberately disagrees: `nan == nan` is False).
   , compare nan nan == Eq
-  -- totalOrder SPLITS the zeros: -0.0 < +0.0 ...
-  , compare nzero 0.0 == Lt
-  , compare 0.0 nzero == Gt
-  -- ... while `Eq` still calls them equal.  THE ACCEPTED #360 COST.
+  -- #758: `compare` now UNIFIES ±0.0 (zero sign normalised away) and AGREES with
+  -- `Eq`; NaN is the sole compare != eq residual.
+  , compare nzero 0.0 == Eq
+  , compare 0.0 nzero == Eq
   , nzero == 0.0
   -- The ordered core is untouched.
   , compare ninf pinf == Lt
@@ -80,7 +80,9 @@ main =
   , isN (min nan 1.0) == nanLow
   , isN (max nan 1.0) == not nanLow
   -- Sorting is DETERMINISTIC on NaN data: permuting the input gives ONE answer.
-  , debug (sortF [3.0, nan, 1.0, nzero, 0.0, 2.0]) == debug (sortF [nan, 0.0, 2.0, nzero, 3.0, 1.0])
+  -- (No ±0.0 here: post-#758 they compare `Eq`, so a stable sort keeps them in
+  -- INPUT order — permuting two differently-signed zeros is legitimately visible.)
+  , debug (sortF [3.0, nan, 1.0, 0.0, 2.0]) == debug (sortF [nan, 0.0, 2.0, 3.0, 1.0])
   , debug (sortF [3.0, nan, 1.0]) == debug (sortF [1.0, nan, 3.0])
   -- THE #305/N5 TRIPWIRE: all four are primitive IEEE predicates, ALL False at a
   -- NaN operand.  Ord's DEFAULTS derive them from `compare`, so if `impl Ord
