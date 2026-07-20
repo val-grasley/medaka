@@ -1,0 +1,1 @@
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"W-GUARD-INEXHAUSTIVE","kind":"warning","message":"guards may not be exhaustive","range":{"end":{"character":13,"line":2},"start":{"character":12,"line":2}},"severity":2,"source":"medaka"}]}]}

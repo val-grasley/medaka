@@ -1,5 +1,5 @@
 # META
-source_lines=876
+source_lines=898
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted exhaust stage — Stage 4 port of `lib/exhaust.ml`'s standalone
@@ -663,6 +663,10 @@ renderClauseWitness 1 (PCon _ (inner::_)) = renderWitness inner
 renderClauseWitness _ w = renderWitness w
 
 -- Per-group loc: the first clause body carries the parser's `ELoc` wrapper.
+-- A guarded clause's body is the `EGuards` node itself — it carries no `Loc` of
+-- its own (the parser never wraps `EGuards [...]`/`arms` with `located`), so
+-- recover a representative span by drilling into its arms: the first arm whose
+-- body or guard condition carries an `ELoc`/`EDoOrigin` wrapper (#99).
 groupLoc : List (List Pat, Expr) -> Option Loc
 groupLoc [] = None
 groupLoc ((_, body)::_) = clauseBodyLoc body
@@ -670,7 +674,25 @@ groupLoc ((_, body)::_) = clauseBodyLoc body
 clauseBodyLoc : Expr -> Option Loc
 clauseBodyLoc (ELoc l _) = Some l
 clauseBodyLoc (EDoOrigin l _) = Some l
+clauseBodyLoc (EGuards arms) = guardArmsLoc arms
 clauseBodyLoc _ = None
+
+guardArmsLoc : List GuardArm -> Option Loc
+guardArmsLoc [] = None
+guardArmsLoc ((GuardArm guards body)::rest) = match clauseBodyLoc body
+  Some l => Some l
+  None => match guardCondsLoc guards
+    Some l => Some l
+    None => guardArmsLoc rest
+
+guardCondsLoc : List Guard -> Option Loc
+guardCondsLoc [] = None
+guardCondsLoc ((GBool e)::rest) = match clauseBodyLoc e
+  Some l => Some l
+  None => guardCondsLoc rest
+guardCondsLoc ((GBind _ e)::rest) = match clauseBodyLoc e
+  Some l => Some l
+  None => guardCondsLoc rest
 
 groupArity : List (List Pat, Expr) -> Int
 groupArity [] = 0
@@ -1137,7 +1159,15 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DTypeSig false "clauseBodyLoc" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyCon "Loc"))))
 (DFunDef false "clauseBodyLoc" ((PCon "ELoc" (PVar "l") PWild)) (EApp (EVar "Some") (EVar "l")))
 (DFunDef false "clauseBodyLoc" ((PCon "EDoOrigin" (PVar "l") PWild)) (EApp (EVar "Some") (EVar "l")))
+(DFunDef false "clauseBodyLoc" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "guardArmsLoc") (EVar "arms")))
 (DFunDef false "clauseBodyLoc" (PWild) (EVar "None"))
+(DTypeSig false "guardArmsLoc" (TyFun (TyApp (TyCon "List") (TyCon "GuardArm")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "guardArmsLoc" ((PList)) (EVar "None"))
+(DFunDef false "guardArmsLoc" ((PCons (PCon "GuardArm" (PVar "guards") (PVar "body")) (PVar "rest"))) (EMatch (EApp (EVar "clauseBodyLoc") (EVar "body")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EMatch (EApp (EVar "guardCondsLoc") (EVar "guards")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EApp (EVar "guardArmsLoc") (EVar "rest")))))))
+(DTypeSig false "guardCondsLoc" (TyFun (TyApp (TyCon "List") (TyCon "Guard")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "guardCondsLoc" ((PList)) (EVar "None"))
+(DFunDef false "guardCondsLoc" ((PCons (PCon "GBool" (PVar "e")) (PVar "rest"))) (EMatch (EApp (EVar "clauseBodyLoc") (EVar "e")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EApp (EVar "guardCondsLoc") (EVar "rest")))))
+(DFunDef false "guardCondsLoc" ((PCons (PCon "GBind" PWild (PVar "e")) (PVar "rest"))) (EMatch (EApp (EVar "clauseBodyLoc") (EVar "e")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EApp (EVar "guardCondsLoc") (EVar "rest")))))
 (DTypeSig false "groupArity" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr"))) (TyCon "Int")))
 (DFunDef false "groupArity" ((PList)) (ELit (LInt 0)))
 (DFunDef false "groupArity" ((PCons (PVar "c") PWild)) (EApp (EVar "listLen") (EApp (EVar "clausePats") (EVar "c"))))
@@ -1503,7 +1533,15 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DTypeSig false "clauseBodyLoc" (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyCon "Loc"))))
 (DFunDef false "clauseBodyLoc" ((PCon "ELoc" (PVar "l") PWild)) (EApp (EVar "Some") (EVar "l")))
 (DFunDef false "clauseBodyLoc" ((PCon "EDoOrigin" (PVar "l") PWild)) (EApp (EVar "Some") (EVar "l")))
+(DFunDef false "clauseBodyLoc" ((PCon "EGuards" (PVar "arms"))) (EApp (EVar "guardArmsLoc") (EVar "arms")))
 (DFunDef false "clauseBodyLoc" (PWild) (EVar "None"))
+(DTypeSig false "guardArmsLoc" (TyFun (TyApp (TyCon "List") (TyCon "GuardArm")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "guardArmsLoc" ((PList)) (EVar "None"))
+(DFunDef false "guardArmsLoc" ((PCons (PCon "GuardArm" (PVar "guards") (PVar "body")) (PVar "rest"))) (EMatch (EApp (EVar "clauseBodyLoc") (EVar "body")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EMatch (EApp (EVar "guardCondsLoc") (EVar "guards")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EApp (EVar "guardArmsLoc") (EVar "rest")))))))
+(DTypeSig false "guardCondsLoc" (TyFun (TyApp (TyCon "List") (TyCon "Guard")) (TyApp (TyCon "Option") (TyCon "Loc"))))
+(DFunDef false "guardCondsLoc" ((PList)) (EVar "None"))
+(DFunDef false "guardCondsLoc" ((PCons (PCon "GBool" (PVar "e")) (PVar "rest"))) (EMatch (EApp (EVar "clauseBodyLoc") (EVar "e")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EApp (EVar "guardCondsLoc") (EVar "rest")))))
+(DFunDef false "guardCondsLoc" ((PCons (PCon "GBind" PWild (PVar "e")) (PVar "rest"))) (EMatch (EApp (EVar "clauseBodyLoc") (EVar "e")) (arm (PCon "Some" (PVar "l")) () (EApp (EVar "Some") (EVar "l"))) (arm (PCon "None") () (EApp (EVar "guardCondsLoc") (EVar "rest")))))
 (DTypeSig false "groupArity" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr"))) (TyCon "Int")))
 (DFunDef false "groupArity" ((PList)) (ELit (LInt 0)))
 (DFunDef false "groupArity" ((PCons (PVar "c") PWild)) (EApp (EVar "listLen") (EApp (EVar "clausePats") (EVar "c"))))

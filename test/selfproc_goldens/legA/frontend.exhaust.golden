@@ -50,8 +50,10 @@ groupLoc : List (List Pat, Expr) -> Option Loc
 guardAlwaysFires : Guard -> Bool
 guardArmBinds : GuardArm -> List LetBind
 guardArmTotal : GuardArm -> Bool
+guardArmsLoc : List GuardArm -> Option Loc
 guardArmsTotal : List GuardArm -> Bool
 guardBinds : Guard -> List LetBind
+guardCondsLoc : List Guard -> Option Loc
 guardWarning : String
 guardsDecidablyExhaustive : List Guard -> Bool
 headBucketRow : List Pat -> Map String (List (List Pat)) -> Map String (List (List Pat))
