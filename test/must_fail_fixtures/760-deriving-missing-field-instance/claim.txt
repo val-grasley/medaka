@@ -1,0 +1,17 @@
+issue: 760
+what: deriving (Eq) on Outer whose field type Inner has NO Eq instance is NOT
+what: obligation-checked. `check` accepts (exit 0), and `run` uses a permissive
+what: structural fallback to print True then False at exit 0. The identical obligation
+what: written directly (`Inner 1 == Inner 1`) is correctly REJECTED at check. `build`
+what: panics "no impl of method 'eq' for type 'Inner'" — so check also accepts a program
+what: build cannot compile (run != build).
+cmd: run main.mdk
+exit: 0
+stdout-line: True
+stdout-line: False
+control: run control.mdk
+why-control: adding `deriving (Eq)` to Inner makes the program genuinely valid — it checks
+why-control: clean and run/build agree at exit 0 — isolating the bug to the MISSING inner
+why-control: instance, not derived-Eq dispatch in general.
+why-note: drains when check learns to reject the derived instance: `run main.mdk` then exits
+why-note: 1 (rejected before evaluation), no longer matching the pinned exit 0 / True / False.

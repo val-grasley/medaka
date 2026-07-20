@@ -1,0 +1,9 @@
+data Inner = Inner Int              -- no deriving, no Eq impl
+data Outer = Outer Inner deriving (Eq)
+
+-- `check` accepts this (the bug): the derived Eq body calls `eq` on the Inner
+-- field, but that obligation is not surfaced at typecheck for a DERIVED instance.
+-- `run` falls back to a structural walk (True/False); `build` panics "no impl eq".
+main =
+  println (Outer (Inner 1) == Outer (Inner 1))
+  println (Outer (Inner 1) == Outer (Inner 2))
