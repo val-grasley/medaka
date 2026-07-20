@@ -193,6 +193,8 @@ checkToLines : List Decl -> String
 checkToLinesWithRuntime : List Decl -> List Decl -> List Decl -> String
 checkUndeterminedObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
 checkUndeterminedObligations : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkUndeterminedRetEffVars : List Decl -> Unit
+checkUndeterminedRetEffVarsDecl : Decl -> Unit
 clauseImplDictUser : Int -> ImplMethod -> List String
 clauseIsNonFunction : FunClause -> Bool
 clauseIsValue : FunClause -> Bool

@@ -1,0 +1,22 @@
+-- #784 (S0, review follow-up): the KIND-AWARE half. A Type-kinded type var `e`
+-- (here in the arg `List e`) and the Row-kinded effect var `<e>` in the return
+-- merely SHARE A SPELLING — they are independent variables. A name-based
+-- "argument-carried" test wrongly counts `List e` as pinning the effect and
+-- re-opens the laundering hole (a pure `pureUse` performs <Stdout> at run). The
+-- kind-aware predicate counts ONLY row-kinded argument occurrences, so `List e`
+-- pins nothing and the method is rejected T-EFFECT-UNDETERMINED at the interface
+-- declaration — check == run == build all REJECT via a diagnostic (no panic).
+interface Speak a where
+  speak : a -> List e -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d xs =
+    let _ = putStr "[call] "
+    "woof"
+
+pureUse : Speak a => a -> List b -> String
+pureUse x ys = speak x ys
+
+main = putStrLn (pureUse Dog [1, 2, 3])
