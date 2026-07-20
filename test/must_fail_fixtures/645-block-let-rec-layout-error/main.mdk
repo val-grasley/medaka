@@ -1,3 +1,0 @@
-main =
-  let rec go n = if n <= 0 then 0 else go (n - 1)
-  println (go 3)

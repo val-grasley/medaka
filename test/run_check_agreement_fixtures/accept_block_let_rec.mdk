@@ -1,0 +1,7 @@
+-- #645: block/statement-level `let rec f a… = …` now parses and evaluates
+-- correctly (previously a hard parse error misattributed to LAYOUT — statement-
+-- level `letKind` had no `TRec` arm, only top-level `letExprKind` did). All three
+-- engines (check/run/build) must accept, and run/build must agree on the value.
+main =
+  let rec go n = if n <= 0 then 0 else go (n - 1)
+  println (go 5)

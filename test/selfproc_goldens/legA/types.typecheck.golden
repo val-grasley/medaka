@@ -40,6 +40,7 @@ ambiguousFieldMsg : String -> List String -> String
 ambiguousImplMsg : String -> String
 annotTooGeneralMsg : Ty -> String
 anyArgMentions : List String -> List Ty -> Bool
+anyClauseEagerlyRefsGroup : List String -> List FunClause -> Bool
 anyDepReaches : List String -> List String -> String -> List (String, List Decl) -> Bool
 anyHoleAtom : List Atom -> Bool
 anyIdPinned : List Int -> List (Int, Mono) -> Bool
@@ -135,6 +136,7 @@ checkAnnotTooGeneral : Ty -> List Mono -> Unit
 checkBodyImpl : List (String, Scheme) -> CheckMode -> List Decl -> List (String, Scheme)
 checkCallObligations : List Decl -> List (String, List Mono, Option Loc) -> Unit
 checkCallObligationsU : ImplUniverse -> List String -> List (String, List Mono, Option Loc) -> Unit
+checkClausesNonFunctionLocated : List String -> String -> List FunClause -> Unit
 checkCoherence : List Decl -> Unit
 checkEffectAtoms : List (String, Option String) -> Unit
 checkEffectEscape : List (String, Ty) -> String -> List Atom -> Unit
@@ -151,6 +153,8 @@ checkImplObligationsU : ImplUniverse -> List (String, List String, Ty, Mono, Opt
 checkInterfaceCycles : List Decl -> Unit
 checkLetBind : String -> List FunClause -> Unit
 checkLetBinds : List LetBind -> Unit
+checkLetGroupBindsGo : List LetBind -> Unit
+checkLetGroupBindsLocated : List LetBind -> Unit
 checkLetRecDecls : List Decl -> Unit
 checkMatchExhaustive : Mono -> List Arm -> Unit
 checkMatchRedundant : Mono -> List Arm -> Unit
@@ -181,6 +185,7 @@ checkProgramSchemes : List Decl -> List Decl -> List (String, Scheme)
 checkProgramSchemesWithRuntime : List Decl -> List Decl -> List Decl -> List (String, Scheme)
 checkProgramSeeded : List (String, Scheme) -> List Decl -> List (String, Scheme)
 checkProgramSeededSplit : List (String, Scheme) -> List Decl -> List Decl -> List (String, Scheme)
+checkRecBindNonFunction : String -> Expr -> Unit
 checkRedundantGo : Option String -> List (List Pat) -> Map String Unit -> Bool -> List Arm -> Unit
 checkReqObligations : ImplUniverse -> Option Loc -> List (String, List Mono) -> Unit
 checkReqOne : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
@@ -195,12 +200,14 @@ checkUndeterminedObligation : ImplUniverse -> String -> Mono -> Option Loc -> Un
 checkUndeterminedObligations : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
 checkUndeterminedRetEffVars : List Decl -> Unit
 checkUndeterminedRetEffVarsDecl : Decl -> Unit
+clauseEagerlyRefsGroup : List String -> FunClause -> Bool
 clauseImplDictUser : Int -> ImplMethod -> List String
 clauseIsNonFunction : FunClause -> Bool
 clauseIsValue : FunClause -> Bool
 clauseRefs : (List Pat, Expr) -> List String
 clausesAreValue : List FunClause -> Bool
 clausesAt : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
+clausesLoc : List FunClause -> Option Loc
 clausesOf : String -> Map String (List (List Pat, Expr)) -> List (List Pat, Expr)
 cmCheckWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List (String, Scheme))
 cmDiagsWorker : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), (List TcDiag, List TcDiag))
@@ -368,6 +375,16 @@ dropVecObls : Int -> List (String, List Int) -> List (String, List Int)
 dsub : Param -> Param -> Bool
 dsubN : Param -> Param -> Bool
 dtopFor : String -> Param
+eagerRefs : Expr -> List String
+eagerRefsArm : Arm -> List String
+eagerRefsClauseAllPats : FunClause -> List String
+eagerRefsDoStmt : DoStmt -> List String
+eagerRefsFieldAssign : FieldAssign -> List String
+eagerRefsGuard : Guard -> List String
+eagerRefsGuardArm : GuardArm -> List String
+eagerRefsInterp : InterpPart -> List String
+eagerRefsLetBind : LetBind -> List String
+eagerRefsPair : (Expr, Expr) -> List String
 effHoleSrc : String
 effStr : List Atom -> String
 effTailNames : Ty -> List String
@@ -730,6 +747,7 @@ lamUnderLoc : Expr -> Option (Option Loc, List Pat, Expr)
 lastComponent : List String -> String
 letBindDictSites : LetBind -> List (Ref (List Route))
 letBindEVars : LetBind -> List String
+letBindName : LetBind -> String
 letBindNameTc : LetBind -> String
 letBindNamesTc : List LetBind -> List String
 letBindPlaceholder : LetBind -> (String, Scheme)
