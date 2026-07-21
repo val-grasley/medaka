@@ -916,7 +916,11 @@ scanTriple src len p startQ depth id leadingNl acc
   | p >= len = RTok (TString (maybeStrip leadingNl acc)) startQ p :: scan src len p depth id
   | isTripleAt src len p = RTok (TString (maybeStrip leadingNl acc)) startQ (p + 3) :: scan src len (p + 3) depth id
   | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' =
-    RTok (TInterpOpen acc) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
+    -- `tripleInterpMark`-prefixed (see its doc comment, below `joinNlStr`): a
+    -- PLAIN string's decoded content can also start with '\n' (a `\n` escape,
+    -- e.g. stdlib's `"\n\{...} passed"`), so the post-pass can't tell TRIPLE
+    -- vs PLAIN from the string content alone once escapes are decoded.
+    RTok (TInterpOpen (tripleInterpMark ++ acc)) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
   | isBackslash (at src p) && p + 1 < len =
     scanTripleEsc src len p startQ depth id leadingNl acc (at src (p + 1))
   | isNL (at src p) = scanTriple src len (p + 1) startQ depth id (firstNl leadingNl acc) (acc ++ "\n")
@@ -946,11 +950,20 @@ scanTripleEsc src len p startQ depth id leadingNl acc e
     scanTriple src len (p + 2) startQ depth id leadingNl (acc ++ charToStr e)
 
 -- string part after an interpolation opened from a triple string closes
--- (`"""`→INTERP_END with stripIndent, `\{`→INTERP_MID re-marking id = -1)
+-- (`"""`→INTERP_END, `\{`→INTERP_MID re-marking id = -1). Emitted RAW (no
+-- `stripIndent` here, unlike the plain `TString` case): a continuation
+-- segment resumes mid-line right after a `}`, so `stripIndent` — which only
+-- ever fires on a segment that ITSELF opens with '\n' — would be a no-op on
+-- most of these anyway and, on the rare one that DOES happen to open with a
+-- raw '\n' (e.g. `\{x}\nmore`), would wrongly dedent it by its own lone-line
+-- indent instead of the WHOLE interpolated string's shared indent. The
+-- `dedentTripleInterp` post-pass (below `joinNlStr`) does that dedent
+-- jointly, correctly, from this and every sibling segment's true raw text.
 scanInterpTripleCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
 scanInterpTripleCont src len p depth acc
-  | p >= len = RTok (TInterpEnd (stripIndent acc)) p p :: scan src len p depth 0
-  | isTripleAt src len p = RTok (TInterpEnd (stripIndent acc)) p (p + 3) :: scan src len (p + 3) depth 0
+  | p >= len = RTok (TInterpEnd acc) p p :: scan src len p depth 0
+  | isTripleAt src len p =
+    RTok (TInterpEnd acc) p (p + 3) :: scan src len (p + 3) depth 0
   | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' =
     RTok (TInterpMid acc) p (p + 2) :: scan src len (p + 2) depth (0 - 1)
   | isBackslash (at src p) && p + 1 < len =
@@ -1046,6 +1059,157 @@ dropCharsToStr cs k n
 
 joinNlStr : List String -> String
 joinNlStr xs = joinWith "\n" xs
+
+-- ── Triple-quoted interpolated-string dedent (#290) ─────────────────────────
+-- `scanTriple`/`scanInterpTripleCont` dedent each raw segment INDEPENDENTLY,
+-- and `stripIndent` is a no-op unless the segment ITSELF opens with a raw
+-- '\n' (matching plain `TString`'s single-segment case). Of an interpolated
+-- triple string's pieces, only `TInterpOpen` can ever start that way — a
+-- `TInterpMid`/`TInterpEnd` always resumes mid-line right after a `}` — and
+-- `scanTriple`'s `TInterpOpen` branch doesn't even call `maybeStrip` (unlike
+-- its `TString` sibling two lines above it). So the interpolated case never
+-- gets dedented past the first `\{`: the leading raw '\n' survives into the
+-- value (reads as an extra blank line wherever it's printed) and the final
+-- segment's trailing whitespace-only line is never collapsed away (dropping
+-- the trailing blank line the dedent should have produced instead).
+--
+-- Fixed as a post-pass over the fully-scanned raw stream: re-dedent each
+-- triple-quoted interpolation group (`TInterpOpen` .. `TInterpMid*` ..
+-- `TInterpEnd`) as ONE unit. The embedded `\{expr}` tokens between segments
+-- are ordinary code, not string content, so concatenating the segments'
+-- literal text directly (no separator) reproduces exactly the string with
+-- every `\{expr}` deleted — which is exactly what a shared minimum-indent
+-- computation needs. (Nested string interpolation inside an embedded expr
+-- isn't valid Medaka — see the file header — so no group nesting to guard.)
+--
+-- Detecting a TRIPLE-quoted group can't be done by inspecting the decoded
+-- string content ("starts with '\n'"): a PLAIN string's content can ALSO
+-- start with '\n' via a `\n` escape (stdlib's own `test.mdk` has exactly
+-- this: `"\n\{intToString passed} passed, …"`), and by the time it's in a
+-- token both look identical. So `scanTriple`'s `TInterpOpen` emission
+-- prefixes `tripleInterpMark` — a control byte that can never appear in real
+-- Medaka source — onto only the TRIPLE-flavored open; this pass keys off
+-- that marker and strips it back off before the token goes anywhere else.
+tripleInterpMark : String
+tripleInterpMark = charToStr (fromOption ' ' (charFromCode 1))
+
+hasTripleInterpMark : String -> Bool
+hasTripleInterpMark s =
+  let cs = stringToChars s
+  arrayLength cs > 0 && at cs 0 == fromOption ' ' (charFromCode 1)
+
+dropTripleInterpMark : String -> String
+dropTripleInterpMark s =
+  let cs = stringToChars s
+  dropCharsToStr cs 1 (arrayLength cs)
+
+-- The dedent itself is still gated on `leadingNl` (mirrors `maybeStrip`): a
+-- single-line triple-quoted interpolation (`"""foo \{x}"""`, no raw '\n' at
+-- all) is left completely untouched, same as a single-line plain triple
+-- string.
+startsWithNl : String -> Bool
+startsWithNl s =
+  let cs = stringToChars s
+  arrayLength cs > 0 && at cs 0 == '\n'
+
+endsWithNl : String -> Bool
+endsWithNl s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  n > 0 && at cs (n - 1) == '\n'
+
+computeMinIndent : String -> Int
+computeMinIndent joined =
+  let cs = stringToChars joined
+  let n = arrayLength cs
+  -- position 1: the leading '\n' (guaranteed present) is dropped, same as
+  -- `stripIndentCs` does for the single-segment case.
+  normalizeMin (minIndentGo (splitLines cs 1 n "") indentSentinel)
+
+-- Dedent a triple-interpolation group's raw segments (`openStr` already
+-- confirmed to start with '\n') by the shared `minInd`. A segment's FIRST
+-- line is only stripped when it actually starts a fresh source line — either
+-- `openStr` itself (its leading '\n' is dropped outright, same as a plain
+-- triple string's line 0) or a later segment whose PREVIOUS segment ended
+-- right at a raw '\n'; otherwise that first line is a continuation of the
+-- previous segment's unterminated trailing line and must be left untouched.
+dedentGroupSegs : Int -> List String -> List String
+dedentGroupSegs minInd (openStr::rest) =
+  let cs = stringToChars openStr
+  let openLines = splitLines cs 1 (arrayLength cs) ""
+  let openOut = joinNlStr (stripLines minInd openLines)
+  openOut :: dedentRestSegs minInd (endsWithNl openStr) rest
+dedentGroupSegs _ [] = []
+
+dedentRestSegs : Int -> Bool -> List String -> List String
+dedentRestSegs _ _ [] = []
+dedentRestSegs minInd atLineStart (seg::rest) =
+  let cs = stringToChars seg
+  let lines = splitLines cs 0 (arrayLength cs) ""
+  let out = joinNlStr (stripFirstAware minInd atLineStart lines)
+  out :: dedentRestSegs minInd (endsWithNl seg) rest
+
+stripFirstAware : Int -> Bool -> List String -> List String
+stripFirstAware _ _ [] = []
+stripFirstAware minInd True (l::rest) =
+  stripLine minInd l :: stripLines minInd rest
+stripFirstAware minInd False (l::rest) = l :: stripLines minInd rest
+
+-- Walk the tokens right after a triple-interpolation group's `TInterpOpen`,
+-- collecting its own `TInterpMid`/`TInterpEnd` raw payloads in order and
+-- splitting off everything through (and including) the closing `TInterpEnd`
+-- from whatever comes after.
+-- (Token fields are re-wrapped as `RTok ... mo me` rather than reusing an
+-- `@`-bound whole-token variable via `::` — a latent typechecker bug
+-- misinfers an `@`-pattern binding's type when it's later `::`-consed;
+-- typechecker-internal, out of scope here, so this just avoids the shape.)
+splitInterpGroup : List RawTok -> (List String, List RawTok, List RawTok)
+splitInterpGroup [] = ([], [], [])
+splitInterpGroup ((RTok (TInterpMid s) mo me)::rest) =
+  let (segs, mid, after) = splitInterpGroup rest
+  (s::segs, RTok (TInterpMid s) mo me :: mid, after)
+splitInterpGroup ((RTok (TInterpEnd s) eo ee)::rest) =
+  ([s], [RTok (TInterpEnd s) eo ee], rest)
+splitInterpGroup (t::rest) =
+  let (segs, mid, after) = splitInterpGroup rest
+  (segs, t::mid, after)
+
+-- Replace a group's own `TInterpMid`/`TInterpEnd` payloads (in order) with
+-- their dedented values; every other token passes through unchanged.
+substituteOwn : List String -> List RawTok -> List RawTok
+substituteOwn _ [] = []
+substituteOwn (v::vs) ((RTok (TInterpMid _) mo me)::rest) =
+  RTok (TInterpMid v) mo me :: substituteOwn vs rest
+substituteOwn (v::vs) ((RTok (TInterpEnd _) eo ee)::rest) =
+  RTok (TInterpEnd v) eo ee :: substituteOwn vs rest
+substituteOwn vals (t::rest) = t :: substituteOwn vals rest
+substituteOwn [] (t::rest) = t :: substituteOwn [] rest
+
+-- Top-level pass: rewrite every triple-quoted interpolation group's segments
+-- to their jointly-dedented values; every other token passes through as-is.
+dedentTripleInterp : List RawTok -> List RawTok
+dedentTripleInterp [] = []
+dedentTripleInterp ((RTok (TInterpOpen s) so eo)::rest)
+  | hasTripleInterpMark s =
+    let sReal = dropTripleInterpMark s
+    let (rawSegs, midToks, afterEnd) = splitInterpGroup rest
+    dedentTripleGroup sReal so eo rawSegs midToks afterEnd
+dedentTripleInterp (t::rest) = t :: dedentTripleInterp rest
+
+dedentTripleGroup : String -> Int -> Int -> List String -> List RawTok -> List RawTok -> List RawTok
+dedentTripleGroup sReal so eo rawSegs midToks afterEnd
+  | startsWithNl sReal =
+    let allRaw = sReal::rawSegs
+    let minInd = computeMinIndent (concatAll allRaw)
+    match dedentGroupSegs minInd allRaw
+      openStr'::restVals => RTok (TInterpOpen openStr') so eo :: substituteOwn restVals midToks ++ dedentTripleInterp afterEnd
+      [] => RTok (TInterpOpen sReal) so eo :: midToks ++ dedentTripleInterp afterEnd
+  | otherwise =
+    RTok (TInterpOpen sReal) so eo :: midToks ++ dedentTripleInterp afterEnd
+
+concatAll : List String -> String
+concatAll [] = ""
+concatAll (x::xs) = x ++ concatAll xs
 
 -- char literals — escapes processed into the value, mirroring lib/lexer.mll's
 -- `read_char` (Phase 133): `\n \t \r \0 \\ \'` and `\u{…}`, else raw chars up to
@@ -1748,8 +1912,12 @@ stripComments (r::rest) = r :: stripComments rest
 -- The layout pass over the raw stream, carrying offsets.  Shared by `tokenize`
 -- (which drops offsets) and `tokenizeWithOffsets` (the position side-channel).
 layoutWithOffsets : Array Char -> Int -> List (Token, Int)
-layoutWithOffsets src len =
-  elseFilter (layout (stripComments (scan src len 0 0 0)) [0] [] None False)
+layoutWithOffsets src len = elseFilter (layout
+  (stripComments (dedentTripleInterp (scan src len 0 0 0)))
+  [0]
+  []
+  None
+  False)
 
 -- Layout variant that threads both START and END offsets per token, used by
 -- `tokenizeWithOffsetPairs`.  Real tokens carry their RTok start+end; synthetic
@@ -1845,7 +2013,7 @@ elseFilterPairs [] = []
 
 layoutWithOffsetPairs : Array Char -> Int -> List (Token, Int, Int)
 layoutWithOffsetPairs src len = elseFilterPairs (layoutPairs
-  (stripComments (scan src len 0 0 0))
+  (stripComments (dedentTripleInterp (scan src len 0 0 0)))
   [0]
   []
   None

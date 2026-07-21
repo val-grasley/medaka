@@ -5545,7 +5545,11 @@ INDENT
 UPPER "RTok"
 LPAREN
 UPPER "TInterpOpen"
+LPAREN
+IDENT "tripleInterpMark"
+PLUSPLUS
 IDENT "acc"
+RPAREN
 RPAREN
 IDENT "p"
 LPAREN
@@ -6041,10 +6045,7 @@ EQUAL
 UPPER "RTok"
 LPAREN
 UPPER "TInterpEnd"
-LPAREN
-IDENT "stripIndent"
 IDENT "acc"
-RPAREN
 RPAREN
 IDENT "p"
 IDENT "p"
@@ -6062,13 +6063,11 @@ IDENT "src"
 IDENT "len"
 IDENT "p"
 EQUAL
+INDENT
 UPPER "RTok"
 LPAREN
 UPPER "TInterpEnd"
-LPAREN
-IDENT "stripIndent"
 IDENT "acc"
-RPAREN
 RPAREN
 IDENT "p"
 LPAREN
@@ -6087,6 +6086,8 @@ INT 3
 RPAREN
 IDENT "depth"
 INT 0
+NEWLINE
+DEDENT
 NEWLINE
 PIPE
 IDENT "isBackslash"
@@ -6958,6 +6959,863 @@ IDENT "xs"
 EQUAL
 IDENT "joinWith"
 STRING "\n"
+IDENT "xs"
+NEWLINE
+IDENT "tripleInterpMark"
+COLON
+UPPER "String"
+NEWLINE
+IDENT "tripleInterpMark"
+EQUAL
+IDENT "charToStr"
+LPAREN
+IDENT "fromOption"
+CHAR " "
+LPAREN
+IDENT "charFromCode"
+INT 1
+RPAREN
+RPAREN
+NEWLINE
+IDENT "hasTripleInterpMark"
+COLON
+UPPER "String"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "hasTripleInterpMark"
+IDENT "s"
+EQUAL
+INDENT
+LET
+IDENT "cs"
+EQUAL
+IDENT "stringToChars"
+IDENT "s"
+NEWLINE
+IDENT "arrayLength"
+IDENT "cs"
+GT
+INT 0
+AND
+IDENT "at"
+IDENT "cs"
+INT 0
+EQ_EQ
+IDENT "fromOption"
+CHAR " "
+LPAREN
+IDENT "charFromCode"
+INT 1
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "dropTripleInterpMark"
+COLON
+UPPER "String"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "dropTripleInterpMark"
+IDENT "s"
+EQUAL
+INDENT
+LET
+IDENT "cs"
+EQUAL
+IDENT "stringToChars"
+IDENT "s"
+NEWLINE
+IDENT "dropCharsToStr"
+IDENT "cs"
+INT 1
+LPAREN
+IDENT "arrayLength"
+IDENT "cs"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "startsWithNl"
+COLON
+UPPER "String"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "startsWithNl"
+IDENT "s"
+EQUAL
+INDENT
+LET
+IDENT "cs"
+EQUAL
+IDENT "stringToChars"
+IDENT "s"
+NEWLINE
+IDENT "arrayLength"
+IDENT "cs"
+GT
+INT 0
+AND
+IDENT "at"
+IDENT "cs"
+INT 0
+EQ_EQ
+CHAR "\n"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "endsWithNl"
+COLON
+UPPER "String"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "endsWithNl"
+IDENT "s"
+EQUAL
+INDENT
+LET
+IDENT "cs"
+EQUAL
+IDENT "stringToChars"
+IDENT "s"
+NEWLINE
+LET
+IDENT "n"
+EQUAL
+IDENT "arrayLength"
+IDENT "cs"
+NEWLINE
+IDENT "n"
+GT
+INT 0
+AND
+IDENT "at"
+IDENT "cs"
+LPAREN
+IDENT "n"
+MINUS
+INT 1
+RPAREN
+EQ_EQ
+CHAR "\n"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "computeMinIndent"
+COLON
+UPPER "String"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "computeMinIndent"
+IDENT "joined"
+EQUAL
+INDENT
+LET
+IDENT "cs"
+EQUAL
+IDENT "stringToChars"
+IDENT "joined"
+NEWLINE
+LET
+IDENT "n"
+EQUAL
+IDENT "arrayLength"
+IDENT "cs"
+NEWLINE
+IDENT "normalizeMin"
+LPAREN
+IDENT "minIndentGo"
+LPAREN
+IDENT "splitLines"
+IDENT "cs"
+INT 1
+IDENT "n"
+STRING ""
+RPAREN
+IDENT "indentSentinel"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "dedentGroupSegs"
+COLON
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "String"
+ARROW
+UPPER "List"
+UPPER "String"
+NEWLINE
+IDENT "dedentGroupSegs"
+IDENT "minInd"
+LPAREN
+IDENT "openStr"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "cs"
+EQUAL
+IDENT "stringToChars"
+IDENT "openStr"
+NEWLINE
+LET
+IDENT "openLines"
+EQUAL
+IDENT "splitLines"
+IDENT "cs"
+INT 1
+LPAREN
+IDENT "arrayLength"
+IDENT "cs"
+RPAREN
+STRING ""
+NEWLINE
+LET
+IDENT "openOut"
+EQUAL
+IDENT "joinNlStr"
+LPAREN
+IDENT "stripLines"
+IDENT "minInd"
+IDENT "openLines"
+RPAREN
+NEWLINE
+IDENT "openOut"
+CONS
+IDENT "dedentRestSegs"
+IDENT "minInd"
+LPAREN
+IDENT "endsWithNl"
+IDENT "openStr"
+RPAREN
+IDENT "rest"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "dedentGroupSegs"
+UNDERSCORE
+LBRACKET
+RBRACKET
+EQUAL
+LBRACKET
+RBRACKET
+NEWLINE
+IDENT "dedentRestSegs"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Bool"
+ARROW
+UPPER "List"
+UPPER "String"
+ARROW
+UPPER "List"
+UPPER "String"
+NEWLINE
+IDENT "dedentRestSegs"
+UNDERSCORE
+UNDERSCORE
+LBRACKET
+RBRACKET
+EQUAL
+LBRACKET
+RBRACKET
+NEWLINE
+IDENT "dedentRestSegs"
+IDENT "minInd"
+IDENT "atLineStart"
+LPAREN
+IDENT "seg"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "cs"
+EQUAL
+IDENT "stringToChars"
+IDENT "seg"
+NEWLINE
+LET
+IDENT "lines"
+EQUAL
+IDENT "splitLines"
+IDENT "cs"
+INT 0
+LPAREN
+IDENT "arrayLength"
+IDENT "cs"
+RPAREN
+STRING ""
+NEWLINE
+LET
+IDENT "out"
+EQUAL
+IDENT "joinNlStr"
+LPAREN
+IDENT "stripFirstAware"
+IDENT "minInd"
+IDENT "atLineStart"
+IDENT "lines"
+RPAREN
+NEWLINE
+IDENT "out"
+CONS
+IDENT "dedentRestSegs"
+IDENT "minInd"
+LPAREN
+IDENT "endsWithNl"
+IDENT "seg"
+RPAREN
+IDENT "rest"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "stripFirstAware"
+COLON
+UPPER "Int"
+ARROW
+UPPER "Bool"
+ARROW
+UPPER "List"
+UPPER "String"
+ARROW
+UPPER "List"
+UPPER "String"
+NEWLINE
+IDENT "stripFirstAware"
+UNDERSCORE
+UNDERSCORE
+LBRACKET
+RBRACKET
+EQUAL
+LBRACKET
+RBRACKET
+NEWLINE
+IDENT "stripFirstAware"
+IDENT "minInd"
+UPPER "True"
+LPAREN
+IDENT "l"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+IDENT "stripLine"
+IDENT "minInd"
+IDENT "l"
+CONS
+IDENT "stripLines"
+IDENT "minInd"
+IDENT "rest"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "stripFirstAware"
+IDENT "minInd"
+UPPER "False"
+LPAREN
+IDENT "l"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+IDENT "l"
+CONS
+IDENT "stripLines"
+IDENT "minInd"
+IDENT "rest"
+NEWLINE
+IDENT "splitInterpGroup"
+COLON
+UPPER "List"
+UPPER "RawTok"
+ARROW
+LPAREN
+UPPER "List"
+UPPER "String"
+COMMA
+UPPER "List"
+UPPER "RawTok"
+COMMA
+UPPER "List"
+UPPER "RawTok"
+RPAREN
+NEWLINE
+IDENT "splitInterpGroup"
+LBRACKET
+RBRACKET
+EQUAL
+LPAREN
+LBRACKET
+RBRACKET
+COMMA
+LBRACKET
+RBRACKET
+COMMA
+LBRACKET
+RBRACKET
+RPAREN
+NEWLINE
+IDENT "splitInterpGroup"
+LPAREN
+LPAREN
+UPPER "RTok"
+LPAREN
+UPPER "TInterpMid"
+IDENT "s"
+RPAREN
+IDENT "mo"
+IDENT "me"
+RPAREN
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "segs"
+COMMA
+IDENT "mid"
+COMMA
+IDENT "after"
+RPAREN
+EQUAL
+IDENT "splitInterpGroup"
+IDENT "rest"
+NEWLINE
+LPAREN
+IDENT "s"
+CONS
+IDENT "segs"
+COMMA
+UPPER "RTok"
+LPAREN
+UPPER "TInterpMid"
+IDENT "s"
+RPAREN
+IDENT "mo"
+IDENT "me"
+CONS
+IDENT "mid"
+COMMA
+IDENT "after"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "splitInterpGroup"
+LPAREN
+LPAREN
+UPPER "RTok"
+LPAREN
+UPPER "TInterpEnd"
+IDENT "s"
+RPAREN
+IDENT "eo"
+IDENT "ee"
+RPAREN
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+LPAREN
+LBRACKET
+IDENT "s"
+RBRACKET
+COMMA
+LBRACKET
+UPPER "RTok"
+LPAREN
+UPPER "TInterpEnd"
+IDENT "s"
+RPAREN
+IDENT "eo"
+IDENT "ee"
+RBRACKET
+COMMA
+IDENT "rest"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "splitInterpGroup"
+LPAREN
+IDENT "t"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+LET
+LPAREN
+IDENT "segs"
+COMMA
+IDENT "mid"
+COMMA
+IDENT "after"
+RPAREN
+EQUAL
+IDENT "splitInterpGroup"
+IDENT "rest"
+NEWLINE
+LPAREN
+IDENT "segs"
+COMMA
+IDENT "t"
+CONS
+IDENT "mid"
+COMMA
+IDENT "after"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "substituteOwn"
+COLON
+UPPER "List"
+UPPER "String"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+NEWLINE
+IDENT "substituteOwn"
+UNDERSCORE
+LBRACKET
+RBRACKET
+EQUAL
+LBRACKET
+RBRACKET
+NEWLINE
+IDENT "substituteOwn"
+LPAREN
+IDENT "v"
+CONS
+IDENT "vs"
+RPAREN
+LPAREN
+LPAREN
+UPPER "RTok"
+LPAREN
+UPPER "TInterpMid"
+UNDERSCORE
+RPAREN
+IDENT "mo"
+IDENT "me"
+RPAREN
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+UPPER "RTok"
+LPAREN
+UPPER "TInterpMid"
+IDENT "v"
+RPAREN
+IDENT "mo"
+IDENT "me"
+CONS
+IDENT "substituteOwn"
+IDENT "vs"
+IDENT "rest"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "substituteOwn"
+LPAREN
+IDENT "v"
+CONS
+IDENT "vs"
+RPAREN
+LPAREN
+LPAREN
+UPPER "RTok"
+LPAREN
+UPPER "TInterpEnd"
+UNDERSCORE
+RPAREN
+IDENT "eo"
+IDENT "ee"
+RPAREN
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+INDENT
+UPPER "RTok"
+LPAREN
+UPPER "TInterpEnd"
+IDENT "v"
+RPAREN
+IDENT "eo"
+IDENT "ee"
+CONS
+IDENT "substituteOwn"
+IDENT "vs"
+IDENT "rest"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "substituteOwn"
+IDENT "vals"
+LPAREN
+IDENT "t"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+IDENT "t"
+CONS
+IDENT "substituteOwn"
+IDENT "vals"
+IDENT "rest"
+NEWLINE
+IDENT "substituteOwn"
+LBRACKET
+RBRACKET
+LPAREN
+IDENT "t"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+IDENT "t"
+CONS
+IDENT "substituteOwn"
+LBRACKET
+RBRACKET
+IDENT "rest"
+NEWLINE
+IDENT "dedentTripleInterp"
+COLON
+UPPER "List"
+UPPER "RawTok"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+NEWLINE
+IDENT "dedentTripleInterp"
+LBRACKET
+RBRACKET
+EQUAL
+LBRACKET
+RBRACKET
+NEWLINE
+IDENT "dedentTripleInterp"
+LPAREN
+LPAREN
+UPPER "RTok"
+LPAREN
+UPPER "TInterpOpen"
+IDENT "s"
+RPAREN
+IDENT "so"
+IDENT "eo"
+RPAREN
+CONS
+IDENT "rest"
+RPAREN
+INDENT
+PIPE
+IDENT "hasTripleInterpMark"
+IDENT "s"
+EQUAL
+INDENT
+LET
+IDENT "sReal"
+EQUAL
+IDENT "dropTripleInterpMark"
+IDENT "s"
+NEWLINE
+LET
+LPAREN
+IDENT "rawSegs"
+COMMA
+IDENT "midToks"
+COMMA
+IDENT "afterEnd"
+RPAREN
+EQUAL
+IDENT "splitInterpGroup"
+IDENT "rest"
+NEWLINE
+IDENT "dedentTripleGroup"
+IDENT "sReal"
+IDENT "so"
+IDENT "eo"
+IDENT "rawSegs"
+IDENT "midToks"
+IDENT "afterEnd"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "dedentTripleInterp"
+LPAREN
+IDENT "t"
+CONS
+IDENT "rest"
+RPAREN
+EQUAL
+IDENT "t"
+CONS
+IDENT "dedentTripleInterp"
+IDENT "rest"
+NEWLINE
+IDENT "dedentTripleGroup"
+COLON
+UPPER "String"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "List"
+UPPER "String"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+ARROW
+UPPER "List"
+UPPER "RawTok"
+NEWLINE
+IDENT "dedentTripleGroup"
+IDENT "sReal"
+IDENT "so"
+IDENT "eo"
+IDENT "rawSegs"
+IDENT "midToks"
+IDENT "afterEnd"
+INDENT
+PIPE
+IDENT "startsWithNl"
+IDENT "sReal"
+EQUAL
+INDENT
+LET
+IDENT "allRaw"
+EQUAL
+IDENT "sReal"
+CONS
+IDENT "rawSegs"
+NEWLINE
+LET
+IDENT "minInd"
+EQUAL
+IDENT "computeMinIndent"
+LPAREN
+IDENT "concatAll"
+IDENT "allRaw"
+RPAREN
+NEWLINE
+MATCH
+IDENT "dedentGroupSegs"
+IDENT "minInd"
+IDENT "allRaw"
+INDENT
+IDENT "openStr'"
+CONS
+IDENT "restVals"
+FAT_ARROW
+UPPER "RTok"
+LPAREN
+UPPER "TInterpOpen"
+IDENT "openStr'"
+RPAREN
+IDENT "so"
+IDENT "eo"
+CONS
+IDENT "substituteOwn"
+IDENT "restVals"
+IDENT "midToks"
+PLUSPLUS
+IDENT "dedentTripleInterp"
+IDENT "afterEnd"
+NEWLINE
+LBRACKET
+RBRACKET
+FAT_ARROW
+UPPER "RTok"
+LPAREN
+UPPER "TInterpOpen"
+IDENT "sReal"
+RPAREN
+IDENT "so"
+IDENT "eo"
+CONS
+IDENT "midToks"
+PLUSPLUS
+IDENT "dedentTripleInterp"
+IDENT "afterEnd"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+PIPE
+IDENT "otherwise"
+EQUAL
+INDENT
+UPPER "RTok"
+LPAREN
+UPPER "TInterpOpen"
+IDENT "sReal"
+RPAREN
+IDENT "so"
+IDENT "eo"
+CONS
+IDENT "midToks"
+PLUSPLUS
+IDENT "dedentTripleInterp"
+IDENT "afterEnd"
+NEWLINE
+DEDENT
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "concatAll"
+COLON
+UPPER "List"
+UPPER "String"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "concatAll"
+LBRACKET
+RBRACKET
+EQUAL
+STRING ""
+NEWLINE
+IDENT "concatAll"
+LPAREN
+IDENT "x"
+CONS
+IDENT "xs"
+RPAREN
+EQUAL
+IDENT "x"
+PLUSPLUS
+IDENT "concatAll"
 IDENT "xs"
 NEWLINE
 IDENT "charEscDecode"
@@ -12009,12 +12867,13 @@ IDENT "layoutWithOffsets"
 IDENT "src"
 IDENT "len"
 EQUAL
-INDENT
 IDENT "elseFilter"
 LPAREN
 IDENT "layout"
 LPAREN
 IDENT "stripComments"
+LPAREN
+IDENT "dedentTripleInterp"
 LPAREN
 IDENT "scan"
 IDENT "src"
@@ -12022,6 +12881,7 @@ IDENT "len"
 INT 0
 INT 0
 INT 0
+RPAREN
 RPAREN
 RPAREN
 LBRACKET
@@ -12032,8 +12892,6 @@ RBRACKET
 UPPER "None"
 UPPER "False"
 RPAREN
-NEWLINE
-DEDENT
 NEWLINE
 IDENT "layoutPairs"
 COLON
@@ -13389,12 +14247,15 @@ IDENT "layoutPairs"
 LPAREN
 IDENT "stripComments"
 LPAREN
+IDENT "dedentTripleInterp"
+LPAREN
 IDENT "scan"
 IDENT "src"
 IDENT "len"
 INT 0
 INT 0
 INT 0
+RPAREN
 RPAREN
 RPAREN
 LBRACKET
