@@ -12764,6 +12764,25 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- laundering at the CALL site remains #784's concern.
     let expected = fromAstTypeE (freshEffMap (dedup (effTailNames mty ++ rowArgNames mty))) (baseMap ++ extraMap) mty
     let actual = inferClauses env [(pats, body)]
+    -- #803 (S0): bound the impl body's latent effect on EVERY arrow down to the method's
+    -- DECLARED return by the effect the method declares at that same arrow — inspected
+    -- BEFORE `unify expected actual`.  An effect an impl legitimately performs by USING an
+    -- argument (applying a callback `a -> <e> b`, running a row-kinded `Async e` arg)
+    -- enters the body row as that argument's effect VARIABLE (an unbound tail at
+    -- impl-check, since params are fresh vars here).  An INTRINSIC effect — `putStr`, or a
+    -- call to a concrete-effect helper, sourced from NO argument — instead lands as a
+    -- CONCRETE ATOM on whichever arrow evaluates it.  So per arrow, the impl's concrete
+    -- atoms must be a subset of the method's declared concrete atoms; anything more
+    -- launders to pure at the call site.  Walking ALL declared arrows (not just the
+    -- impl's `pats` count) is load-bearing: a curried / eta-reduced impl
+    -- (`speak d k = u => putStr …`) writes FEWER patterns and performs its intrinsic
+    -- effect on a RETURNED-lambda arrow BEYOND its pattern count — the arrow the declared
+    -- return still covers.  Must run before unify: unify merges the intrinsic atom into
+    -- the shared open tail (both-open arm, :898, runs no effectLeakCheck), after which
+    -- effrowLabels no longer sees it.  Argument-contributed effects need no explicit set:
+    -- at impl-check they are variables, never concrete atoms, so they are structurally
+    -- exempt at every arrow.
+    let _ = checkImplEffectLaunder iface mname expected actual (orElseLoc (implBodyLoc body) (firstTyConLoc mty))
     let _ = unify expected actual
     -- #518 (S0, silent wrongness): PLAN.md #11 Num defaulting NEVER RAN over an impl
     -- method body — this path is not a let-group, so nothing grounded its ambiguous
@@ -12808,6 +12827,66 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     setRef perRun.value.currentFn ""
 -- G4: mark binop sites recorded while inferring this impl body so resolveBinopSite
 -- routes their element dict (RDict) — and ONLY theirs, not top-level operators.
+
+-- #803 (S0, silent wrongness): the impl-body effect-LAUNDER check.  Sound rule, per
+-- arrow of the method's DECLARED type down to its final return:
+--
+--     ∀ arrow i ≤ methodArity.  atoms(body_arrow_effect_i) ⊆ atoms(declared_effect_i)
+--
+-- i.e. the impl's concrete latent atoms at each arrow must be bounded by the method's
+-- declared concrete atoms at that same arrow (the general form of
+-- `body_latent ⊆ decl(φ) ∪ argContributable`).  Checked BEFORE `unify expected actual`,
+-- which makes argContributable free and exact: every parameter is still a fresh
+-- variable there, so an effect the body performs by USING an argument (applying a
+-- callback, running a row-kinded `Async e` arg) appears as that variable — never a
+-- concrete atom — at every arrow.  Hence the body's *concrete atoms* on any arrow are
+-- exactly the INTRINSIC effects, and per-arrow `atomsEscape` against the declared row
+-- (IO-expanded via the same expandIoInBound the binding-boundary check uses, :527) is
+-- precisely the laundered set — a variable is caller-visible and cannot lie, so only a
+-- concrete atom can launder.  [expected] (the declared method type as a Mono, with a
+-- FRESH effvar per declared var so its concrete atoms are exactly what is written) and
+-- [actual] (the inferred clause type) share arrow structure; walking [expected]'s arrows
+-- bounds the walk at methodArity.  Walking ALL declared arrows — not the impl's pattern
+-- count — is what closes the curried / eta-reduced hole: a returned-lambda arrow beyond
+-- the impl's `pats` still carries a declared return effect, so its intrinsic atoms are
+-- still bounded.
+checkImplEffectLaunder : String -> String -> Mono -> Mono -> Option Loc -> Unit
+checkImplEffectLaunder iface mname expected actual loc = match arrowLaunderEscape (allArrowEffs expected) (allArrowEffs actual)
+  [] => ()
+  escaping => pushTypeErrorOnceAt "T-EFFECT-LAUNDER" loc (effectLaunderMsg iface mname escaping)
+
+-- the effect rows on each arrow of a Mono arrow spine, outermost first, down to the
+-- non-arrow result (length = the type's arity).
+allArrowEffs : Mono -> List EffRow
+allArrowEffs m = match normalize m
+  TFun _ eff b => eff :: allArrowEffs b
+  _ => []
+
+-- per-arrow launder residual: at each arrow position, the impl's ([actual]) concrete
+-- atoms not permitted by the method's ([declared]) concrete atoms there, IO-expanded.
+-- [declared] bounds the length to methodArity; the walk stops when [declared] runs out
+-- (nothing is promised past the declared return) OR [actual] does (an eta-reduced body
+-- whose remaining arrows sit inside an as-yet-unresolved var carry no atoms pre-unify).
+arrowLaunderEscape : List EffRow -> List EffRow -> List Atom
+arrowLaunderEscape [] _ = []
+arrowLaunderEscape _ [] = []
+arrowLaunderEscape (d::ds) (a::as2) = atomsEscape (effrowLabels a) (effrowLabels d)
+  ++ arrowLaunderEscape ds as2
+
+-- the first source span inside an impl-method body, for locating T-EFFECT-LAUNDER
+-- at the offending body rather than the shared interface signature.  Peels the
+-- let-chain a `let _ = putStr …; body` body desugars to (a partial mirror of
+-- resolve.mdk's firstExprLoc, which is not exported); falls back at the call site
+-- to the method-signature loc when the body carries no span.
+implBodyLoc : Expr -> Option Loc
+implBodyLoc (ELoc l _) = Some l
+implBodyLoc (ELam _ b) = implBodyLoc b
+implBodyLoc (ELet _ _ _ e1 e2) = orElseLoc (implBodyLoc e1) (implBodyLoc e2)
+implBodyLoc (ELetGroup _ b) = implBodyLoc b
+implBodyLoc _ = None
+
+effectLaunderMsg : String -> String -> List Atom -> String
+effectLaunderMsg iface mname escaping = "Effect laundering in impl of '\{mname}' for interface '\{iface}': the body performs <\{renderAtoms escaping}>, which is not sourced from any argument and is not declared by the method's effect row, so a caller can instantiate the method's effect variable to <> and a function typed pure would then silently perform it. Either declare the effect as a concrete label in the method's return row (e.g. `<\{renderAtoms escaping}>`), or perform it only through an argument (a callback carrying `<e>`) so the caller sees it."
 
 -- Register an impl method's OWN method-level constraints (`Thenable m => …`) into
 -- activeDictVars, one slot per constraint, so a return-position method in the impl

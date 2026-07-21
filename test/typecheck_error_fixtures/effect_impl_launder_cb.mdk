@@ -1,0 +1,13 @@
+-- #803 (S0): an impl method performing an INTRINSIC effect (putStr, not sourced
+-- from any argument) under an interface method whose effect var `<e>` is
+-- argument-carried is laundered — a caller instantiates e := <> and a pure-typed
+-- function silently performs <Stdout>. Rejected by T-EFFECT-LAUNDER at impl check.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d cb =
+    let _ = putStr "[cb] "
+    "woof"

@@ -1,0 +1,19 @@
+-- #803 (S0): the laundering shape the FIRST cut missed. The impl APPLIES its
+-- callback (`k ()` — opening the shared effect tail) AND performs an intrinsic
+-- <Stdout> (`putStr`). Applying the callback is exactly what map/traverse do, so a
+-- post-unification check that inspects the return effect var sees the intrinsic
+-- atom merged into the shared open tail and misses it. The fix inspects the body's
+-- OWN latent effect before unification: the applied callback contributes its effect
+-- VARIABLE, while the intrinsic <Stdout> is a CONCRETE atom, so it still escapes.
+-- check == run == build all REJECT via a DIAGNOSTIC, never a runtime panic.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> <e> String
+data Dog = Dog
+impl Speak Dog where
+  speak d k =
+    let _ = k ()
+    let _ = putStr "[mixed] "
+    "woof"
+pureUse : Speak a => a -> (Unit -> Unit) -> String
+pureUse x k = speak x k
+main = putStrLn (pureUse Dog (u => u))

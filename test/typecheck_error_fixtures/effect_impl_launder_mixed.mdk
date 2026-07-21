@@ -1,0 +1,16 @@
+-- #803 (S0): the mixed launder — the impl APPLIES its callback (arg-contributed
+-- <e> variable) AND performs an intrinsic <Stdout> (`putStr`). The intrinsic atom
+-- escapes the declared return row and is rejected by T-EFFECT-LAUNDER. This is the
+-- shape a post-unification effect-var check misses (the applied callback merges the
+-- atom into the shared open tail); the check inspects the body's latent effect
+-- BEFORE unification, where the intrinsic effect is still a concrete atom.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d k =
+    let _ = k ()
+    let _ = putStr "[mixed] "
+    "woof"

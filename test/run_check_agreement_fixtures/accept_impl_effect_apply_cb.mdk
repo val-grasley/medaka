@@ -1,0 +1,19 @@
+-- #803 boundary (ACCEPT): the effect-poly SAFE case, same shape as map/traverse.
+-- The impl APPLIES its callback (`cb ()`), so the effect flowing into `<e>` is the
+-- callback's own variable `e` (same effvar id — no concrete atom is absorbed), and
+-- the T-EFFECT-LAUNDER residual check must NOT fire. `use` threads the effect
+-- honestly (`<e>` in its own signature), so the <Stdout> is visible at the call.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d cb =
+    let _ = cb ()
+    "woof"
+
+use : Speak a => a -> (Unit -> <e> Unit) -> <e> String
+use x cb = speak x cb
+
+main = putStrLn (use Dog (u => putStr "[cb] "))

@@ -22,7 +22,7 @@
 # OCaml probe (dev/tc_module_probe.exe) by test/capture_goldens.sh.  All OTHER
 # fixtures keep BOTH drivers + a no-prelude golden, unchanged.  (Capture may use
 # OCaml by design; the gate stays OCaml-free at RUN time.)
-PRELUDE_DEP="int_vs_string.mdk value_restriction.mdk missing_super_impl.mdk cyclic_superinterface.mdk ambiguous_impl.mdk ambiguous_return_nested.mdk ambiguous_return_noconstraint.mdk do_bind_annot_mismatch.mdk nested_requires_function_key.mdk semigroup_no_impl.mdk negate_no_impl.mdk nonlinear_head_inconsistent.mdk"
+PRELUDE_DEP="int_vs_string.mdk value_restriction.mdk missing_super_impl.mdk cyclic_superinterface.mdk ambiguous_impl.mdk ambiguous_return_nested.mdk ambiguous_return_noconstraint.mdk do_bind_annot_mismatch.mdk nested_requires_function_key.mdk semigroup_no_impl.mdk negate_no_impl.mdk nonlinear_head_inconsistent.mdk effect_impl_launder_cb.mdk effect_impl_launder_ghost.mdk effect_impl_launder_mixed.mdk effect_impl_launder_retlam.mdk"
 #
 # Usage:  sh test/diff_compiler_typecheck_errors.sh
 set -u

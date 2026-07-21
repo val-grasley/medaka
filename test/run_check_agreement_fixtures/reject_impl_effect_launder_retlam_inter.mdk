@@ -1,0 +1,14 @@
+-- #803 (S0): the intrinsic effect lands on an INTERMEDIATE returned arrow (performed
+-- when the 2nd argument is applied, before the final lambda is returned), not the
+-- final one. The method declares the effect only on its final arrow, so the
+-- per-arrow bound rejects the intermediate <Stdout>. REJECT via a diagnostic.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> Unit -> <e> String
+data Dog = Dog
+impl Speak Dog where
+  speak d = k =>
+    let _ = putStr "[inter] "
+    u => "woof"
+pureUse : Speak a => a -> (Unit -> Unit) -> Unit -> String
+pureUse x k u = speak x k u
+main = putStrLn (pureUse Dog (u => u) ())

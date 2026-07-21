@@ -430,21 +430,68 @@ below: the alternative of lower-bounding a return-only effect var by the *dispat
 impl's latent effect was rejected because it would make the effect depend on
 dispatch, violating that orthogonality.
 
-**Scope of Option A — what it does and does NOT guarantee.** This side condition is a
-*necessary* well-formedness rule, not a *sufficient* soundness proof. It is purely
-about the shape of the **declared signature**; it does **not** bound the **impl
-body's** latent effect. In particular, a method whose signature *does* carry `e` in
-an argument can still launder: an impl is free to **ignore** the callback (never
-invoke it) and perform its own intrinsic effect. For example
-`speak : a → (Unit →^e Unit) →^e String` is well-formed under this rule, yet an impl
-that runs `putStr` without ever calling the `Unit →^e Unit` argument performs
-`<Stdout>` while a caller instantiates `e := ⟨ ⟩` — the same laundering, now hidden
-behind an argument-shaped `e`. Ruling that out requires bounding an impl body's
-latent effect by the effect that actually *flows from its arguments* (effect
-inference over the body, the same shape as the value/`map`/`traverse` case, which is
-why it cannot be a blanket ban), and that is **not yet enforced** for effect-variable
-methods. It is tracked separately as **#803** and is out of scope for Option A, whose
-job is exactly the signature-level well-formedness above.
+**Scope of Option A, and the impl-body bound that completes it (#803, ENFORCED).**
+Option A's side condition is a *necessary* well-formedness rule about the shape of the
+**declared signature**; on its own it does **not** bound the **impl body's** latent
+effect. A method whose signature *does* carry `e` in an argument can still *attempt* to
+launder — and in **two** shapes, not one: an impl may **ignore** the effect argument and
+perform its own *intrinsic* effect, **or** it may legitimately **use** the effect
+argument (apply the callback, run the row-kinded data value) *and additionally* perform
+an intrinsic effect alongside it. For example `speak : a → (Unit →^e Unit) →^e String`
+is well-formed under Option A, yet an impl `speak d k = k (); putStr "…"; "woof"`
+performs `<Stdout>` while a caller instantiates `e := ⟨ ⟩` — laundering that *applying*
+the callback does not excuse.
+
+This is now **rejected** by a companion rule that bounds the impl **body's own latent
+effect** — on **every arrow of the method's declared type, down to its final return** —
+by what its arguments and signature justify. Writing `φ_i^{decl}` and `φ_i^{body}` for the
+declared and inferred effect on the *i*-th arrow of a method of declared arity *n*:
+
+```
+    ∀ i ≤ n.   atoms(φ_i^{body})  ⊆  atoms(φ_i^{decl})  ∪  atoms(argContributable)
+```
+
+where **argContributable** is the union of the effect rows an impl may perform by *using*
+its arguments — each function-typed argument's arrow latent row, each row-kinded data
+argument's effect row — and `atoms(·)` / the containment are IO-expanded exactly as the
+binding-boundary escape check of §5. Any atom of `φ_i^{body}` outside that bound is an
+intrinsic effect the caller cannot see, and is **rejected** (`T-EFFECT-LAUNDER`).
+
+**Why every arrow, not just the last.** An impl may write **fewer patterns** than the
+method's arity and return a lambda for the rest (`speak d k = u => …`), an ordinary
+curried idiom; its intrinsic effect then lands on a **returned-lambda arrow beyond the
+impl's pattern count** but still *within* the method's declared arrows. Bounding only the
+final arrow — or only the impl's own pattern count — misses exactly that effect (the
+smoking gun: `speak d k u = …` and `speak d k = u => …` must be judged identically).
+
+**Why it is exact.** The bound is checked **before** the body's rows are unified into the
+declared type, and there every parameter is still a fresh variable — so `argContributable`
+is entirely effect *variables* carrying no atoms, and an effect the body performs *through
+an argument* (applying a callback, running an effectful data value) appears on its arrow as
+that same variable, never a concrete atom. Consequently the per-arrow residual reduces to
+*concrete atoms of `φ_i^{body}` minus `φ_i^{decl}`*: a variable is visible to the caller and
+cannot lie, so only a concrete atom can launder. This makes the rule sound *and* precise —
+not the blanket *"no effect var may carry a concrete effect"* ban that would break
+`map`/`traverse`:
+
+- an impl that **threads** the effect (`map`, `traverse`, or any impl — curried or not —
+  that *applies* its callback / *runs* its effectful data argument) contributes only that
+  argument's **variable** to each `φ_i^{body}` — no atom — so it is **accepted**;
+- an impl whose callback carries a **concrete** effect (`Unit →^{Stdout} Unit`) which the
+  method's return honestly declares is **arg-contributed and declared**, so it too is
+  **accepted** — the reason `argContributable` cannot be dropped from the rule as stated;
+- an impl that **honestly declares** its own effect (`<Stdout | e>`) has that atom in the
+  matching `φ_i^{decl}`, so it is **accepted**;
+- only an **intrinsic** effect — a concrete atom on some arrow justified by neither the
+  arguments nor the declared effect at that arrow — **escapes** and is **rejected**,
+  whether the impl ignores its effect argument, uses it, or is written point-free/curried.
+
+So an argument-carried effect variable is bounded by the effect that actually *flows from
+the method's arguments*: the caller sees `e` in the call's type, and — with this rule —
+the instantiation **cannot lie**, because the dispatched impl can perform on that row only
+what its arguments justify or its signature declares. Together, Option A (signature shape)
+and this impl-body bound close the laundering hole for effect-variable interface methods.
+(Was tracked as #803.)
 
 **Effect-polymorphic data (effects as type-constructor arguments).** A row may
 occupy a **type-constructor argument** position, so a data type can be parameterized

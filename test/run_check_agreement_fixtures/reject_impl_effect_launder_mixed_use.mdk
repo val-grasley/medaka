@@ -1,0 +1,15 @@
+-- #803 (S0): same launder as reject_impl_effect_launder_mixed but the callback
+-- result is BOUND (`let n = k ()`) rather than discarded — still applies the
+-- callback (arg-contributed <e> variable) and still performs an intrinsic <Stdout>,
+-- which escapes. REJECT via a diagnostic (check == run == build).
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> <e> String
+data Dog = Dog
+impl Speak Dog where
+  speak d k =
+    let n = k ()
+    let _ = putStr "[use] "
+    "woof"
+pureUse : Speak a => a -> (Unit -> Unit) -> String
+pureUse x k = speak x k
+main = putStrLn (pureUse Dog (u => u))

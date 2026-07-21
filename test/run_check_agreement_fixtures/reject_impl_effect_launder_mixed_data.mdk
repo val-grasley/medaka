@@ -1,0 +1,19 @@
+-- #803 (S0): the row-kinded-data variant of the mixed launder. The impl RUNS its
+-- row-kinded `Box e` argument (`runBox b`, contributing e's variable) AND performs
+-- an intrinsic <Stdout> (`putStr`). The intrinsic atom escapes; the arg-run effect
+-- is a variable and does not. REJECT via a diagnostic (check == run == build).
+data Box e = Box (Unit -> <e> Unit) | Empty
+runBox : Box e -> <e> Unit
+runBox (Box f) = f ()
+runBox Empty = ()
+interface Speak s where
+  speak : s -> Box e -> <e> String
+data Dog = Dog
+impl Speak Dog where
+  speak d b =
+    let _ = runBox b
+    let _ = putStr "[data] "
+    "woof"
+pureUse : Speak s => s -> Box e -> String
+pureUse x b = speak x b
+main = putStrLn (pureUse Dog Empty)

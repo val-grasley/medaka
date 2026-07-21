@@ -1,0 +1,18 @@
+-- #803 (S0): the CURRIED / eta-reduced launder. The method has arity 3 and its
+-- effect var `<e>` sits on the FINAL arrow; the impl writes only 2 patterns and
+-- returns a lambda for the 3rd argument, performing its intrinsic <Stdout> (`putStr`)
+-- on that returned-lambda arrow — BEYOND the impl's pattern count. A check that peels
+-- only the impl's pattern count misses it; the check peels every arrow down to the
+-- METHOD's declared arity, so the intrinsic atom on the returned arrow still escapes.
+-- Smoking gun: the 3-pattern form (`speak d k u = …`) rejects identically.
+-- check == run == build all REJECT via a DIAGNOSTIC, never a runtime panic.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> Unit -> <e> String
+data Dog = Dog
+impl Speak Dog where
+  speak d k = u =>
+    let _ = putStr "[retlam] "
+    "woof"
+pureUse : Speak a => a -> (Unit -> Unit) -> Unit -> String
+pureUse x k u = speak x k u
+main = putStrLn (pureUse Dog (u => u) ())

@@ -1,0 +1,16 @@
+-- #803 boundary (ACCEPT): the callback carries a CONCRETE effect `<Stdout>` and the
+-- impl APPLIES it; the method's return row honestly declares `<Stdout>`. The effect
+-- is argument-contributed (and declared), not intrinsic, so it must NOT be rejected
+-- — the check would false-reject this if it ignored argument-contributed effects.
+-- Pins the boundary: applying a concrete-effect callback whose effect is declared is
+-- accepted and runs.
+interface Emit a where
+  emit : a -> (Unit -> <Stdout> Unit) -> <Stdout> String
+data Dog = Dog
+impl Emit Dog where
+  emit d k =
+    let _ = k ()
+    "woof"
+use : Emit a => a -> (Unit -> <Stdout> Unit) -> <Stdout> String
+use x k = emit x k
+main = putStrLn (use Dog (u => putStr "[concrete] "))

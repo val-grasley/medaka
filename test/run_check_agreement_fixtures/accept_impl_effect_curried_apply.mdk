@@ -1,0 +1,14 @@
+-- #803 boundary (ACCEPT): a CURRIED impl (1 pattern, two returned lambdas) that
+-- APPLIES its callback inside the innermost lambda. The effect on the returned arrows
+-- is the callback's effect VARIABLE (arg-contributed, no concrete atom), so peeling to
+-- the declared arity must NOT reject it — the false-positive risk of the deeper walk.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> Unit -> <e> String
+data Dog = Dog
+impl Speak Dog where
+  speak d = k => u =>
+    let _ = k ()
+    "woof"
+use : Speak a => a -> (Unit -> <e> Unit) -> Unit -> <e> String
+use x k u = speak x k u
+main = putStrLn (use Dog (u => putStr "[lc] ") ())

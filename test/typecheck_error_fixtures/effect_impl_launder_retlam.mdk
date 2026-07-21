@@ -1,0 +1,15 @@
+-- #803 (S0): the CURRIED / eta-reduced launder. The method has arity 3 with its
+-- effect var on the final arrow; the impl writes 2 patterns and returns a lambda for
+-- the 3rd argument, performing an intrinsic <Stdout> on that returned-lambda arrow —
+-- beyond the impl's pattern count but within the method's declared arrows. The check
+-- bounds every arrow down to the method's declared arity, so the intrinsic atom on the
+-- returned arrow is rejected by T-EFFECT-LAUNDER (identically to the 3-pattern form).
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> Unit -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d k = u =>
+    let _ = putStr "[retlam] "
+    "woof"

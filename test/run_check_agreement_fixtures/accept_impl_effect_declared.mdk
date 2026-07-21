@@ -1,0 +1,18 @@
+-- #803 boundary (ACCEPT): the impl's intrinsic <Stdout> is HONESTLY DECLARED in
+-- the method's effect row (`<Stdout | e>`). The residual check IO-expands and diffs
+-- the absorbed atoms against the declared row, so <Stdout> nets to empty and the
+-- impl stays accepted — the effect is no longer laundered, it rides the type.
+interface Speak a where
+  speak : a -> (Unit -> <e> Unit) -> <Stdout | e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d cb =
+    let _ = putStr "[cb] "
+    "woof"
+
+use : Speak a => a -> (Unit -> Unit) -> <Stdout> String
+use x cb = speak x cb
+
+main = putStrLn (use Dog (u => u))

@@ -1,0 +1,23 @@
+-- #803 (S0): the row-kinded-data variant of the launder. The effect var `<e>` is
+-- carried by the Row-kinded slot of `Ghost e` (an argument), so #784 Option A
+-- accepts the interface. The impl ignores the `Ghost` argument and performs its
+-- own intrinsic <Stdout> (`putStr`), which is absorbed into `<e>`; `pureUse`
+-- instantiates the slot to `Ghost <>` and is certified PURE, yet `run` performs
+-- <Stdout>. T-EFFECT-LAUNDER rejects it — check == run == build all REJECT via a
+-- DIAGNOSTIC, never a runtime panic.
+data Ghost e = Using (Unit -> <e> Unit) | Free
+
+interface Speak s where
+  speak : s -> Ghost e -> <e> String
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d g =
+    let _ = putStr "[ghost] "
+    "woof"
+
+pureUse : Speak s => s -> Ghost e -> String
+pureUse x g = speak x g
+
+main = putStrLn (pureUse Dog Free)
