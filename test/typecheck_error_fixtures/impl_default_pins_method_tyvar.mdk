@@ -1,0 +1,11 @@
+-- #814 (S0): the DEFAULT body has the same obligation — specialized into the
+-- impl, it is checked by the same W3 rule and rejected.
+interface Mk a where
+  other : a -> Int
+  mk : a -> b
+  mk d = "not-a-b"
+
+data Dog = Dog
+
+impl Mk Dog where
+  other d = 7

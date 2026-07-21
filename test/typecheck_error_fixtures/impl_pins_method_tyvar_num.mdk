@@ -1,0 +1,11 @@
+-- #814 (S0), constraint axis: `42` pins the method's `b` to a Num-obligated
+-- var — still a TVar, so distinctness alone misses it — but the caller owes no
+-- Num evidence and may instantiate b := String (evaluation then crashes).
+-- Rejected by T-IMPL-TOO-SPECIFIC (undeclared constraint on a scheme var).
+interface Mk a where
+  mk : a -> b
+
+data Dog = Dog
+
+impl Mk Dog where
+  mk d = 42

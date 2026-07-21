@@ -491,7 +491,60 @@ the method's arguments*: the caller sees `e` in the call's type, and — with th
 the instantiation **cannot lie**, because the dispatched impl can perform on that row only
 what its arguments justify or its signature declares. Together, Option A (signature shape)
 and this impl-body bound close the laundering hole for effect-variable interface methods.
-(Was tracked as #803.)
+(Was tracked as #803.) They do **not** yet close the *type-variable* channel — an impl can
+still smuggle a row inside the instantiation of a quantified **type** variable, off the
+arrow spine the bound walks. That channel is closed by method-scheme rigidity, next.
+
+**Method-scheme rigidity (the instantiation channel; #814).** The two rules above
+constrain the *signature's shape* and the *declared arrows*. The remaining laundering
+channel is the **instantiation of the method's quantified variables themselves**: with the
+body checked against the method type via ordinary (flexible) unification, an impl of
+`mk : a → b` can pin `b := Unit →^⟨Stdout⟩ String` — or a tuple or data type containing
+such an arrow — while every caller instantiates `b` freshly and may pin it to the *pure*
+arrow: a certified-pure value performs IO, and no arrow of the declared spine ever carried
+an atom for the #803 bound to see. The same flexibility is a **type**-soundness hole with
+no effects involved at all (`mk d = 42` pinned `b := Int`; a caller instantiates
+`b := String` and evaluation crashes), which is why the fix is not effect-specific.
+
+The rule (the effect reading of `DICT-SEMANTICS.md` §3 **W3**, which owns the formal
+statement): an impl or default method body is checked against the method's declared type
+with every quantified variable not bound by the interface head — **type variables and
+effect variables alike** — held **rigid**. For a type variable, rigid means what it means
+in any skolem check: it may not be instantiated to a constructed type, identified with
+another method variable, or identified with an instance-head variable. For an effect
+variable `μ`, rigid means the row it stands for may acquire **no concrete atom beyond
+what the declared row at each of `μ`'s occurrences already carries** (IO-expanded,
+exactly as §5's escape check), and two distinct declared effect variables may not be
+identified — an atom that reaches `μ` from nowhere in the signature is precisely an
+intrinsic effect the caller can erase by instantiating `μ := ⟨ ⟩`.
+
+Consequences, and the division of labour with the #803 bound:
+
+- pinning `b` is rejected *outright* — effectful, pure, nested in tuples or data-type
+  arguments, it makes no difference, so the tuple/data-nesting variants need no
+  variance-aware descent: there is nothing to descend into once `b` cannot be pinned;
+- an intrinsic atom poured into an argument-pinned `e` at a position **off the arrow
+  spine** (e.g. a method returning `(Unit →^e Unit, Int)`, the atom inside the tuple) is
+  caught by the effect-variable half — the one laundering shape the per-arrow #803 walk
+  is structurally blind to;
+- the #803 per-arrow bound remains the *diagnostic* seam for spine positions (it names
+  the offending arrow pre-unification); in the idealized semantics it is subsumed by
+  rigidity — a rigid `μ` on a declared arrow cannot absorb an intrinsic atom.
+
+Two deliberate design notes. **First**, rigidity is an over-approximation in one corner:
+an atom entering a rigid `μ` at a *purely contravariant* occurrence (the impl returns a
+function that merely *demands* a more-effectful callback than the caller need supply)
+cannot actually be performed, yet is rejected. That is the §4 stance transposed —
+over-rejection is a completeness gap, never a soundness hole — and the corner is
+unreachable anyway for honestly-shaped signatures. **Second**, the alternative that was
+considered and **rejected**: keeping the flexible instantiation and adding a
+variance-aware structural walk of the (declared, inferred) type pair that hunts effect
+atoms in covariant positions of the pinned types. It would have needed per-datatype
+variance machinery the type system does not track, and — decisively — it *presumes the
+pinning survives*, which the `b := Int` crash shows is unsound independently of effects.
+Rigidity closes both axes with no new machinery, and is the standard obligation of the
+dictionary translation besides (an instance method must inhabit the method's scheme at
+the instance head — Wadler–Blott; `DICT-SEMANTICS.md` §3 W3).
 
 **Effect-polymorphic data (effects as type-constructor arguments).** A row may
 occupy a **type-constructor argument** position, so a data type can be parameterized

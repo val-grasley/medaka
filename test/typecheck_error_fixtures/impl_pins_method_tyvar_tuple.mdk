@@ -1,0 +1,15 @@
+-- #814 (S0): the pinned effectful arrow hides INSIDE a returned tuple at `b`
+-- (off the arrow spine, where the #803 per-arrow walk cannot see it).  W3
+-- rejects the pin itself, so the nesting is irrelevant.
+noisy : Unit -> <Stdout> String
+noisy u =
+  let _ = putStr "[tuplehide] "
+  "woof"
+
+interface Mk a where
+  mk : a -> b
+
+data Dog = Dog
+
+impl Mk Dog where
+  mk d = (noisy, 1)

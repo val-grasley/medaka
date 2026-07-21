@@ -1,0 +1,10 @@
+-- W3 positive control: a DECLARED method-level constraint (`Num b =>`) licenses
+-- the body's Num obligation on `b` (and requires-closure licenses superclass
+-- obligations — cf. foldMap's `Monoid m =>` body using `++`).  Accepted.
+interface Lift f where
+  lift : Num b => a -> f b
+
+data Box x = Box x
+
+impl Lift Box where
+  lift x = Box 0

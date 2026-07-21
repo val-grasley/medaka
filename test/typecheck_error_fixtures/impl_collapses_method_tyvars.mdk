@@ -1,0 +1,10 @@
+-- #814 (S0): the impl identifies two method-scheme vars (`pick` returns the
+-- `c`-typed argument where `b` is declared) — a caller instantiating b/c to
+-- different types gets a wrong-typed value.  Rejected by T-IMPL-TOO-SPECIFIC.
+interface Pick a where
+  pick : a -> b -> c -> b
+
+data Dog = Dog
+
+impl Pick Dog where
+  pick d x y = y

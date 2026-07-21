@@ -1,0 +1,124 @@
+eq : a -> a -> Bool
+append : a -> a -> a
+empty : a
+compare : a -> a -> Ordering
+lt : a -> a -> Bool
+gt : a -> a -> Bool
+lte : a -> a -> Bool
+gte : a -> a -> Bool
+min : a -> a -> a
+max : a -> a -> a
+debug : a -> String
+display : a -> String
+hash : a -> Int
+add : a -> a -> a
+sub : a -> a -> a
+mul : a -> a -> a
+div : a -> a -> a
+negate : a -> a
+abs : a -> a
+signum : a -> a
+fromInt : Int -> a
+minBound : a
+maxBound : a
+map : (a -> b) -> c a -> c b
+pure : a -> b a
+ap : a (b -> c) -> a b -> a c
+andThen : a b -> (b -> a c) -> a c
+noMatch : a b
+orElse : a b -> a b -> a b
+bimap : (a -> b) -> (c -> d) -> e a c -> e b d
+mapFirst : (a -> b) -> c a d -> c b d
+mapSecond : (a -> b) -> c d a -> c d b
+fold : (a -> b -> a) -> a -> c b -> a
+foldRight : (a -> b -> b) -> b -> c a -> b
+foldMap : (a -> b) -> c a -> b
+toList : a b -> List b
+isEmpty : a b -> Bool
+length : a b -> Int
+filterMap : (a -> Option b) -> c a -> c b
+filter : (a -> Bool) -> b a -> b a
+fromEntries : List a -> b
+index : a -> b -> c
+setIndex : a -> b -> c -> a
+slice : a -> Int -> Int -> a
+traverse : (a -> b c) -> d a -> b (d c)
+sequence : a (b c) -> b (a c)
+arbitrary : Unit -> <Rand> a
+shrink : a -> List a
+to_rep : a -> Rep
+from_rep : Rep -> a
+lift : a -> b c
+not : Bool -> Bool
+neq : Eq a => a -> a -> Bool
+clamp : Ord a => a -> a -> a -> a
+isEven : Int -> Bool
+isOdd : Int -> Bool
+floatSignBit : Float -> Bool
+compareBySign : Float -> Float -> Ordering
+otherwise : Bool
+compareNaN : Float -> Float -> Ordering
+thenCmp : Ordering -> Ordering -> Ordering
+debugListItems : Debug a => List a -> String
+debugArrayItems : Debug a => Array a -> Int -> Int -> String
+eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
+displayListItems : Display a => List a -> String
+displayArrayItems : Display a => Array a -> Int -> Int -> String
+derivedIsQuoteChar : Char -> Bool
+derivedNextDepth : Char -> Int -> Int
+derivedHasTopLevelSpace : Array Char -> Int -> Int -> Int -> Bool
+derivedArgNeedsParens : String -> Bool
+derivedShowWrap : String -> String
+hashListItems : Hashable a => Int -> List a -> Int
+println : Display a => a -> <IO> Unit
+print : Display a => a -> <IO> Unit
+replaceWith : Mappable a => a b -> c -> a c
+map2 : Applicative d => (a -> b -> c) -> d a -> d b -> d c
+map3 : Applicative e => (a -> b -> c -> d) -> e a -> e b -> e c -> e d
+flatMap : Thenable b => (a -> b c) -> b a -> b c
+identity : a -> a
+flat : Thenable a => a (a b) -> a b
+when : Thenable a => Bool -> a Unit -> a Unit
+unless : Thenable a => Bool -> a Unit -> a Unit
+foldThen : Thenable c => (a -> b -> c a) -> a -> List b -> c a
+repeatThen : Thenable a => Int -> a b -> a (List b)
+filterThen : Thenable b => (a -> b Bool) -> List a -> b (List a)
+forEach : Thenable b => List a -> (a -> b Unit) -> b Unit
+runEach : Thenable a => List (a b) -> a Unit
+guard : Alternative a => Bool -> a Unit
+sliceListGo : List a -> Int -> Int -> Int -> List a
+any : Foldable b => (a -> Bool) -> b a -> Bool
+all : Foldable b => (a -> Bool) -> b a -> Bool
+find : Foldable b => (a -> Bool) -> b a -> Option a
+count : Foldable b => (a -> Bool) -> b a -> Int
+sum : (Foldable a, Num b) => a b -> b
+product : (Foldable a, Num b) => a b -> b
+elem : (Eq a, Foldable b) => a -> b a -> Bool
+notElem : (Eq a, Foldable b) => a -> b a -> Bool
+maximum : (Foldable a, Ord b) => a b -> Option b
+minimum : (Foldable a, Ord b) => a b -> Option b
+and : Bool -> Bool -> Bool
+or : Bool -> Bool -> Bool
+xor : Bool -> Bool -> Bool
+isSome : Option a -> Bool
+isNone : Option a -> Bool
+fromOption : a -> Option a -> a
+toResult : a -> Option b -> Result a b
+fromResult : Result a b -> Option b
+isOk : Result a b -> Bool
+isErr : Result a b -> Bool
+fromResultOr : a -> Result b a -> a
+mapErr : (a -> b) -> Result a c -> Result b c
+fst : (a, b) -> a
+snd : (a, b) -> b
+const : a -> b -> a
+flip : (a -> b -> c) -> b -> a -> c
+on : (a -> a -> b) -> (c -> a) -> c -> c -> b
+curry : ((a, b) -> c) -> a -> b -> c
+uncurry : (a -> b -> c) -> (a, b) -> c
+discard : Mappable a => a b -> a Unit
+compose : (a -> b) -> (c -> a) -> c -> b
+pipe : (a -> b) -> (b -> c) -> a -> c
+apply : (a -> b) -> a -> b
+arbitraryString : Unit -> <Rand> String
+arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a

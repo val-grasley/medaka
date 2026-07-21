@@ -1,0 +1,1 @@
+TYPE ERROR: Impl of 'pick' for interface 'Pick' identifies quantified type variables that the declared type 'a -> b -> c -> b' keeps distinct (two method variables forced equal, or a method variable forced equal to an impl-head variable). Every caller may instantiate each independently, so the body must keep them independent.

@@ -323,6 +323,54 @@ more — so `min⊑` is computed by finitely many decidable comparisons, before
 any recursion. W1 + W2 + C1 together make entailment the function the
 elaboration of §4 assumes it to be.
 
+**W3 (method-scheme fidelity).** `inst` fills `methods` from `I`'s impl, and
+`var` at every use site instantiates the **method's declared scheme** — so the
+dictionary's method values must actually *inhabit* those schemes, at the
+instance head, **at full generality**. For an instance
+`I = (instance Q ⇒ C T̄)` and a class method
+
+```
+            m : ∀ā_C. C ā_C ⇒ ∀b̄ μ̄. Q_m ⇒ τ_m
+```
+
+(`b̄` the method-level type variables not bound by the class head, `μ̄` its
+effect variables), the body supplied by `I` — or by the class's **default**,
+which is checked by this same rule (it is the class-provided impl, at the head
+`C ā_C` itself with `ā_C` also held rigid) — must satisfy
+
+```
+            (Q, Q_m) | Γ ⊢ impl_I.m ⇝ e_m : [T̄/ā_C] τ_m     with b̄, μ̄ RIGID
+```
+
+**rigid** meaning skolem constants: the body may not instantiate a `b ∈ b̄` to
+a constructed type, may not identify two of them, and may not identify one with
+a variable of `T̄`; a `μ ∈ μ̄` may not acquire a concrete effect atom nor be
+identified with another. `b̄ μ̄` belong to the **caller** — `var` re-instantiates
+them freshly at every use site — so a body that pins one inhabits a strictly
+more specific type than the scheme every call site is entitled to. Checking the
+body with *flexible* `b̄ μ̄` (unification metavariables) is unsound on both
+axes, silently:
+
+- **type axis** — `mk : a → b` with a body returning `42` fixes `b := Int`;
+  a caller instantiates `b := String` and evaluation crashes (likewise a body
+  forcing `b = c` between two method variables, or `b` = an instance variable
+  of `T̄`);
+- **effect axis** — the same body position can fix `b` to an *effect-bearing*
+  type (`Unit →^⟨Stdout⟩ String`, alone or nested in a tuple or data argument);
+  the caller pins `b` to the pure arrow and obtains a certified-pure value that
+  performs IO — the laundering vein of
+  [`EFFECTS-SEMANTICS.md`](EFFECTS-SEMANTICS.md) §6 (#814).
+
+W3 needs **no variance analysis**: rigidity decides scheme membership
+uniformly. In particular a body like `mk d = k ⇒ k ()` (fixing `b` to a
+callback-taking arrow — a shape a variance-aware effect check would be tempted
+to admit, since the atom sits contravariantly) is rejected on the *type* axis
+alone: `∀b` with `b` pinned to any shape is a lie to every caller, effectful or
+not. This is the instance-side counterpart of `gen-sig`'s "a signature is a
+contract the body must satisfy, not a floor it can raise" (§4): the method
+signature is a contract the impl must meet **at every instantiation the caller
+may choose**, not just one the impl finds convenient.
+
 ---
 
 ## 4. Elaboration: typing-with-translation
@@ -781,6 +829,14 @@ specific clause; that mapping is the audit's starting point.
   `IE` in declaration order, keys instances by class-plus-head-constructor
   alone (which cannot separate `List Int` from `List a`), or resolves
   nested/super obligations through a different lookup than top-level goals.
+- **Impl fixes a caller-owned method variable (#814 vein)** → §3 W3: an impl or
+  default body checked with *flexible* method-scheme variables can pin a type
+  variable the caller instantiates freshly at every `var` — a type-soundness
+  crash when pinned to a mismatched concrete type, silent effect laundering when
+  pinned to an effect-bearing type. Suspect any impl/default body-checking path
+  that unifies the body against the method type with fresh metavariables and
+  never verifies the scheme's non-head quantifiers survived as distinct,
+  unconstrained variables.
 
 ---
 

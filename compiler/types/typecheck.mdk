@@ -12762,8 +12762,10 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- (`<Stdout>`) or PURE (`<>`) declared row still yields a closed row, so a genuine
     -- impl-body effect leak past a non-var bound is still enforced (#782).  The free-var
     -- laundering at the CALL site remains #784's concern.
-    let expected = fromAstTypeE (freshEffMap (dedup (effTailNames mty ++ rowArgNames mty))) (baseMap ++ extraMap) mty
+    let effMap = freshEffMap (dedup (effTailNames mty ++ rowArgNames mty))
+    let expected = fromAstTypeE effMap (baseMap ++ extraMap) mty
     let actual = inferClauses env [(pats, body)]
+    let launderLoc = orElseLoc (implBodyLoc body) (firstTyConLoc mty)
     -- #803 (S0): bound the impl body's latent effect on EVERY arrow down to the method's
     -- DECLARED return by the effect the method declares at that same arrow — inspected
     -- BEFORE `unify expected actual`.  An effect an impl legitimately performs by USING an
@@ -12782,8 +12784,33 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- effrowLabels no longer sees it.  Argument-contributed effects need no explicit set:
     -- at impl-check they are variables, never concrete atoms, so they are structurally
     -- exempt at every arrow.
-    let _ = checkImplEffectLaunder iface mname expected actual (orElseLoc (implBodyLoc body) (firstTyConLoc mty))
+    let errN0 = listLen perRun.value.typeErrors.value
+    let _ = checkImplEffectLaunder iface mname expected actual launderLoc
+    -- True iff the per-arrow #803 walk just flagged this body — the post-unify
+    -- effect-atom half below then stays quiet (same defect, one report).
+    let launderFlagged = listLen perRun.value.typeErrors.value > errN0
     let _ = unify expected actual
+    -- #814 (S0): W3 method-scheme fidelity (DICT-SEMANTICS §3).  The method's
+    -- non-head quantified variables — type AND effect — belong to the CALLER
+    -- (every use site re-instantiates them freshly), so the body must be checked
+    -- at full generality.  [extraMap]/[effMap] were fresh flexible vars for the
+    -- unify above; verifying they SURVIVED unification as distinct unbound
+    -- variables (types) / atom-free rows with distinct tails (effects) is
+    -- equivalent to having checked the body against skolems, at the cost of one
+    -- post-unify inspection (the same discipline as checkAnnotTooGeneral's C3).
+    -- Without it an impl can pin `b` in `mk : a -> b` — to Int (caller
+    -- instantiates b := String, evaluation crashes) or to an effect-bearing
+    -- arrow, alone or nested in a tuple/data arg (caller pins b to the pure
+    -- arrow: a certified-pure value performs IO — the #814 laundering vein the
+    -- per-arrow #803 walk above is structurally blind to).  Runs BEFORE
+    -- defaultBodyLocalNum so a body-local Num default can never mask a pin.
+    -- [addedObls] (this body's obligation window, also fed to defaultBodyLocalNum
+    -- below) carries the CONSTRAINT axis: a body whose pin is a *constrained
+    -- var* rather than a constructed type (`mk d = 42` pins b to a Num-obligated
+    -- var, still a TVar) escapes the distinctness check, but its obligation on a
+    -- caller-owned var is the same lie — gen-sig's `Q_sig ⊩ P'` on the impl side.
+    let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+    let _ = checkImplMethodRigidity iface mname mty headMonos extraMap effMap addedObls launderFlagged launderLoc
     -- #518 (S0, silent wrongness): PLAN.md #11 Num defaulting NEVER RAN over an impl
     -- method body — this path is not a let-group, so nothing grounded its ambiguous
     -- Num vars.  A literal consumed entirely inside the body (`t _ = s [1, 2]`) left
@@ -12809,7 +12836,6 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- exitLevel, but this function has no enterLevel/exitLevel at all, so the level it
     -- would compute here is meaningless.  It is also orthogonal to #518 (oblDispatchMonos
     -- returns [] for Num).  Tracked as #564.
-    let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
     let _ = defaultBodyLocalNum addedObls expected
     -- Eval-path method-dict threading (parity with inferDefaultMethod's
     -- registerMethodDictSlots): an impl method with its OWN method-level constraint
@@ -12887,6 +12913,209 @@ implBodyLoc _ = None
 
 effectLaunderMsg : String -> String -> List Atom -> String
 effectLaunderMsg iface mname escaping = "Effect laundering in impl of '\{mname}' for interface '\{iface}': the body performs <\{renderAtoms escaping}>, which is not sourced from any argument and is not declared by the method's effect row, so a caller can instantiate the method's effect variable to <> and a function typed pure would then silently perform it. Either declare the effect as a concrete label in the method's return row (e.g. `<\{renderAtoms escaping}>`), or perform it only through an argument (a callback carrying `<e>`) so the caller sees it."
+
+-- #814 (S0): W3 method-scheme fidelity — the post-unify rigidity check.  The
+-- method scheme's non-head quantifiers are re-instantiated freshly by every
+-- caller, so the impl body may not constrain them.  Having unified the body
+-- against fresh flexible vars, rigidity holds iff each survived untouched:
+--   · every [extraMap] type var still normalizes to a TVar (not pinned to a
+--     constructed type), and all their ids are pairwise distinct and disjoint
+--     from the impl-head vars' ids (not identified with each other or with a
+--     head variable);
+--   · every [effMap] effect var's row carries no concrete atom beyond what the
+--     declared row at EVERY occurrence of that var in [mty] already covers
+--     (IO-expanded, as the §5 escape check) — an atom unification poured into
+--     the var from a position whose declared row lacks it is an intrinsic
+--     effect the caller erases by instantiating the var to <>; and the vars'
+--     tails are pairwise distinct and disjoint from any impl-head row tails.
+-- Union-find bindings are monotone, so a var unbound-and-distinct AFTER unify
+-- was never constrained DURING it: this is observationally the skolem check.
+-- All lists here are the handful of quantified vars of one method signature.
+checkImplMethodRigidity : String -> String -> Ty -> List Mono -> List (String, Mono) -> List (String, Ref Effvar) -> List (String, List String, Ty, Mono, Option Loc) -> Bool -> Option Loc -> Unit
+checkImplMethodRigidity iface mname mty headMonos extraMap effMap addedObls launderFlagged loc =
+  let pinned = map fst (filterList (p => not (isUnboundTvar (snd p))) extraMap)
+  let _ = if isNonEmptyL pinned then pushTypeErrorOnceAt "T-IMPL-TOO-SPECIFIC" loc (implPinsTyvarMsg iface mname mty pinned)
+  else
+    let survivors = sigTvarIds (map snd extraMap)
+    if hasDupI survivors || anyContainsI survivors (flatMap monoTyvarIds headMonos) then
+      pushTypeErrorOnceAt "T-IMPL-TOO-SPECIFIC" loc (implCollapsesTyvarsMsg iface mname mty)
+    else
+      ()
+  let _ = checkSurvivorObligations iface mname mty extraMap addedObls loc
+  checkImplEffVarRigidity iface mname mty headMonos effMap launderFlagged loc
+
+-- the constraint axis of W3: a predicate the body records on a method-scheme
+-- var must be entailed by a DECLARED method-level constraint on that var,
+-- closed under `requires` (`foldMap : Monoid m => …` whose body's `++` infers
+-- `Semigroup m` is entailed; `mk : a -> b` whose body's `42` infers `Num b` is
+-- not — a caller instantiates b to a type with no Num impl and evaluation
+-- dispatches into nothing).  Obligations on non-scheme vars (body-local
+-- literals, impl-head `requires` vars, ground receivers) are skipped — the
+-- existing checkImplObligations/defaulting machinery owns those.
+checkSurvivorObligations : String -> String -> Ty -> List (String, Mono) -> List (String, List String, Ty, Mono, Option Loc) -> Option Loc -> Unit
+checkSurvivorObligations _ _ _ _ [] _ = ()
+checkSurvivorObligations iface mname mty extraMap ((oiface, otyparams, omty, occ, _)::rest) loc =
+  -- the obligation's [occ] is the FULL instantiated occurrence type (`Int -> a`
+  -- for a literal's `fromInt`); the constrained position is extracted by the
+  -- same declared-type walk checkImplObligations uses.  Dispatch (receiver)
+  -- typarams only, per the F0 stance: a non-receiver typaram is impl-determined.
+  let _ = checkSurvivorDispatchMonos
+    iface
+    mname
+    mty
+    extraMap
+    oiface
+    (dispatchMonosOf (dispatchTyparams otyparams) omty occ)
+    loc
+  checkSurvivorObligations iface mname mty extraMap rest loc
+
+checkSurvivorDispatchMonos : String -> String -> Ty -> List (String, Mono) -> String -> List Mono -> Option Loc -> Unit
+checkSurvivorDispatchMonos _ _ _ _ _ [] _ = ()
+checkSurvivorDispatchMonos iface mname mty extraMap oiface (dm::rest) loc =
+  let _ = match survivorNameOf dm extraMap
+    Some vname =>
+      if entailedByDeclared oiface vname mty then
+        ()
+      else
+        pushTypeErrorOnceAt "T-IMPL-TOO-SPECIFIC" loc (implUndeclaredConstraintMsg iface mname mty oiface vname)
+    None => ()
+  checkSurvivorDispatchMonos iface mname mty extraMap oiface rest loc
+
+-- the method-scheme var name whose post-unify root [omono] resolves to, if any
+survivorNameOf : Mono -> List (String, Mono) -> Option String
+survivorNameOf omono extraMap = match normalize omono
+  TVar cell => survivorNameOfId (tyvarId cell) extraMap
+  _ => None
+
+survivorNameOfId : Int -> List (String, Mono) -> Option String
+survivorNameOfId _ [] = None
+survivorNameOfId id ((n, m)::rest) = match normalize m
+  TVar cell => if tyvarId cell == id then Some n else survivorNameOfId id rest
+  _ => survivorNameOfId id rest
+
+-- is [oiface] within the `requires`-closure of the method-level constraints
+-- declared on var [vname] in [mty]?  ifaceSelfAndSupers — NOT expandSupersPairs,
+-- whose WS-1b user-iface guard deliberately skips prelude chains (a dict-SLOT
+-- policy), while entailment here must see them (`Monoid m =>` entails the
+-- prelude `Semigroup m`).
+entailedByDeclared : String -> String -> Ty -> Bool
+entailedByDeclared oiface vname mty =
+  contains oiface (flatMap ifaceSelfAndSupers (declaredIfacesOn vname mty))
+
+-- the interfaces the method's own signature constrains [vname] with
+declaredIfacesOn : String -> Ty -> List String
+declaredIfacesOn vname (TyConstrained cs t) = map constraintIface (filterList (c => contains vname (constraintVarNames c)) cs)
+  ++ declaredIfacesOn vname t
+declaredIfacesOn vname (TyEffect _ _ t) = declaredIfacesOn vname t
+declaredIfacesOn _ _ = []
+
+constraintIface : Constraint -> String
+constraintIface (Constraint n _) = n
+
+constraintVarNames : Constraint -> List String
+constraintVarNames (Constraint _ args) = flatMap tyVarNames args
+
+isUnboundTvar : Mono -> Bool
+isUnboundTvar m = match normalize m
+  TVar _ => True
+  _ => False
+
+-- any member of [xs] present in [ys] (tiny per-method var lists)
+anyContainsI : List Int -> List Int -> Bool
+anyContainsI [] _ = False
+anyContainsI (x::xs) ys = containsI x ys || anyContainsI xs ys
+
+-- the effect half of the rigidity check: atom containment per declared
+-- occurrence, then tail distinctness.
+checkImplEffVarRigidity : String -> String -> Ty -> List Mono -> List (String, Ref Effvar) -> Bool -> Option Loc -> Unit
+checkImplEffVarRigidity iface mname mty headMonos effMap launderFlagged loc =
+  let occs = effVarOccAtoms mty ++ map (n => (n, [])) (rowArgNames mty)
+  let _ = if launderFlagged then
+    ()
+  else
+    checkEffVarAtoms iface mname occs effMap loc
+  let tails = effVarTailIds effMap
+  if hasDupI tails || anyContainsI tails (flatMap monoEffTailIds headMonos) then
+    pushTypeErrorOnceAt "T-IMPL-TOO-SPECIFIC" loc (implCollapsesEffvarsMsg iface mname mty)
+  else
+    ()
+
+checkEffVarAtoms : String -> String -> List (String, List Atom) -> List (String, Ref Effvar) -> Option Loc -> Unit
+checkEffVarAtoms _ _ _ [] _ = ()
+checkEffVarAtoms iface mname occs ((n, cell)::rest) loc =
+  let esc = effVarOccEscape n (effrowLabels (EffRow [] (Some cell))) occs
+  let _ = if isNonEmptyL esc then
+    pushTypeErrorOnceAt "T-EFFECT-LAUNDER" loc (effVarLaunderMsg iface mname n esc)
+  else
+    ()
+  checkEffVarAtoms iface mname occs rest loc
+
+-- the first occurrence of var [n] whose declared atoms fail to cover
+-- [instAtoms]: laundering demands EVERY occurrence cover the instantiation,
+-- since the caller reads the var's row at each of them independently.
+effVarOccEscape : String -> List Atom -> List (String, List Atom) -> List Atom
+effVarOccEscape _ [] _ = []
+effVarOccEscape _ _ [] = []
+effVarOccEscape n instAtoms ((m, declAtoms)::rest) =
+  if m == n && isNonEmptyL (atomsEscape instAtoms declAtoms) then
+    atomsEscape instAtoms declAtoms
+  else
+    effVarOccEscape n instAtoms rest
+
+-- (name, written atoms) for each named-tail row occurrence in a method's AST
+-- type — every TyEffect node, on the arrow spine or nested (tuples, callback
+-- rows, data-arg rows).  Bare row-kinded ctor-arg slots (`Async e a`) carry no
+-- written atoms and are contributed by rowArgNames at the call site.
+effVarOccAtoms : Ty -> List (String, List Atom)
+effVarOccAtoms (TyEffect labels (Some n) t) =
+  (n, atomsOfWritten labels) :: effVarOccAtoms t
+effVarOccAtoms (TyEffect _ None t) = effVarOccAtoms t
+effVarOccAtoms (TyApp a b) = effVarOccAtoms a ++ effVarOccAtoms b
+effVarOccAtoms (TyFun a b) = effVarOccAtoms a ++ effVarOccAtoms b
+effVarOccAtoms (TyTuple ts) = flatMap effVarOccAtoms ts
+effVarOccAtoms (TyConstrained _ t) = effVarOccAtoms t
+effVarOccAtoms _ = []
+
+-- the still-open tail id of each method effect var's row, post-unify (a closed
+-- row contributes nothing: closing a var to the empty row performs LESS than
+-- any caller instantiation — the safe direction, not a pin).
+effVarTailIds : List (String, Ref Effvar) -> List Int
+effVarTailIds [] = []
+effVarTailIds ((_, cell)::rest) = match effrowNorm (EffRow [] (Some cell))
+  EffRow _ (Some t) => effvarId t :: effVarTailIds rest
+  EffRow _ None => effVarTailIds rest
+
+-- the row-tail ids reachable in a Mono (impl-head types may carry row-kinded
+-- args, e.g. `impl Runner (Async e)`)
+monoEffTailIds : Mono -> List Int
+monoEffTailIds m = match normalize m
+  TApp a b => monoEffTailIds a ++ monoEffTailIds b
+  TFun a eff b => monoEffTailIds a ++ rowTailIds eff ++ monoEffTailIds b
+  TEff row => rowTailIds row
+  _ => []
+
+rowTailIds : EffRow -> List Int
+rowTailIds row = match effrowNorm row
+  EffRow _ (Some t) => [effvarId t]
+  EffRow _ None => []
+
+quotedNames : List String -> String
+quotedNames names = joinWith ", " (map (n => "'" ++ n ++ "'") names)
+
+implPinsTyvarMsg : String -> String -> Ty -> List String -> String
+implPinsTyvarMsg iface mname mty pinned = "Impl of '\{mname}' for interface '\{iface}' pins the method's quantified type variable(s) \{quotedNames pinned}: the declared type '\{ppTy mty}' promises every caller its own choice of \{quotedNames pinned}, but this body fixes them to specific types. A caller instantiating them differently would get a value of the wrong type — or, if the pinned type carries an effect row, a value typed pure that silently performs effects. Make the body parametric in \{quotedNames pinned}, or name the intended concrete type in the method's signature."
+
+implUndeclaredConstraintMsg : String -> String -> Ty -> String -> String -> String
+implUndeclaredConstraintMsg iface mname mty oiface vname = "Impl of '\{mname}' for interface '\{iface}' requires '\{oiface}' on the method's quantified type variable '\{vname}', but the declared type '\{ppTy mty}' does not: every caller instantiates '\{vname}' freely (including to a type with no '\{oiface}' impl), so the body may not assume it. Add the constraint to the method's signature (`\{oiface} \{vname} => …`), or make the body parametric in '\{vname}'."
+
+implCollapsesTyvarsMsg : String -> String -> Ty -> String
+implCollapsesTyvarsMsg iface mname mty = "Impl of '\{mname}' for interface '\{iface}' identifies quantified type variables that the declared type '\{ppTy mty}' keeps distinct (two method variables forced equal, or a method variable forced equal to an impl-head variable). Every caller may instantiate each independently, so the body must keep them independent."
+
+implCollapsesEffvarsMsg : String -> String -> Ty -> String
+implCollapsesEffvarsMsg iface mname mty = "Impl of '\{mname}' for interface '\{iface}' identifies effect variables that the declared type '\{ppTy mty}' keeps distinct. Every caller instantiates each independently, so unifying them lets an effect flow to a row the caller pinned to <>. Keep the body's effects on the variable the signature declares at that position."
+
+effVarLaunderMsg : String -> String -> String -> List Atom -> String
+effVarLaunderMsg iface mname evar escaping = "Effect laundering in impl of '\{mname}' for interface '\{iface}': the body performs <\{renderAtoms escaping}> inside the method's effect variable <\{evar}>, at a position whose declared row does not include it, so a caller can instantiate <\{evar}> to <> and a value typed pure would silently perform it. Declare the effect as a concrete label at that position in the method's signature, or perform it only through an argument (a callback carrying <\{evar}>) so the caller sees it."
 
 -- Register an impl method's OWN method-level constraints (`Thenable m => …`) into
 -- activeDictVars, one slot per constraint, so a return-position method in the impl

@@ -1,0 +1,11 @@
+-- #814 family (S0): an intrinsic <Stdout> poured into the argument-pinned
+-- effect var <e> at a position OFF the arrow spine (inside the returned
+-- tuple) — invisible to the #803 per-arrow bound, caught by the effect half
+-- of the W3 rigidity check (T-EFFECT-LAUNDER).
+interface Mk a where
+  mk : a -> (Unit -> <e> Unit) -> (Unit -> <e> Unit, Int)
+
+data Dog = Dog
+
+impl Mk Dog where
+  mk d k = (u => putStr "[nested2] ", 1)

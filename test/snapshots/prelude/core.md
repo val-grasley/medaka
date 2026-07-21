@@ -1,5 +1,5 @@
 # META
-source_lines=1643
+source_lines=1645
 stages=TYPES
 # SOURCE
 {- core.mdk — the foundation every other Medaka module rests on.
@@ -770,7 +770,9 @@ export impl Mappable Option where
    `Err` side) can coexist without forcing every call site to qualify. -}
 export impl Mappable (Result e) where
   map f (Ok a) = Ok (f a)
-  map _ e = e
+  -- rebuilt (not returned as-is): `map _ e = e` would identify the method's
+  -- `a`/`b`, which W3 method-scheme fidelity forbids (DICT-SEMANTICS §3)
+  map _ (Err x) = Err x
 
 {- | Replace every element of a wrapped value with a constant, keeping the
    structure — Haskell's `$>`.  `replaceWith fa b == map (const b) fa`.

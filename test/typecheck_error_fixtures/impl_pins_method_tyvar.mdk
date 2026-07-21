@@ -1,0 +1,13 @@
+-- #814 (S0): an impl pinning the method's quantified TYPE variable `b` to an
+-- effect-bearing arrow launders the effect — a caller instantiates b to the
+-- pure arrow and a certified-pure value performs <Stdout>.  W3 method-scheme
+-- fidelity (DICT-SEMANTICS §3): rejected by T-IMPL-TOO-SPECIFIC.
+interface Mk a where
+  mk : a -> b
+
+data Dog = Dog
+
+impl Mk Dog where
+  mk d = u =>
+    let _ = putStr "[minimal] "
+    "woof"
