@@ -456,6 +456,7 @@ entryHeadMatches : Ty -> List Ty -> List Mono -> Bool
 entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
 envAlphaLets : TcEnv -> List (String, Expr)
 eqCompareOp : Mono -> Mono -> Mono
+eqIdList : List Int -> List Int -> Bool
 eqInt : Int -> Int -> Bool
 eqIntList : List Int -> List Int -> Bool
 eqStr : String -> String -> Bool

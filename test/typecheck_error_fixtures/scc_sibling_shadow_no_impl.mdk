@@ -1,0 +1,25 @@
+-- #816 round-3 adversarial break C4: a where-helper in ONE member of a
+-- mutually-recursive SCC must not blind a SIBLING member's genuine method
+-- call (name-keyed blinding disabled the long-standing No-impl check).
+-- Rejected: No impl of W for String.
+-- C4 ATTACK: mutually-recursive top-level pair; f's where-helper is named
+-- `wob` (a genuine method name); g uses genuine method wob at String with NO
+-- impl.  If bodyLocalNamesRef is only reset per-SCC, f's push is stale when
+-- g's body is inferred -> obligation skipped -> check green (break).
+data Dog = Dog
+
+interface W a where
+  wob : a -> Int
+
+impl W Dog where
+  wob d = 1
+
+f : Int -> Int
+f x = if x == 0 then 0 else g (x - 1)
+  where
+    wob n = n + 100
+
+g : Int -> Int
+g y = wob "str" + f y
+
+main = println (g 0)

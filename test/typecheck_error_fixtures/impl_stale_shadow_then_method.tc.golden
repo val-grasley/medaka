@@ -1,0 +1,1 @@
+TYPE ERROR: Impl of 'sel' for interface 'F' requires 'Q' on the method's quantified type variable 'b', but the declared type 'a -> b -> Bool' does not: every caller instantiates 'b' freely (including to a type with no 'Q' impl), so the body may not assume it. Add the constraint to the method's signature (`Q b => …`), or make the body parametric in 'b'.

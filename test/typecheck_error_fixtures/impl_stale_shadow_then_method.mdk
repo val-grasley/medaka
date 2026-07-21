@@ -1,0 +1,28 @@
+-- #816 round-3 adversarial break C1: a local shadow bound in a NESTED scope
+-- that has ENDED must not blind a later GENUINE method occurrence in the
+-- same body — the body-local table is keyed by BINDING IDENTITY (scheme
+-- ids), not bare name.  Rejected via the survivor constraint check.
+-- C1 ATTACK: local `q` bound in a NESTED SCOPE THAT ENDS, then the GENUINE
+-- method q used after — does the stale bodyLocalNamesRef entry skip the
+-- obligation (under-checking)?
+data Dog = Dog
+
+interface Q a where
+  q : a -> a -> Bool
+
+impl Q Dog where
+  q x y = True
+
+data Cat = Cat
+
+interface F a where
+  sel : a -> b -> Bool
+
+impl F Cat where
+  sel c x =
+    let early =
+      let q = (y => True)
+      q 5
+    q x x
+
+main = println (sel Cat "s")
