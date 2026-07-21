@@ -1,0 +1,25 @@
+issue: 797
+what: a top-level function declared with a free (return-position) effect var, `f : Int
+what: -> <e> String`, has `<e>` COLLAPSE to the closed empty row `<>` when its declared
+what: type is built — `fromAstType` (compiler/types/typecheck.mdk) resolves the tail var
+what: against a hardcoded EMPTY effect table, so `<e>` reads as "pure". A legitimate
+what: effectful body (`putStr`) is then spuriously REJECTED with a misleading
+what: T-EFFECT-LEAK that claims `f` was "declared with <>" — it wasn't; it was declared
+what: with an open `<e>`. The impl-method half of this same defect was fixed by #782;
+what: this is the TOP-LEVEL function path, which #782 does not reach.
+cmd: check-json main.mdk
+exit: 1
+diag-code: T-EFFECT-LEAK 3:2-3:6
+control: check-json control.mdk
+why-control: control.mdk is the SAME function shape with the effect row written
+why-control: CONCRETELY (`<Stdout>`) instead of as a free var (`<e>`) — same body, same
+why-control: call site. It must check clean (exit 0, no diagnostics), proving ordinary
+why-control: effect-row declaration and enforcement work fine. That isolates the bug to
+why-control: the FREE EFFECT VAR specifically collapsing to `<>`, not to effect checking
+why-control: in general.
+why-note: This does NOT assert whether the FIX should be "accept `<e>` as open" or
+why-note: "reject as under-determined" (the issue leaves that as a #784-Option-A
+why-note: question for whoever picks it up) — either resolution changes this exact
+why-note: (exit 1, T-EFFECT-LEAK, "declared with <>") observation and drains this row.
+why-note: It pins only the CURRENT wrong behavior: a misleading diagnostic that reads a
+why-note: declared-open effect row as closed.
