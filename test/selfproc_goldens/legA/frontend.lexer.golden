@@ -30,17 +30,25 @@ commentCol : Comment -> Int
 commentLine : Comment -> Int
 commentText : Comment -> String
 commonEscDecode : Char -> Option String
+computeMinIndent : String -> Int
+concatAll : List String -> String
 consumeNl : Array Char -> Int -> Int -> Int -> (Int, Int)
 continuationTok : Array Char -> Int -> Int -> Token
+dedentGroupSegs : Int -> List String -> List String
+dedentRestSegs : Int -> Bool -> List String -> List String
+dedentTripleGroup : String -> Int -> Int -> List String -> List RawTok -> List RawTok -> List RawTok
+dedentTripleInterp : List RawTok -> List RawTok
 describeToken : Token -> String
 digitVal : Char -> Int
 digitsEnd : Array Char -> Int -> Int -> Int
 dotContinuesAccess : Array Char -> Int -> Int -> Bool
 dropCharsToStr : Array Char -> Int -> Int -> String
 dropFrame : List Int -> List Int
+dropTripleInterpMark : String -> String
 elseFilter : List (Token, Int) -> List (Token, Int)
 elseFilterPairs : List (Token, Int, Int) -> List (Token, Int, Int)
 emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List RawTok
+endsWithNl : String -> Bool
 escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 expEnd : Array Char -> Int -> Int -> Int
 firstNl : Bool -> String -> Bool
@@ -52,6 +60,7 @@ flushCloseGo : Token -> Int -> List RawTok -> List Int -> Int -> List Int -> Boo
 flushClosePairs : Token -> Int -> Int -> List RawTok -> List Int -> List Int -> Bool -> List (Token, Int, Int)
 flushClosePairsGo : Token -> Int -> Int -> List RawTok -> List Int -> Int -> List Int -> Bool -> List (Token, Int, Int)
 handleNewline : Array Char -> Int -> Int -> Int -> Int -> List RawTok
+hasTripleInterpMark : String -> Bool
 identEnd : Array Char -> Int -> Int -> Int
 identRunStart : Array Char -> Int -> Int
 identStartLower : Array Char -> Int -> Bool
@@ -146,13 +155,17 @@ sigRadixDigits : Array Char -> Int -> Int -> List Char
 singleOp : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 skipBlockComment : Array Char -> Int -> Int -> Int -> Int
 skipLineComment : Array Char -> Int -> Int -> Int
+splitInterpGroup : List RawTok -> (List String, List RawTok, List RawTok)
 splitLines : Array Char -> Int -> Int -> String -> List String
+startsWithNl : String -> Bool
 stripComments : List RawTok -> List RawTok
+stripFirstAware : Int -> Bool -> List String -> List String
 stripIndent : String -> String
 stripIndentCs : String -> Array Char -> Int -> String
 stripLeadingUs : Array Char -> Int -> Int -> String
 stripLine : Int -> String -> String
 stripLines : Int -> List String -> List String
+substituteOwn : List String -> List RawTok -> List RawTok
 substr : Array Char -> Int -> Int -> String
 substrNoUs : Array Char -> Int -> Int -> String
 tokenToString : Token -> String
@@ -160,6 +173,7 @@ tokenize : String -> List Token
 tokenizeWithLines : String -> (List Token, List Int)
 tokenizeWithOffsetPairs : String -> (List Token, List (Int, Int))
 tokenizeWithOffsets : String -> (List Token, List Int)
+tripleInterpMark : String
 uHexEnd : Array Char -> Int -> Int -> Int
 uniEscChar : Array Char -> Int -> Int -> Option Char
 uniEscCode : Array Char -> Int -> Int -> Option Int

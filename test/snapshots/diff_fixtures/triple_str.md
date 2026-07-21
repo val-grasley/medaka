@@ -37,9 +37,9 @@ NEWLINE
 IDENT "interp"
 IDENT "name"
 EQUAL
-INTERP_OPEN "\n  Hello, "
+INTERP_OPEN "Hello, "
 IDENT "name"
-INTERP_END "!\n  Bye.\n  "
+INTERP_END "!\nBye.\n"
 NEWLINE
 IDENT "main"
 COLON
@@ -70,12 +70,12 @@ EOF
 # DESUGAR
 (DFunDef false "inline" () (ELit (LString "one \"quoted\" line")))
 (DFunDef false "block" () (ELit (LString "first\n  indented\nlast\n")))
-(DFunDef false "interp" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "\n  Hello, ")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "!\n  Bye.\n  "))))
+(DFunDef false "interp" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "Hello, ")) (EApp (EVar "display") (EVar "name"))) (ELit (LString "!\nBye.\n"))))
 (DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
 (DFunDef false "main" () (EBlock (DoExpr (EApp (EVar "println") (EVar "inline"))) (DoExpr (EApp (EVar "println") (EVar "block"))) (DoExpr (EApp (EVar "println") (EApp (EVar "interp") (ELit (LString "Medaka")))))))
 # MARK
 (DFunDef false "inline" () (ELit (LString "one \"quoted\" line")))
 (DFunDef false "block" () (ELit (LString "first\n  indented\nlast\n")))
-(DFunDef false "interp" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "\n  Hello, ")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "!\n  Bye.\n  "))))
+(DFunDef false "interp" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "Hello, ")) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString "!\nBye.\n"))))
 (DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
 (DFunDef false "main" () (EBlock (DoExpr (EApp (EDictApp "println") (EVar "inline"))) (DoExpr (EApp (EDictApp "println") (EVar "block"))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "interp") (ELit (LString "Medaka")))))))

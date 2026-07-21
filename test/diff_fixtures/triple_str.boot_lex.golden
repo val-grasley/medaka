@@ -10,9 +10,9 @@ NEWLINE
 IDENT "interp"
 IDENT "name"
 EQUAL
-INTERP_OPEN "\n  Hello, "
+INTERP_OPEN "Hello, "
 IDENT "name"
-INTERP_END "!\n  Bye.\n  "
+INTERP_END "!\nBye.\n"
 NEWLINE
 IDENT "main"
 COLON
