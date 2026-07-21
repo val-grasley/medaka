@@ -1,0 +1,33 @@
+issue: 804
+what: an ABSTRACTLY-exported (`export data`, constructor PRIVATE) row-kinded type,
+what: imported TYPE-ONLY into another module and used in an interface method with the
+what: argument-carried effect-var shape (`speak : s -> Asy e a -> <e> a`), is spuriously
+what: rejected with T-EFFECT-UNDETERMINED — as if `<e>` appeared only in RETURN position
+what: with no argument pinning it. The #784 well-formedness check
+what: (`checkUndeterminedRetEffVars`) reads argument row-ctor param-kinds from
+what: `dataParamKindsRef`, but an abstractly-exported type's param-kinds don't propagate
+what: to the importing module's kind table, so the check can't confirm `e` sits at a
+what: row-kinded position in `Asy e a` and conservatively rejects. The `public export`
+what: equivalent (constructor visible) accepts the identical interface declaration.
+cmd: check-json main.mdk
+exit: 1
+diag-code: T-EFFECT-UNDETERMINED 2:15-2:18
+control: check-json control.mdk
+why-fixture: THIS IS A MULTI-MODULE PIN. main.mdk imports `Asy` type-only from the
+why-fixture: sibling `dat.mdk` (`export data Asy e a = Mk (Unit -> <e> a)`) in the SAME
+why-fixture: fixture directory — `medaka check main.mdk` resolves same-directory sibling
+why-fixture: imports without a medaka.toml, so a single `cmd:` line drives the real
+why-fixture: cross-module repro; datpub.mdk/control.mdk form the other half of the pair
+why-fixture: and are not loaded by the main.mdk run (confirmed: `check --json main.mdk`'s
+why-fixture: `files` array lists only dat.mdk + main.mdk).
+why-control: control.mdk is BYTE-IDENTICAL to main.mdk except it imports `Asy` from
+why-control: `datpub.mdk`, where the SAME type is declared `public export` (constructor
+why-control: visible) instead of abstractly `export`ed. It must check clean (exit 0, no
+why-control: diagnostics), proving the effect-determinacy check and cross-module `Asy`
+why-control: import both work in general. That isolates the observation to the
+why-control: ABSTRACT-EXPORT case specifically — the one difference between the two
+why-control: pairs is ctor visibility, not the row-kinded shape or the interface method.
+why-note: S3, not a blocker — a `public export` workaround exists (see control.mdk) and
+why-note: the rejection is conservative (sound), not silently wrong. Fix direction per
+why-note: the issue: propagate a row-kinded type's PARAM-KINDS across module boundaries
+why-note: even when its constructors stay private.

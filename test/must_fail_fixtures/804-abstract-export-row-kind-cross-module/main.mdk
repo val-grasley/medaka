@@ -1,0 +1,4 @@
+import dat.{Asy}
+interface Speak s where
+  speak : s -> Asy e a -> <e> a
+main = println "hi"
