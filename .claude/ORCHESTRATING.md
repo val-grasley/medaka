@@ -951,3 +951,24 @@ Build/seed mechanics live in `AGENTS.md`; what is orchestrator-specific:
 - **A new gap in a tool's native compile** (a tool pulled into the native graph for the first time) is the
   recurring shape: census it gap-tolerantly, then close each gap principled. `compiler/EMITTER-GAPS.md` is
   the gap ledger.
+
+## 2026-07-21 — #814/#816 W3 arc (four adversarial rounds; three merged PRs)
+
+- **A CI watcher parsing `gh pr checks` TEXT is blind to shard failures** — awk field-splitting
+  on names containing spaces ("gates (tools)") silently dropped two RED shards and printed
+  CI-DONE; the truth needed `gh pr checks N --json name,bucket` + jq (alarm on any
+  `bucket=="fail"`, terminal on none pending). Re-derive: compare both forms on any run with a
+  failed shard.
+- **fmt BEFORE capture/bless, always.** A `fmt --write` after oracle builds / snapshot blessing
+  re-stamps the source mtime: oracles read as stale (FORCE rebuild) and the snapshot SOURCE
+  section moves (re-bless). fmt itself is no-op-clean on formatted files (verified: mtime
+  preserved) — the hazard is purely ordering. Cost two full rebuild cycles this session.
+- **The adversarial-review gate earned its keep AGAIN**: rounds 1–3 each found real
+  check-green breaks (indirect obligation channels, the cross-module default seam, two wrong
+  shadow-discriminator designs); round 4 was the first clean round. Same 4-round shape as
+  #803. The structural cause is now filed (#837 binding identity, #838 unified obligations,
+  #840 two-mode forks) — check those before designing the next soundness pass.
+- **must_fail CONTROL-BROKE can be exactly backwards** (#831): the #814 pin's control encoded
+  the issue's contested design premise, so "the ENVIRONMENT moved, not the bug" was wrong —
+  the fix rejecting the control WAS the fix working. Verify which side moved before draining
+  or reverting; never close/keep an issue on that message alone.

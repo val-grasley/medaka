@@ -1,0 +1,11 @@
+data Dog = Dog
+
+wrap : (Unit -> String) -> Int -> (Unit -> String, Int)
+wrap f n = (f, n)
+
+pair : (Unit -> String, Int)
+pair = wrap (u =>
+  let s = "woof"
+  s) 1
+
+main = putStrLn ((fst pair) ())
