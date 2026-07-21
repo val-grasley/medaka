@@ -1,0 +1,6 @@
+data Bar = Bar
+interface Foo a where
+  foo : a -> String
+impl Foo (List a) where
+  foo _ = debug Bar
+main = println (foo ([1] : List Int))

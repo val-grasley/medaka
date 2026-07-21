@@ -1,0 +1,29 @@
+issue: 814
+what: an impl instantiates a polymorphic INTERFACE-METHOD return type (`mk : a -> b`) to
+what: an effectful function (`Unit -> <Stdout> String`) and performs an intrinsic effect
+what: (`putStr`) inside it. The caller fixes `b` to a PURE type
+what: (`pureUse : Mk a => a -> (Unit -> String)`), and `check` accepts the wrapper as
+what: pure with ZERO diagnostics (exit 0) — the printed scheme even reads
+what: `pureUse : Mk a => a -> Unit -> String`, no effect row anywhere. `medaka run`
+what: then performs IO through what the checker believes is a pure value: it prints
+what: "[minimal] woof". This is a silent soundness hole, not a crash — a caller who
+what: trusts the checked-pure signature has no way to know the returned function does
+what: IO. Needs a variance-aware structural walk of the (expected, actual) type pair
+what: through function/tuple/data-arg positions, which the checker does not do today.
+cmd: check main.mdk
+exit: 0
+stdout-line: pureUse : Mk a => a -> Unit -> String
+control: check control.mdk
+why-control: control.mdk is the SAME shape (same interface, same polymorphic return `b`,
+why-control: same `pureUse` wrapper fixing `b` to a pure `Unit -> String`) except the
+why-control: impl body performs NO effect at all — a genuinely pure `mk`. It must check
+why-control: clean at exit 0 with the identical printed scheme, proving the polymorphic
+why-control: -return dispatch and instantiation machinery themselves are fine. That
+why-control: isolates the bug to the LAUNDERING specifically: an effect hidden inside the
+why-control: value instantiated at `b`, not to interface methods with polymorphic
+why-control: returns in general.
+why-note: This pin asserts the CHECK-TIME half only (exit 0, no diagnostics, and the
+why-note: scheme itself reads pure) — the sharpest, narrowest observable of the S0: the
+why-note: checker's own output claims purity. A fix must make `check` reject this
+why-note: program (or annotate the effect honestly), which flips this row's exit to
+why-note: nonzero or changes the printed scheme, and drains it.

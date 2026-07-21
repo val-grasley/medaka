@@ -1,0 +1,21 @@
+issue: 807
+what: a block-level `let rec f = x => …` binding — RHS a BARE LAMBDA — is wrongly
+what: REJECTED as a "non-function value let rec" (`T-NONREC-VALUE-LET`). The parser
+what: wraps the RHS in `ELoc`, and `isSyntacticLambda`'s shape check doesn't see
+what: through that wrapper, so a genuine `ELam` under `ELoc` reads as "not a lambda".
+what: The equivalent multi-clause form `let rec f x = x + 1` works fine — only the
+what: lambda-RHS form is over-rejected. Also reproduces at TOP level
+what: (`let rec f = x => x + 1` as a top-level decl), same root cause.
+cmd: check-json main.mdk
+exit: 1
+diag-code: T-NONREC-VALUE-LET 1:16-1:24
+control: check-json control.mdk
+why-control: control.mdk is byte-for-byte the same program with the ONLY difference being
+why-control: the multi-clause form (`let rec f x = x + 1`) instead of the lambda-RHS form
+why-control: (`let rec f = x => x + 1`) — same recursive binding, same body, same call
+why-control: site, same result (42). It must check AND run clean, isolating the bug to
+why-control: the LAMBDA-RHS SHAPE specifically, not to `let rec` or recursion in general.
+why-note: the TOP-LEVEL variant (`let rec f = x => x + 1` as a top-level decl, not
+why-note: inside `main`) also reproduces with the same code, at range 0:0-0:0 — not
+why-note: separately pinned (same root cause, one fixture per issue); the block-level
+why-note: form above is the sharper, better-located repro.

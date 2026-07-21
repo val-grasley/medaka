@@ -1,0 +1,27 @@
+issue: 792
+what: a PARAMETRIC impl (`impl Foo (List a)`, head not ground) whose method body needs a
+what: GROUND instance that is missing and not named in any `requires` (`debug Bar`,
+what: with `Bar` deriving nothing) is ACCEPTED by `check` (exit 0, no diagnostics) but
+what: REJECTED by `build`/`run` ("no impl of method 'debug' for type 'Bar'"). #781/#787
+what: window the obligation channel across parametric-body inference so a parametric
+what: body's ground TYPE-MISMATCH obligations are deferred to build and `check` accepts
+what: — this is the same deferral, but for a ground MISSING-INSTANCE obligation instead
+what: of a mismatch, which #781's fix does not reach. This breaks the
+what: `run_check_agreement` invariant: `check` is strictly more permissive than `build`.
+cmd: check main.mdk
+exit: 0
+control: check control.mdk
+why-control: control.mdk is the SAME parametric-impl shape (same interface, same
+why-control: parametric `impl Foo (List a)` head, same `debug Bar` call in the method
+why-control: body) except `Bar` derives `Debug`, so the instance genuinely exists. It
+why-control: must check clean (exit 0), proving parametric-impl dispatch and the `Debug`
+why-control: derivation machinery both work. That isolates the observation to the
+why-control: MISSING-INSTANCE case specifically, not to parametric impls in general.
+why-note: this pin asserts only the `check`-accepts half (per the issue's own scoping —
+why-note: `check`==exit 0 is the defect; `build` already correctly rejects, so build
+why-note: failing is NOT itself surprising and isn't what's pinned). Independently
+why-note: confirmed by hand outside this fixture: `medaka build main.mdk` on the same
+why-note: source exits 1 with "runtime error [E-PANIC]: no impl of method 'debug' for
+why-note: type 'Bar'" — the check/build disagreement this issue names. A fix that makes
+why-note: `check` also reject this program (surfacing the obligation at check time, the
+why-note: issue's suggested remedy) flips this row's exit to nonzero and drains it.
