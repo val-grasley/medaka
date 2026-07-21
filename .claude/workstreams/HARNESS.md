@@ -61,3 +61,23 @@ git checkout $BASE -- <file>      # a revert that means what it says
 ```
 `git stash push -- <file>` is NOT a substitute — it silently no-ops with "No local changes to
 save" once the change is already committed.
+
+## H-gh: gh CLI write-path workarounds on this box (#835)
+
+`gh` here fails PR/issue **edits** against this repo with `GraphQL: Projects (classic) is
+being deprecated … (repository.pullRequest.projectCards)` — and the trap is that
+`gh pr edit N --body-file f` / `gh issue edit` exit **without applying the change**
+(verified by read-back, twice, 2026-07-21; `gh --version` 2.46.0 (Debian)). Working path is REST:
+
+```sh
+gh api repos/MedakaLang/medaka/pulls/816  -X PATCH -F body=@file   # PRs
+gh api repos/MedakaLang/medaka/issues/820 -X PATCH -F body=@file   # issues
+```
+
+then READ BACK (`gh pr view N --json body | grep <sentinel>`) — never trust the exit
+status (this is the general gh write-path rule; the Projects-classic error is one more
+cause). Also: backticks inside a DOUBLE-quoted `--title`/`--body` are shell command
+substitution — a title containing `` `gh pr edit` `` executed it mid-flight this session;
+use single-quoted heredocs for bodies and plain text for titles. Re-check whether a gh
+upgrade fixed the GraphQL path before propagating this further; delete this block when it
+has.

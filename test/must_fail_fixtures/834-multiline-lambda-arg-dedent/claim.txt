@@ -1,0 +1,20 @@
+issue: 834
+what: a multi-line lambda written directly as a parenthesized CALL argument
+what: (`wrap (u => <indented block>) 1`) fails to parse — here "unexpected `(`",
+what: in other positions "expected a dedent" pointing at the ENCLOSING decl.
+what: The hoisted-to-a-named-binding control is accepted, so the construct's
+what: SEMANTICS are fine; the open question (see issue) is the LAYOUT-SEMANTICS
+what: verdict: either the spec licenses this shape (parser bug — fix), or it
+what: does not (keep the reject but make the diagnostic name the actual
+what: problem).  This pin drains on EITHER outcome: the program parses, or the
+what: diagnostic changes away from the bare parse error.
+cmd: check main.mdk
+exit: 1
+control: check control.mdk
+why-control: control.mdk is the same program with the lambda hoisted to a named
+why-control: top-level binding (`mk`) — the documented workaround.  It must
+why-control: check clean at exit 0, proving multi-line lambda BODIES, the tuple
+why-control: construction, and the call all typecheck; the failure is isolated
+why-control: to the lambda's placement as a parenthesized argument.
+why-note: exit-only pin (no stdout-line): the current message wording is part of
+why-note: what the fix may change, so pinning it would under-drain outcome (b).
