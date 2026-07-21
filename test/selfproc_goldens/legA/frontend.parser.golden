@@ -409,6 +409,7 @@ parseVariant : Parser Variant
 parseWhereBinding : Parser (String, List Pat, Expr)
 parseWhereBindings : Parser (List (String, List Pat, Expr))
 parseWithPositions : String -> (List Decl, Positions)
+parseWithPositionsLocated : String -> (List Decl, Positions)
 parseWithPositionsOpt : String -> Option (List Decl, Positions)
 patAppFor : Token -> Parser Pat
 patConsTail : Pat -> Parser Pat

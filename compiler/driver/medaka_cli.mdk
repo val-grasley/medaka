@@ -59,6 +59,7 @@ import frontend.parser.{
   parse,
   parseLocated,
   parseWithPositions,
+  parseWithPositionsLocated,
   parseResult,
   ParseError,
   parseErrorLine,
@@ -1977,7 +1978,7 @@ lintEntryOf (Some (cacheDir, stamp)) target src =
 -- reaching the tier through the parses, exactly as before #395.
 lintFileFresh : String -> String -> String -> Bool -> <IO> (LintEntry, Positions, List Decl)
 lintFileFresh target src hash wantOccs =
-  let (decls, pos) = parseWithPositions src
+  let (decls, pos) = parseWithPositionsLocated src
   (
     LintEntry {
       path = target,

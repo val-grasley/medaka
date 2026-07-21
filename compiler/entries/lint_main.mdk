@@ -7,7 +7,7 @@
 -- per line as `<severity>: [<rule>] <message>` (location-stripped; the golden
 -- harness sorts).  Mirror of compiler/entries/exhaust_main.mdk.
 
-import frontend.parser.{parseWithPositions}
+import frontend.parser.{parseWithPositionsLocated}
 import tools.lint.{lintToLines}
 
 main = match args ()
@@ -17,6 +17,10 @@ main = match args ()
 withTarget : String -> <IO> Unit
 withTarget targetPath = match readFile targetPath
   Ok targetSrc =>
-    let (decls, pos) = parseWithPositions targetSrc
+    -- `parseWithPositionsLocated` (#649): findings print location-STRIPPED
+    -- here, but inline `-- lint-disable-line`/`-next-line` suppression still
+    -- keys off each Finding's real location, so a nested exprRuleFindings hit
+    -- needs its own span rather than the enclosing decl's to suppress right.
+    let (decls, pos) = parseWithPositionsLocated targetSrc
     putStr (lintToLines targetSrc targetPath pos decls)
   Err msg => ePutStrLn msg
