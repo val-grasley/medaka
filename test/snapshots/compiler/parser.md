@@ -1,5 +1,5 @@
 # META
-source_lines=4288
+source_lines=4293
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -1428,21 +1428,26 @@ armGuardFor TIf = do
 armGuardFor _ = pure []
 
 -- ── Patterns ────────────────────────────────────────────────────────────
--- top level (pat_as): an as-pattern `x@p`, else a cons-pattern.  AS_AT is the
+-- A full pattern is a cons-pattern; the as-pattern `x@p` is a cons HEAD, so `@`
+-- binds tighter than `::` (see parsePatCons/parseAsPat below).  AS_AT is the
 -- lexer's `@`-adjacent-to-ident token; if it doesn't follow, orElse backtracks.
 parsePat : Parser Pat
-parsePat = orElse parseAsPat parsePatCons
+parsePat = parsePatCons
 
+-- `@` binds TIGHTER than `::`: `t@(A _)::rest` is `PCons (PAs t (A _)) rest`,
+-- not `PAs t (PCons (A _) rest)` (#812).  So the as-pattern is parsed as a cons
+-- HEAD (below), and its sub-pattern is a `parsePatApp` — an application/atom that
+-- does NOT swallow a following `::` tail.
 parseAsPat : Parser Pat
 parseAsPat = do
   x <- identNameP
   expectTok TAsAt
-  sub <- parsePatCons
+  sub <- parsePatApp
   pure (PAs x sub)
 
 parsePatCons : Parser Pat
 parsePatCons = do
-  p <- parsePatApp
+  p <- orElse parseAsPat parsePatApp
   orElse (patConsTail p) (pure p)
 
 patConsTail : Pat -> Parser Pat
@@ -4790,11 +4795,11 @@ parseResultWith src tokList offList =
 (DFunDef false "armGuardFor" ((PCon "TIf")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma"))))))
 (DFunDef false "armGuardFor" (PWild) (EApp (EVar "pure") (EListLit)))
 (DTypeSig false "parsePat" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parsePat" () (EApp (EApp (EVar "orElse") (EVar "parseAsPat")) (EVar "parsePatCons")))
+(DFunDef false "parsePat" () (EVar "parsePatCons"))
 (DTypeSig false "parseAsPat" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parseAsPat" () (EApp (EApp (EVar "andThen") (EVar "identNameP")) (ELam ((PVar "x")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TAsAt"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parsePatCons")) (ELam ((PVar "sub")) (EApp (EVar "pure") (EApp (EApp (EVar "PAs") (EVar "x")) (EVar "sub"))))))))))
+(DFunDef false "parseAsPat" () (EApp (EApp (EVar "andThen") (EVar "identNameP")) (ELam ((PVar "x")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TAsAt"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parsePatApp")) (ELam ((PVar "sub")) (EApp (EVar "pure") (EApp (EApp (EVar "PAs") (EVar "x")) (EVar "sub"))))))))))
 (DTypeSig false "parsePatCons" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parsePatCons" () (EApp (EApp (EVar "andThen") (EVar "parsePatApp")) (ELam ((PVar "p")) (EApp (EApp (EVar "orElse") (EApp (EVar "patConsTail") (EVar "p"))) (EApp (EVar "pure") (EVar "p"))))))
+(DFunDef false "parsePatCons" () (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "orElse") (EVar "parseAsPat")) (EVar "parsePatApp"))) (ELam ((PVar "p")) (EApp (EApp (EVar "orElse") (EApp (EVar "patConsTail") (EVar "p"))) (EApp (EVar "pure") (EVar "p"))))))
 (DTypeSig false "patConsTail" (TyFun (TyCon "Pat") (TyApp (TyCon "Parser") (TyCon "Pat"))))
 (DFunDef false "patConsTail" ((PVar "p")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TCons"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parsePatCons")) (ELam ((PVar "q")) (EApp (EVar "pure") (EApp (EApp (EVar "PCons") (EVar "p")) (EVar "q"))))))))
 (DTypeSig false "parsePatApp" (TyApp (TyCon "Parser") (TyCon "Pat")))
@@ -6157,11 +6162,11 @@ parseResultWith src tokList offList =
 (DFunDef false "armGuardFor" ((PCon "TIf")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma"))))))
 (DFunDef false "armGuardFor" (PWild) (EApp (EMethodRef "pure") (EListLit)))
 (DTypeSig false "parsePat" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parsePat" () (EApp (EApp (EVar "orElse#shadow") (EVar "parseAsPat")) (EVar "parsePatCons")))
+(DFunDef false "parsePat" () (EVar "parsePatCons"))
 (DTypeSig false "parseAsPat" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parseAsPat" () (EApp (EApp (EMethodRef "andThen") (EVar "identNameP")) (ELam ((PVar "x")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TAsAt"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parsePatCons")) (ELam ((PVar "sub")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "PAs") (EVar "x")) (EMethodRef "sub"))))))))))
+(DFunDef false "parseAsPat" () (EApp (EApp (EMethodRef "andThen") (EVar "identNameP")) (ELam ((PVar "x")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TAsAt"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parsePatApp")) (ELam ((PVar "sub")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "PAs") (EVar "x")) (EMethodRef "sub"))))))))))
 (DTypeSig false "parsePatCons" (TyApp (TyCon "Parser") (TyCon "Pat")))
-(DFunDef false "parsePatCons" () (EApp (EApp (EMethodRef "andThen") (EVar "parsePatApp")) (ELam ((PVar "p")) (EApp (EApp (EVar "orElse#shadow") (EApp (EVar "patConsTail") (EVar "p"))) (EApp (EMethodRef "pure") (EVar "p"))))))
+(DFunDef false "parsePatCons" () (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "orElse#shadow") (EVar "parseAsPat")) (EVar "parsePatApp"))) (ELam ((PVar "p")) (EApp (EApp (EVar "orElse#shadow") (EApp (EVar "patConsTail") (EVar "p"))) (EApp (EMethodRef "pure") (EVar "p"))))))
 (DTypeSig false "patConsTail" (TyFun (TyCon "Pat") (TyApp (TyCon "Parser") (TyCon "Pat"))))
 (DFunDef false "patConsTail" ((PVar "p")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TCons"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parsePatCons")) (ELam ((PVar "q")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "PCons") (EVar "p")) (EVar "q"))))))))
 (DTypeSig false "parsePatApp" (TyApp (TyCon "Parser") (TyCon "Pat")))
