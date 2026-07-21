@@ -1,0 +1,11 @@
+-- #812: an `@`-pattern binds TIGHTER than `::`.  `t@(A _)::rest` must parse as
+-- `PCons (PAs t (A _)) rest` (t bound to the HEAD element), not
+-- `PAs t (PCons (A _) rest)` (t bound to the whole list).  Covers the head
+-- position (function clause + match arm) and the tail position.
+
+headAsCons ((t@(A _))::rest) = t
+tailAsCons (x::t@(y::_)) = t
+
+matchHeadAs xs = match xs
+  (t@(A _))::rest => t
+  _ => xs

@@ -1424,21 +1424,26 @@ armGuardFor TIf = do
 armGuardFor _ = pure []
 
 -- ── Patterns ────────────────────────────────────────────────────────────
--- top level (pat_as): an as-pattern `x@p`, else a cons-pattern.  AS_AT is the
+-- A full pattern is a cons-pattern; the as-pattern `x@p` is a cons HEAD, so `@`
+-- binds tighter than `::` (see parsePatCons/parseAsPat below).  AS_AT is the
 -- lexer's `@`-adjacent-to-ident token; if it doesn't follow, orElse backtracks.
 parsePat : Parser Pat
-parsePat = orElse parseAsPat parsePatCons
+parsePat = parsePatCons
 
+-- `@` binds TIGHTER than `::`: `t@(A _)::rest` is `PCons (PAs t (A _)) rest`,
+-- not `PAs t (PCons (A _) rest)` (#812).  So the as-pattern is parsed as a cons
+-- HEAD (below), and its sub-pattern is a `parsePatApp` — an application/atom that
+-- does NOT swallow a following `::` tail.
 parseAsPat : Parser Pat
 parseAsPat = do
   x <- identNameP
   expectTok TAsAt
-  sub <- parsePatCons
+  sub <- parsePatApp
   pure (PAs x sub)
 
 parsePatCons : Parser Pat
 parsePatCons = do
-  p <- parsePatApp
+  p <- orElse parseAsPat parsePatApp
   orElse (patConsTail p) (pure p)
 
 patConsTail : Pat -> Parser Pat
