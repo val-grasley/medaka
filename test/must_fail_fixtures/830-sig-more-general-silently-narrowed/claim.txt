@@ -1,0 +1,19 @@
+issue: 830
+what: a declared signature more general than its body is silently NARROWED with
+what: no def-site diagnostic — `f : a -> b` with body `42` checks clean and the
+what: printed scheme reads `f : a -> Int`, contradicting the declaration; callers
+what: error far from the cause (or, caller-less, the module exports a signature
+what: its value does not have).  checkSigsTooGeneral exists for exactly this and
+what: does not fire.  The interface-method analogue is a def-site reject since
+what: #816 (T-IMPL-TOO-SPECIFIC); top-level signatures deserve the same.
+cmd: check main.mdk
+exit: 0
+stdout-line: f : a -> Int
+control: check control.mdk
+why-control: control.mdk declares the HONEST narrowed signature (`a -> Int`) and
+why-control: uses it at a valid instantiation (`f "s"` — `a` free, result Int) —
+why-control: it must check clean at exit 0, proving polymorphic-arg signatures
+why-control: and Int-result unification are fine; the bug is specifically the
+why-control: TOO-GENERAL declaration accepted without a def-site error.
+why-note: A fix fires T-TYPE-TOO-GENERAL (or sigTooGeneralMsg) at the def site,
+why-note: flipping exit to nonzero and draining this row.

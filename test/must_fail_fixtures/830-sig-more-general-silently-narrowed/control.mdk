@@ -1,0 +1,4 @@
+f : a -> Int
+f x = 42
+
+main = println (f "s")
