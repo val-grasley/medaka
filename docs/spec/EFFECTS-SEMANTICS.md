@@ -430,6 +430,26 @@ below: the alternative of lower-bounding a return-only effect var by the *dispat
 impl's latent effect was rejected because it would make the effect depend on
 dispatch, violating that orthogonality.
 
+**The dual condition: argument-occurrence coverage (ENFORCED).** Option A constrains
+where a *return*-row variable must also appear; its dual constrains what an
+*argument*-position occurrence may carry. An effect variable's argument occurrences
+(a callback's row, a row-kinded argument) are rows an impl can **perform** by using
+that argument — so the method's own rows must account for them, at declaration:
+
+- **argument-only** — `use : a → (Unit →^e Unit) → Int`, where `e` appears in *no*
+  non-argument row: an impl applying the callback performs `e` with no row charging
+  it (a pure-typed wrapper silently prints; verified). Ill-formed.
+- **uncovered atoms** — `act1 : a → (Unit →^{Stdout ⊔ e} Unit) →^e Unit`: the
+  callback's concrete `Stdout` pours into a row declared bare `⟨e⟩`, which a caller
+  instantiates to `⟨ ⟩` (verified launder). Ill-formed unless **every** non-argument
+  occurrence of `e` covers (IO-expanded) the union of `e`'s argument-side atoms —
+  `⟨Stdout ⊔ e⟩` at both callback and return is fine, as is an `⟨IO ⊔ e⟩` return.
+
+Like Option A this is decided from the declared signature alone (dispatch never
+consulted). It must live at the declaration: once unification runs, the same-tail
+row arm (`⟨e⟩ ∼ ⟨Stdout ⊔ e⟩`) succeeds without recording the atom anywhere, so no
+post-hoc inspection can recover the loss.
+
 **Scope of Option A, and the impl-body bound that completes it (#803, ENFORCED).**
 Option A's side condition is a *necessary* well-formedness rule about the shape of the
 **declared signature**; on its own it does **not** bound the **impl body's** latent
@@ -530,6 +550,18 @@ Consequences, and the division of labour with the #803 bound:
 - the #803 per-arrow bound remains the *diagnostic* seam for spine positions (it names
   the offending arrow pre-unification); in the idealized semantics it is subsumed by
   rigidity — a rigid `μ` on a declared arrow cannot absorb an intrinsic atom.
+
+**Known residual (#817).** One identification is *deliberately admitted*: a method
+effect variable unifying with an **instance-head row parameter** (`impl Mappable
+(Async e)`, whose `Suspend` arm stores the callback and thereby forces the method's
+`e'` ≈ the head's `e`). It is a real laundering channel — the callback's effect is
+charged at *build* time but performed at *force* time, so a pure-typed thunk obtained
+through the container performs the deferred effect (verified; tracked as #817) — but
+the sound result row `e ⊔ e'` is inexpressible while the instance head fixes the
+container's row, so rejecting the identification would outlaw effect-polymorphic
+data's shipped functor/monad instances outright. The resolution is design-scoped and
+owned by #817; the type-variable half has **no** such exception (a method type
+variable may never alias an instance-head type variable).
 
 Two deliberate design notes. **First**, rigidity is an over-approximation in one corner:
 an atom entering a rigid `μ` at a *purely contravariant* occurrence (the impl returns a

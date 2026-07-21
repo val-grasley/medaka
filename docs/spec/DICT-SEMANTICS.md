@@ -345,7 +345,9 @@ which is checked by this same rule (it is the class-provided impl, at the head
 **rigid** meaning skolem constants: the body may not instantiate a `b ∈ b̄` to
 a constructed type, may not identify two of them, and may not identify one with
 a variable of `T̄`; a `μ ∈ μ̄` may not acquire a concrete effect atom nor be
-identified with another. `b̄ μ̄` belong to the **caller** — `var` re-instantiates
+identified with another. (One admitted exception on the effect side — a `μ`
+identified with a **row parameter of `T̄` itself** — is a known, tracked
+residual; see `EFFECTS-SEMANTICS.md` §6 "Known residual (#817)".) `b̄ μ̄` belong to the **caller** — `var` re-instantiates
 them freshly at every use site — so a body that pins one inhabits a strictly
 more specific type than the scheme every call site is entitled to. Checking the
 body with *flexible* `b̄ μ̄` (unification metavariables) is unsound on both

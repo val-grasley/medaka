@@ -1,0 +1,5 @@
+-- The argument-only dual: <e> rides the callback but appears in none of the
+-- method's own rows, so an impl applying it performs <e> charged nowhere (a
+-- pure-typed wrapper prints).  Rejected by T-EFFECT-ARG-UNCOVERED.
+interface Use a where
+  use : a -> (Unit -> <e> Unit) -> Int

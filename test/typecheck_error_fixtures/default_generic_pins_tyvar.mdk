@@ -1,0 +1,8 @@
+-- #816 adversarial break 1 (the seam, single-file): the GENERIC default path
+-- is what checks a default inherited by a cross-module impl, and it must
+-- reject a pinning default even with NO impl in sight.  Rejected by
+-- T-IMPL-TOO-SPECIFIC with the "Default body of …" subject.
+interface Mk a where
+  other : a -> Int
+  mk : a -> b
+  mk d = "not-a-b"

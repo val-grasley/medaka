@@ -1,0 +1,10 @@
+import async.{Async, runAsync, liftIO}
+quiet : Int -> Int
+quiet x = x + 1
+builder : Unit -> (Unit -> Int)
+builder u =
+  let built = map quiet (liftIO (u2 => 1))
+  (u3 => runAsync built)
+main =
+  let pureThunk = builder ()
+  println (pureThunk ())

@@ -1,0 +1,12 @@
+import async.{Async, runAsync, liftIO}
+noisy : Int -> <Stdout> Int
+noisy x =
+  let _ = putStr "[async-launder] "
+  x + 1
+builder : Unit -> <Stdout> (Unit -> Int)
+builder u =
+  let built = map noisy (liftIO (u2 => 1))
+  (u3 => runAsync built)
+main =
+  let pureThunk = builder ()
+  println (pureThunk ())

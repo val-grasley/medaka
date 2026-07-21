@@ -1,0 +1,13 @@
+-- #816 adversarial break 2: the Num obligation reaches the scheme var `b`
+-- through a constrained HELPER call, riding the CALL-obligation channel the
+-- survivor check must also read.  Rejected by T-IMPL-TOO-SPECIFIC.
+hh : Num x => x -> x
+hh p = p + p
+
+interface M a where
+  meth : a -> b -> b
+
+data Dog = Dog
+
+impl M Dog where
+  meth d x = hh x

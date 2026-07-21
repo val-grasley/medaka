@@ -1,0 +1,21 @@
+issue: 818
+what: a method-level `=>` constraint on an interface method (`peer : Ord b => …`) is
+what: registered for dict routing but never recorded as an obligation, so a call
+what: site instantiating `b` to a type with NO impl (`peer Dog NoOrd NoOrd`) passes
+what: `check` with zero diagnostics.  `run` prints a wrong answer (False, from `<`
+what: on an Ord-less type); the built native binary crashes
+what: (E-NONEXHAUSTIVE-MATCH here; a variant routed through another impl body
+what: SEGFAULTS).  Constrained plain FUNCTIONS are checked (recordCallObligations);
+what: the method path records no obligation at all.
+cmd: check main.mdk
+exit: 0
+stdout-line: main : Unit
+control: check control.mdk
+why-control: control.mdk is the identical program with the constrained var
+why-control: instantiated at Int, which HAS an Ord impl — it must check clean at
+why-control: exit 0, proving method dispatch and method-level-constraint dict
+why-control: routing are intact; that isolates the bug to the MISSING OBLIGATION
+why-control: on an unsatisfiable instantiation, not to constrained methods per se.
+why-note: A fix records one call obligation per method-level constraint slot at
+why-note: the call site (mirroring recordCallObligations), flipping main.mdk's
+why-note: exit to nonzero ("No impl of Ord for NoOrd") and draining this row.

@@ -1,0 +1,20 @@
+issue: 819
+what: a parametric impl's body pins the impl-HEAD type variable (`impl Sizer (P c d)`
+what: whose body annotates the `c`-typed field as String), yet the impl still
+what: registers for the fully parametric head — a `P Int Int` receiver dispatches to
+what: it and `run` panics.  The #816 W3 rule holds METHOD-scheme vars rigid; the
+what: impl-head vars are the instance's own quantifiers, exempt there by design, so
+what: this is the missing INSTANCE-side analogue (head vars must survive every
+what: method body unconstrained, or the head must be narrowed to what the bodies
+what: support).
+cmd: check main.mdk
+exit: 0
+stdout-line: main : Unit
+control: check control.mdk
+why-control: control.mdk narrows the impl head to what the body actually supports
+why-control: (`impl Sizer (P String d)`) and calls it at a matching receiver — it
+why-control: must check clean at exit 0, proving parametric impl heads, field
+why-control: annotations, and dispatch are intact; the bug is specifically the
+why-control: UNNARROWED head paired with a body that pins its variable.
+why-note: A fix applies the C3-style survivor check to impl-head vars across each
+why-note: method body, flipping main.mdk's exit to nonzero and draining this row.

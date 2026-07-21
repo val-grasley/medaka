@@ -1,0 +1,7 @@
+-- #816 adversarial break 4: the callback carries <Stdout> on effect var <e>
+-- but the return row is bare <e> — an impl applying the callback pours the
+-- atom into a row a caller instantiates to <>.  Rejected at the interface
+-- declaration by T-EFFECT-ARG-UNCOVERED (post-unify inspection cannot see it:
+-- the same-tail row arm loses the atom).
+interface Act a where
+  act1 : a -> (Unit -> <Stdout | e> Unit) -> <e> Unit

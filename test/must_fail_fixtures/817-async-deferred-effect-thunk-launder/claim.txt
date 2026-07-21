@@ -1,0 +1,26 @@
+issue: 817
+what: Async's Mappable impl stores the map callback inside a Suspend, identifying the
+what: method's effect var with the container's row parameter (the #817 carve-out in
+what: checkImplEffVarRigidity admits this).  The callback's <Stdout> is charged at
+what: BUILD time (the map call), but performed at FORCE time (runAsync) — and the
+what: container row the force site is charged with was never made to absorb it.  So
+what: `builder` returns a thunk whose printed scheme is the PURE `Unit -> Int`, check
+what: exits 0 with zero diagnostics, and calling the pure-typed thunk prints
+what: "[async-launder]".  A caller holding only the thunk has no way to know it does
+what: IO.  Unfixable locally: the sound result row `e ⊔ e'` is inexpressible while
+what: the instance head fixes `f := Async e`; resolution is design-scoped (drop the
+what: shipped generic impls, or an Async v2 composition surface — see #817).
+cmd: check main.mdk
+exit: 0
+stdout-line: builder : Unit -> <Stdout> Unit -> Int
+control: check control.mdk
+why-control: control.mdk is the SAME deferral shape (map over a lifted Async, the
+why-control: thunk returned and forced later) with a PURE callback — no effect
+why-control: anywhere.  It must check clean at exit 0, proving Async construction,
+why-control: dispatch, and runAsync typing are themselves intact; that isolates the
+why-control: bug to the DEFERRED EFFECT specifically (an effectful callback smuggled
+why-control: past the container row), not to Async's functor machinery in general.
+why-note: This pin asserts the check-time observable: exit 0 AND the scheme's return
+why-note: segment reading pure (`Unit -> Int` after the build-site <Stdout>).  A fix
+why-note: must reject the program or type the returned thunk effectful, flipping the
+why-note: exit or the printed scheme, and drains this row.

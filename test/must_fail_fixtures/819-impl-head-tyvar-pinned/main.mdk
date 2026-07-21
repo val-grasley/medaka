@@ -1,0 +1,8 @@
+interface Sizer x where
+  size : x -> Int
+data P c d = P c d
+impl Sizer (P c d) where
+  size (P tag n) =
+    let t : String = tag
+    5
+main = println (size (P 1 2))

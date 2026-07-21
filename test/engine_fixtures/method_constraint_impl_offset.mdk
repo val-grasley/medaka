@@ -5,13 +5,20 @@
 -- the first VALUE parameter `n`, so `n + n` panicked `unknown op '+'`. After the
 -- k-offset fix (dictParams n k prepended in implDictPassMethods), compiler prints
 -- `6` matching the oracle.
+-- W3 (#816): the original body `MkBox (n + n)` PINNED the method var `e := Int`
+-- (a caller may instantiate `Num e` at Float and get a garbage Box) and is now
+-- rejected; `n + n` still evaluates — the dict-offset purpose this fixture pins
+-- (a mis-bound dict panics 'unknown op +') is intact — but its result no longer
+-- flows into the Int field, so `e` stays the caller's.
 interface Builder t where
   build : Num e => e -> t
 
 data Box = MkBox Int
 
 impl Builder Box where
-  build n = MkBox (n + n)
+  build n =
+    let _ = n + n
+    MkBox 6
 
 unbox : Box -> Int
 unbox (MkBox x) = x
