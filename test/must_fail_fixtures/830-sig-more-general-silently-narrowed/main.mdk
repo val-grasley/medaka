@@ -1,0 +1,4 @@
+f : a -> b
+f x = 42
+
+main = println 1
