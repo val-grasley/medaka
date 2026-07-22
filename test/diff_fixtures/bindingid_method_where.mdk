@@ -1,0 +1,11 @@
+interface P a where
+  p : a -> Int
+
+impl P Int where
+  p x = x
+
+foo x = p x
+  where
+    p n = n + 1
+
+main = println (p 5 + foo 7)
