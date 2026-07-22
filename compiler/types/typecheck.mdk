@@ -2759,6 +2759,7 @@ data PerRun = PerRun {
     pendingImplObligationsN : Ref Int,
     numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route)),
     poisonedVars : Ref (List Int),
+    deferrableVarIds : Ref (List Int),  -- #838 I2: caller-deferrable var ids (memberIds+anchoredIds of every closed group)
     tupleCallCandidates : Ref (List (Mono, String, Option (Loc, String))),
     numlitVarLocs : Ref (List (Mono, Loc)),
     numlitUntainted : Ref (List (Mono, Loc)),
@@ -2798,7 +2799,7 @@ data PerRun = PerRun {
     currentLevel : Ref Int,
   }
 
--- Construct all 58 field-Refs fresh (each reproduces its former top-level ref's initial).
+-- Construct all 59 field-Refs fresh (each reproduces its former top-level ref's initial).
 freshPerRun : Unit -> PerRun
 freshPerRun _ = PerRun {
   tyvarCounter = Ref 0,
@@ -2826,6 +2827,7 @@ freshPerRun _ = PerRun {
   pendingImplObligationsN = Ref 0,
   numlitRefs = Ref [],
   poisonedVars = Ref [],
+  deferrableVarIds = Ref [],
   tupleCallCandidates = Ref [],
   numlitVarLocs = Ref [],
   numlitUntainted = Ref [],
@@ -7155,22 +7157,19 @@ inferRecLet env x e1 e2 =
 registerLocalScheme : String -> Scheme -> Int -> Int -> Int -> Unit
 registerLocalScheme x sch oblN0 callN0 dictN0 =
   let _ = setRef perRun.value.bodyLocalSchemesRef ((x, schemeIds sch)::perRun.value.bodyLocalSchemesRef.value)
-  -- Obligation registration is scoped to IMPL/DEFAULT bodies — the W3 channel
-  -- the round-2 alias break exploits.  Registering for every local everywhere
-  -- is the RIGHT general fix (a top-level `where` helper's orphaned constraint
-  -- is the same pre-existing S0: `f x = go x where go n = n + 1` types
-  -- `f : a -> a` and `f "abc"` panics at run), but it re-routes constraints
-  -- through the ambiguity machinery program-wide (an Ord-constrained
-  -- where-helper's use trips `Ambiguous instance` instead of deferring to the
-  -- enclosing scheme) — that generalization is tracked as its own issue and
-  -- belongs with its own blast-radius pass.
-  if perRun.value.inRigidityBodyRef.value then
-    let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
-    let callOblsDelta = callOblsWindow callN0
-    let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-    registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
-  else
-    ()
+  -- #827/#838 I2: register local-scheme obligations EVERYWHERE, not just inside
+  -- IMPL/DEFAULT bodies.  The old `inRigidityBodyRef` gate scoped this to the W3
+  -- channel because registering universally re-routed constraints through the
+  -- ambiguity machinery (an Ord-constrained where-helper's use tripped `Ambiguous
+  -- instance` instead of deferring) — a top-level `where` helper's orphaned
+  -- constraint (`f x = go x where go n = n + 1` typing `f : a -> a`, `f "abc"`
+  -- panicking at run) was the resulting S0.  I2's uniform deferral (checkUndetermined-
+  -- Obligation RULE 2, deferrableVarIds) now defers a generalizable var into the
+  -- enclosing scheme instead of rejecting, so the gate is safe to flip open.
+  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let callOblsDelta = callOblsWindow callN0
+  let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
+  registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> Mono
 inferLetSimple env pat e1 e2 =
@@ -7908,10 +7907,11 @@ processLetGroup env binds =
   let callOblsDelta = callOblsWindow callN0
   let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
   let _ = setRef perRun.value.bodyLocalSchemesRef (map (p => (fst p, schemeIds (snd p))) (groupSchemesOf genv binds) ++ perRun.value.bodyLocalSchemesRef.value)
-  let _ = if perRun.value.inRigidityBodyRef.value then
-    registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) (groupSchemesOf genv binds)
-  else
-    ()
+  -- #827/#838 I2: register EVERYWHERE (gate flipped from `inRigidityBodyRef`).  The
+  -- uniform deferral (checkUndeterminedObligation RULE 2) makes a generalizable
+  -- where/let var defer into the enclosing scheme rather than trip an ambiguity
+  -- reject, closing the orphaned-local-constraint S0 (#827).  See registerLocalScheme.
+  let _ = registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) (groupSchemesOf genv binds)
   genv
 
 -- the generalized (name, scheme) pairs of a just-closed local group
@@ -8108,7 +8108,19 @@ registerAmbiguousConstraints obls monos =
   -- outer currentLevel + 1).  anchoredIds = every unbound var that appears inside a
   -- concrete-headed dispatch mono across this group's obligations (head-pinnable).
   let anchoredIds = flatMap concreteHeadVarIds (flatMap oblDispatchMonos obls)
-  registerAmbiguousGo obls (perRun.value.currentLevel.value + 1) (flatMap monoUnboundIds monos) anchoredIds
+  let memberIds = flatMap monoUnboundIds monos
+  -- #838 I2 (DESIGN.md §2.4): the deferral/anchor context, computed here at group
+  -- close, is accumulated program-wide so the END-OF-RUN call checker can consult it.
+  -- memberIds = this group's generalizable vars (in some member's TYPE ⇒ forwarded to
+  -- callers); anchoredIds = concrete-head-pinned vars.  Both are `deferredToCaller`
+  -- (rule 2): an obligation on such a var belongs to the enclosing scheme and is
+  -- discharged by a further-out caller, NOT ambiguous.  A var that escapes its group
+  -- in NEITHER set is the genuinely-ambiguous case rule 3 still rejects.  Var ids are
+  -- globally unique, so a program-wide union is equivalent to the per-group triple the
+  -- design's per-window checker would pass — see registerDispatchMonos's filter, whose
+  -- escaped-unanchored test is exactly the complement of membership here.
+  let _ = setRef perRun.value.deferrableVarIds (memberIds ++ anchoredIds ++ perRun.value.deferrableVarIds.value)
+  registerAmbiguousGo obls (perRun.value.currentLevel.value + 1) memberIds anchoredIds
 
 -- the dispatch monos this obligation discriminates on (empty for Num, whose
 -- ambiguity is handled by literal defaulting).
@@ -12630,9 +12642,21 @@ checkUndeterminedObligations univ iface (a::rest) loc =
 -- path (checkModuleFullImpl) and the emit/eval path, so `check` rejects too.
 checkUndeterminedObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
 checkUndeterminedObligation univ iface occ loc
-  | iface == "Num" = ()
-  | isSome (activeDictVarOf occ) = ()
+  | iface == "Num" = ()                                              -- RULE 4a: Num → literal defaulting, never ambiguity
+  | isSome (activeDictVarOf occ) = ()                                -- forwarded enclosing-dict slot (fold-in)
   | anyIn (monoUnboundIds occ) perRun.value.poisonedVars.value = ()  -- Chunk A: primary mismatch already explained this var
+  -- RULE 2 (#838 I2, DESIGN.md §2.4): every free var of this predicate belongs to some
+  -- enclosing scheme (a member/anchored id of a closed group, `deferrableVarIds`) ⇒ it
+  -- is `deferredToCaller` — the constraint is forwarded and re-checked at each concrete
+  -- use, so DEFER here.  This is the escaped-unanchored test lifted out of
+  -- registerOneAmbiguous and made a checker rule; it is what checkOneImplObligation does
+  -- unconditionally on a non-ground arg, now shared by the call channel.  Without it a
+  -- where-helper's re-instantiated `Ord a` (once #827's registration gate is flipped)
+  -- would trip the rule-3 ambiguity reject instead of deferring into the enclosing
+  -- scheme (`guard_gap_where.mdk`, #827).
+  | isNonEmptyL (monoUnboundIds occ) && allList (i => containsI i perRun.value.deferrableVarIds.value) (monoUnboundIds occ) = ()
+  -- RULE 3: the var escaped its group anchored to NOTHING and the iface has >= 2 impls
+  -- ⇒ genuinely ambiguous (the escaped-unanchored case registerDispatchMonos records).
   | implCountForIfaceU univ iface >= 2 =
     pushTypeErrorOnceAt "T-AMBIGUOUS-INSTANCE" loc (ambiguousImplMsg iface)
   | otherwise = ()

@@ -8,5 +8,5 @@ f x = go x
 
 main = println (f 5)
 # TYPES_USER
-f : a -> a
+f : Num a => a -> a
 main : Unit

@@ -1,6 +1,0 @@
-g : Num x => x -> x
-g v = v + 1
-
-f x = g x
-
-main = println (f 5)
