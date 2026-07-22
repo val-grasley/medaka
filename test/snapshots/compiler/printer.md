@@ -1,5 +1,5 @@
 # META
-source_lines=1833
+source_lines=1835
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted pretty printer for Medaka — a port of lib/printer.ml, producing
@@ -554,6 +554,7 @@ exprPrec : Expr -> Int
 exprPrec (ELit l) = if isNegLit l then precUnary else precAtom
 exprPrec (ENumLit n _ _ _) = if n < 0 then precUnary else precAtom
 exprPrec (EVar _) = precAtom
+exprPrec (EVarId _ _) = precAtom
 exprPrec (EMethodRef _) = precAtom
 exprPrec (EDictApp _) = precAtom
 exprPrec (ETuple _) = precAtom
@@ -636,6 +637,7 @@ printExprRaw (ELit l) = printLit l
 -- decimal value, unchanged from before.
 printExprRaw (ENumLit n _ _ lx) = text (if lx == "" then intToString n else lx)
 printExprRaw (EVar n) = text n
+printExprRaw (EVarId n _) = text n
 printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n
 printExprRaw (EApp f x) =
@@ -2047,6 +2049,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "exprPrec" ((PCon "ELit" (PVar "l"))) (EIf (EApp (EVar "isNegLit") (EVar "l")) (EVar "precUnary") (EVar "precAtom")))
 (DFunDef false "exprPrec" ((PCon "ENumLit" (PVar "n") PWild PWild PWild)) (EIf (EBinOp "<" (EVar "n") (ELit (LInt 0))) (EVar "precUnary") (EVar "precAtom")))
 (DFunDef false "exprPrec" ((PCon "EVar" PWild)) (EVar "precAtom"))
+(DFunDef false "exprPrec" ((PCon "EVarId" PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EMethodRef" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EDictApp" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ETuple" PWild)) (EVar "precAtom"))
@@ -2104,6 +2107,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printExprRaw" ((PCon "ELit" (PVar "l"))) (EApp (EVar "printLit") (EVar "l")))
 (DFunDef false "printExprRaw" ((PCon "ENumLit" (PVar "n") PWild PWild (PVar "lx"))) (EApp (EVar "text") (EIf (EBinOp "==" (EVar "lx") (ELit (LString ""))) (EApp (EVar "intToString") (EVar "n")) (EVar "lx"))))
 (DFunDef false "printExprRaw" ((PCon "EVar" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
+(DFunDef false "printExprRaw" ((PCon "EVarId" (PVar "n") PWild)) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EMethodRef" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EDictApp" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EApp" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precApp")) (EVar "f"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " ")))) (EApp (EApp (EVar "printExpr") (EVar "precPostfix")) (EVar "x")))))
@@ -2707,6 +2711,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "exprPrec" ((PCon "ELit" (PVar "l"))) (EIf (EApp (EVar "isNegLit") (EVar "l")) (EVar "precUnary") (EVar "precAtom")))
 (DFunDef false "exprPrec" ((PCon "ENumLit" (PVar "n") PWild PWild PWild)) (EIf (EBinOp "<" (EVar "n") (ELit (LInt 0))) (EVar "precUnary") (EVar "precAtom")))
 (DFunDef false "exprPrec" ((PCon "EVar" PWild)) (EVar "precAtom"))
+(DFunDef false "exprPrec" ((PCon "EVarId" PWild PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EMethodRef" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "EDictApp" PWild)) (EVar "precAtom"))
 (DFunDef false "exprPrec" ((PCon "ETuple" PWild)) (EVar "precAtom"))
@@ -2764,6 +2769,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printExprRaw" ((PCon "ELit" (PVar "l"))) (EApp (EVar "printLit") (EVar "l")))
 (DFunDef false "printExprRaw" ((PCon "ENumLit" (PVar "n") PWild PWild (PVar "lx"))) (EApp (EVar "text") (EIf (EBinOp "==" (EVar "lx") (ELit (LString ""))) (EApp (EVar "intToString") (EVar "n")) (EVar "lx"))))
 (DFunDef false "printExprRaw" ((PCon "EVar" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
+(DFunDef false "printExprRaw" ((PCon "EVarId" (PVar "n") PWild)) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EMethodRef" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EDictApp" (PVar "n"))) (EApp (EVar "text") (EVar "n")))
 (DFunDef false "printExprRaw" ((PCon "EApp" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "printExpr") (EVar "precApp")) (EVar "f"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " ")))) (EApp (EApp (EVar "printExpr") (EVar "precPostfix")) (EVar "x")))))

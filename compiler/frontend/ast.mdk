@@ -238,6 +238,14 @@ public export data Expr =
   -- Unconsumed today (no eval arm, no sexp/astdump clause), so every dump stays
   -- byte-identical: this node only ever lives in resolve's annotated output.
   | EVarAt String Addr
+  -- Resolve-only (#837): a variable occurrence stamped by resolve's `stampBindingIds`
+  -- pass with the monotonic id of the binding it resolves to.  0 = unidentified —
+  -- resolved to a local/pattern/where binder whose id is deferred (increment 1 mints
+  -- only TOP-LEVEL binders), or a cross-module/global/unbound name — read as the
+  -- bare-name fallback (today's behaviour).  Transparent: sexp/printer render as bare
+  -- `n`, lower/mangle strip it to `EVar n`, so all dump/IR gates stay byte-identical.
+  -- Only ever lives in the transient tree typecheck infers; never reaches emit/eval.
+  | EVarId String Int
   -- Return-position method occurrence (pure/empty/…) rewritten by the self-hosted
   -- typecheck's pre-pass: method name + a mutable route the typechecker resolves.
   -- RKey = the concrete impl's head type — or, when two impls share that head type

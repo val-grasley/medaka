@@ -1,0 +1,11 @@
+interface Sz a where
+  sz : a -> Int
+
+impl Sz Int where
+  sz x = g x
+    where
+      g n = n + 1
+
+g x = x
+
+main = println (g "hi")

@@ -393,6 +393,7 @@ domainParam : Option String -> Param
 drender : Param -> String
 drenderN : Param -> String
 driverState : Ref DriverState
+dropFirst : Int -> List a -> List a
 dropPairs : Int -> List (String, Int) -> List (String, Int)
 dropSchemesNamed : List String -> List (String, Scheme) -> List (String, Scheme)
 dropShadowedCore : List String -> List Decl -> List Decl
@@ -733,7 +734,8 @@ inferUnopE : TcEnv -> String -> Expr -> Ref Route -> Mono
 inferUserImplBodies : TcEnv -> List Decl -> List Decl -> Unit
 inferValueField : TcEnv -> Expr -> Mono
 inferVar : TcEnv -> String -> Mono
-inferVarPlain : TcEnv -> String -> Mono
+inferVarId : TcEnv -> String -> Int -> Mono
+inferVarPlainId : TcEnv -> String -> Int -> Mono
 inferVariantUpdate : TcEnv -> String -> Expr -> List FieldAssign -> Mono
 inferredConstraintIds : String -> List Int -> List Int
 inferredIfacePairs : String -> List Int -> List (String, Int)
@@ -748,7 +750,7 @@ instantiate : Scheme -> Mono
 instantiateRecord : RecordInfo -> (Mono, List (String, Mono))
 instantiateSigTracked : Ty -> (Mono, List (String, Mono))
 instantiateTracked : Scheme -> (Mono, List (Int, Mono))
-instantiateVarTracked : String -> Scheme -> Mono
+instantiateVarTrackedId : String -> Int -> Scheme -> Mono
 intercalateComma : List String -> String
 ioAliasLabels : List String
 isArithBinop : String -> Bool
@@ -799,7 +801,6 @@ loadDataUniverse : Unit -> Unit
 locEq : Loc -> Loc -> Bool
 lookupAssocI : Int -> List (Int, a) -> Option a
 lookupAssocS : String -> List (String, List String) -> Option (List String)
-lookupAssocS2 : String -> List (String, List (String, List Int)) -> Option (List (String, List Int))
 lookupAssocSL2 : String -> List (String, List Int) -> Option (List Int)
 lookupAxis : String -> List (String, Param) -> Option Param
 lookupAxisOrTop : String -> List (String, Param) -> Param -> Param
@@ -812,7 +813,9 @@ lookupQualArity : String -> String -> List ((String, String), List Int) -> Optio
 lookupQualIfaces : String -> String -> List ((String, String), List String) -> Option (List String)
 lookupRecordByMangledHead : String -> String -> Option (String, RecordInfo)
 lookupRecordByName : String -> Option RecordInfo
-lookupSchemeIface : String -> Int -> List (String, List (String, List Int)) -> Option String
+lookupSchemeIface : String -> Int -> List ((String, Int), List (String, List Int)) -> Option String
+lookupSchemeObls : String -> Int -> List ((String, Int), List (String, List Int)) -> Option (List (String, List Int))
+lookupSchemeOblsByName : String -> List ((String, Int), List (String, List Int)) -> Option (List (String, List Int))
 lookupSigTvMap : String -> List (String, Ty, List (String, Mono)) -> Option (Ty, List (String, Mono))
 lookupVar : TcEnv -> String -> Option Scheme
 lowerRowLevels : Int -> EffRow -> Unit
@@ -1081,7 +1084,7 @@ registerOneMethodDict : String -> Int -> Int -> List (Int, Mono) -> Unit
 registerPredGiven : String -> List Mono -> String -> Unit
 registerRecordInfoKeyed : String -> String -> List String -> List Field -> Unit
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> Unit
-registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+registerSchemeObligations : List (String, Int) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 registerVariants : TcEnv -> String -> List String -> List Variant -> TcEnv
 registersElementDict : String -> List String -> Bool
 rejectCyclicAliases : Unit -> Unit

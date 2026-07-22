@@ -1,0 +1,5 @@
+g x = x + 1
+
+h = g 2
+
+main = println h

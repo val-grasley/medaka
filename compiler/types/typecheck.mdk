@@ -49,6 +49,7 @@ import frontend.ast.{
 }
 import frontend.desugar.{mapProg}
 import frontend.marker.{localBoundNames}
+import frontend.resolve.{stampBindingIds}
 -- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
 -- difference from the guard-coverage pass is the ctor oracle (here it comes from
@@ -668,6 +669,9 @@ alpha lets (EBinOp op a _ _)
   | op == "++" = alphaLeftPrefix (alpha lets a)
 alpha _ (EBinOp _ _ _ _) = Unknown
 alpha lets (EVar x) = match lookupAssoc x lets
+  Some rhs => alpha lets rhs
+  None => Unknown
+alpha lets (EVarId x _) = match lookupAssoc x lets
   Some rhs => alpha lets rhs
   None => Unknown
 alpha lets (ELet _ _ (PVar x) e1 e2) = alpha ((x, e1)::lets) e2
@@ -2685,13 +2689,14 @@ data PerRun = PerRun {
     pendingDictAppsN : Ref Int,
     pendingCallObligations : Ref (List (String, List Mono, Option Loc)),
     pendingCallObligationsN : Ref Int,
-    schemeObligationsRef : Ref (List (String, List (String, List Int))),
-    methodConstraintsRef : Ref (List (String, List Int)),
-    methodConstraintPositionsRef : Ref (List (String, List Int)),
+    schemeObligationsRef : Ref (List ((String, Int), List (String, List Int))),  -- #837: keyed by (binding-name, binding-id) — the id from resolve's
+    schemeDefIdsRef : Ref (List (String, Int)),  -- stampBindingIds, so a where-helper `g`'s obligations can no longer leak
+    methodConstraintsRef : Ref (List (String, List Int)),  -- onto an unrelated top-level `g` (retires the three snapshot/restore windows).
+    methodConstraintPositionsRef : Ref (List (String, List Int)),  -- id 0 = a local/where/cross-module binder → the bare-name fallback path.
     pendingMethodDicts : Ref (List (Ref (List Route), List Mono)),
-    pendingRecDictApps : Ref (List RecDictApp),
-    currentFn : Ref String,
-    currentImplBody : Ref Bool,
+    pendingRecDictApps : Ref (List RecDictApp),  -- #837: each TOP-LEVEL value binder → its stampBindingIds id, set once per
+    currentFn : Ref String,  -- module (checkBodyImpl) right after stamping.  registerSchemeObligations
+    currentImplBody : Ref Bool,  -- reads it to tag a top-level member's obligations with its binding id.
     methodSiteFns : Ref (OrdMap (List Mono)),
     dictAppFns : Ref (OrdMap (List (List Mono))),
     promotedRef : Ref (List String),
@@ -2753,6 +2758,7 @@ freshPerRun _ = PerRun {
   pendingCallObligations = Ref [],
   pendingCallObligationsN = Ref 0,
   schemeObligationsRef = Ref [],
+  schemeDefIdsRef = Ref [],
   methodConstraintsRef = Ref [],
   methodConstraintPositionsRef = Ref [],
   pendingMethodDicts = Ref [],
@@ -3022,6 +3028,7 @@ isNonexpansive (ELoc _ e) = isNonexpansive e
 isNonexpansive (EDoOrigin _ e) = isNonexpansive e
 isNonexpansive (ELit _) = True
 isNonexpansive (EVar _) = True
+isNonexpansive (EVarId _ _) = True
 isNonexpansive (ELam _ _) = True
 isNonexpansive (EAnnot e _) = isNonexpansive e
 isNonexpansive (EHeadAnnot e _) = isNonexpansive e
@@ -3049,6 +3056,7 @@ isCtorAppHead (ELoc _ e) = isCtorAppHead e
 isCtorAppHead (EDoOrigin _ e) = isCtorAppHead e
 isCtorAppHead (EApp f _) = isCtorAppHead f
 isCtorAppHead (EVar name) = name != "Ref" && ctorHeadIsUpper name
+isCtorAppHead (EVarId name _) = name != "Ref" && ctorHeadIsUpper name
 isCtorAppHead _ = False
 
 -- True iff the first character of a name is an ASCII uppercase letter,
@@ -3197,8 +3205,14 @@ renderConstraintCtx ctx cnt ((iface, ids)::rest) =
 -- hover/completion/inlay renderers so all display surfaces show `Num a => …`.
 export ppSchemeNamed : String -> Scheme -> String
 ppSchemeNamed n s =
+  -- #837: key the obligation lookup by (name, binding-id), exactly as the check-path
+  -- reader does — recovering the id from schemeDefIdsRef (top-level binders of the
+  -- module last checked).  With the leak-guard windows retired this is what stops a
+  -- where-helper `g`'s obligation rendering on an unrelated top-level `g`; a binder
+  -- absent from schemeDefIdsRef (id 0) falls to the bare-name scan (today's path).
+  let id = fromOption 0 (lookupAssoc n perRun.value.schemeDefIdsRef.value)
   ppSchemeCon
-    (fromOption [] (lookupAssocS2 n perRun.value.schemeObligationsRef.value))
+    (fromOption [] (lookupSchemeObls n id perRun.value.schemeObligationsRef.value))
     s
 
 ppMono : Mono -> String
@@ -3821,6 +3835,9 @@ infer _ (ELit l) = litType l
 -- `fromInt` is unbound: fall back to a plain fresh var, dref stays RNone (⇒ Int).
 infer env (ENumLit n fref dref _) = inferNumLit env n fref dref
 infer env (EVar x) = inferVar env x
+-- #837: EVarId carries the resolve-minted binding id; thread it to
+-- instantiateVarTracked so obligation lookup keys by (name, id).
+infer env (EVarId x id) = inferVarId env x id
 infer env (EApp f x) = inferAppExpr env f x
 infer env (ELam pats body) = inferLam env pats body
 infer env (ELet isMut isFun pat e1 e2) = inferLet env isMut isFun pat e1 e2
@@ -5290,15 +5307,20 @@ inferInfix env op l r =
   inferApp (envAlphaLets env) (EApp inner r) (inferApp (envAlphaLets env) inner ft lt) rt
 
 inferVar : TcEnv -> String -> Mono
-inferVar env x = match maybeStandaloneValueMono x
+inferVar env x = inferVarId env x 0
+
+-- #837: the id-carrying entry point.  id 0 (every non-EVarId caller, e.g.
+-- inferInfix) is the bare-name fallback — byte-identical to the pre-#837 path.
+inferVarId : TcEnv -> String -> Int -> Mono
+inferVarId env x id = match maybeStandaloneValueMono x
   -- P0-19 d4b (S4): bare value-position definer shadow → the standalone scheme.
   Some m => m
-  None => inferVarPlain env x
+  None => inferVarPlainId env x id
 
-inferVarPlain : TcEnv -> String -> Mono
-inferVarPlain env x = match lookupVar env x
+inferVarPlainId : TcEnv -> String -> Int -> Mono
+inferVarPlainId env x id = match lookupVar env x
   Some s =>
-    let mono = instantiateVarTracked x s
+    let mono = instantiateVarTrackedId x id s
     -- a lambda/pattern-bound local shadowing a method name resolves to a
     -- MONOMORPHIC scheme; recording a method obligation for it invents a
     -- predicate on whatever the local unifies with (see inferMethodAt's
@@ -5317,8 +5339,12 @@ inferVarPlain env x = match lookupVar env x
 -- to this call's fresh mono, recorded as a call obligation checked after inference.
 -- A binding with no recorded obligations takes the plain instantiate path (identical
 -- mono).  Mirrors lib/typecheck.ml re-checking inferred_constraints at every use.
-instantiateVarTracked : String -> Scheme -> Mono
-instantiateVarTracked x s = match lookupAssocS2 x perRun.value.schemeObligationsRef.value
+-- #837: [id] is the occurrence's binding id (from EVarId).  When id != 0 the
+-- lookup keys EXACTLY (x, id) — so a top-level `g`'s use can never pick up a
+-- where-helper `g`'s obligations.  id == 0 (local/where/cross-module/global, or
+-- any non-EVarId caller) falls to the bare-name scan — byte-identical to today.
+instantiateVarTrackedId : String -> Int -> Scheme -> Mono
+instantiateVarTrackedId x id s = match lookupSchemeObls x id perRun.value.schemeObligationsRef.value
   Some obs =>
     let inst = instantiateTracked s
     let _ = recordSchemeCallObligations obs (snd inst)
@@ -5384,12 +5410,22 @@ substMonos (id::rest) subst = match lookupAssocI id subst
   Some mono => map (mono :: _) (substMonos rest subst)
   None => None
 
--- String-keyed lookup over schemeObligationsRef.
-lookupAssocS2 : String -> List (String, List (String, List Int)) -> Option (List (String, List Int))
-lookupAssocS2 _ [] = None
-lookupAssocS2 k ((k2, v)::rest)
-  | k == k2 = Some v
-  | otherwise = lookupAssocS2 k rest
+-- #837: (name, id)-keyed lookup over schemeObligationsRef.  id != 0 keys the
+-- occurrence's binding EXACTLY; id == 0 falls to the bare-name scan (today's path).
+lookupSchemeObls : String -> Int -> List ((String, Int), List (String, List Int)) -> Option (List (String, List Int))
+lookupSchemeObls x 0 table = lookupSchemeOblsByName x table
+lookupSchemeObls _ _ [] = None
+lookupSchemeObls x id (((n2, i2), v)::rest)
+  | n2 == x && i2 == id = Some v
+  | otherwise = lookupSchemeObls x id rest
+
+-- name-only scan (first match) — the bare-name fallback and the display readers
+-- (ppSchemeNamed / lookupSchemeIface) keep exactly this pre-#837 behaviour.
+lookupSchemeOblsByName : String -> List ((String, Int), List (String, List Int)) -> Option (List (String, List Int))
+lookupSchemeOblsByName _ [] = None
+lookupSchemeOblsByName x (((n2, _), v)::rest)
+  | n2 == x = Some v
+  | otherwise = lookupSchemeOblsByName x rest
 
 -- Error-path B4: if [x] is a registered interface method, record this occurrence's
 -- (post-instantiation) mono so checkImplObligations can verify a matching impl
@@ -5665,6 +5701,9 @@ shadowStandaloneHead env (EMethodAt name tagRef _ _)
   | isShadowStandalone name = Some (name, [tagRef])
   | otherwise = None
 shadowStandaloneHead env (EVar name)
+  | isShadowStandalone name = Some (name, [])
+  | otherwise = None
+shadowStandaloneHead env (EVarId name _)
   | isShadowStandalone name = Some (name, [])
   | otherwise = None
 shadowStandaloneHead _ _ = None
@@ -6351,6 +6390,9 @@ definerShadowVarHead (ELoc _ f) = definerShadowVarHead f
 definerShadowVarHead (EVar name)
   | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = Some name
   | otherwise = None
+definerShadowVarHead (EVarId name _)
+  | ifaceMethodName name && contains name perRun.value.definerShadowNamesRef.value = Some name
+  | otherwise = None
 definerShadowVarHead _ = None
 
 -- S2 (THE INVERSION): type an un-marked (check-path) definer-shadow application against
@@ -6686,6 +6728,7 @@ appSpineName (EDoOrigin _ e) = appSpineName e
 appSpineName (EAnnot e _) = appSpineName e
 appSpineName (EApp f _) = appSpineName f
 appSpineName (EVar n) = Some n
+appSpineName (EVarId n _) = Some n
 appSpineName (EVarAt n _) = Some n
 appSpineName _ = None
 
@@ -6800,6 +6843,7 @@ renderCallArg (ELit (LBool False)) = Some "False"
 renderCallArg (ELit (LString s)) = Some ("\"" ++ s ++ "\"")
 renderCallArg (ELit (LChar c)) = Some ("'" ++ c ++ "'")
 renderCallArg (EVar n) = Some n
+renderCallArg (EVarId n _) = Some n
 renderCallArg (EUnOp "-" e _) = map ("-" ++ _) (renderCallArg e)
 renderCallArg _ = None
 
@@ -7028,7 +7072,7 @@ registerLocalScheme x sch oblN0 callN0 dictN0 =
     let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
     let callOblsDelta = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
     let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-    registerSchemeObligations [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
+    registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
   else
     ()
 
@@ -7652,6 +7696,7 @@ clausesLoc ((FunClause _ rhs)::_) = exprLoc rhs
 -- not eager).
 eagerRefs : Expr -> List String
 eagerRefs (EVar x) = [x]
+eagerRefs (EVarId x _) = [x]
 eagerRefs (EApp a b) = eagerRefs a ++ eagerRefs b
 eagerRefs (ELam _ _) = []
 eagerRefs (ELet _ _ _ e1 e2) = eagerRefs e1 ++ eagerRefs e2
@@ -7768,7 +7813,7 @@ processLetGroup env binds =
   let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
   let _ = setRef perRun.value.bodyLocalSchemesRef (map (p => (fst p, schemeIds (snd p))) (groupSchemesOf genv binds) ++ perRun.value.bodyLocalSchemesRef.value)
   let _ = if perRun.value.inRigidityBodyRef.value then
-    registerSchemeObligations [] callOblsDelta (addedObls ++ forwardedObls) (groupSchemesOf genv binds)
+    registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) (groupSchemesOf genv binds)
   else
     ()
   genv
@@ -8054,6 +8099,14 @@ takeFirst n _
   | n <= 0 = []
 takeFirst _ [] = []
 takeFirst n (x::xs) = x :: takeFirst (n - 1) xs
+
+-- #837: drop the first [n] entries (the complement of takeFirst) — splits a
+-- stamped `coreProg ++ prog0` back into its core/user halves for Flat inference.
+dropFirst : Int -> List a -> List a
+dropFirst n xs
+  | n <= 0 = xs
+dropFirst _ [] = []
+dropFirst n (_::xs) = dropFirst (n - 1) xs
 
 generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> TcEnv
 generalizeGroup env [] = env
@@ -11542,6 +11595,21 @@ checkBodyImpl seed mode prog0 =
   let prog = match mode
     Flat coreProg => coreProg ++ prog0
     Module _ _ _ => prog0
+  -- #837: stamp binding ids on the program the bodies are INFERRED from.  `prog`
+  -- itself stays unstamped for the pre-inference analyses (shadows/key table/…),
+  -- which do not need ids; only the inferred bodies (defs + impl/default/prop/test)
+  -- carry EVarId, and schemeDefIdsRef feeds registerSchemeObligations the top-level
+  -- members' ids.  A single walk (top-level frame built over the whole `prog`, so a
+  -- user body referencing a prelude fn gets the prelude fn's id), then split back
+  -- into core/user slices for the two-phase Flat inference.
+  let stampRes = stampBindingIds prog
+  let progS = fst stampRes
+  let _ = setRef perRun.value.schemeDefIdsRef (snd stampRes)
+  let coreLen = match mode
+    Flat coreProg => listLen coreProg
+    Module _ _ _ => 0
+  let coreProgS = takeFirst coreLen progS
+  let prog0S = dropFirst coreLen progS
   -- the full visible universe (shadows / key table / iface-param registration /
   -- completeness / obligations): Flat = whole flattened program; Module = imported
   -- data + impl universe + this module.
@@ -11689,7 +11757,7 @@ checkBodyImpl seed mode prog0 =
       let _ = setRef perRun.value.methodConstraintsRef (perRun.value.methodConstraintsRef.value ++ crossRun.value.crossModuleMethodConstraintsRef.value)
       sm
   let env1 = extendVars (extendVars (extendVars dataEnv seed) globalS) shadowLayer
-  let defs = funDefs prog
+  let defs = funDefs progS
   let topSchemes = processTopGroups env1 sigs defs (groupNames defs omEmpty)
   -- (#2 / BREAK #1) inference plan.  FLAT runs the TWO-PHASE prelude-then-user scoped
   -- inference (dropSchemesNamed drops user schemes shadowing an interface method so the
@@ -11701,10 +11769,10 @@ checkBodyImpl seed mode prog0 =
     Flat coreProg =>
       let preludeBodyEnv = extendVars env1 (dropSchemesNamed methodNames topSchemes)
       let _ = scopeShadowsCore ()
-      let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog coreProg
-      let _ = inferDefaultBodiesIfEnabled preludeBodyEnv coreProg
-      let _ = inferPropBodies preludeBodyEnv coreProg
-      let _ = inferTestBodies preludeBodyEnv coreProg
+      let _ = inferImplBodiesIfEnabledIn preludeBodyEnv prog coreProgS
+      let _ = inferDefaultBodiesIfEnabled preludeBodyEnv coreProgS
+      let _ = inferPropBodies preludeBodyEnv coreProgS
+      let _ = inferTestBodies preludeBodyEnv coreProgS
       let _ = scopeShadowsUser ()
       -- #760: on the EMIT path keep the ORIGINAL full impl-body inference
       -- (inferImplBodiesIfEnabledIn — ALL impls, no filtering, no error suppression); on
@@ -11716,11 +11784,11 @@ checkBodyImpl seed mode prog0 =
       -- (llvm_typed / llvm_typed_ir) — so emit MUST keep the full call.  The CORE call above
       -- stays emit-gated (re-inferring core on check leaks spurious ambiguities).
       let _ = if driverState.value.implInferEnabled.value
-        then inferImplBodiesIfEnabledIn preludeBodyEnv prog prog0
-        else inferUserImplBodies preludeBodyEnv prog prog0
-      let _ = inferDefaultBodiesIfEnabled preludeBodyEnv prog0
-      let _ = inferPropBodies preludeBodyEnv prog0
-      let _ = inferTestBodies preludeBodyEnv prog0
+        then inferImplBodiesIfEnabledIn preludeBodyEnv prog prog0S
+        else inferUserImplBodies preludeBodyEnv prog prog0S
+      let _ = inferDefaultBodiesIfEnabled preludeBodyEnv prog0S
+      let _ = inferPropBodies preludeBodyEnv prog0S
+      let _ = inferTestBodies preludeBodyEnv prog0S
       ()
     Module _ _ implDecls =>
       let bodyEnv = extendVars env1 topSchemes
@@ -11731,13 +11799,13 @@ checkBodyImpl seed mode prog0 =
       -- of #760 (it reproduced through the loader while single-file check already caught it).
       -- allProg = implDecls (interfaces + accumulated impls) grounds the field types.  Linear:
       -- inferUserImplBodies routes the method-type lookup through the O(log) registered table.
-      let _ = inferModuleImplBodiesIfEnabled bodyEnv implDecls prog
+      let _ = inferModuleImplBodiesIfEnabled bodyEnv implDecls progS
       let _ = if not driverState.value.implInferEnabled.value
-        then inferUserImplBodies bodyEnv implDecls prog
+        then inferUserImplBodies bodyEnv implDecls progS
         else ()
-      let _ = inferDefaultBodiesIfEnabled bodyEnv prog
-      let _ = inferPropBodies bodyEnv prog
-      let _ = inferTestBodies bodyEnv prog
+      let _ = inferDefaultBodiesIfEnabled bodyEnv progS
+      let _ = inferPropBodies bodyEnv progS
+      let _ = inferTestBodies bodyEnv progS
       ()
   -- (#3) cross-module dict-threading SNAPSHOT — MODULE ONLY (flat SKIPS: running it would
   -- pollute the cross-module accumulators with a phantom single-file attribution).
@@ -12096,7 +12164,9 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   let _ = setRef perRun.value.currentFn ""
   let _ = setRef perRun.value.bodyLocalSchemesRef []
   let _ = setRef perRun.value.inRigidityBodyRef True
-  let schemeOblsSnap = perRun.value.schemeObligationsRef.value
+  -- #837: the schemeObligationsRef snapshot/restore window is RETIRED — a where-helper
+  -- named like a top-level binding can no longer leak, now that registration/lookup key
+  -- by (name, binding-id) rather than the bare name.
   let inst = instantiateTracked (fst st)
   -- W3 on the GENERIC default path (adversarial break 1): window this body's
   -- obligations on both channels, exactly as inferImplMethod does.
@@ -12135,7 +12205,7 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
     addedObls
     addedCallObls
     defLoc
-  let _ = setRef perRun.value.schemeObligationsRef schemeOblsSnap
+  -- #837: schemeObligationsRef restore RETIRED (see snapshot site above).
   let _ = setRef perRun.value.inRigidityBodyRef False
   -- register AFTER body inference, so each constraint var's id in [snd inst] is
   -- its SURVIVING (normalized) union-find root — the same id the in-body return-
@@ -12998,7 +13068,8 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     let _ = setRef perRun.value.currentImplBody True
     let _ = setRef perRun.value.bodyLocalSchemesRef []
     let _ = setRef perRun.value.inRigidityBodyRef True
-    let schemeOblsSnap = perRun.value.schemeObligationsRef.value
+    -- #837: schemeObligationsRef snapshot/restore window RETIRED — (name, binding-id)
+    -- keying makes a where-helper name collision structurally impossible.
     -- #518: window this body's newly-added obligations, exactly as processLetGroup /
     -- checkProgramSeeded do for a let-group, so the Num defaulting below is scoped to
     -- THIS method and can never touch an already-generalized outer var.
@@ -13112,7 +13183,7 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- the route, so register the var → dict-param mapping here (AFTER body inference,
     -- so each var is its surviving union-find root, mirroring registerMethodDictSlots).
     let _ = registerImplMethodDicts mname ifaceParams mty extraMap
-    let _ = setRef perRun.value.schemeObligationsRef schemeOblsSnap
+    -- #837: schemeObligationsRef restore RETIRED (see snapshot site above).
     let _ = setRef perRun.value.inRigidityBodyRef False
     let _ = setRef perRun.value.currentImplBody False
     setRef perRun.value.currentFn ""
@@ -13861,6 +13932,7 @@ sigsOf (_::rest) = sigsOf rest
 -- approximate (includes bound vars), filtered to top-level group names by caller
 allEVars : Expr -> List String
 allEVars (EVar x) = [x]
+allEVars (EVarId x _) = [x]
 allEVars (EMethodAt n _ _ _) = [n]
 allEVars (EDictAt n _) = [n]
 allEVars (ELit _) = []
@@ -14165,16 +14237,13 @@ processSCC env sigs grouped members =
   -- not monomorphised to the shadowing standalone's declared domain.
   let _ = setRef perRun.value.groupConstraintMonosRef (flatMap snd regs)
   let _ = setRef perRun.value.bodyLocalSchemesRef []
-  -- registerLocalScheme entries are NAME-KEYED and body-scoped: a prelude
-  -- where-helper named `g` (core's `find`) must not leak obligations onto an
-  -- unrelated top-level `g` in a later body (it put a phantom `Num a =>` on
-  -- types/numlit_bidir's signed fn).  Restore the table once this group's
-  -- bodies finish — uses of a local are always within its body, and this
-  -- group's OWN member registration below reads the window deltas, not the
-  -- table.
-  let schemeOblsSnap = perRun.value.schemeObligationsRef.value
+  -- #837: the schemeObligationsRef snapshot/restore window is RETIRED.  It existed
+  -- because registerLocalScheme entries were NAME-KEYED and body-scoped: a prelude
+  -- where-helper named `g` (core's `find`) leaked obligations onto an unrelated
+  -- top-level `g` in a later body (a phantom `Num a =>` on types/numlit_bidir's
+  -- signed fn).  Registration/lookup now key by (name, binding-id), so a top-level
+  -- `g`'s use keys (g, its-id) and can never match a where-helper `g`'s (g, 0) entry.
   let _ = inferMembers env2 sigs grouped placeholders
-  let _ = setRef perRun.value.schemeObligationsRef schemeOblsSnap
   let _ = setRef perRun.value.groupConstraintMonosRef []
   let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
@@ -14213,7 +14282,7 @@ processSCC env sigs grouped members =
   -- which are 1-ary by construction (see allDictObls).
   let callOblsDelta = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
   let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-  let _ = registerSchemeObligations sigTvMaps callOblsDelta (addedObls ++ forwardedObls) schemes
+  let _ = registerSchemeObligations perRun.value.schemeDefIdsRef.value sigTvMaps callOblsDelta (addedObls ++ forwardedObls) schemes
   -- SIGNATURE CONSTRAINT SOUNDNESS: a signed member whose body induces an
   -- interface constraint on one of its own quantified vars that its declared `=>`
   -- context (superclass-closed) does NOT cover severs the constraint for callers
@@ -14614,15 +14683,20 @@ maybeInferConstraint sigs m sch
 -- the union's redundant superclass display — `when : Thenable m => …` whose body's
 -- `pure` infers Applicative now renders just `Thenable a =>` (Applicative is entailed
 -- by `Thenable requires Applicative`, so it is checked-and-dropped, not merged).
-registerSchemeObligations : List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
-registerSchemeObligations _ _ _ [] = ()
-registerSchemeObligations sigTvMaps callObls addedObls ((m, sch)::rest) =
+-- #837: [memberDefIds] carries each TOP-LEVEL member's binding id (processSCC passes
+-- schemeDefIdsRef); the local/where call sites pass [] so their members key under the
+-- sentinel id 0.  A member absent from [memberDefIds] is a local/where binder → 0.
+registerSchemeObligations : List (String, Int) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+registerSchemeObligations _ _ _ _ [] = ()
+registerSchemeObligations memberDefIds sigTvMaps callObls addedObls ((m, sch)::rest) =
   let obs = dedupVecObls (schemeOblsForMember sigTvMaps callObls addedObls m sch)
-  let _ = if isEmptyL obs then
-    ()
+  let _ = if isEmptyL obs then ()
   else
-    setRef perRun.value.schemeObligationsRef ((m, obs)::perRun.value.schemeObligationsRef.value)
-  registerSchemeObligations sigTvMaps callObls addedObls rest
+    let defId = fromOption 0 (lookupAssoc m memberDefIds)
+    setRef
+      perRun.value.schemeObligationsRef
+      (((m, defId), obs)::perRun.value.schemeObligationsRef.value)
+  registerSchemeObligations memberDefIds sigTvMaps callObls addedObls rest
 
 -- #619: a SIGNED binding's scheme context is EXACTLY its declared `=>` predicates
 -- (authoritative); an UNSIGNED binding's is its inferred principal context (direct
@@ -14984,9 +15058,11 @@ ifaceForInferredId m id =
     Some s => s
     None => ifaceFromDictApps id perRun.value.pendingDictApps.value
 
-lookupSchemeIface : String -> Int -> List (String, List (String, List Int)) -> Option String
+-- #837: keyed by member NAME only (the id here is a SCHEME-VAR id, not a binding
+-- id) — match the name component of the (name, binding-id) key, first match wins.
+lookupSchemeIface : String -> Int -> List ((String, Int), List (String, List Int)) -> Option String
 lookupSchemeIface _ _ [] = None
-lookupSchemeIface m id ((m2, obs)::rest)
+lookupSchemeIface m id (((m2, _), obs)::rest)
   | m == m2 = match lookupIfaceById id obs
     Some iface => Some iface
     None => lookupSchemeIface m id rest
@@ -15792,6 +15868,9 @@ renameMethodVar : List (String, String) -> Expr -> Expr
 renameMethodVar renames (e@(EVar x)) = match lookupAssoc x renames
   Some origin => EVar origin
   None => e
+renameMethodVar renames (e@(EVarId x _)) = match lookupAssoc x renames
+  Some origin => EVar origin
+  None => e
 renameMethodVar _ e = e
 
 -- (localName, originMethodName) for every import in [prog] whose ORIGIN is a method of
@@ -16127,7 +16206,9 @@ checkModulesPreamble runtimeDecls coreDecls modules =
   -- bindings (the next module's resetState has not run yet).  This is the source-exact store a
   -- plain-EVar use of a PRELUDE constrained fn (`println`) reads in instantiateVarTracked, so
   -- its Display obligation lands on the located check path instead of being dropped.
-  let _ = setRef crossRun.value.coreSchemeObligationsRef (omFromPairs perRun.value.schemeObligationsRef.value omEmpty)
+  -- #837: coreSchemeObligationsRef is NAME-keyed (declaredCrossModuleObls reads it by
+  -- bare cross-module name); drop the binding-id component of each (name, id) key.
+  let _ = setRef crossRun.value.coreSchemeObligationsRef (omFromPairs (map (kv => (fst (fst kv), snd kv)) perRun.value.schemeObligationsRef.value) omEmpty)
   (runtimeSeed, coreSchemes)
 
 -- worker: plain per-module typecheck (no diagnostics harvest, no accAll).  Surfaces

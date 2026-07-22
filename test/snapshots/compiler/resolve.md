@@ -1,5 +1,5 @@
 # META
-source_lines=2572
+source_lines=2792
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
@@ -75,6 +75,7 @@ import support.util.{
   joinDot,
   filterList,
   anyList,
+  dedup,
 }
 
 -- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
@@ -2574,10 +2575,229 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
   Some (Loc f sl sc _ _) =>
     let ff = if f == "" then fallbackFile else f
     "\{ff}:\{intToString sl}:\{intToString sc}: \{ppResError e}"
+
+-- ── #837: binding-id minting (stampBindingIds) ──────────────────────────────
+-- Mints a monotonic unique Int per TOP-LEVEL value binder and stamps every
+-- surviving plain `EVar x` occurrence with the id of the binding it resolves to
+-- (`EVarId x id`), so typecheck's `schemeObligationsRef` can key by (name, id)
+-- instead of the bare name — retiring the body-scoped snapshot/restore windows.
+--
+-- INCREMENT 1 mints only top-level binders.  Local / lambda / pattern / where
+-- binders are pushed into scope as a frame of (name, 0) so SHADOWING is correct
+-- (an inner `g` still hides a top-level `g`), but their occurrences carry the
+-- sentinel id 0 and typecheck reads those through the bare-name fallback (exactly
+-- today's behaviour).  TODO(#837 incr2): mint where-group / local binders too so
+-- `bodyLocalSchemesRef` / `isBodyLocalScheme` can be retired.
+--
+-- Runs AFTER mark, BEFORE typecheck.  The walk is a pure deterministic
+-- left-to-right traversal, so ids are stable run-to-run and NEVER reach the
+-- emitter (the EVarId node is stripped by core_ir_lower).  Frame model mirrors
+-- annotate.mdk's `List (List String)` stack, carrying (name, id): the OUTERMOST
+-- frame is the top-level binders (real ids); inner frames are locals (id 0).
+
+-- innermost frame first; first match wins (shadowing).  0 = unminted local.
+lookupBindId : List (List (String, Int)) -> String -> Int
+lookupBindId [] _ = 0
+lookupBindId (frame::rest) n = match lookupAssoc n frame
+  Some id => id
+  None => lookupBindId rest n
+
+-- a local (param/let/match/where) scope frame: every name at the sentinel id 0.
+zeroFrame : List String -> List (String, Int)
+zeroFrame names = map (n => (n, 0)) names
+
+-- per-parameter frames (applyClosure pushes one frame per param, innermost last).
+paramZeroFrames : List Pat -> List (List (String, Int))
+paramZeroFrames pats = reverseL (map (p => zeroFrame (patBindings p)) pats)
+
+-- top-level value binder names, in decl order (DFunDef + DLetGroup members).
+topBinderNames : List Decl -> List String
+topBinderNames [] = []
+topBinderNames ((DFunDef _ n _ _)::rest) = n :: topBinderNames rest
+topBinderNames ((DLetGroup _ binds)::rest) = map letBindName binds
+  ++ topBinderNames rest
+topBinderNames ((DAttrib _ d)::rest) = topBinderNames (d::rest)
+topBinderNames (_::rest) = topBinderNames rest
+
+-- number distinct names monotonically from `i` (ids are 1-based; 0 is sentinel).
+numberFrom : Int -> List String -> List (String, Int)
+numberFrom _ [] = []
+numberFrom i (n::rest) = (n, i) :: numberFrom (i + 1) rest
+
+-- ── the walk ────────────────────────────────────────────────────────────────
+stampExpr : List (List (String, Int)) -> Expr -> Expr
+stampExpr _ (ELit l) = ELit l
+stampExpr _ (ENumLit n r d lx) = ENumLit n r d lx
+stampExpr _ (EMethodRef m) = EMethodRef m
+stampExpr _ (EDictApp d) = EDictApp d
+stampExpr _ (EMethodAt name r ir mr) = EMethodAt name r ir mr
+stampExpr _ (EDictAt name r) = EDictAt name r
+stampExpr _ (EVarAt n a) = EVarAt n a
+stampExpr _ (EVarId n i) = EVarId n i
+stampExpr env (EVar n)
+  | isHint n = EVar n
+  | otherwise = EVarId n (lookupBindId env n)
+stampExpr env (EApp f x) = EApp (stampExpr env f) (stampExpr env x)
+stampExpr env (ELam pats body) =
+  ELam pats (stampExpr (paramZeroFrames pats ++ env) body)
+stampExpr env (ELet m isRec pat e1 e2) = stampLet env m isRec pat e1 e2
+stampExpr env (ELetGroup binds body) = stampLetGroup env binds body
+stampExpr env (EMatch e0 arms) =
+  EMatch (stampExpr env e0) (map (stampArm env) arms)
+stampExpr env (EIf c t el) =
+  EIf (stampExpr env c) (stampExpr env t) (stampExpr env el)
+stampExpr env (EBinOp op a b r) =
+  EBinOp op (stampExpr env a) (stampExpr env b) r
+stampExpr env (EUnOp op a r) = EUnOp op (stampExpr env a) r
+stampExpr env (EInfix op a b) = EInfix op (stampExpr env a) (stampExpr env b)
+stampExpr env (EFieldAccess e0 f r) = EFieldAccess (stampExpr env e0) f r
+stampExpr env (ETuple es) = ETuple (map (stampExpr env) es)
+stampExpr env (EListLit es) = EListLit (map (stampExpr env) es)
+stampExpr env (EArrayLit es) = EArrayLit (map (stampExpr env) es)
+stampExpr env (ERangeList lo hi incl) =
+  ERangeList (stampExpr env lo) (stampExpr env hi) incl
+stampExpr env (ERangeArray lo hi incl) =
+  ERangeArray (stampExpr env lo) (stampExpr env hi) incl
+stampExpr env (ESlice e0 lo hi incl r) =
+  ESlice (stampExpr env e0) (stampExpr env lo) (stampExpr env hi) incl r
+stampExpr env (EIndex e0 i r) = EIndex (stampExpr env e0) (stampExpr env i) r
+stampExpr env (EAnnot e0 t) = EAnnot (stampExpr env e0) t
+stampExpr env (EHeadAnnot e0 t) = EHeadAnnot (stampExpr env e0) t
+stampExpr env (EBlock stmts) = EBlock (stampStmts env stmts)
+stampExpr env (EDo stmts) = EDo (stampStmts env stmts)
+stampExpr env (EStringInterp parts) =
+  EStringInterp (map (stampInterp env) parts)
+stampExpr env (EGuards arms) = EGuards (map (stampGuardArm env) arms)
+stampExpr env (ERecordCreate name fs) =
+  ERecordCreate name (map (stampFieldAssign env) fs)
+stampExpr env (ERecordUpdate e0 fs r) =
+  ERecordUpdate (stampExpr env e0) (map (stampFieldAssign env) fs) r
+stampExpr env (EVariantUpdate con e0 fs) =
+  EVariantUpdate con (stampExpr env e0) (map (stampFieldAssign env) fs)
+stampExpr env (EMapLit n kvs) = EMapLit n (map (stampKv env) kvs)
+stampExpr env (ESetLit n es) = ESetLit n (map (stampExpr env) es)
+stampExpr env (EAsPat x e0) = EAsPat x (stampExpr env e0)
+stampExpr env (ESection s) = ESection (stampSection env s)
+stampExpr env (ELoc l e) = ELoc l (stampExpr env e)
+stampExpr env (EDoOrigin l e) = EDoOrigin l (stampExpr env e)
+
+stampLet : List (List (String, Int)) -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
+stampLet env m True (PVar f) e1 e2 =
+  let inner = zeroFrame [f] :: env
+  ELet m True (PVar f) (stampExpr inner e1) (stampExpr inner e2)
+stampLet env m isRec pat e1 e2 =
+  ELet
+    m
+    isRec
+    pat
+    (stampExpr env e1)
+    (stampExpr (zeroFrame (patBindings pat) :: env) e2)
+
+stampLetGroup : List (List (String, Int)) -> List LetBind -> Expr -> Expr
+stampLetGroup env binds body =
+  let groupScope = zeroFrame (map letBindName binds) :: env
+  ELetGroup (map (stampLetBind groupScope) binds) (stampExpr groupScope body)
+
+stampLetBind : List (List (String, Int)) -> LetBind -> LetBind
+stampLetBind groupScope (LetBind name clauses) =
+  LetBind name (map (stampClause groupScope) clauses)
+
+stampClause : List (List (String, Int)) -> FunClause -> FunClause
+stampClause groupScope (FunClause pats body) =
+  FunClause pats (stampExpr (paramZeroFrames pats ++ groupScope) body)
+
+stampArm : List (List (String, Int)) -> Arm -> Arm
+stampArm env (Arm pat gs body) =
+  let scope0 = zeroFrame (patBindings pat) :: env
+  let (gs2, scope2) = stampGuards scope0 gs
+  Arm pat gs2 (stampExpr scope2 body)
+
+stampGuards : List (List (String, Int)) -> List Guard -> (List Guard, List (List (String, Int)))
+stampGuards scope [] = ([], scope)
+stampGuards scope ((GBool e)::rest) =
+  let (rest2, scope2) = stampGuards scope rest
+  (GBool (stampExpr scope e) :: rest2, scope2)
+stampGuards scope ((GBind p e)::rest) =
+  let e2 = stampExpr scope e
+  let (rest2, scope2) = stampGuards (zeroFrame (patBindings p) :: scope) rest
+  (GBind p e2 :: rest2, scope2)
+
+stampGuardArm : List (List (String, Int)) -> GuardArm -> GuardArm
+stampGuardArm env (GuardArm gs body) =
+  let (gs2, scope2) = stampGuards env gs
+  GuardArm gs2 (stampExpr scope2 body)
+
+stampStmts : List (List (String, Int)) -> List DoStmt -> List DoStmt
+stampStmts _ [] = []
+stampStmts env ((DoExpr e)::rest) =
+  DoExpr (stampExpr env e) :: stampStmts env rest
+stampStmts env ((DoLet m r p e)::rest) =
+  DoLet m r p (stampExpr env e) ::
+    stampStmts (zeroFrame (patBindings p) :: env) rest
+stampStmts env ((DoBind p e)::rest) =
+  DoBind p (stampExpr env e) ::
+    stampStmts (zeroFrame (patBindings p) :: env) rest
+stampStmts env ((DoAssign x e)::rest) =
+  DoAssign x (stampExpr env e) :: stampStmts (zeroFrame [x] :: env) rest
+stampStmts env ((DoFieldAssign x fs e)::rest) =
+  DoFieldAssign x fs (stampExpr env e) :: stampStmts env rest
+
+stampInterp : List (List (String, Int)) -> InterpPart -> InterpPart
+stampInterp _ (InterpStr s) = InterpStr s
+stampInterp env (InterpExpr e) = InterpExpr (stampExpr env e)
+
+stampFieldAssign : List (List (String, Int)) -> FieldAssign -> FieldAssign
+stampFieldAssign env (FieldAssign n e) = FieldAssign n (stampExpr env e)
+
+stampKv : List (List (String, Int)) -> (Expr, Expr) -> (Expr, Expr)
+stampKv env (k, v) = (stampExpr env k, stampExpr env v)
+
+stampSection : List (List (String, Int)) -> Section -> Section
+stampSection _ (SecBare op) = SecBare op
+stampSection env (SecRight op e) = SecRight op (stampExpr env e)
+stampSection env (SecLeft e op) = SecLeft (stampExpr env e) op
+
+-- ── decl-level walk ─────────────────────────────────────────────────────────
+-- Each top-level fn's params become per-parameter (id-0) frames over the top
+-- frame; sibling top-level names resolve through `top` to their minted id.
+stampDecl : List (String, Int) -> Decl -> Decl
+stampDecl top (DFunDef p n pats body) =
+  DFunDef p n pats (stampExpr (paramZeroFrames pats ++ [top]) body)
+stampDecl top (DProp p n params body) =
+  DProp p n params (stampExpr [zeroFrame (map propParamName params), top] body)
+stampDecl top (DTest p n body) = DTest p n (stampExpr [top] body)
+stampDecl top (DBench p n body) = DBench p n (stampExpr [top] body)
+stampDecl top (DLetGroup p binds) = DLetGroup p (map (stampLetBind [top]) binds)
+stampDecl top (d@(DInterface { methods, ... })) =
+  DInterface { d | methods = map (stampIfaceMethod top) methods }
+stampDecl top (d@(DImpl { methods, ... })) =
+  DImpl { d | methods = map (stampImplMethod top) methods }
+stampDecl top (DAttrib attrs inner) = DAttrib attrs (stampDecl top inner)
+stampDecl _ d = d
+
+stampIfaceMethod : List (String, Int) -> IfaceMethod -> IfaceMethod
+stampIfaceMethod _ (IfaceMethod nm ty None) = IfaceMethod nm ty None
+stampIfaceMethod top (IfaceMethod nm ty (Some (MethodDefault pats body))) =
+  IfaceMethod
+    nm
+    ty
+    (Some (MethodDefault pats (stampExpr (paramZeroFrames pats ++ [top]) body)))
+
+stampImplMethod : List (String, Int) -> ImplMethod -> ImplMethod
+stampImplMethod top (ImplMethod nm pats body) =
+  ImplMethod nm pats (stampExpr (paramZeroFrames pats ++ [top]) body)
+
+-- Mint per-top-level-binder ids and stamp all occurrences.  Returns the stamped
+-- program AND `defIds` (each minted top-level binder → its id), which typecheck's
+-- `registerSchemeObligations` reads to key a top-level member's obligations.
+export stampBindingIds : List Decl -> (List Decl, List (String, Int))
+stampBindingIds decls =
+  let top = numberFrom 1 (dedup (topBinderNames decls))
+  (map (stampDecl top) decls, top)
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omKeys" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false))))
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false) (mem "dedup" false))))
 (DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnboundVariableIsModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig true "resErrorDidYouMean" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "resErrorDidYouMean" ((PCon "UnboundVariable" (PVar "n") PWild (PCon "Some" (PVar "sug")))) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "sug"))))
@@ -3476,10 +3696,120 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "ppResErrorLocated" ((PVar "e")) (EApp (EApp (EVar "ppResErrorLocatedF") (ELit (LString ""))) (EVar "e")))
 (DTypeSig true "ppResErrorLocatedF" (TyFun (TyCon "String") (TyFun (TyCon "ResError") (TyCon "String"))))
 (DFunDef false "ppResErrorLocatedF" ((PVar "fallbackFile") (PVar "e")) (EMatch (EApp (EVar "resErrorLoc") (EVar "e")) (arm (PCon "None") () (EBinOp "++" (ELit (LString "<unknown location>: ")) (EApp (EVar "ppResError") (EVar "e")))) (arm (PCon "Some" (PCon "Loc" (PVar "f") (PVar "sl") (PVar "sc") PWild PWild)) () (EBlock (DoLet false false (PVar "ff") (EIf (EBinOp "==" (EVar "f") (ELit (LString ""))) (EVar "fallbackFile") (EVar "f"))) (DoExpr (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EVar "ff"))) (ELit (LString ":"))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "sl")))) (ELit (LString ":"))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "sc")))) (ELit (LString ": "))) (EApp (EVar "display") (EApp (EVar "ppResError") (EVar "e")))) (ELit (LString ""))))))))
+(DTypeSig false "lookupBindId" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "String") (TyCon "Int"))))
+(DFunDef false "lookupBindId" ((PList) PWild) (ELit (LInt 0)))
+(DFunDef false "lookupBindId" ((PCons (PVar "frame") (PVar "rest")) (PVar "n")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "frame")) (arm (PCon "Some" (PVar "id")) () (EVar "id")) (arm (PCon "None") () (EApp (EApp (EVar "lookupBindId") (EVar "rest")) (EVar "n")))))
+(DTypeSig false "zeroFrame" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))))
+(DFunDef false "zeroFrame" ((PVar "names")) (EApp (EApp (EVar "map") (ELam ((PVar "n")) (ETuple (EVar "n") (ELit (LInt 0))))) (EVar "names")))
+(DTypeSig false "paramZeroFrames" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DFunDef false "paramZeroFrames" ((PVar "pats")) (EApp (EVar "reverseL") (EApp (EApp (EVar "map") (ELam ((PVar "p")) (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))))) (EVar "pats"))))
+(DTypeSig false "topBinderNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "topBinderNames" ((PList)) (EListLit))
+(DFunDef false "topBinderNames" ((PCons (PCon "DFunDef" PWild (PVar "n") PWild PWild) (PVar "rest"))) (EBinOp "::" (EVar "n") (EApp (EVar "topBinderNames") (EVar "rest"))))
+(DFunDef false "topBinderNames" ((PCons (PCon "DLetGroup" PWild (PVar "binds")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "map") (EVar "letBindName")) (EVar "binds")) (EApp (EVar "topBinderNames") (EVar "rest"))))
+(DFunDef false "topBinderNames" ((PCons (PCon "DAttrib" PWild (PVar "d")) (PVar "rest"))) (EApp (EVar "topBinderNames") (EBinOp "::" (EVar "d") (EVar "rest"))))
+(DFunDef false "topBinderNames" ((PCons PWild (PVar "rest"))) (EApp (EVar "topBinderNames") (EVar "rest")))
+(DTypeSig false "numberFrom" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DFunDef false "numberFrom" (PWild (PList)) (EListLit))
+(DFunDef false "numberFrom" ((PVar "i") (PCons (PVar "n") (PVar "rest"))) (EBinOp "::" (ETuple (EVar "n") (EVar "i")) (EApp (EApp (EVar "numberFrom") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))
+(DTypeSig false "stampExpr" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Expr") (TyCon "Expr"))))
+(DFunDef false "stampExpr" (PWild (PCon "ELit" (PVar "l"))) (EApp (EVar "ELit") (EVar "l")))
+(DFunDef false "stampExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "r") (PVar "d") (PVar "lx"))) (EApp (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "r")) (EVar "d")) (EVar "lx")))
+(DFunDef false "stampExpr" (PWild (PCon "EMethodRef" (PVar "m"))) (EApp (EVar "EMethodRef") (EVar "m")))
+(DFunDef false "stampExpr" (PWild (PCon "EDictApp" (PVar "d"))) (EApp (EVar "EDictApp") (EVar "d")))
+(DFunDef false "stampExpr" (PWild (PCon "EMethodAt" (PVar "name") (PVar "r") (PVar "ir") (PVar "mr"))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "name")) (EVar "r")) (EVar "ir")) (EVar "mr")))
+(DFunDef false "stampExpr" (PWild (PCon "EDictAt" (PVar "name") (PVar "r"))) (EApp (EApp (EVar "EDictAt") (EVar "name")) (EVar "r")))
+(DFunDef false "stampExpr" (PWild (PCon "EVarAt" (PVar "n") (PVar "a"))) (EApp (EApp (EVar "EVarAt") (EVar "n")) (EVar "a")))
+(DFunDef false "stampExpr" (PWild (PCon "EVarId" (PVar "n") (PVar "i"))) (EApp (EApp (EVar "EVarId") (EVar "n")) (EVar "i")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EVar" (PVar "n"))) (EIf (EApp (EVar "isHint") (EVar "n")) (EApp (EVar "EVar") (EVar "n")) (EIf (EVar "otherwise") (EApp (EApp (EVar "EVarId") (EVar "n")) (EApp (EApp (EVar "lookupBindId") (EVar "env")) (EVar "n"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EApp" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "f"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "x"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELam" (PVar "pats") (PVar "body"))) (EApp (EApp (EVar "ELam") (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EVar "env"))) (EVar "body"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELet" (PVar "m") (PVar "isRec") (PVar "pat") (PVar "e1") (PVar "e2"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "stampLet") (EVar "env")) (EVar "m")) (EVar "isRec")) (EVar "pat")) (EVar "e1")) (EVar "e2")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELetGroup" (PVar "binds") (PVar "body"))) (EApp (EApp (EApp (EVar "stampLetGroup") (EVar "env")) (EVar "binds")) (EVar "body")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EMatch" (PVar "e0") (PVar "arms"))) (EApp (EApp (EVar "EMatch") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "stampArm") (EVar "env"))) (EVar "arms"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EIf" (PVar "c") (PVar "t") (PVar "el"))) (EApp (EApp (EApp (EVar "EIf") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "c"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "t"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "el"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EBinOp" (PVar "op") (PVar "a") (PVar "b") (PVar "r"))) (EApp (EApp (EApp (EApp (EVar "EBinOp") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "a"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "b"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EUnOp" (PVar "op") (PVar "a") (PVar "r"))) (EApp (EApp (EApp (EVar "EUnOp") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "a"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "a"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "b"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EFieldAccess" (PVar "e0") (PVar "f") (PVar "r"))) (EApp (EApp (EApp (EVar "EFieldAccess") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EVar "f")) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ETuple" (PVar "es"))) (EApp (EVar "ETuple") (EApp (EApp (EVar "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EListLit" (PVar "es"))) (EApp (EVar "EListLit") (EApp (EApp (EVar "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "EArrayLit") (EApp (EApp (EVar "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERangeList" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EVar "ERangeList") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "lo"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "hi"))) (EVar "incl")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERangeArray" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EVar "ERangeArray") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "lo"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "hi"))) (EVar "incl")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ESlice" (PVar "e0") (PVar "lo") (PVar "hi") (PVar "incl") (PVar "r"))) (EApp (EApp (EApp (EApp (EApp (EVar "ESlice") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "lo"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "hi"))) (EVar "incl")) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EIndex" (PVar "e0") (PVar "i") (PVar "r"))) (EApp (EApp (EApp (EVar "EIndex") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "i"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EAnnot" (PVar "e0") (PVar "t"))) (EApp (EApp (EVar "EAnnot") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EVar "t")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EHeadAnnot" (PVar "e0") (PVar "t"))) (EApp (EApp (EVar "EHeadAnnot") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EVar "t")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EBlock" (PVar "stmts"))) (EApp (EVar "EBlock") (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "stmts"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EDo" (PVar "stmts"))) (EApp (EVar "EDo") (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "stmts"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EVar "map") (EApp (EVar "stampInterp") (EVar "env"))) (EVar "parts"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EVar "map") (EApp (EVar "stampGuardArm") (EVar "env"))) (EVar "arms"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "name")) (EApp (EApp (EVar "map") (EApp (EVar "stampFieldAssign") (EVar "env"))) (EVar "fs"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "stampFieldAssign") (EVar "env"))) (EVar "fs"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EVariantUpdate" (PVar "con") (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "con")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EVar "map") (EApp (EVar "stampFieldAssign") (EVar "env"))) (EVar "fs"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "stampKv") (EVar "env"))) (EVar "kvs"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EVar "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EAsPat" (PVar "x") (PVar "e0"))) (EApp (EApp (EVar "EAsPat") (EVar "x")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ESection" (PVar "s"))) (EApp (EVar "ESection") (EApp (EApp (EVar "stampSection") (EVar "env")) (EVar "s"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELoc" (PVar "l") (PVar "e"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EDoOrigin" (PVar "l") (PVar "e"))) (EApp (EApp (EVar "EDoOrigin") (EVar "l")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DTypeSig false "stampLet" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr"))))))))
+(DFunDef false "stampLet" ((PVar "env") (PVar "m") (PCon "True") (PCon "PVar" (PVar "f")) (PVar "e1") (PVar "e2")) (EBlock (DoLet false false (PVar "inner") (EBinOp "::" (EApp (EVar "zeroFrame") (EListLit (EVar "f"))) (EVar "env"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "ELet") (EVar "m")) (EVar "True")) (EApp (EVar "PVar") (EVar "f"))) (EApp (EApp (EVar "stampExpr") (EVar "inner")) (EVar "e1"))) (EApp (EApp (EVar "stampExpr") (EVar "inner")) (EVar "e2"))))))
+(DFunDef false "stampLet" ((PVar "env") (PVar "m") (PVar "isRec") (PVar "pat") (PVar "e1") (PVar "e2")) (EApp (EApp (EApp (EApp (EApp (EVar "ELet") (EVar "m")) (EVar "isRec")) (EVar "pat")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e1"))) (EApp (EApp (EVar "stampExpr") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "pat"))) (EVar "env"))) (EVar "e2"))))
+(DTypeSig false "stampLetGroup" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
+(DFunDef false "stampLetGroup" ((PVar "env") (PVar "binds") (PVar "body")) (EBlock (DoLet false false (PVar "groupScope") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EApp (EVar "map") (EVar "letBindName")) (EVar "binds"))) (EVar "env"))) (DoExpr (EApp (EApp (EVar "ELetGroup") (EApp (EApp (EVar "map") (EApp (EVar "stampLetBind") (EVar "groupScope"))) (EVar "binds"))) (EApp (EApp (EVar "stampExpr") (EVar "groupScope")) (EVar "body"))))))
+(DTypeSig false "stampLetBind" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "LetBind") (TyCon "LetBind"))))
+(DFunDef false "stampLetBind" ((PVar "groupScope") (PCon "LetBind" (PVar "name") (PVar "clauses"))) (EApp (EApp (EVar "LetBind") (EVar "name")) (EApp (EApp (EVar "map") (EApp (EVar "stampClause") (EVar "groupScope"))) (EVar "clauses"))))
+(DTypeSig false "stampClause" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "FunClause") (TyCon "FunClause"))))
+(DFunDef false "stampClause" ((PVar "groupScope") (PCon "FunClause" (PVar "pats") (PVar "body"))) (EApp (EApp (EVar "FunClause") (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EVar "groupScope"))) (EVar "body"))))
+(DTypeSig false "stampArm" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Arm") (TyCon "Arm"))))
+(DFunDef false "stampArm" ((PVar "env") (PCon "Arm" (PVar "pat") (PVar "gs") (PVar "body"))) (EBlock (DoLet false false (PVar "scope0") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "pat"))) (EVar "env"))) (DoLet false false (PTuple (PVar "gs2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EVar "scope0")) (EVar "gs"))) (DoExpr (EApp (EApp (EApp (EVar "Arm") (EVar "pat")) (EVar "gs2")) (EApp (EApp (EVar "stampExpr") (EVar "scope2")) (EVar "body"))))))
+(DTypeSig false "stampGuards" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "Guard")) (TyTuple (TyApp (TyCon "List") (TyCon "Guard")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))))
+(DFunDef false "stampGuards" ((PVar "scope") (PList)) (ETuple (EListLit) (EVar "scope")))
+(DFunDef false "stampGuards" ((PVar "scope") (PCons (PCon "GBool" (PVar "e")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "rest2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EVar "scope")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EVar "GBool") (EApp (EApp (EVar "stampExpr") (EVar "scope")) (EVar "e"))) (EVar "rest2")) (EVar "scope2")))))
+(DFunDef false "stampGuards" ((PVar "scope") (PCons (PCon "GBind" (PVar "p") (PVar "e")) (PVar "rest"))) (EBlock (DoLet false false (PVar "e2") (EApp (EApp (EVar "stampExpr") (EVar "scope")) (EVar "e"))) (DoLet false false (PTuple (PVar "rest2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))) (EVar "scope"))) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EVar "GBind") (EVar "p")) (EVar "e2")) (EVar "rest2")) (EVar "scope2")))))
+(DTypeSig false "stampGuardArm" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "GuardArm") (TyCon "GuardArm"))))
+(DFunDef false "stampGuardArm" ((PVar "env") (PCon "GuardArm" (PVar "gs") (PVar "body"))) (EBlock (DoLet false false (PTuple (PVar "gs2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EVar "env")) (EVar "gs"))) (DoExpr (EApp (EApp (EVar "GuardArm") (EVar "gs2")) (EApp (EApp (EVar "stampExpr") (EVar "scope2")) (EVar "body"))))))
+(DTypeSig false "stampStmts" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "DoStmt")) (TyApp (TyCon "List") (TyCon "DoStmt")))))
+(DFunDef false "stampStmts" (PWild (PList)) (EListLit))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoExpr" (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EVar "DoExpr") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoLet" (PVar "m") (PVar "r") (PVar "p") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "DoLet") (EVar "m")) (EVar "r")) (EVar "p")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))) (EVar "env"))) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoBind" (PVar "p") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "DoBind") (EVar "p")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))) (EVar "env"))) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoAssign" (PVar "x") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "DoAssign") (EVar "x")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EBinOp "::" (EApp (EVar "zeroFrame") (EListLit (EVar "x"))) (EVar "env"))) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoFieldAssign" (PVar "x") (PVar "fs") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EVar "DoFieldAssign") (EVar "x")) (EVar "fs")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "rest"))))
+(DTypeSig false "stampInterp" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "InterpPart") (TyCon "InterpPart"))))
+(DFunDef false "stampInterp" (PWild (PCon "InterpStr" (PVar "s"))) (EApp (EVar "InterpStr") (EVar "s")))
+(DFunDef false "stampInterp" ((PVar "env") (PCon "InterpExpr" (PVar "e"))) (EApp (EVar "InterpExpr") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DTypeSig false "stampFieldAssign" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "FieldAssign") (TyCon "FieldAssign"))))
+(DFunDef false "stampFieldAssign" ((PVar "env") (PCon "FieldAssign" (PVar "n") (PVar "e"))) (EApp (EApp (EVar "FieldAssign") (EVar "n")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DTypeSig false "stampKv" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyTuple (TyCon "Expr") (TyCon "Expr")) (TyTuple (TyCon "Expr") (TyCon "Expr")))))
+(DFunDef false "stampKv" ((PVar "env") (PTuple (PVar "k") (PVar "v"))) (ETuple (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "k")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "v"))))
+(DTypeSig false "stampSection" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Section") (TyCon "Section"))))
+(DFunDef false "stampSection" (PWild (PCon "SecBare" (PVar "op"))) (EApp (EVar "SecBare") (EVar "op")))
+(DFunDef false "stampSection" ((PVar "env") (PCon "SecRight" (PVar "op") (PVar "e"))) (EApp (EApp (EVar "SecRight") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DFunDef false "stampSection" ((PVar "env") (PCon "SecLeft" (PVar "e") (PVar "op"))) (EApp (EApp (EVar "SecLeft") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EVar "op")))
+(DTypeSig false "stampDecl" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "Decl") (TyCon "Decl"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DFunDef" (PVar "p") (PVar "n") (PVar "pats") (PVar "body"))) (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "p")) (EVar "n")) (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EListLit (EVar "top")))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DProp" (PVar "p") (PVar "n") (PVar "params") (PVar "body"))) (EApp (EApp (EApp (EApp (EVar "DProp") (EVar "p")) (EVar "n")) (EVar "params")) (EApp (EApp (EVar "stampExpr") (EListLit (EApp (EVar "zeroFrame") (EApp (EApp (EVar "map") (EVar "propParamName")) (EVar "params"))) (EVar "top"))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DTest" (PVar "p") (PVar "n") (PVar "body"))) (EApp (EApp (EApp (EVar "DTest") (EVar "p")) (EVar "n")) (EApp (EApp (EVar "stampExpr") (EListLit (EVar "top"))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DBench" (PVar "p") (PVar "n") (PVar "body"))) (EApp (EApp (EApp (EVar "DBench") (EVar "p")) (EVar "n")) (EApp (EApp (EVar "stampExpr") (EListLit (EVar "top"))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DLetGroup" (PVar "p") (PVar "binds"))) (EApp (EApp (EVar "DLetGroup") (EVar "p")) (EApp (EApp (EVar "map") (EApp (EVar "stampLetBind") (EListLit (EVar "top")))) (EVar "binds"))))
+(DFunDef false "stampDecl" ((PVar "top") (PAs "d" (PRec "DInterface" ((rf "methods" None)) true))) (EVariantUpdate "DInterface" (EVar "d") ((fa "methods" (EApp (EApp (EVar "map") (EApp (EVar "stampIfaceMethod") (EVar "top"))) (EVar "methods"))))))
+(DFunDef false "stampDecl" ((PVar "top") (PAs "d" (PRec "DImpl" ((rf "methods" None)) true))) (EVariantUpdate "DImpl" (EVar "d") ((fa "methods" (EApp (EApp (EVar "map") (EApp (EVar "stampImplMethod") (EVar "top"))) (EVar "methods"))))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DAttrib" (PVar "attrs") (PVar "inner"))) (EApp (EApp (EVar "DAttrib") (EVar "attrs")) (EApp (EApp (EVar "stampDecl") (EVar "top")) (EVar "inner"))))
+(DFunDef false "stampDecl" (PWild (PVar "d")) (EVar "d"))
+(DTypeSig false "stampIfaceMethod" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "IfaceMethod") (TyCon "IfaceMethod"))))
+(DFunDef false "stampIfaceMethod" (PWild (PCon "IfaceMethod" (PVar "nm") (PVar "ty") (PCon "None"))) (EApp (EApp (EApp (EVar "IfaceMethod") (EVar "nm")) (EVar "ty")) (EVar "None")))
+(DFunDef false "stampIfaceMethod" ((PVar "top") (PCon "IfaceMethod" (PVar "nm") (PVar "ty") (PCon "Some" (PCon "MethodDefault" (PVar "pats") (PVar "body"))))) (EApp (EApp (EApp (EVar "IfaceMethod") (EVar "nm")) (EVar "ty")) (EApp (EVar "Some") (EApp (EApp (EVar "MethodDefault") (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EListLit (EVar "top")))) (EVar "body"))))))
+(DTypeSig false "stampImplMethod" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "ImplMethod") (TyCon "ImplMethod"))))
+(DFunDef false "stampImplMethod" ((PVar "top") (PCon "ImplMethod" (PVar "nm") (PVar "pats") (PVar "body"))) (EApp (EApp (EApp (EVar "ImplMethod") (EVar "nm")) (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EListLit (EVar "top")))) (EVar "body"))))
+(DTypeSig true "stampBindingIds" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DFunDef false "stampBindingIds" ((PVar "decls")) (EBlock (DoLet false false (PVar "top") (EApp (EApp (EVar "numberFrom") (ELit (LInt 1))) (EApp (EVar "dedup") (EApp (EVar "topBinderNames") (EVar "decls"))))) (DoExpr (ETuple (EApp (EApp (EVar "map") (EApp (EVar "stampDecl") (EVar "top"))) (EVar "decls")) (EVar "top")))))
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omKeys" false))))
-(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false))))
+(DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false) (mem "dedup" false))))
 (DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnboundVariableIsModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig true "resErrorDidYouMean" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "String")))))
 (DFunDef false "resErrorDidYouMean" ((PCon "UnboundVariable" (PVar "n") PWild (PCon "Some" (PVar "sug")))) (EApp (EVar "Some") (ETuple (EVar "n") (EVar "sug"))))
@@ -4378,3 +4708,113 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 (DFunDef false "ppResErrorLocated" ((PVar "e")) (EApp (EApp (EVar "ppResErrorLocatedF") (ELit (LString ""))) (EVar "e")))
 (DTypeSig true "ppResErrorLocatedF" (TyFun (TyCon "String") (TyFun (TyCon "ResError") (TyCon "String"))))
 (DFunDef false "ppResErrorLocatedF" ((PVar "fallbackFile") (PVar "e")) (EMatch (EApp (EVar "resErrorLoc") (EVar "e")) (arm (PCon "None") () (EBinOp "++" (ELit (LString "<unknown location>: ")) (EApp (EVar "ppResError") (EVar "e")))) (arm (PCon "Some" (PCon "Loc" (PVar "f") (PVar "sl") (PVar "sc") PWild PWild)) () (EBlock (DoLet false false (PVar "ff") (EIf (EBinOp "==" (EVar "f") (ELit (LString ""))) (EVar "fallbackFile") (EVar "f"))) (DoExpr (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EVar "ff"))) (ELit (LString ":"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "sl")))) (ELit (LString ":"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "sc")))) (ELit (LString ": "))) (EApp (EMethodRef "display") (EApp (EVar "ppResError") (EVar "e")))) (ELit (LString ""))))))))
+(DTypeSig false "lookupBindId" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "String") (TyCon "Int"))))
+(DFunDef false "lookupBindId" ((PList) PWild) (ELit (LInt 0)))
+(DFunDef false "lookupBindId" ((PCons (PVar "frame") (PVar "rest")) (PVar "n")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "frame")) (arm (PCon "Some" (PVar "id")) () (EVar "id")) (arm (PCon "None") () (EApp (EApp (EVar "lookupBindId") (EVar "rest")) (EVar "n")))))
+(DTypeSig false "zeroFrame" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))))
+(DFunDef false "zeroFrame" ((PVar "names")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "n")) (ETuple (EVar "n") (ELit (LInt 0))))) (EVar "names")))
+(DTypeSig false "paramZeroFrames" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DFunDef false "paramZeroFrames" ((PVar "pats")) (EApp (EVar "reverseL") (EApp (EApp (EMethodRef "map") (ELam ((PVar "p")) (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))))) (EVar "pats"))))
+(DTypeSig false "topBinderNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "topBinderNames" ((PList)) (EListLit))
+(DFunDef false "topBinderNames" ((PCons (PCon "DFunDef" PWild (PVar "n") PWild PWild) (PVar "rest"))) (EBinOp "::" (EVar "n") (EApp (EVar "topBinderNames") (EVar "rest"))))
+(DFunDef false "topBinderNames" ((PCons (PCon "DLetGroup" PWild (PVar "binds")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EMethodRef "map") (EVar "letBindName")) (EVar "binds")) (EApp (EVar "topBinderNames") (EVar "rest"))))
+(DFunDef false "topBinderNames" ((PCons (PCon "DAttrib" PWild (PVar "d")) (PVar "rest"))) (EApp (EVar "topBinderNames") (EBinOp "::" (EVar "d") (EVar "rest"))))
+(DFunDef false "topBinderNames" ((PCons PWild (PVar "rest"))) (EApp (EVar "topBinderNames") (EVar "rest")))
+(DTypeSig false "numberFrom" (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DFunDef false "numberFrom" (PWild (PList)) (EListLit))
+(DFunDef false "numberFrom" ((PVar "i") (PCons (PVar "n") (PVar "rest"))) (EBinOp "::" (ETuple (EVar "n") (EVar "i")) (EApp (EApp (EVar "numberFrom") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "rest"))))
+(DTypeSig false "stampExpr" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Expr") (TyCon "Expr"))))
+(DFunDef false "stampExpr" (PWild (PCon "ELit" (PVar "l"))) (EApp (EVar "ELit") (EVar "l")))
+(DFunDef false "stampExpr" (PWild (PCon "ENumLit" (PVar "n") (PVar "r") (PVar "d") (PVar "lx"))) (EApp (EApp (EApp (EApp (EVar "ENumLit") (EVar "n")) (EVar "r")) (EVar "d")) (EVar "lx")))
+(DFunDef false "stampExpr" (PWild (PCon "EMethodRef" (PVar "m"))) (EApp (EVar "EMethodRef") (EVar "m")))
+(DFunDef false "stampExpr" (PWild (PCon "EDictApp" (PVar "d"))) (EApp (EVar "EDictApp") (EVar "d")))
+(DFunDef false "stampExpr" (PWild (PCon "EMethodAt" (PVar "name") (PVar "r") (PVar "ir") (PVar "mr"))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "name")) (EVar "r")) (EVar "ir")) (EVar "mr")))
+(DFunDef false "stampExpr" (PWild (PCon "EDictAt" (PVar "name") (PVar "r"))) (EApp (EApp (EVar "EDictAt") (EVar "name")) (EVar "r")))
+(DFunDef false "stampExpr" (PWild (PCon "EVarAt" (PVar "n") (PVar "a"))) (EApp (EApp (EVar "EVarAt") (EVar "n")) (EVar "a")))
+(DFunDef false "stampExpr" (PWild (PCon "EVarId" (PVar "n") (PVar "i"))) (EApp (EApp (EVar "EVarId") (EVar "n")) (EVar "i")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EVar" (PVar "n"))) (EIf (EApp (EVar "isHint") (EVar "n")) (EApp (EVar "EVar") (EVar "n")) (EIf (EVar "otherwise") (EApp (EApp (EVar "EVarId") (EVar "n")) (EApp (EApp (EVar "lookupBindId") (EVar "env")) (EVar "n"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EApp" (PVar "f") (PVar "x"))) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "f"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "x"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELam" (PVar "pats") (PVar "body"))) (EApp (EApp (EVar "ELam") (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EVar "env"))) (EVar "body"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELet" (PVar "m") (PVar "isRec") (PVar "pat") (PVar "e1") (PVar "e2"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "stampLet") (EVar "env")) (EVar "m")) (EVar "isRec")) (EVar "pat")) (EVar "e1")) (EVar "e2")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELetGroup" (PVar "binds") (PVar "body"))) (EApp (EApp (EApp (EVar "stampLetGroup") (EVar "env")) (EVar "binds")) (EVar "body")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EMatch" (PVar "e0") (PVar "arms"))) (EApp (EApp (EVar "EMatch") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampArm") (EVar "env"))) (EVar "arms"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EIf" (PVar "c") (PVar "t") (PVar "el"))) (EApp (EApp (EApp (EVar "EIf") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "c"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "t"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "el"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EBinOp" (PVar "op") (PVar "a") (PVar "b") (PVar "r"))) (EApp (EApp (EApp (EApp (EVar "EBinOp") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "a"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "b"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EUnOp" (PVar "op") (PVar "a") (PVar "r"))) (EApp (EApp (EApp (EVar "EUnOp") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "a"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EInfix" (PVar "op") (PVar "a") (PVar "b"))) (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "a"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "b"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EFieldAccess" (PVar "e0") (PVar "f") (PVar "r"))) (EApp (EApp (EApp (EVar "EFieldAccess") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EVar "f")) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ETuple" (PVar "es"))) (EApp (EVar "ETuple") (EApp (EApp (EMethodRef "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EListLit" (PVar "es"))) (EApp (EVar "EListLit") (EApp (EApp (EMethodRef "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EArrayLit" (PVar "es"))) (EApp (EVar "EArrayLit") (EApp (EApp (EMethodRef "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERangeList" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EVar "ERangeList") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "lo"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "hi"))) (EVar "incl")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERangeArray" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EApp (EVar "ERangeArray") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "lo"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "hi"))) (EVar "incl")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ESlice" (PVar "e0") (PVar "lo") (PVar "hi") (PVar "incl") (PVar "r"))) (EApp (EApp (EApp (EApp (EApp (EVar "ESlice") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "lo"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "hi"))) (EVar "incl")) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EIndex" (PVar "e0") (PVar "i") (PVar "r"))) (EApp (EApp (EApp (EVar "EIndex") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "i"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EAnnot" (PVar "e0") (PVar "t"))) (EApp (EApp (EVar "EAnnot") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EVar "t")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EHeadAnnot" (PVar "e0") (PVar "t"))) (EApp (EApp (EVar "EHeadAnnot") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EVar "t")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EBlock" (PVar "stmts"))) (EApp (EVar "EBlock") (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "stmts"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EDo" (PVar "stmts"))) (EApp (EVar "EDo") (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "stmts"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EStringInterp" (PVar "parts"))) (EApp (EVar "EStringInterp") (EApp (EApp (EMethodRef "map") (EApp (EVar "stampInterp") (EVar "env"))) (EVar "parts"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EGuards" (PVar "arms"))) (EApp (EVar "EGuards") (EApp (EApp (EMethodRef "map") (EApp (EVar "stampGuardArm") (EVar "env"))) (EVar "arms"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERecordCreate" (PVar "name") (PVar "fs"))) (EApp (EApp (EVar "ERecordCreate") (EVar "name")) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampFieldAssign") (EVar "env"))) (EVar "fs"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ERecordUpdate" (PVar "e0") (PVar "fs") (PVar "r"))) (EApp (EApp (EApp (EVar "ERecordUpdate") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampFieldAssign") (EVar "env"))) (EVar "fs"))) (EVar "r")))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EVariantUpdate" (PVar "con") (PVar "e0") (PVar "fs"))) (EApp (EApp (EApp (EVar "EVariantUpdate") (EVar "con")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampFieldAssign") (EVar "env"))) (EVar "fs"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EMapLit" (PVar "n") (PVar "kvs"))) (EApp (EApp (EVar "EMapLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampKv") (EVar "env"))) (EVar "kvs"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ESetLit" (PVar "n") (PVar "es"))) (EApp (EApp (EVar "ESetLit") (EVar "n")) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampExpr") (EVar "env"))) (EVar "es"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EAsPat" (PVar "x") (PVar "e0"))) (EApp (EApp (EVar "EAsPat") (EVar "x")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e0"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ESection" (PVar "s"))) (EApp (EVar "ESection") (EApp (EApp (EVar "stampSection") (EVar "env")) (EVar "s"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "ELoc" (PVar "l") (PVar "e"))) (EApp (EApp (EVar "ELoc") (EVar "l")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DFunDef false "stampExpr" ((PVar "env") (PCon "EDoOrigin" (PVar "l") (PVar "e"))) (EApp (EApp (EVar "EDoOrigin") (EVar "l")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DTypeSig false "stampLet" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Bool") (TyFun (TyCon "Bool") (TyFun (TyCon "Pat") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr"))))))))
+(DFunDef false "stampLet" ((PVar "env") (PVar "m") (PCon "True") (PCon "PVar" (PVar "f")) (PVar "e1") (PVar "e2")) (EBlock (DoLet false false (PVar "inner") (EBinOp "::" (EApp (EVar "zeroFrame") (EListLit (EVar "f"))) (EVar "env"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "ELet") (EVar "m")) (EVar "True")) (EApp (EVar "PVar") (EVar "f"))) (EApp (EApp (EVar "stampExpr") (EVar "inner")) (EVar "e1"))) (EApp (EApp (EVar "stampExpr") (EVar "inner")) (EVar "e2"))))))
+(DFunDef false "stampLet" ((PVar "env") (PVar "m") (PVar "isRec") (PVar "pat") (PVar "e1") (PVar "e2")) (EApp (EApp (EApp (EApp (EApp (EVar "ELet") (EVar "m")) (EVar "isRec")) (EVar "pat")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e1"))) (EApp (EApp (EVar "stampExpr") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "pat"))) (EVar "env"))) (EVar "e2"))))
+(DTypeSig false "stampLetGroup" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "LetBind")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
+(DFunDef false "stampLetGroup" ((PVar "env") (PVar "binds") (PVar "body")) (EBlock (DoLet false false (PVar "groupScope") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EApp (EMethodRef "map") (EVar "letBindName")) (EVar "binds"))) (EVar "env"))) (DoExpr (EApp (EApp (EVar "ELetGroup") (EApp (EApp (EMethodRef "map") (EApp (EVar "stampLetBind") (EVar "groupScope"))) (EVar "binds"))) (EApp (EApp (EVar "stampExpr") (EVar "groupScope")) (EVar "body"))))))
+(DTypeSig false "stampLetBind" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "LetBind") (TyCon "LetBind"))))
+(DFunDef false "stampLetBind" ((PVar "groupScope") (PCon "LetBind" (PVar "name") (PVar "clauses"))) (EApp (EApp (EVar "LetBind") (EVar "name")) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampClause") (EVar "groupScope"))) (EVar "clauses"))))
+(DTypeSig false "stampClause" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "FunClause") (TyCon "FunClause"))))
+(DFunDef false "stampClause" ((PVar "groupScope") (PCon "FunClause" (PVar "pats") (PVar "body"))) (EApp (EApp (EVar "FunClause") (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EVar "groupScope"))) (EVar "body"))))
+(DTypeSig false "stampArm" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Arm") (TyCon "Arm"))))
+(DFunDef false "stampArm" ((PVar "env") (PCon "Arm" (PVar "pat") (PVar "gs") (PVar "body"))) (EBlock (DoLet false false (PVar "scope0") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "pat"))) (EVar "env"))) (DoLet false false (PTuple (PVar "gs2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EVar "scope0")) (EVar "gs"))) (DoExpr (EApp (EApp (EApp (EVar "Arm") (EVar "pat")) (EVar "gs2")) (EApp (EApp (EVar "stampExpr") (EVar "scope2")) (EVar "body"))))))
+(DTypeSig false "stampGuards" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "Guard")) (TyTuple (TyApp (TyCon "List") (TyCon "Guard")) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))))
+(DFunDef false "stampGuards" ((PVar "scope") (PList)) (ETuple (EListLit) (EVar "scope")))
+(DFunDef false "stampGuards" ((PVar "scope") (PCons (PCon "GBool" (PVar "e")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "rest2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EVar "scope")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EVar "GBool") (EApp (EApp (EVar "stampExpr") (EVar "scope")) (EVar "e"))) (EVar "rest2")) (EVar "scope2")))))
+(DFunDef false "stampGuards" ((PVar "scope") (PCons (PCon "GBind" (PVar "p") (PVar "e")) (PVar "rest"))) (EBlock (DoLet false false (PVar "e2") (EApp (EApp (EVar "stampExpr") (EVar "scope")) (EVar "e"))) (DoLet false false (PTuple (PVar "rest2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))) (EVar "scope"))) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EVar "GBind") (EVar "p")) (EVar "e2")) (EVar "rest2")) (EVar "scope2")))))
+(DTypeSig false "stampGuardArm" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "GuardArm") (TyCon "GuardArm"))))
+(DFunDef false "stampGuardArm" ((PVar "env") (PCon "GuardArm" (PVar "gs") (PVar "body"))) (EBlock (DoLet false false (PTuple (PVar "gs2") (PVar "scope2")) (EApp (EApp (EVar "stampGuards") (EVar "env")) (EVar "gs"))) (DoExpr (EApp (EApp (EVar "GuardArm") (EVar "gs2")) (EApp (EApp (EVar "stampExpr") (EVar "scope2")) (EVar "body"))))))
+(DTypeSig false "stampStmts" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyCon "DoStmt")) (TyApp (TyCon "List") (TyCon "DoStmt")))))
+(DFunDef false "stampStmts" (PWild (PList)) (EListLit))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoExpr" (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EVar "DoExpr") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoLet" (PVar "m") (PVar "r") (PVar "p") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EApp (EVar "DoLet") (EVar "m")) (EVar "r")) (EVar "p")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))) (EVar "env"))) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoBind" (PVar "p") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "DoBind") (EVar "p")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EBinOp "::" (EApp (EVar "zeroFrame") (EApp (EVar "patBindings") (EVar "p"))) (EVar "env"))) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoAssign" (PVar "x") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EVar "DoAssign") (EVar "x")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EBinOp "::" (EApp (EVar "zeroFrame") (EListLit (EVar "x"))) (EVar "env"))) (EVar "rest"))))
+(DFunDef false "stampStmts" ((PVar "env") (PCons (PCon "DoFieldAssign" (PVar "x") (PVar "fs") (PVar "e")) (PVar "rest"))) (EBinOp "::" (EApp (EApp (EApp (EVar "DoFieldAssign") (EVar "x")) (EVar "fs")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EApp (EApp (EVar "stampStmts") (EVar "env")) (EVar "rest"))))
+(DTypeSig false "stampInterp" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "InterpPart") (TyCon "InterpPart"))))
+(DFunDef false "stampInterp" (PWild (PCon "InterpStr" (PVar "s"))) (EApp (EVar "InterpStr") (EVar "s")))
+(DFunDef false "stampInterp" ((PVar "env") (PCon "InterpExpr" (PVar "e"))) (EApp (EVar "InterpExpr") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DTypeSig false "stampFieldAssign" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "FieldAssign") (TyCon "FieldAssign"))))
+(DFunDef false "stampFieldAssign" ((PVar "env") (PCon "FieldAssign" (PVar "n") (PVar "e"))) (EApp (EApp (EVar "FieldAssign") (EVar "n")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DTypeSig false "stampKv" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyTuple (TyCon "Expr") (TyCon "Expr")) (TyTuple (TyCon "Expr") (TyCon "Expr")))))
+(DFunDef false "stampKv" ((PVar "env") (PTuple (PVar "k") (PVar "v"))) (ETuple (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "k")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "v"))))
+(DTypeSig false "stampSection" (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))) (TyFun (TyCon "Section") (TyCon "Section"))))
+(DFunDef false "stampSection" (PWild (PCon "SecBare" (PVar "op"))) (EApp (EVar "SecBare") (EVar "op")))
+(DFunDef false "stampSection" ((PVar "env") (PCon "SecRight" (PVar "op") (PVar "e"))) (EApp (EApp (EVar "SecRight") (EVar "op")) (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))))
+(DFunDef false "stampSection" ((PVar "env") (PCon "SecLeft" (PVar "e") (PVar "op"))) (EApp (EApp (EVar "SecLeft") (EApp (EApp (EVar "stampExpr") (EVar "env")) (EVar "e"))) (EVar "op")))
+(DTypeSig false "stampDecl" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "Decl") (TyCon "Decl"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DFunDef" (PVar "p") (PVar "n") (PVar "pats") (PVar "body"))) (EApp (EApp (EApp (EApp (EVar "DFunDef") (EVar "p")) (EVar "n")) (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EListLit (EVar "top")))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DProp" (PVar "p") (PVar "n") (PVar "params") (PVar "body"))) (EApp (EApp (EApp (EApp (EVar "DProp") (EVar "p")) (EVar "n")) (EVar "params")) (EApp (EApp (EVar "stampExpr") (EListLit (EApp (EVar "zeroFrame") (EApp (EApp (EMethodRef "map") (EVar "propParamName")) (EVar "params"))) (EVar "top"))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DTest" (PVar "p") (PVar "n") (PVar "body"))) (EApp (EApp (EApp (EVar "DTest") (EVar "p")) (EVar "n")) (EApp (EApp (EVar "stampExpr") (EListLit (EVar "top"))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DBench" (PVar "p") (PVar "n") (PVar "body"))) (EApp (EApp (EApp (EVar "DBench") (EVar "p")) (EVar "n")) (EApp (EApp (EVar "stampExpr") (EListLit (EVar "top"))) (EVar "body"))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DLetGroup" (PVar "p") (PVar "binds"))) (EApp (EApp (EVar "DLetGroup") (EVar "p")) (EApp (EApp (EMethodRef "map") (EApp (EVar "stampLetBind") (EListLit (EVar "top")))) (EVar "binds"))))
+(DFunDef false "stampDecl" ((PVar "top") (PAs "d" (PRec "DInterface" ((rf "methods" None)) true))) (EVariantUpdate "DInterface" (EVar "d") ((fa "methods" (EApp (EApp (EMethodRef "map") (EApp (EVar "stampIfaceMethod") (EVar "top"))) (EVar "methods"))))))
+(DFunDef false "stampDecl" ((PVar "top") (PAs "d" (PRec "DImpl" ((rf "methods" None)) true))) (EVariantUpdate "DImpl" (EVar "d") ((fa "methods" (EApp (EApp (EMethodRef "map") (EApp (EVar "stampImplMethod") (EVar "top"))) (EVar "methods"))))))
+(DFunDef false "stampDecl" ((PVar "top") (PCon "DAttrib" (PVar "attrs") (PVar "inner"))) (EApp (EApp (EVar "DAttrib") (EVar "attrs")) (EApp (EApp (EVar "stampDecl") (EVar "top")) (EVar "inner"))))
+(DFunDef false "stampDecl" (PWild (PVar "d")) (EVar "d"))
+(DTypeSig false "stampIfaceMethod" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "IfaceMethod") (TyCon "IfaceMethod"))))
+(DFunDef false "stampIfaceMethod" (PWild (PCon "IfaceMethod" (PVar "nm") (PVar "ty") (PCon "None"))) (EApp (EApp (EApp (EVar "IfaceMethod") (EVar "nm")) (EVar "ty")) (EVar "None")))
+(DFunDef false "stampIfaceMethod" ((PVar "top") (PCon "IfaceMethod" (PVar "nm") (PVar "ty") (PCon "Some" (PCon "MethodDefault" (PVar "pats") (PVar "body"))))) (EApp (EApp (EApp (EVar "IfaceMethod") (EVar "nm")) (EVar "ty")) (EApp (EVar "Some") (EApp (EApp (EVar "MethodDefault") (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EListLit (EVar "top")))) (EVar "body"))))))
+(DTypeSig false "stampImplMethod" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyCon "ImplMethod") (TyCon "ImplMethod"))))
+(DFunDef false "stampImplMethod" ((PVar "top") (PCon "ImplMethod" (PVar "nm") (PVar "pats") (PVar "body"))) (EApp (EApp (EApp (EVar "ImplMethod") (EVar "nm")) (EVar "pats")) (EApp (EApp (EVar "stampExpr") (EBinOp "++" (EApp (EVar "paramZeroFrames") (EVar "pats")) (EListLit (EVar "top")))) (EVar "body"))))
+(DTypeSig true "stampBindingIds" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DFunDef false "stampBindingIds" ((PVar "decls")) (EBlock (DoLet false false (PVar "top") (EApp (EApp (EVar "numberFrom") (ELit (LInt 1))) (EApp (EVar "dedup") (EApp (EVar "topBinderNames") (EVar "decls"))))) (DoExpr (ETuple (EApp (EApp (EMethodRef "map") (EApp (EVar "stampDecl") (EVar "top"))) (EVar "decls")) (EVar "top")))))

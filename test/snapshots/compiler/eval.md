@@ -1,5 +1,5 @@
 # META
-source_lines=3450
+source_lines=3452
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
@@ -1107,6 +1107,8 @@ eval _ (ELit (LChar c)) = VChar c
 eval _ (ELit (LBool b)) = VBool b
 eval _ (ELit LUnit) = VUnit
 eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
+-- #837: EVarId is a resolve-only transparent tag; eval by name exactly as EVar.
+eval env (EVarId x _) = if startsWithAt x then VUnit else lookupEnv env x
 -- DORMANT consume arm for the §2.0 lexical-addressing EMIT half: handles an
 -- `EVarAt` node (produced by annotate.mdk's annotateProgram) by slot-indexing
 -- the frame the address names.  It is NOT wired into the eval pipeline — the
@@ -3936,6 +3938,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "eval" (PWild (PCon "ELit" (PCon "LBool" (PVar "b")))) (EApp (EVar "VBool") (EVar "b")))
 (DFunDef false "eval" (PWild (PCon "ELit" (PCon "LUnit"))) (EVar "VUnit"))
 (DFunDef false "eval" ((PVar "env") (PCon "EVar" (PVar "x"))) (EIf (EApp (EVar "startsWithAt") (EVar "x")) (EVar "VUnit") (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "x"))))
+(DFunDef false "eval" ((PVar "env") (PCon "EVarId" (PVar "x") PWild)) (EIf (EApp (EVar "startsWithAt") (EVar "x")) (EVar "VUnit") (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "x"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EVarAt" (PVar "x") (PVar "addr"))) (EIf (EApp (EVar "startsWithAt") (EVar "x")) (EVar "VUnit") (EApp (EApp (EApp (EVar "lookupAtAddr") (EVar "env")) (EVar "x")) (EVar "addr"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EMethodAt" (PVar "name") (PVar "routeRef") (PVar "implRef") (PVar "methodRef"))) (EApp (EApp (EApp (EApp (EApp (EVar "evalMethodAt") (EVar "env")) (EVar "name")) (EFieldAccess (EVar "routeRef") "value")) (EFieldAccess (EVar "implRef") "value")) (EFieldAccess (EVar "methodRef") "value")))
 (DFunDef false "eval" ((PVar "env") (PCon "EDictAt" (PVar "name") (PVar "routesRef"))) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "name"))) (EFieldAccess (EVar "routesRef") "value")))
@@ -5336,6 +5339,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "eval" (PWild (PCon "ELit" (PCon "LBool" (PVar "b")))) (EApp (EVar "VBool") (EVar "b")))
 (DFunDef false "eval" (PWild (PCon "ELit" (PCon "LUnit"))) (EVar "VUnit"))
 (DFunDef false "eval" ((PVar "env") (PCon "EVar" (PVar "x"))) (EIf (EApp (EVar "startsWithAt") (EVar "x")) (EVar "VUnit") (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "x"))))
+(DFunDef false "eval" ((PVar "env") (PCon "EVarId" (PVar "x") PWild)) (EIf (EApp (EVar "startsWithAt") (EVar "x")) (EVar "VUnit") (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "x"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EVarAt" (PVar "x") (PVar "addr"))) (EIf (EApp (EVar "startsWithAt") (EVar "x")) (EVar "VUnit") (EApp (EApp (EApp (EVar "lookupAtAddr") (EVar "env")) (EVar "x")) (EVar "addr"))))
 (DFunDef false "eval" ((PVar "env") (PCon "EMethodAt" (PVar "name") (PVar "routeRef") (PVar "implRef") (PVar "methodRef"))) (EApp (EApp (EApp (EApp (EApp (EVar "evalMethodAt") (EVar "env")) (EVar "name")) (EFieldAccess (EVar "routeRef") "value")) (EFieldAccess (EVar "implRef") "value")) (EFieldAccess (EVar "methodRef") "value")))
 (DFunDef false "eval" ((PVar "env") (PCon "EDictAt" (PVar "name") (PVar "routesRef"))) (EApp (EApp (EApp (EVar "applyDicts") (EVar "env")) (EApp (EApp (EVar "lookupEnv") (EVar "env")) (EVar "name"))) (EFieldAccess (EVar "routesRef") "value")))

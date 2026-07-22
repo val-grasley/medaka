@@ -1,5 +1,5 @@
 # META
-source_lines=338
+source_lines=340
 stages=DESUGAR,MARK
 # SOURCE
 -- Structural S-expression dump of the self-host AST, mirroring dev/astdump.ml
@@ -127,6 +127,8 @@ exprSexp (ELit l) = node "ELit" [litSexp l]
 -- same) and the parse-fixture / OCaml↔compiler sexp diff gates keep passing.
 exprSexp (ENumLit n _ _ _) = node "ELit" [node "LInt" [intToString n]]
 exprSexp (EVar x) = node "EVar" [escStr x]
+-- #837: EVarId renders as a bare EVar so every sexp/snapshot dump stays byte-identical.
+exprSexp (EVarId x _) = node "EVar" [escStr x]
 -- EVarAt/EMethodAt are elaborated nodes introduced by annotate/typecheck
 -- (post-resolve); programToSexp only ever serializes pre-annotate (desugared)
 -- ASTs, so these arms are unreachable.
@@ -401,6 +403,7 @@ programToSexp prog = joinNl (map declSexp prog)
 (DFunDef false "exprSexp" ((PCon "ELit" (PVar "l"))) (EApp (EApp (EVar "node") (ELit (LString "ELit"))) (EListLit (EApp (EVar "litSexp") (EVar "l")))))
 (DFunDef false "exprSexp" ((PCon "ENumLit" (PVar "n") PWild PWild PWild)) (EApp (EApp (EVar "node") (ELit (LString "ELit"))) (EListLit (EApp (EApp (EVar "node") (ELit (LString "LInt"))) (EListLit (EApp (EVar "intToString") (EVar "n")))))))
 (DFunDef false "exprSexp" ((PCon "EVar" (PVar "x"))) (EApp (EApp (EVar "node") (ELit (LString "EVar"))) (EListLit (EApp (EVar "escStr") (EVar "x")))))
+(DFunDef false "exprSexp" ((PCon "EVarId" (PVar "x") PWild)) (EApp (EApp (EVar "node") (ELit (LString "EVar"))) (EListLit (EApp (EVar "escStr") (EVar "x")))))
 (DFunDef false "exprSexp" ((PCon "EVarAt" PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: programToSexp serializes pre-annotate ASTs; EVarAt is introduced by annotateProgram"))))
 (DFunDef false "exprSexp" ((PCon "EMethodAt" PWild PWild PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: programToSexp serializes pre-annotate ASTs; EMethodAt is introduced by typecheck elaboration"))))
 (DFunDef false "exprSexp" ((PCon "EDictAt" PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: programToSexp serializes pre-annotate ASTs; EDictAt is introduced by typecheck elaboration"))))
@@ -573,6 +576,7 @@ programToSexp prog = joinNl (map declSexp prog)
 (DFunDef false "exprSexp" ((PCon "ELit" (PVar "l"))) (EApp (EApp (EVar "node") (ELit (LString "ELit"))) (EListLit (EApp (EVar "litSexp") (EVar "l")))))
 (DFunDef false "exprSexp" ((PCon "ENumLit" (PVar "n") PWild PWild PWild)) (EApp (EApp (EVar "node") (ELit (LString "ELit"))) (EListLit (EApp (EApp (EVar "node") (ELit (LString "LInt"))) (EListLit (EApp (EVar "intToString") (EVar "n")))))))
 (DFunDef false "exprSexp" ((PCon "EVar" (PVar "x"))) (EApp (EApp (EVar "node") (ELit (LString "EVar"))) (EListLit (EApp (EVar "escStr") (EVar "x")))))
+(DFunDef false "exprSexp" ((PCon "EVarId" (PVar "x") PWild)) (EApp (EApp (EVar "node") (ELit (LString "EVar"))) (EListLit (EApp (EVar "escStr") (EVar "x")))))
 (DFunDef false "exprSexp" ((PCon "EVarAt" PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: programToSexp serializes pre-annotate ASTs; EVarAt is introduced by annotateProgram"))))
 (DFunDef false "exprSexp" ((PCon "EMethodAt" PWild PWild PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: programToSexp serializes pre-annotate ASTs; EMethodAt is introduced by typecheck elaboration"))))
 (DFunDef false "exprSexp" ((PCon "EDictAt" PWild PWild)) (EApp (EVar "panic") (ELit (LString "unreachable: programToSexp serializes pre-annotate ASTs; EDictAt is introduced by typecheck elaboration"))))

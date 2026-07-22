@@ -71,6 +71,7 @@ import support.util.{
   joinDot,
   filterList,
   anyList,
+  dedup,
 }
 
 -- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
@@ -2570,3 +2571,222 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
   Some (Loc f sl sc _ _) =>
     let ff = if f == "" then fallbackFile else f
     "\{ff}:\{intToString sl}:\{intToString sc}: \{ppResError e}"
+
+-- ── #837: binding-id minting (stampBindingIds) ──────────────────────────────
+-- Mints a monotonic unique Int per TOP-LEVEL value binder and stamps every
+-- surviving plain `EVar x` occurrence with the id of the binding it resolves to
+-- (`EVarId x id`), so typecheck's `schemeObligationsRef` can key by (name, id)
+-- instead of the bare name — retiring the body-scoped snapshot/restore windows.
+--
+-- INCREMENT 1 mints only top-level binders.  Local / lambda / pattern / where
+-- binders are pushed into scope as a frame of (name, 0) so SHADOWING is correct
+-- (an inner `g` still hides a top-level `g`), but their occurrences carry the
+-- sentinel id 0 and typecheck reads those through the bare-name fallback (exactly
+-- today's behaviour).  TODO(#837 incr2): mint where-group / local binders too so
+-- `bodyLocalSchemesRef` / `isBodyLocalScheme` can be retired.
+--
+-- Runs AFTER mark, BEFORE typecheck.  The walk is a pure deterministic
+-- left-to-right traversal, so ids are stable run-to-run and NEVER reach the
+-- emitter (the EVarId node is stripped by core_ir_lower).  Frame model mirrors
+-- annotate.mdk's `List (List String)` stack, carrying (name, id): the OUTERMOST
+-- frame is the top-level binders (real ids); inner frames are locals (id 0).
+
+-- innermost frame first; first match wins (shadowing).  0 = unminted local.
+lookupBindId : List (List (String, Int)) -> String -> Int
+lookupBindId [] _ = 0
+lookupBindId (frame::rest) n = match lookupAssoc n frame
+  Some id => id
+  None => lookupBindId rest n
+
+-- a local (param/let/match/where) scope frame: every name at the sentinel id 0.
+zeroFrame : List String -> List (String, Int)
+zeroFrame names = map (n => (n, 0)) names
+
+-- per-parameter frames (applyClosure pushes one frame per param, innermost last).
+paramZeroFrames : List Pat -> List (List (String, Int))
+paramZeroFrames pats = reverseL (map (p => zeroFrame (patBindings p)) pats)
+
+-- top-level value binder names, in decl order (DFunDef + DLetGroup members).
+topBinderNames : List Decl -> List String
+topBinderNames [] = []
+topBinderNames ((DFunDef _ n _ _)::rest) = n :: topBinderNames rest
+topBinderNames ((DLetGroup _ binds)::rest) = map letBindName binds
+  ++ topBinderNames rest
+topBinderNames ((DAttrib _ d)::rest) = topBinderNames (d::rest)
+topBinderNames (_::rest) = topBinderNames rest
+
+-- number distinct names monotonically from `i` (ids are 1-based; 0 is sentinel).
+numberFrom : Int -> List String -> List (String, Int)
+numberFrom _ [] = []
+numberFrom i (n::rest) = (n, i) :: numberFrom (i + 1) rest
+
+-- ── the walk ────────────────────────────────────────────────────────────────
+stampExpr : List (List (String, Int)) -> Expr -> Expr
+stampExpr _ (ELit l) = ELit l
+stampExpr _ (ENumLit n r d lx) = ENumLit n r d lx
+stampExpr _ (EMethodRef m) = EMethodRef m
+stampExpr _ (EDictApp d) = EDictApp d
+stampExpr _ (EMethodAt name r ir mr) = EMethodAt name r ir mr
+stampExpr _ (EDictAt name r) = EDictAt name r
+stampExpr _ (EVarAt n a) = EVarAt n a
+stampExpr _ (EVarId n i) = EVarId n i
+stampExpr env (EVar n)
+  | isHint n = EVar n
+  | otherwise = EVarId n (lookupBindId env n)
+stampExpr env (EApp f x) = EApp (stampExpr env f) (stampExpr env x)
+stampExpr env (ELam pats body) =
+  ELam pats (stampExpr (paramZeroFrames pats ++ env) body)
+stampExpr env (ELet m isRec pat e1 e2) = stampLet env m isRec pat e1 e2
+stampExpr env (ELetGroup binds body) = stampLetGroup env binds body
+stampExpr env (EMatch e0 arms) =
+  EMatch (stampExpr env e0) (map (stampArm env) arms)
+stampExpr env (EIf c t el) =
+  EIf (stampExpr env c) (stampExpr env t) (stampExpr env el)
+stampExpr env (EBinOp op a b r) =
+  EBinOp op (stampExpr env a) (stampExpr env b) r
+stampExpr env (EUnOp op a r) = EUnOp op (stampExpr env a) r
+stampExpr env (EInfix op a b) = EInfix op (stampExpr env a) (stampExpr env b)
+stampExpr env (EFieldAccess e0 f r) = EFieldAccess (stampExpr env e0) f r
+stampExpr env (ETuple es) = ETuple (map (stampExpr env) es)
+stampExpr env (EListLit es) = EListLit (map (stampExpr env) es)
+stampExpr env (EArrayLit es) = EArrayLit (map (stampExpr env) es)
+stampExpr env (ERangeList lo hi incl) =
+  ERangeList (stampExpr env lo) (stampExpr env hi) incl
+stampExpr env (ERangeArray lo hi incl) =
+  ERangeArray (stampExpr env lo) (stampExpr env hi) incl
+stampExpr env (ESlice e0 lo hi incl r) =
+  ESlice (stampExpr env e0) (stampExpr env lo) (stampExpr env hi) incl r
+stampExpr env (EIndex e0 i r) = EIndex (stampExpr env e0) (stampExpr env i) r
+stampExpr env (EAnnot e0 t) = EAnnot (stampExpr env e0) t
+stampExpr env (EHeadAnnot e0 t) = EHeadAnnot (stampExpr env e0) t
+stampExpr env (EBlock stmts) = EBlock (stampStmts env stmts)
+stampExpr env (EDo stmts) = EDo (stampStmts env stmts)
+stampExpr env (EStringInterp parts) =
+  EStringInterp (map (stampInterp env) parts)
+stampExpr env (EGuards arms) = EGuards (map (stampGuardArm env) arms)
+stampExpr env (ERecordCreate name fs) =
+  ERecordCreate name (map (stampFieldAssign env) fs)
+stampExpr env (ERecordUpdate e0 fs r) =
+  ERecordUpdate (stampExpr env e0) (map (stampFieldAssign env) fs) r
+stampExpr env (EVariantUpdate con e0 fs) =
+  EVariantUpdate con (stampExpr env e0) (map (stampFieldAssign env) fs)
+stampExpr env (EMapLit n kvs) = EMapLit n (map (stampKv env) kvs)
+stampExpr env (ESetLit n es) = ESetLit n (map (stampExpr env) es)
+stampExpr env (EAsPat x e0) = EAsPat x (stampExpr env e0)
+stampExpr env (ESection s) = ESection (stampSection env s)
+stampExpr env (ELoc l e) = ELoc l (stampExpr env e)
+stampExpr env (EDoOrigin l e) = EDoOrigin l (stampExpr env e)
+
+stampLet : List (List (String, Int)) -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
+stampLet env m True (PVar f) e1 e2 =
+  let inner = zeroFrame [f] :: env
+  ELet m True (PVar f) (stampExpr inner e1) (stampExpr inner e2)
+stampLet env m isRec pat e1 e2 =
+  ELet
+    m
+    isRec
+    pat
+    (stampExpr env e1)
+    (stampExpr (zeroFrame (patBindings pat) :: env) e2)
+
+stampLetGroup : List (List (String, Int)) -> List LetBind -> Expr -> Expr
+stampLetGroup env binds body =
+  let groupScope = zeroFrame (map letBindName binds) :: env
+  ELetGroup (map (stampLetBind groupScope) binds) (stampExpr groupScope body)
+
+stampLetBind : List (List (String, Int)) -> LetBind -> LetBind
+stampLetBind groupScope (LetBind name clauses) =
+  LetBind name (map (stampClause groupScope) clauses)
+
+stampClause : List (List (String, Int)) -> FunClause -> FunClause
+stampClause groupScope (FunClause pats body) =
+  FunClause pats (stampExpr (paramZeroFrames pats ++ groupScope) body)
+
+stampArm : List (List (String, Int)) -> Arm -> Arm
+stampArm env (Arm pat gs body) =
+  let scope0 = zeroFrame (patBindings pat) :: env
+  let (gs2, scope2) = stampGuards scope0 gs
+  Arm pat gs2 (stampExpr scope2 body)
+
+stampGuards : List (List (String, Int)) -> List Guard -> (List Guard, List (List (String, Int)))
+stampGuards scope [] = ([], scope)
+stampGuards scope ((GBool e)::rest) =
+  let (rest2, scope2) = stampGuards scope rest
+  (GBool (stampExpr scope e) :: rest2, scope2)
+stampGuards scope ((GBind p e)::rest) =
+  let e2 = stampExpr scope e
+  let (rest2, scope2) = stampGuards (zeroFrame (patBindings p) :: scope) rest
+  (GBind p e2 :: rest2, scope2)
+
+stampGuardArm : List (List (String, Int)) -> GuardArm -> GuardArm
+stampGuardArm env (GuardArm gs body) =
+  let (gs2, scope2) = stampGuards env gs
+  GuardArm gs2 (stampExpr scope2 body)
+
+stampStmts : List (List (String, Int)) -> List DoStmt -> List DoStmt
+stampStmts _ [] = []
+stampStmts env ((DoExpr e)::rest) =
+  DoExpr (stampExpr env e) :: stampStmts env rest
+stampStmts env ((DoLet m r p e)::rest) =
+  DoLet m r p (stampExpr env e) ::
+    stampStmts (zeroFrame (patBindings p) :: env) rest
+stampStmts env ((DoBind p e)::rest) =
+  DoBind p (stampExpr env e) ::
+    stampStmts (zeroFrame (patBindings p) :: env) rest
+stampStmts env ((DoAssign x e)::rest) =
+  DoAssign x (stampExpr env e) :: stampStmts (zeroFrame [x] :: env) rest
+stampStmts env ((DoFieldAssign x fs e)::rest) =
+  DoFieldAssign x fs (stampExpr env e) :: stampStmts env rest
+
+stampInterp : List (List (String, Int)) -> InterpPart -> InterpPart
+stampInterp _ (InterpStr s) = InterpStr s
+stampInterp env (InterpExpr e) = InterpExpr (stampExpr env e)
+
+stampFieldAssign : List (List (String, Int)) -> FieldAssign -> FieldAssign
+stampFieldAssign env (FieldAssign n e) = FieldAssign n (stampExpr env e)
+
+stampKv : List (List (String, Int)) -> (Expr, Expr) -> (Expr, Expr)
+stampKv env (k, v) = (stampExpr env k, stampExpr env v)
+
+stampSection : List (List (String, Int)) -> Section -> Section
+stampSection _ (SecBare op) = SecBare op
+stampSection env (SecRight op e) = SecRight op (stampExpr env e)
+stampSection env (SecLeft e op) = SecLeft (stampExpr env e) op
+
+-- ── decl-level walk ─────────────────────────────────────────────────────────
+-- Each top-level fn's params become per-parameter (id-0) frames over the top
+-- frame; sibling top-level names resolve through `top` to their minted id.
+stampDecl : List (String, Int) -> Decl -> Decl
+stampDecl top (DFunDef p n pats body) =
+  DFunDef p n pats (stampExpr (paramZeroFrames pats ++ [top]) body)
+stampDecl top (DProp p n params body) =
+  DProp p n params (stampExpr [zeroFrame (map propParamName params), top] body)
+stampDecl top (DTest p n body) = DTest p n (stampExpr [top] body)
+stampDecl top (DBench p n body) = DBench p n (stampExpr [top] body)
+stampDecl top (DLetGroup p binds) = DLetGroup p (map (stampLetBind [top]) binds)
+stampDecl top (d@(DInterface { methods, ... })) =
+  DInterface { d | methods = map (stampIfaceMethod top) methods }
+stampDecl top (d@(DImpl { methods, ... })) =
+  DImpl { d | methods = map (stampImplMethod top) methods }
+stampDecl top (DAttrib attrs inner) = DAttrib attrs (stampDecl top inner)
+stampDecl _ d = d
+
+stampIfaceMethod : List (String, Int) -> IfaceMethod -> IfaceMethod
+stampIfaceMethod _ (IfaceMethod nm ty None) = IfaceMethod nm ty None
+stampIfaceMethod top (IfaceMethod nm ty (Some (MethodDefault pats body))) =
+  IfaceMethod
+    nm
+    ty
+    (Some (MethodDefault pats (stampExpr (paramZeroFrames pats ++ [top]) body)))
+
+stampImplMethod : List (String, Int) -> ImplMethod -> ImplMethod
+stampImplMethod top (ImplMethod nm pats body) =
+  ImplMethod nm pats (stampExpr (paramZeroFrames pats ++ [top]) body)
+
+-- Mint per-top-level-binder ids and stamp all occurrences.  Returns the stamped
+-- program AND `defIds` (each minted top-level binder → its id), which typecheck's
+-- `registerSchemeObligations` reads to key a top-level member's obligations.
+export stampBindingIds : List Decl -> (List Decl, List (String, Int))
+stampBindingIds decls =
+  let top = numberFrom 1 (dedup (topBinderNames decls))
+  (map (stampDecl top) decls, top)

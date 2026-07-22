@@ -1103,6 +1103,8 @@ eval _ (ELit (LChar c)) = VChar c
 eval _ (ELit (LBool b)) = VBool b
 eval _ (ELit LUnit) = VUnit
 eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
+-- #837: EVarId is a resolve-only transparent tag; eval by name exactly as EVar.
+eval env (EVarId x _) = if startsWithAt x then VUnit else lookupEnv env x
 -- DORMANT consume arm for the §2.0 lexical-addressing EMIT half: handles an
 -- `EVarAt` node (produced by annotate.mdk's annotateProgram) by slot-indexing
 -- the frame the address names.  It is NOT wired into the eval pipeline — the
