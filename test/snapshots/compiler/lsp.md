@@ -1,5 +1,5 @@
 # META
-source_lines=1703
+source_lines=1704
 stages=DESUGAR,MARK
 # SOURCE
 -- lint-disable-file rule-duplicate-body
@@ -895,6 +895,7 @@ hasExplicitSig (d::rest) name = match innerDecl d
 
 -- Column right after the name on the decl's start line (0-based `line`).  Scan
 -- from char 0 over identifier chars; None if the line has no leading identifier.
+-- Intentionally kept (not retired) as `inlayNamePos`'s `None` fallback — full F5 retirement stays deferred.
 columnAfterName : String -> Int -> Option Int
 columnAfterName src line =
   let arr = stringToChars src

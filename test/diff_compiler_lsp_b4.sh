@@ -113,7 +113,16 @@ check() {
 #   line 1: triple : Int -> Int    (explicit signature)
 #   line 2: triple x = x * 3
 #   line 3: result = double 5
-DOC_TEXT='double x = x + x\ntriple : Int -> Int\ntriple x = x * 3\nresult = double 5\n'
+#   line 4: export quad x = x * 4   (unsignatured, `export`-prefixed — NOTE
+#     `public` alone is a DData-only modifier, `afterPublicFor` fatals on
+#     anything else, so a value binding can only be `export`-prefixed, not
+#     `public export`). #331/PR #856 review: every prior fixture here was
+#     col-0-only, so it could not discriminate `inlayNamePos`'s real
+#     name-Loc end column (11 — "export " is 7 chars, "quad" is 4 more) from
+#     the `columnAfterName` heuristic it superseded, which would have scanned
+#     the leading identifier run from char 0 and landed after "export"
+#     (col 6) — the WRONG position. Hand-verified: 'export quad x = x * 4'.find('quad') == 7.
+DOC_TEXT='double x = x + x\ntriple : Int -> Int\ntriple x = x * 3\nresult = double 5\nexport quad x = x * 4\n'
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
 DIDOPEN='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b4.mdk","languageId":"medaka","version":1,"text":"'"$DOC_TEXT"'"}}}'
 EXIT='{"jsonrpc":"2.0","method":"exit","params":{}}'
@@ -258,10 +267,19 @@ def norm(xs):
 ss, oo = norm(s), norm(o)
 # `triple` (line 1/2) has an explicit signature → no hint; double/result do.
 hinted_lines = {l for (l, _, _, _) in ss}
+# line 4 ("export quad x = x * 4") must hint at character 11 — the REAL
+# end-of-name column ("export " is 7 chars + "quad" is 4 more) — not 6, which
+# is where the superseded columnAfterName heuristic would have landed (it
+# scans the leading identifier run from char 0, so it would stop right after
+# "export"). This is the discriminating assertion #331/PR #856's review
+# asked for: every OTHER fixture here is col-0-only and can't tell
+# inlayNamePos apart from the heuristic it replaced.
+quad_hints = [(l, c) for (l, c, lbl, _) in ss if l == 4]
 ok = (ss == oo
       and 0 in hinted_lines        # double
       and 1 not in hinted_lines    # triple : Int -> Int (signature line)
-      and 2 not in hinted_lines)   # triple x = x * 3 (already-signatured name)
+      and 2 not in hinted_lines    # triple x = x * 3 (already-signatured name)
+      and quad_hints == [(4, 11)])  # export quad — real name-end column
 sys.exit(0 if ok else 1)
 PY
 check "inlayHint unsignatured-only, pos+label == OCaml" "$?"

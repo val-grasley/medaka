@@ -1,0 +1,11 @@
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+{"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 3, "col": 19}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 5, "col": 17}}}
+{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 8, "col": 15}}}
+{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 10, "col": 12}}}
+{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 12, "col": 14}}}
+{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 14, "col": 7}}}
+{"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 16, "col": 8}}}
+{"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/prefixed_decls.mdk", "line": 19, "col": 19}}}
+{"jsonrpc": "2.0", "id": 10, "method": "shutdown", "params": {}}

@@ -1,0 +1,20 @@
+-- Prefixed/non-bare decl-kind sample (medaka_symbols/medaka_definition #331
+-- coverage, PR #856 review follow-up) — public export/export/extern/let rec/
+-- an @attrib-wrapped decl, none of which any other mcp_fixtures source uses.
+public export data Widget = MkWidget Int
+
+export interface Sized a where
+  size : a -> Int
+
+export newtype Tag = MkTag String
+
+export type Alias = Int
+
+export effect Net
+
+extern jsPeek : Int -> Int
+
+let rec spin n = spin n
+
+@deprecated "use spin2"
+public export data Old = MkOld Int
