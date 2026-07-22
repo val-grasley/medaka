@@ -85,9 +85,13 @@ dataVariantsNFor : String -> Token -> Parser (List Variant)
 declBlockRhs : Decl -> Bool
 declChainLines : Array Token -> Array Int -> Decl -> Int -> Int -> List Int
 declChainTopOp : Decl -> Option String
+declNameSpanOf : Array Token -> Array (Int, Int) -> Array Int -> (Decl, Int, Int) -> Option Loc
+declNameTokIdx : Array Token -> Decl -> Int -> Option Int
+declNameTokIdxAt : Array Token -> Decl -> Int -> Option Int
 declPosEndLine : DeclPos -> Int
 declPosLine : DeclPos -> Int
-declPosOf : Array Token -> Array Int -> (Decl, Int, Int) -> DeclPos
+declPosNameLoc : DeclPos -> Option Loc
+declPosOf : Array Token -> Array Int -> Array (Int, Int) -> Array Int -> (Decl, Int, Int) -> DeclPos
 declThenNoise : Parser Decl
 declWithSpan : Parser (Decl, Int, Int)
 deepenLeftover : String -> Array Token -> Array Int -> Int -> Int -> ParseError
@@ -216,9 +220,11 @@ isDataDecl : Decl -> Bool
 isForeignKwTok : Token -> Bool
 isIntMinLit : Int -> Bool
 isLayoutTok : Token -> Bool
+isLeadingModifierTok : Token -> Bool
 isNoiseTok : Token -> Bool
 isOpenDelim : Token -> Bool
 isPlainIdentTok : Token -> Bool
+isTStringTok : Token -> Bool
 joinComma : List String -> String
 joinSemi : List String -> String
 kvElemToField : Expr -> FieldAssign
@@ -262,6 +268,7 @@ listFor : Token -> Parser Expr
 listRest : Expr -> Token -> Parser Expr
 locLineStartsRef : Ref (Array Int)
 locOfSpan : Int -> Int -> Loc
+locOfSpanWith : Array (Int, Int) -> Array Int -> Int -> Int -> Loc
 locOffsRef : Ref (Array (Int, Int))
 locSrcRef : Ref String
 locateOffset : Array Token -> Array Int -> Int -> Int -> Int
@@ -460,6 +467,7 @@ semicolonMsg : String
 sepBy1 : Parser a -> Parser b -> Parser (List a)
 sepThen : Parser a -> Parser b -> Parser b
 setLocState : String -> Array (Int, Int) -> Unit
+skipLeadingModifiers : Array Token -> Int -> Int
 skipNewlines : Parser Unit
 skipNlFor : Token -> Parser Unit
 skipNoise : Parser Unit
@@ -476,7 +484,10 @@ stringLitFor : Token -> Parser String
 stringLitP : Parser String
 stripLoc : Expr -> Expr
 tokEndOffsetAt : Int -> Int
+tokEndOffsetAtArr : Array (Int, Int) -> Int -> Int
+tokIdxOrNone : Array Token -> Int -> Option Int
 tokOffsetAt : Int -> Int
+tokOffsetAtArr : Array (Int, Int) -> Int -> Int
 tupleCtorTailFor : Int -> Token -> Parser Ty
 tupleCtorTyName : Int -> String
 tupleCtorTyOfArity : Int -> Parser Ty
