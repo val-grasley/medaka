@@ -1924,22 +1924,108 @@ recordLocalBind name v =
 -- is the compiler analog of the oracle's constraint_obligations + check_constraint_
 -- obligations: pendingDictApps routes the dict, this list checks the impl exists.
 
--- PERF: `pendingCallObligations`' length in O(1) — see `pendingImplObligationsN`.
--- processSCC brackets each top-level group with a length-before / length-after pair
--- (three reads per group), and this list is never trimmed, so walking it to measure
--- its length was O(N) per group — O(N²) over a large file.  Mutated ONLY by
--- `resetState` and `pushCallObl`.
+-- #841/#838 I1: `Windowed a` — a list+counter pair (formerly kept in step "by
+-- convention" across resetState/push/error-rollback, per-channel) as ONE value whose
+-- ONLY mutators are its own six ops.  wPush/wReset/wRestore are the sole writers, so
+-- the invariant cannot drift; wMark/wWindow replace the `N0 = …N.value` snapshot +
+-- `takeFirst (…N.value - N0) …value` bracket pattern every channel repeats.  #838 I1
+-- ports ONLY `pendingCallObligations`/`pendingCallObligationsN` onto this — see
+-- `compiler/types/typecheck.mdk`'s `obls` field below.  `pendingImplObligations` and
+-- `pendingDictApps` are deliberately left AS-IS (later increments, #838 §5.1).
+data Windowed a = Windowed { items : Ref (List a), n : Ref Int }
 
--- One obligation per PREDICATE: (iface, argument VECTOR, loc).  A 1-param
--- interface pushes a singleton vector; `Ix a i` pushes [a, i] JOINTLY, so the
--- checker can ask "is there an impl of Ix for THIS pair" rather than two
--- unanswerable questions about `a` and `i` separately (#607).
-pushCallObl : (String, List Mono, Option Loc) -> Unit
-pushCallObl obl =
-  let _ = setRef perRun.value.pendingCallObligations (obl::perRun.value.pendingCallObligations.value)
-  setRef
-    perRun.value.pendingCallObligationsN
-    (perRun.value.pendingCallObligationsN.value + 1)
+wNew : Unit -> Windowed a
+wNew _ = Windowed { items = Ref [], n = Ref 0 }
+
+-- the ONLY reset.  Unused in #838 I1 — `freshPerRun` re-mints `obls` via `wNew`
+-- rather than resetting an existing one (per-module reset is a whole-PerRun re-mint
+-- here, not a per-field reset), so this call channel never needs a reset-in-place.
+-- Kept as part of the `Windowed` API surface for #841/#838's later increments
+-- (I4/I5, when `pendingImplObligations`/`pendingDictApps` port onto it too).
+wReset : Windowed a -> Unit
+-- lint-disable-next-line rule-dead-code
+wReset w =
+  let _ = setRef w.items []
+  setRef w.n 0
+
+-- the ONLY extend.
+wPush : Windowed a -> a -> Unit
+wPush w x =
+  let _ = setRef w.items (x::w.items.value)
+  setRef w.n (w.n.value + 1)
+
+-- O(1) length snapshot, replacing a channel's `…N.value` read.
+wMark : Windowed a -> Int
+wMark w = w.n.value
+
+-- recover exactly the items pushed since [mark] (consed on the front, so
+-- `takeFirst` recovers them in push order).
+wWindow : Windowed a -> Int -> List a
+wWindow w mark = takeFirst (w.n.value - mark) w.items.value
+
+-- for an error-rollback window (inferUserImplBodies): capture both refs together.
+wSnapshot : Windowed a -> (List a, Int)
+wSnapshot w = (w.items.value, w.n.value)
+
+-- the ONLY rollback.
+wRestore : Windowed a -> (List a, Int) -> Unit
+wRestore w snap =
+  let _ = setRef w.items (fst snap)
+  setRef w.n (snd snap)
+
+-- #838 I1 (DESIGN.md §2.2): the unified obligation record.  `pred.args` is the
+-- ALREADY-PROJECTED dispatch/argument vector — exactly the call channel's existing
+-- shape (contrast the impl channel's un-projected method type, out of scope this
+-- increment).  `originId` is the #837 binding id of the binding this obligation was
+-- DEFERRED BY (0 = anchorless/local/cross-module, mirroring incr1's id-0 fallback);
+-- populated now so a later increment does not re-key every record (#838 §2.2).
+-- `prov` is documentary in I1 — the checker below does not yet branch on it (that is
+-- I2's uniform-deferral work); it is carried now so I2 does not need a second
+-- migration to add it.
+data Predicate = Predicate { iface : String, args : List Mono }
+
+data Provenance =
+  -- +,-,*,/,%, ==,!=,<,>,<=,>=, ++, unary -  (recordIfaceObligation; impl channel, not yet ported)
+  | POperator
+  -- a numeric literal's Num obligation  (impl channel, not yet ported)
+  | PNumLit
+  -- a registered interface-method occurrence  (impl channel, not yet ported)
+  | PMethodOcc
+  -- a constrained-fn call's shattered dict slot / signature constraint occurrence
+  | PCallSlot
+  -- re-instantiation of a binding's deferred predicate (schemeObligationsRef)
+  | PSchemeReinst
+  -- a forwarded enclosing-dict slot  (dict channel, not yet ported)
+  | PDictFwd
+  -- a method-level `=>` constraint slot  (#818, not yet recorded — I3)
+  | PMethodLevel
+
+data UObligation =
+  | UObligation {
+      pred : Predicate,
+      originId : Int,
+      prov : Provenance,
+      loc : Option Loc,
+    }
+
+-- The single recorder for the (now-ported) call channel: every producer becomes a
+-- thin caller stamping its own provenance.
+recordObl : Predicate -> Int -> Provenance -> Option Loc -> Unit
+recordObl p originId prov loc = wPush
+  perRun.value.obls
+  UObligation { pred = p, originId = originId, prov = prov, loc = loc }
+
+-- #838 I1: project a ported UObligation back to the pre-#838 tuple shape
+-- `(iface, argument vector, loc)`, for the many downstream consumers
+-- (registerLocalScheme/registerSchemeObligations/checkSigConstraintCoverage/
+-- checkDefaultMethodRigidity/checkImplMethodRigidity/numCallObls/…) that stay on the
+-- old shape this increment — only the storage + its own checker move in I1 (#838 §5.2).
+oblAsTuple : UObligation -> (String, List Mono, Option Loc)
+oblAsTuple o = (o.pred.iface, o.pred.args, o.loc)
+
+-- the call channel's window, in the pre-#838 tuple shape (see oblAsTuple).
+callOblsWindow : Int -> List (String, List Mono, Option Loc)
+callOblsWindow mark = map oblAsTuple (wWindow perRun.value.obls mark)
 
 -- #11 soundness (native obligation hole, ALWAYS-ON, independent of the dict-
 -- elaboration machinery): per top-level binding, the deferred impl obligations it
@@ -2005,8 +2091,9 @@ pushCallObl obl =
 -- impl → a concrete RKey to it; ≥2 → an AmbiguousImpl error.  Recorded from the same
 -- `expanded` (iface, id) pairing inferDictAtFound already builds for recordCallObligations.
 
--- PERF: `pendingDictApps`' length in O(1) — same O(N²)-per-group length scan as
--- `pendingCallObligationsN`.  Mutated ONLY by `resetState` and `pushDictApp`.
+-- PERF: `pendingDictApps`' length in O(1) — same O(N²)-per-group length scan the call
+-- channel had before #838 I1 ported it onto `Windowed` (see `wMark` above).  Mutated
+-- ONLY by `resetState` and `pushDictApp`.
 
 pushDictApp : (Ref (List Route), List Mono, List String) -> Unit
 pushDictApp app =
@@ -2639,9 +2726,11 @@ hadMatchWarnings _ = match driverState.value.matchWarnings.value
 -- resetState clears" == "what PerRun holds" — enforced by the constructor: a new per-module
 -- accumulator cannot be added without appearing in freshPerRun (and thus the reset).  This
 -- is a record OF Refs (fields stay `Ref …`), NOT a record of values: the hot accumulators
--- (pendingSites, typeErrors, pendingCallObligations, activeDictVars, …) are pushed with
+-- (pendingSites, typeErrors, pendingImplObligations, activeDictVars, …) are pushed with
 -- `setRef x (v :: x.value)`, so the field must be a Ref for that to stay one Ref-write — a
--- record of values would rebuild the whole 58-field record on every push.
+-- record of values would rebuild the whole 58-field record on every push.  (`obls`, #838
+-- I1, is the one exception: a small `Windowed a` VALUE whose own two fields are Refs —
+-- see `wPush` — so pushing through it is still one Ref-write, not a whole-record rebuild.)
 -- (#158 PR4 extracted shadowHeadCtxRef OUT of here into `Toggles`; its resetState clearing is
 -- preserved by freshToggles being minted in the same resetState — see resetState below.)
 data PerRun = PerRun {
@@ -2687,8 +2776,7 @@ data PerRun = PerRun {
     currentImportOriginsRef : Ref (List (String, String)),
     pendingDictApps : Ref (List (Ref (List Route), List Mono, List String)),
     pendingDictAppsN : Ref Int,
-    pendingCallObligations : Ref (List (String, List Mono, Option Loc)),
-    pendingCallObligationsN : Ref Int,
+    obls : Windowed UObligation,  -- #838 I1: the call channel (pendingCallObligations/N), ported onto Windowed
     schemeObligationsRef : Ref (List ((String, Int), List (String, List Int))),  -- #837: keyed by (binding-name, binding-id) — the id from resolve's
     schemeDefIdsRef : Ref (List (String, Int)),  -- stampBindingIds, so a where-helper `g`'s obligations can no longer leak
     methodConstraintsRef : Ref (List (String, List Int)),  -- onto an unrelated top-level `g` (retires the three snapshot/restore windows).
@@ -2755,8 +2843,7 @@ freshPerRun _ = PerRun {
   currentImportOriginsRef = Ref [],
   pendingDictApps = Ref [],
   pendingDictAppsN = Ref 0,
-  pendingCallObligations = Ref [],
-  pendingCallObligationsN = Ref 0,
+  obls = wNew (),
   schemeObligationsRef = Ref [],
   schemeDefIdsRef = Ref [],
   methodConstraintsRef = Ref [],
@@ -4283,7 +4370,7 @@ recordCallObligations (iface::ifs) (mono::ms)
     -- punch-list item 3), which moves emitted arity and is deliberately NOT
     -- done here.  The joint obligation for such a predicate is supplied by the
     -- declared-context path (declaredSchemeOblsFor); this path stays as-is.
-    let _ = pushCallObl (iface, [mono], currentLoc.value)
+    let _ = recordObl (Predicate { iface = iface, args = [mono] }) 0 PCallSlot currentLoc.value
     recordCallObligations ifs ms
 
 -- String-keyed assoc lookup over funConstraintIfacesRef (returns the iface name list).
@@ -4489,7 +4576,7 @@ blockRecLet env x e =
   let _ = checkRecBindNonFunction x e  -- #799
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
-  let callN0 = perRun.value.pendingCallObligationsN.value
+  let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
@@ -4508,7 +4595,7 @@ blockLet : TcEnv -> Pat -> Expr -> TcEnv
 blockLet env (PVar x) e =
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
-  let callN0 = perRun.value.pendingCallObligationsN.value
+  let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let t = infer env e
   let _ = exitLevel ()
@@ -5347,7 +5434,7 @@ instantiateVarTrackedId : String -> Int -> Scheme -> Mono
 instantiateVarTrackedId x id s = match lookupSchemeObls x id perRun.value.schemeObligationsRef.value
   Some obs =>
     let inst = instantiateTracked s
-    let _ = recordSchemeCallObligations obs (snd inst)
+    let _ = recordSchemeCallObligations id obs (snd inst)
     fst inst
   -- #673: schemeObligationsRef is a PER-MODULE ref (reset per module), so a CROSS-MODULE
   -- constrained binding used as a plain EVar has NO entry here.  For a PRELUDE binding
@@ -5357,7 +5444,7 @@ instantiateVarTrackedId x id s = match lookupSchemeObls x id perRun.value.scheme
   None => match declaredCrossModuleObls x
     Some obs =>
       let inst = instantiateTracked s
-      let _ = recordSchemeCallObligations obs (snd inst)
+      let _ = recordSchemeCallObligations id obs (snd inst)
       fst inst
     None => instantiate s
 
@@ -5391,17 +5478,23 @@ shatterVecObls (iface::ifs) (id::ids)
   | otherwise = (iface, [id]) :: shatterVecObls ifs ids
 
 -- map each (iface, scheme-var-id VECTOR) through the instantiation subst to this
--- call's monos, pushing ONE joint obligation per predicate onto
--- pendingCallObligations.  If ANY id is absent from the subst (shouldn't happen for a
--- quantified var) the whole predicate is skipped — a partial vector would be a
--- different predicate (#607).
-recordSchemeCallObligations : List (String, List Int) -> List (Int, Mono) -> Unit
-recordSchemeCallObligations [] _ = ()
-recordSchemeCallObligations ((iface, ids)::rest) subst = match substMonos ids subst
+-- call's monos, pushing ONE joint obligation per predicate onto the call channel
+-- (`Windowed UObligation`, #838 I1).  [originId] is the occurrence's own #837 binding
+-- id (threaded from instantiateVarTrackedId's [id] — the binding this re-instantiation
+-- was deferred by; 0 = anchorless), stored on the record so a later increment (I2) can
+-- read it without a second migration.  If ANY id is absent from the subst (shouldn't
+-- happen for a quantified var) the whole predicate is skipped — a partial vector would
+-- be a different predicate (#607).
+recordSchemeCallObligations : Int -> List (String, List Int) -> List (Int, Mono) -> Unit
+recordSchemeCallObligations _ [] _ = ()
+recordSchemeCallObligations originId ((iface, ids)::rest) subst = match substMonos ids subst
   Some monos =>
-    let _ = pushCallObl (iface, monos, currentLoc.value)
-    recordSchemeCallObligations rest subst
-  None => recordSchemeCallObligations rest subst
+    let _ = recordObl Predicate {
+      iface = iface,
+      args = monos,
+    } originId PSchemeReinst currentLoc.value
+    recordSchemeCallObligations originId rest subst
+  None => recordSchemeCallObligations originId rest subst
 
 -- the monos [ids] map to under [subst], in order; None if any id is unmapped.
 substMonos : List Int -> List (Int, Mono) -> Option (List Mono)
@@ -6649,7 +6742,10 @@ recordSigConstraintObls : List Constraint -> List (String, Mono) -> List (Int, M
 recordSigConstraintObls [] _ _ = ()
 recordSigConstraintObls ((Constraint iface args)::rest) tvs subst =
   let _ = match recordSigConstraintArgs args tvs subst
-    Some monos => pushCallObl (iface, monos, currentLoc.value)
+    Some monos => recordObl Predicate {
+      iface = iface,
+      args = monos,
+    } 0 PCallSlot currentLoc.value
     None => ()
   recordSigConstraintObls rest tvs subst
 
@@ -7031,7 +7127,7 @@ inferRecLet env x e1 e2 =
   let _ = checkRecBindNonFunction x e1  -- #799
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
-  let callN0 = perRun.value.pendingCallObligationsN.value
+  let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
@@ -7070,7 +7166,7 @@ registerLocalScheme x sch oblN0 callN0 dictN0 =
   -- belongs with its own blast-radius pass.
   if perRun.value.inRigidityBodyRef.value then
     let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
-    let callOblsDelta = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
+    let callOblsDelta = callOblsWindow callN0
     let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
     registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
   else
@@ -7080,7 +7176,7 @@ inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> Mono
 inferLetSimple env pat e1 e2 =
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
-  let callN0 = perRun.value.pendingCallObligationsN.value
+  let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let t1 = infer env e1
   let _ = exitLevel ()
@@ -7784,7 +7880,7 @@ processLetGroup : TcEnv -> List LetBind -> TcEnv
 processLetGroup env binds =
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
-  let callN0 = perRun.value.pendingCallObligationsN.value
+  let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let placeholders = map letBindPlaceholder binds
   let env2 = extendVars env placeholders
@@ -7809,7 +7905,7 @@ processLetGroup env binds =
   -- collisions across bodies are safe: the obligation ids are the scheme's own
   -- quantified ids, and substMonos skips entries whose ids a different scheme's
   -- instantiation does not map.
-  let callOblsDelta = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
+  let callOblsDelta = callOblsWindow callN0
   let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
   let _ = setRef perRun.value.bodyLocalSchemesRef (map (p => (fst p, schemeIds (snd p))) (groupSchemesOf genv binds) ++ perRun.value.bodyLocalSchemesRef.value)
   let _ = if perRun.value.inRigidityBodyRef.value then
@@ -8061,7 +8157,10 @@ registerDispatchMonos : String -> List Mono -> Option Loc -> Int -> List Int -> 
 registerDispatchMonos _ [] _ _ _ _ = ()
 registerDispatchMonos iface (dm::rest) loc groupLevel memberIds anchoredIds =
   let ambig = filterList (p => snd p <= groupLevel && not (containsI (fst p) memberIds) && not (containsI (fst p) anchoredIds)) (monoUnboundVarLevels dm)
-  let _ = if isEmptyL ambig then () else pushCallObl (iface, [dm], loc)
+  let _ = if isEmptyL ambig then
+    ()
+  else
+    recordObl Predicate { iface = iface, args = [dm] } 0 PCallSlot loc
   registerDispatchMonos iface rest loc groupLevel memberIds anchoredIds
 
 -- the (id, level) of every UNBOUND tyvar in [t] (sibling of monoUnboundIds, but
@@ -11837,7 +11936,7 @@ checkBodyImpl seed mode prog0 =
   let _ = match mode
     Flat _ =>
       let _ = checkImplObligations fullUniverse perRun.value.pendingImplObligations.value
-      let _ = checkCallObligations fullUniverse perRun.value.pendingCallObligations.value
+      let _ = checkCallObligations fullUniverse perRun.value.obls.items.value
       let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
       ()
     Module _ _ _ =>
@@ -11855,7 +11954,7 @@ checkBodyImpl seed mode prog0 =
                 let _ = checkImplObligationsU obUniv perRun.value.pendingImplObligations.value
                 setNumlitFloats ()
               else ()
-      let _ = checkCallObligationsU obUniv [] perRun.value.pendingCallObligations.value
+      let _ = checkCallObligationsU obUniv [] perRun.value.obls.items.value
       ()
   let _ = setRef perRun.value.localSchemesOut (mapLocalSchemes perRun.value.localBindRefs.value)
   let _ = setRef perRun.value.seedSchemesOut seed
@@ -12055,13 +12154,11 @@ inferUserImplBodies env allProg decls =
   -- regression, identical to the ground-only behaviour it replaces.
   let implObls = perRun.value.pendingImplObligations.value
   let implOblsN = perRun.value.pendingImplObligationsN.value
-  let callObls = perRun.value.pendingCallObligations.value
-  let callOblsN = perRun.value.pendingCallObligationsN.value
+  let callSnap = wSnapshot perRun.value.obls
   let _ = inferImplBodies env allProg rpNames (filterList implHeadParametric decls)
   let _ = setRef perRun.value.pendingImplObligations implObls
   let _ = setRef perRun.value.pendingImplObligationsN implOblsN
-  let _ = setRef perRun.value.pendingCallObligations callObls
-  let _ = setRef perRun.value.pendingCallObligationsN callOblsN
+  let _ = wRestore perRun.value.obls callSnap
   let _ = setRef useFastIfaceMethodTy False
   -- The errors pushed DURING inference are the head of the list (consed); savedErrs is
   -- the tail.  Keep every added error (#782: the effect axis is no longer suppressed —
@@ -12171,7 +12268,7 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   -- W3 on the GENERIC default path (adversarial break 1): window this body's
   -- obligations on both channels, exactly as inferImplMethod does.
   let oblN0 = perRun.value.pendingImplObligationsN.value
-  let callN0 = perRun.value.pendingCallObligationsN.value
+  let callN0 = wMark perRun.value.obls
   let defLoc = orElseLoc (implBodyLoc body) (firstTyConLoc mty)
   let subject = defaultSubject iface mname
   -- EFFECT axis on the generic default path (round-2 adversarial break 2): a
@@ -12194,7 +12291,7 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   else
     ()
   let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
-  let addedCallObls = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
+  let addedCallObls = callOblsWindow callN0
   let _ = checkDefaultMethodRigidity
     iface
     typarams
@@ -12454,7 +12551,10 @@ checkImplObligationsU univ ((iface, typarams, mty, occ, loc)::rest) =
 -- out caller — `id x = x; y = id 5`) is DEFERRED.  Exactly the accept/reject decision
 -- of checkOneImplObligation's tail, and the mirror of lib/typecheck.ml's
 -- check_constraint_obligations (which checks fun_constraints instantiated at the call).
-checkCallObligations : List Decl -> List (String, List Mono, Option Loc) -> Unit
+-- #838 I1: takes `List UObligation` (the ported call channel) instead of the old bare
+-- tuple.  Deferral is BYTE-IDENTICAL to before the port — checkOneCallObligation still
+-- reads (iface, occs, loc) exactly as it did; only the storage/read shape changed.
+checkCallObligations : List Decl -> List UObligation -> Unit
 checkCallObligations prog obligations =
   checkCallObligationsU (buildImplUniverse prog) [] obligations
 
@@ -12465,10 +12565,13 @@ checkCallObligations prog obligations =
 -- head-of-arg-0-only key conflated `Ix Int Bool` with `Ix Int Char` and reported
 -- only the first (#607).
 -- ORDER of errors follows the OBLIGATION list (unchanged), never the impl universe.
-checkCallObligationsU : ImplUniverse -> List String -> List (String, List Mono, Option Loc) -> Unit
+checkCallObligationsU : ImplUniverse -> List String -> List UObligation -> Unit
 checkCallObligationsU _ _ [] = ()
-checkCallObligationsU univ seen ((iface, occs, loc)::rest) =
-  let key = joinWith "," (iface :: map (o => fromOption "" (headTyconMono o)) occs)
+checkCallObligationsU univ seen (o::rest) =
+  let iface = o.pred.iface
+  let occs = o.pred.args
+  let loc = o.loc
+  let key = joinWith "," (iface :: map (o2 => fromOption "" (headTyconMono o2)) occs)
   if contains key seen then checkCallObligationsU univ seen rest
   else
     let _ = checkOneCallObligation univ iface occs loc
@@ -13074,7 +13177,7 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- checkProgramSeeded do for a let-group, so the Num defaulting below is scoped to
     -- THIS method and can never touch an already-generalized outer var.
     let oblN0 = perRun.value.pendingImplObligationsN.value
-    let callN0 = perRun.value.pendingCallObligationsN.value
+    let callN0 = wMark perRun.value.obls
     -- build the method type's tv map explicitly (instead of expectedMethodType,
     -- which hides it) so the impl method's OWN method-level constraint vars
     -- (`Thenable m => …`) can be registered into activeDictVars below.
@@ -13143,7 +13246,7 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- adversarial review's break 2: without this window the Num rides a channel
     -- the survivor check never read, and `check` stayed green on a program whose
     -- built binary printed garbage.
-    let addedCallObls = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
+    let addedCallObls = callOblsWindow callN0
     let _ = checkImplMethodRigidity iface mname mty headMonos extraMap effMap addedObls addedCallObls launderFlagged launderLoc
     -- #518 (S0, silent wrongness): PLAN.md #11 Num defaulting NEVER RAN over an impl
     -- method body — this path is not a let-group, so nothing grounded its ambiguous
@@ -14226,7 +14329,7 @@ processSCC env sigs grouped members =
   let _ = scopeShadowsForGroup members
   let _ = enterLevel ()
   let oblN0 = perRun.value.pendingImplObligationsN.value
-  let callN0 = perRun.value.pendingCallObligationsN.value
+  let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
@@ -14264,7 +14367,7 @@ processSCC env sigs grouped members =
   -- feed ONLY the Num-defaulting search; addedObls alone still drives the
   -- ambiguous-constraint/scheme-obligation registration below.
   let extraNumObls =
-        numCallObls (takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value)
+        numCallObls (callOblsWindow callN0)
         ++ numDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
   let defaultObls = addedObls ++ extraNumObls
   let _ = defaultGroupNum defaultObls (map snd placeholders)
@@ -14280,7 +14383,7 @@ processSCC env sigs grouped members =
   -- predicate survives whole.  Only the DICT delta still goes through the synthetic
   -- 1-Mono addedObls shape — its entries are registerMember's per-TYVAR dict slots,
   -- which are 1-ary by construction (see allDictObls).
-  let callOblsDelta = takeFirst (perRun.value.pendingCallObligationsN.value - callN0) perRun.value.pendingCallObligations.value
+  let callOblsDelta = callOblsWindow callN0
   let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
   let _ = registerSchemeObligations perRun.value.schemeDefIdsRef.value sigTvMaps callOblsDelta (addedObls ++ forwardedObls) schemes
   -- SIGNATURE CONSTRAINT SOUNDNESS: a signed member whose body induces an
