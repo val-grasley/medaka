@@ -1,5 +1,5 @@
 # META
-source_lines=4624
+source_lines=4636
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -3479,12 +3479,16 @@ lineAt lines i
 -- only adds a name-token FINDER over token kinds already produced.
 
 -- `Loc` for a [startIdx, endIdx) token span, given an EXPLICIT offset-pairs
--- array — deliberately NOT `setLocState` + `locOfSpan`: that reads/writes the
--- `locOffsRef`/`locLineStartsRef` globals, which would also retroactively
--- prime `located`'s placeholder `ELoc`s inside every decl this pass returns,
--- widening `parseWithPositionsOpt`'s contract (unifying the two positions
--- entry points is increment 3 / I6 — out of scope here). Same arithmetic as
--- `locOfSpan`, just parameterized instead of global-state-based.
+-- array instead of `locOfSpan`'s global `locOffsRef`/`locLineStartsRef`
+-- state. Used by the decl/child name-span finders below, which already carry
+-- `offs`/`lineStarts` as plain locals from their caller — no need to round-trip
+-- through the global refs `setLocState` maintains for the `located` combinator.
+-- (Until increment 3 / I6 this separation was also load-bearing: priming the
+-- globals here would have retroactively given `parseWithPositionsOpt` real
+-- expression `ELoc`s ahead of that increment. `parseWithPositionsOpt` now
+-- primes `setLocState` itself with the same `offs`, so both loc systems agree;
+-- this function stays parameterized purely so the name-span finders don't need
+-- global state.) Same arithmetic as `locOfSpan`, just parameterized.
 locOfSpanWith : Array (Int, Int) -> Array Int -> Int -> Int -> Loc
 locOfSpanWith offs lineStarts startIdx endIdx =
   let lastIdx = if endIdx > startIdx then endIdx - 1 else startIdx
@@ -4019,25 +4023,25 @@ parseWithPositions src = match parseWithPositionsOpt src
   Some r => r
   None => panic "parse error"
 
--- `parseWithPositions` PLUS real per-expression `ELoc` locations (#649).  Plain
--- `parseWithPositions` never calls `setLocState`, so every `located` atom in the
--- returned tree carries `located`'s zero-loc placeholder, NOT a real span — fine
--- for callers that only need the decl-level `Positions` side-channel (fmt, doc,
--- codemod, the LSP's line-based lookups), but wrong for a caller that reports a
--- finding at a SPECIFIC sub-expression's own location (`medaka lint`'s
--- `exprRuleFindings` driver: it used to collapse every hit onto the decl's
--- location because the hit's own `ELoc` was never anything but the placeholder).
--- Primes the SAME loc-state `parseLocated`/`parseLocatedResult` use, from a
--- token stream `tokenizeWithOffsetPairs` documents as byte-identical to
--- `tokenizeWithLines`'s (so the offsets line up with the token indices
--- `parseWithPositions`'s OWN re-tokenize will see), then defers to
--- `parseWithPositions` for the rest.  Costs one extra tokenize pass — linear,
--- and only paid by callers that opt in.
+-- Historically: `parseWithPositions` PLUS real per-expression `ELoc` locations
+-- (#649), via a SEPARATE `tokenizeWithOffsetPairs` pass + `setLocState` primed
+-- ahead of deferring to `parseWithPositions` — because plain
+-- `parseWithPositions` (→ `parseWithPositionsOpt`) never called `setLocState`
+-- itself, so every `located` atom in its returned tree carried `located`'s
+-- zero-loc placeholder, NOT a real span. That gap is what let `medaka lint`'s
+-- `exprRuleFindings` driver collapse every finding onto the decl's location
+-- instead of the specific sub-expression's own.
+--
+-- #331 increment 3 / I6 unifies the two entries: `parseWithPositionsOpt` now
+-- primes `setLocState` itself (using the SAME offset pairs it already
+-- computes for the decl/child name-span finders), so `parseWithPositions`
+-- already returns real expression `ELoc`s. This function is now a plain alias
+-- kept for its existing callers (`compiler/tools/lint.mdk`'s
+-- `lintFileDiagTriple` and `compiler/driver/medaka_cli.mdk`'s
+-- `lintFileFresh`) — no separate tokenize pass, no separate `setLocState`
+-- call; the double-tokenize this used to cost is gone.
 export parseWithPositionsLocated : String -> (List Decl, Positions)
-parseWithPositionsLocated src = match tokenizeWithOffsetPairs src
-  (_, offPairs) =>
-    let _ = setLocState src (arrayFromList offPairs)
-    parseWithPositions src
+parseWithPositionsLocated src = parseWithPositions src
 
 -- Non-panicking positions parse for the LSP.  Returns `None` when the source
 -- doesn't parse (instead of `panic "parse error"`), so documentSymbol / definition
@@ -4048,15 +4052,23 @@ parseWithPositionsOpt src = match tokenizeWithLines src
   (tokList, lineList) =>
     let toks = arrayFromList tokList
     let lines = arrayFromList lineList
-    -- #331: a second tokenize pass for the (start,end) offset pairs the decl
-    -- NAME-span finder needs (`declNameSpanOf`).  Its token stream is
-    -- byte-identical to `tokenizeWithLines`'s (both documented as such), so
-    -- the indices line up with `toks`/`spans` below.  Deliberately does NOT
-    -- call `setLocState` — see `locOfSpanWith`'s header for why.
+    -- #331/#649 (increment 3, I6): a second tokenize pass for the (start,end)
+    -- offset pairs the decl NAME-span finder needs (`declNameSpanOf`).  Its
+    -- token stream is byte-identical to `tokenizeWithLines`'s (both documented
+    -- as such), so the indices line up with `toks`/`spans` below.  The SAME
+    -- `offs` also primes `setLocState`, so `located`'s expression `ELoc`s
+    -- carry real spans too — this used to be deliberately skipped (see the old
+    -- `locOfSpanWith` header note, now stale) so that `parseWithPositionsOpt`
+    -- and `parseWithPositionsLocated` stayed two different-fidelity entries;
+    -- unifying them (I6) is the whole point of this increment, so every
+    -- caller — LSP `documentSymbols`/`definition`/`inlayHint` included — now
+    -- gets real sub-expression positions for free, at the SAME one-extra-pass
+    -- cost this function already paid.
     match tokenizeWithOffsetPairs src
       (_, offPairList) =>
         let offs = arrayFromList offPairList
         let nameLineStarts = lineStartsOf src
+        let _ = setLocState src offs
         match runP programWithSpans toks 0
           PErr _ _ => None
           PFatal _ _ => None
@@ -5951,9 +5963,9 @@ parseResultWith src tokList offList =
 (DTypeSig true "parseWithPositions" (TyFun (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Positions"))))
 (DFunDef false "parseWithPositions" ((PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "Some" (PVar "r")) () (EVar "r")) (arm (PCon "None") () (EApp (EVar "panic") (ELit (LString "parse error"))))))
 (DTypeSig true "parseWithPositionsLocated" (TyFun (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Positions"))))
-(DFunDef false "parseWithPositionsLocated" ((PVar "src")) (EMatch (EApp (EVar "tokenizeWithOffsetPairs") (EVar "src")) (arm (PTuple PWild (PVar "offPairs")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setLocState") (EVar "src")) (EApp (EVar "arrayFromList") (EVar "offPairs")))) (DoExpr (EApp (EVar "parseWithPositions") (EVar "src")))))))
+(DFunDef false "parseWithPositionsLocated" ((PVar "src")) (EApp (EVar "parseWithPositions") (EVar "src")))
 (DTypeSig true "parseWithPositionsOpt" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Positions")))))
-(DFunDef false "parseWithPositionsOpt" ((PVar "src")) (EMatch (EApp (EVar "tokenizeWithLines") (EVar "src")) (arm (PTuple (PVar "tokList") (PVar "lineList")) () (EBlock (DoLet false false (PVar "toks") (EApp (EVar "arrayFromList") (EVar "tokList"))) (DoLet false false (PVar "lines") (EApp (EVar "arrayFromList") (EVar "lineList"))) (DoExpr (EMatch (EApp (EVar "tokenizeWithOffsetPairs") (EVar "src")) (arm (PTuple PWild (PVar "offPairList")) () (EBlock (DoLet false false (PVar "offs") (EApp (EVar "arrayFromList") (EVar "offPairList"))) (DoLet false false (PVar "nameLineStarts") (EApp (EVar "lineStartsOf") (EVar "src"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "runP") (EVar "programWithSpans")) (EVar "toks")) (ELit (LInt 0))) (arm (PCon "PErr" PWild PWild) () (EVar "None")) (arm (PCon "PFatal" PWild PWild) () (EVar "None")) (arm (PCon "POk" (PVar "spans") (PVar "pos")) () (EIf (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "pos")) (EVar "TEof")) (EBlock (DoLet false false (PVar "decls") (EApp (EApp (EVar "map") (ELam ((PTuple (PVar "d") (PVar "_s") (PVar "_e"))) (EVar "d"))) (EVar "spans"))) (DoLet false false (PVar "dps") (EApp (EApp (EVar "map") (EApp (EApp (EApp (EApp (EVar "declPosOf") (EVar "toks")) (EVar "lines")) (EVar "offs")) (EVar "nameLineStarts"))) (EVar "spans"))) (DoLet false false (PVar "vls") (EApp (EApp (EApp (EVar "allVariantLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "lcl") (EApp (EApp (EApp (EVar "lastContentLineOf") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "cls") (EApp (EApp (EApp (EVar "allChainLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "decls") (EApp (EApp (EApp (EApp (EVar "Positions") (EVar "dps")) (EVar "vls")) (EVar "lcl")) (EVar "cls")))))) (EVar "None")))))))))))))
+(DFunDef false "parseWithPositionsOpt" ((PVar "src")) (EMatch (EApp (EVar "tokenizeWithLines") (EVar "src")) (arm (PTuple (PVar "tokList") (PVar "lineList")) () (EBlock (DoLet false false (PVar "toks") (EApp (EVar "arrayFromList") (EVar "tokList"))) (DoLet false false (PVar "lines") (EApp (EVar "arrayFromList") (EVar "lineList"))) (DoExpr (EMatch (EApp (EVar "tokenizeWithOffsetPairs") (EVar "src")) (arm (PTuple PWild (PVar "offPairList")) () (EBlock (DoLet false false (PVar "offs") (EApp (EVar "arrayFromList") (EVar "offPairList"))) (DoLet false false (PVar "nameLineStarts") (EApp (EVar "lineStartsOf") (EVar "src"))) (DoLet false false PWild (EApp (EApp (EVar "setLocState") (EVar "src")) (EVar "offs"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "runP") (EVar "programWithSpans")) (EVar "toks")) (ELit (LInt 0))) (arm (PCon "PErr" PWild PWild) () (EVar "None")) (arm (PCon "PFatal" PWild PWild) () (EVar "None")) (arm (PCon "POk" (PVar "spans") (PVar "pos")) () (EIf (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "pos")) (EVar "TEof")) (EBlock (DoLet false false (PVar "decls") (EApp (EApp (EVar "map") (ELam ((PTuple (PVar "d") (PVar "_s") (PVar "_e"))) (EVar "d"))) (EVar "spans"))) (DoLet false false (PVar "dps") (EApp (EApp (EVar "map") (EApp (EApp (EApp (EApp (EVar "declPosOf") (EVar "toks")) (EVar "lines")) (EVar "offs")) (EVar "nameLineStarts"))) (EVar "spans"))) (DoLet false false (PVar "vls") (EApp (EApp (EApp (EVar "allVariantLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "lcl") (EApp (EApp (EApp (EVar "lastContentLineOf") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "cls") (EApp (EApp (EApp (EVar "allChainLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "decls") (EApp (EApp (EApp (EApp (EVar "Positions") (EVar "dps")) (EVar "vls")) (EVar "lcl")) (EVar "cls")))))) (EVar "None")))))))))))))
 (DTypeSig false "resultDecls" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "PR") (TyApp (TyCon "List") (TyCon "Decl"))) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "resultDecls" (PWild (PCon "PErr" PWild PWild)) (EApp (EVar "panic") (ELit (LString "parse error"))))
 (DFunDef false "resultDecls" (PWild (PCon "PFatal" PWild PWild)) (EApp (EVar "panic") (ELit (LString "parse error"))))
@@ -7406,9 +7418,9 @@ parseResultWith src tokList offList =
 (DTypeSig true "parseWithPositions" (TyFun (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Positions"))))
 (DFunDef false "parseWithPositions" ((PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "Some" (PVar "r")) () (EVar "r")) (arm (PCon "None") () (EApp (EVar "panic") (ELit (LString "parse error"))))))
 (DTypeSig true "parseWithPositionsLocated" (TyFun (TyCon "String") (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Positions"))))
-(DFunDef false "parseWithPositionsLocated" ((PVar "src")) (EMatch (EApp (EVar "tokenizeWithOffsetPairs") (EVar "src")) (arm (PTuple PWild (PVar "offPairs")) () (EBlock (DoLet false false PWild (EApp (EApp (EVar "setLocState") (EVar "src")) (EApp (EVar "arrayFromList") (EVar "offPairs")))) (DoExpr (EApp (EVar "parseWithPositions") (EVar "src")))))))
+(DFunDef false "parseWithPositionsLocated" ((PVar "src")) (EApp (EVar "parseWithPositions") (EVar "src")))
 (DTypeSig true "parseWithPositionsOpt" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Positions")))))
-(DFunDef false "parseWithPositionsOpt" ((PVar "src")) (EMatch (EApp (EVar "tokenizeWithLines") (EVar "src")) (arm (PTuple (PVar "tokList") (PVar "lineList")) () (EBlock (DoLet false false (PVar "toks") (EApp (EVar "arrayFromList") (EVar "tokList"))) (DoLet false false (PVar "lines") (EApp (EVar "arrayFromList") (EVar "lineList"))) (DoExpr (EMatch (EApp (EVar "tokenizeWithOffsetPairs") (EVar "src")) (arm (PTuple PWild (PVar "offPairList")) () (EBlock (DoLet false false (PVar "offs") (EApp (EVar "arrayFromList") (EVar "offPairList"))) (DoLet false false (PVar "nameLineStarts") (EApp (EVar "lineStartsOf") (EVar "src"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "runP") (EVar "programWithSpans")) (EVar "toks")) (ELit (LInt 0))) (arm (PCon "PErr" PWild PWild) () (EVar "None")) (arm (PCon "PFatal" PWild PWild) () (EVar "None")) (arm (PCon "POk" (PVar "spans") (PVar "pos")) () (EIf (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "pos")) (EVar "TEof")) (EBlock (DoLet false false (PVar "decls") (EApp (EApp (EMethodRef "map") (ELam ((PTuple (PVar "d") (PVar "_s") (PVar "_e"))) (EVar "d"))) (EVar "spans"))) (DoLet false false (PVar "dps") (EApp (EApp (EMethodRef "map") (EApp (EApp (EApp (EApp (EVar "declPosOf") (EVar "toks")) (EVar "lines")) (EVar "offs")) (EVar "nameLineStarts"))) (EVar "spans"))) (DoLet false false (PVar "vls") (EApp (EApp (EApp (EVar "allVariantLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "lcl") (EApp (EApp (EApp (EVar "lastContentLineOf") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "cls") (EApp (EApp (EApp (EVar "allChainLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "decls") (EApp (EApp (EApp (EApp (EVar "Positions") (EVar "dps")) (EVar "vls")) (EVar "lcl")) (EVar "cls")))))) (EVar "None")))))))))))))
+(DFunDef false "parseWithPositionsOpt" ((PVar "src")) (EMatch (EApp (EVar "tokenizeWithLines") (EVar "src")) (arm (PTuple (PVar "tokList") (PVar "lineList")) () (EBlock (DoLet false false (PVar "toks") (EApp (EVar "arrayFromList") (EVar "tokList"))) (DoLet false false (PVar "lines") (EApp (EVar "arrayFromList") (EVar "lineList"))) (DoExpr (EMatch (EApp (EVar "tokenizeWithOffsetPairs") (EVar "src")) (arm (PTuple PWild (PVar "offPairList")) () (EBlock (DoLet false false (PVar "offs") (EApp (EVar "arrayFromList") (EVar "offPairList"))) (DoLet false false (PVar "nameLineStarts") (EApp (EVar "lineStartsOf") (EVar "src"))) (DoLet false false PWild (EApp (EApp (EVar "setLocState") (EVar "src")) (EVar "offs"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "runP") (EVar "programWithSpans")) (EVar "toks")) (ELit (LInt 0))) (arm (PCon "PErr" PWild PWild) () (EVar "None")) (arm (PCon "PFatal" PWild PWild) () (EVar "None")) (arm (PCon "POk" (PVar "spans") (PVar "pos")) () (EIf (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "pos")) (EVar "TEof")) (EBlock (DoLet false false (PVar "decls") (EApp (EApp (EMethodRef "map") (ELam ((PTuple (PVar "d") (PVar "_s") (PVar "_e"))) (EVar "d"))) (EVar "spans"))) (DoLet false false (PVar "dps") (EApp (EApp (EMethodRef "map") (EApp (EApp (EApp (EApp (EVar "declPosOf") (EVar "toks")) (EVar "lines")) (EVar "offs")) (EVar "nameLineStarts"))) (EVar "spans"))) (DoLet false false (PVar "vls") (EApp (EApp (EApp (EVar "allVariantLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "lcl") (EApp (EApp (EApp (EVar "lastContentLineOf") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoLet false false (PVar "cls") (EApp (EApp (EApp (EVar "allChainLines") (EVar "toks")) (EVar "lines")) (EVar "spans"))) (DoExpr (EApp (EVar "Some") (ETuple (EVar "decls") (EApp (EApp (EApp (EApp (EVar "Positions") (EVar "dps")) (EVar "vls")) (EVar "lcl")) (EVar "cls")))))) (EVar "None")))))))))))))
 (DTypeSig false "resultDecls" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "PR") (TyApp (TyCon "List") (TyCon "Decl"))) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "resultDecls" (PWild (PCon "PErr" PWild PWild)) (EApp (EVar "panic") (ELit (LString "parse error"))))
 (DFunDef false "resultDecls" (PWild (PCon "PFatal" PWild PWild)) (EApp (EVar "panic") (ELit (LString "parse error"))))
