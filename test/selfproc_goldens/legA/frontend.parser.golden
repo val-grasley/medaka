@@ -79,15 +79,19 @@ curryLam : List Pat -> Expr -> Expr
 dataAfterEq : String -> Token -> Parser (List Variant, List DeriveRef)
 dataBody : String -> Parser (List Variant, List DeriveRef)
 dataBodyFor : String -> Token -> Parser (List Variant, List DeriveRef)
+dataChildIdxs : Array Token -> Int -> Int -> List Variant -> List (Option Int)
 dataVariants : Parser (List Variant)
 dataVariantsN : String -> Parser (List Variant)
 dataVariantsNFor : String -> Token -> Parser (List Variant)
 declBlockRhs : Decl -> Bool
 declChainLines : Array Token -> Array Int -> Decl -> Int -> Int -> List Int
 declChainTopOp : Decl -> Option String
+declChildNameIdxs : Array Token -> (Decl, Int, Int) -> List (Option Int)
+declChildSpansOf : Array Token -> Array (Int, Int) -> Array Int -> (Decl, Int, Int) -> List (Option Loc)
 declNameSpanOf : Array Token -> Array (Int, Int) -> Array Int -> (Decl, Int, Int) -> Option Loc
 declNameTokIdx : Array Token -> Decl -> Int -> Option Int
 declNameTokIdxAt : Array Token -> Decl -> Int -> Option Int
+declPosChildLocs : DeclPos -> List (Option Loc)
 declPosEndLine : DeclPos -> Int
 declPosLine : DeclPos -> Int
 declPosNameLoc : DeclPos -> Option Loc
@@ -132,7 +136,11 @@ failIfAliasedMember : List UseMember -> Parser Unit
 failP : String -> Parser a
 fatalAtP : String -> Int -> Parser a
 fatalP : String -> Parser a
+fieldNameGo : Array Token -> Int -> Int -> Int -> Bool -> List Int
+fieldNameIdxsIn : Array Token -> Int -> Int -> List Int
+fieldNameStep : Array Token -> Int -> Int -> Int -> Bool -> Token -> List Int
 fieldPathExtend : Option (String, List String) -> String -> Option (String, List String)
+findWhereIdx : Array Token -> Int -> Int -> Option Int
 firstBacktickIdx : Array Token -> Int -> Int
 firstBlockCommentIdx : Array Token -> Int -> Int
 firstBraceBlockIdx : Array Token -> Int -> Int
@@ -201,6 +209,7 @@ indentedBody : Parser Expr
 indexOrSlice : Expr -> Parser Expr
 indexOrSliceRest : Expr -> Expr -> Token -> Parser Expr
 inlineLetMissingInMsg : String
+innerDeclOf : Decl -> Decl
 intBound : Parser Lit
 intBoundFor : Token -> Parser Lit
 intLitTooBigMsg : String
@@ -283,6 +292,9 @@ memberAliasFor : Int -> String -> Bool -> Token -> Parser UseMember
 memberAliasName : Parser String
 memberAliasNameFor : Token -> Parser String
 memberAliasOrNot : Int -> String -> Bool -> Parser UseMember
+methodNameGo : Array Token -> Int -> Int -> Int -> Bool -> List (Option Int)
+methodNameIdxs : Array Token -> Int -> Int -> List (Option Int)
+methodNameStep : Array Token -> Int -> Int -> Int -> Bool -> Token -> List (Option Int)
 mkAttr : String -> Option String -> Attr
 mkEffect : (List (String, Option String), Option String) -> Ty -> Ty
 mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError
@@ -468,6 +480,7 @@ sepBy1 : Parser a -> Parser b -> Parser (List a)
 sepThen : Parser a -> Parser b -> Parser b
 setLocState : String -> Array (Int, Int) -> Unit
 skipLeadingModifiers : Array Token -> Int -> Int
+skipNewlineToks : Array Token -> Int -> Int -> Int
 skipNewlines : Parser Unit
 skipNlFor : Token -> Parser Unit
 skipNoise : Parser Unit
@@ -507,6 +520,10 @@ upperNameFor : Token -> Parser String
 upperNameP : Parser String
 upperPatRest : String -> Token -> Parser Pat
 upperTail : String -> Token -> Parser Expr
+variantBoundaryAt : Array Token -> Int -> Int -> Int -> Bool -> Token -> List Int
+variantBoundaryGo : Array Token -> Int -> Int -> Int -> Bool -> List Int
+variantBoundaryIdxs : Array Token -> Int -> Int -> List Int
+variantNoneIdxs : Variant -> List (Option Int)
 variantStartsAt : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> Token -> List Int
 variantStartsGo : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> List Int
 variantStartsIn : Array Token -> Array Int -> Int -> Int -> List Int
@@ -520,3 +537,5 @@ whereEol : Expr -> Parser Expr
 whereTail : Expr -> Parser Expr
 withAllFor : Int -> String -> Token -> Parser UseMember
 withAllOrNot : Int -> String -> Parser UseMember
+zipFieldIdxs : List Field -> List Int -> List (Option Int)
+zipVariantIdxs : Array Token -> Int -> List Variant -> List Int -> List (Option Int)
