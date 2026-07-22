@@ -1,0 +1,22 @@
+-- #331 increment 2 (child-name spans) guard: MIXED multi-child decls of every
+-- outline-child kind, with children at DISTINCT columns/lines so a parser↔lsp
+-- child-order DESYNC (a Loc attaching to the wrong child) shows as a wrong
+-- name-column. Columns are 0-based; hand-verified in child_spans.golden.
+interface Shape a where
+  area : a -> Float
+  perim : a -> Float
+  describe a = "a shape"
+
+data Color =
+  | Red
+  | Green
+  | Blue
+
+data Point = { px : Int, py : Int, pz : Int }
+
+impl Shape Color where
+  area c = 1.0
+  perim c = 2.0
+  describe c = "color"
+
+let rec spin n = spin n

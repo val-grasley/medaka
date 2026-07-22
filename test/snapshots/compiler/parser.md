@@ -1,5 +1,5 @@
 # META
-source_lines=4443
+source_lines=4624
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -3371,8 +3371,17 @@ parseProgram = do
 -- `DeclPos`), so this is snapshot-invisible (`snapshot.mdk:renderDeclPos`
 -- reads accessors only) and requires no change anywhere but this file and the
 -- LSP consumers that want the real span.
+-- Fourth field (#331, increment 2 — child-name spans, channel-first): the
+-- ORDERED list of the decl's document-outline CHILD name-token `Loc`s (variant
+-- ctors, record fields, interface/impl methods, the single let-bind), in the
+-- EXACT order `lsp.mdk:symbolPartsOfDecl` emits them.  `Some l` per child whose
+-- name token was located, `None` where the finder missed (the LSP falls back to
+-- the parent decl range for that child).  `[]` for decls with no outline
+-- children.  Also additive/accessor-only, so still snapshot-invisible.
+-- ⚠️ INVARIANT: this list's order/length must track `symbolPartsOfDecl`'s
+-- child traversal exactly — guarded by `test/mcp_fixtures/child_spans.mdk`.
 public export data DeclPos =
-  | DeclPos Int Int (Option Loc)  -- (line, end_line), 1-based; name Loc
+  | DeclPos Int Int (Option Loc) (List (Option Loc))  -- (line, end_line), 1-based; name Loc; child name Locs
 public export data Positions =
   | Positions (List DeclPos) (List Int) Int (List (List Int))
 -- decl positions, variant start lines, last_content_line, per-decl reflow-unit
@@ -3397,16 +3406,22 @@ export positionsChainLines : Positions -> List (List Int)
 positionsChainLines (Positions _ _ _ cl) = cl
 
 export declPosLine : DeclPos -> Int
-declPosLine (DeclPos l _ _) = l
+declPosLine (DeclPos l _ _ _) = l
 
 export declPosEndLine : DeclPos -> Int
-declPosEndLine (DeclPos _ e _) = e
+declPosEndLine (DeclPos _ e _ _) = e
 
 -- The decl's NAME-token `Loc` (#331), or `None` for a decl with no single name
 -- token or where the name-finder couldn't resolve one — callers fall back to
 -- the (line, 0)..(end_line, 0) range built from `declPosLine`/`declPosEndLine`.
 export declPosNameLoc : DeclPos -> Option Loc
-declPosNameLoc (DeclPos _ _ nl) = nl
+declPosNameLoc (DeclPos _ _ nl _) = nl
+
+-- The decl's ordered CHILD name-token `Loc`s (#331, increment 2), in
+-- `symbolPartsOfDecl` outline order; `[]` for childless decls.  Per-child `None`
+-- where the finder missed (LSP falls back to the parent range for that child).
+export declPosChildLocs : DeclPos -> List (Option Loc)
+declPosChildLocs (DeclPos _ _ _ cs) = cs
 
 -- Parse one decl, capturing the (startTokIdx, endTokIdx) span around it.
 declWithSpan : Parser (Decl, Int, Int)
@@ -3575,6 +3590,171 @@ declNameSpanOf toks offs lineStarts (d, s, _e) = map
   (nameIdx => locOfSpanWith offs lineStarts nameIdx (nameIdx + 1))
   (declNameTokIdx toks d s)
 
+-- ── decl CHILD name spans (#331, increment 2 — channel-first) ────────────────
+-- The document-outline CHILDREN of a decl — variant constructors, record
+-- fields, interface/impl methods, and the (single, at top level) let-bind —
+-- each want their OWN name-token `Loc` for the LSP outline, instead of reusing
+-- the parent decl's whole-line range (`lsp.mdk:symbolPartsOfDecl`).  Like the
+-- decl-name finder above, this reads token KINDS structurally from the decl's
+-- token span (no AST loc fields — that AST-field migration is increment 4) and
+-- mints each `Loc` via `locOfSpanWith`.
+--
+-- ⚠️ THE CRITICAL INVARIANT: the returned list's ORDER and LENGTH must match
+-- `lsp.mdk:symbolPartsOfDecl`'s child-traversal order EXACTLY (a nameOmitted
+-- record variant → one entry per field; any other variant → its single ctor;
+-- interface/impl → each method in `methods` order; let group → its single
+-- bind).  If they desync, a `Loc` attaches to the WRONG child — a silent wrong
+-- answer.  Guarded by `test/mcp_fixtures/child_spans.mdk`.
+
+-- Unwrap `@attrib`-stacked wrappers to the underlying decl (for kind dispatch;
+-- the token span still spans the attribute prefix, but no child structural
+-- marker — `where`/`=`/`|`/`{` — lives inside an attribute head, so scanning
+-- the whole span is safe).
+innerDeclOf : Decl -> Decl
+innerDeclOf (DAttrib _ d) = innerDeclOf d
+innerDeclOf d = d
+
+-- Child NAME-token indices, in `symbolPartsOfDecl` outline order (see invariant).
+declChildNameIdxs : Array Token -> (Decl, Int, Int) -> List (Option Int)
+declChildNameIdxs toks (d, s, e) = match innerDeclOf d
+  DData _ _ _ variants _ => dataChildIdxs toks s e variants
+  DInterface { ... } => methodNameIdxs toks s e
+  DImpl { ... } => methodNameIdxs toks s e
+  -- A top-level `DLetGroup` always holds exactly ONE bind (`parseLetGroupDecl`
+  -- → `coalesceClauses [c]`), whose name IS the decl name — reuse the decl-name
+  -- finder on the ORIGINAL `d` (so `@attrib`/modifier skipping is handled).
+  DLetGroup _ _ => [declNameTokIdx toks d s]
+  _ => []
+
+-- ── variants + record fields ────────────────────────────────────────────────
+-- Index-returning twin of `variantStartsIn`/`variantStartsGo`: the token index
+-- (skipping layout noise) immediately after each depth-0 `=`/`|` variant
+-- boundary.  One entry per variant, in source order — mirrors the boundary
+-- logic exactly so its count tracks `variantStartsIn`'s (and the AST variants).
+variantBoundaryIdxs : Array Token -> Int -> Int -> List Int
+variantBoundaryIdxs toks s e = variantBoundaryGo toks s e 0 False
+
+variantBoundaryGo : Array Token -> Int -> Int -> Int -> Bool -> List Int
+variantBoundaryGo toks i e depth seenEq
+  | i >= e = []
+  | otherwise = variantBoundaryAt toks i e depth seenEq (arrayGetUnsafe i toks)
+
+variantBoundaryAt : Array Token -> Int -> Int -> Int -> Bool -> Token -> List Int
+variantBoundaryAt toks i e depth seenEq t
+  | isOpenDelim t = variantBoundaryGo toks (i + 1) e (depth + 1) seenEq
+  | isCloseDelim t = variantBoundaryGo toks (i + 1) e (depth - 1) seenEq
+  | depth == 0 && not seenEq && t == TEqual && nextSigIsPipe toks e (i + 1) =
+    variantBoundaryGo toks (i + 1) e depth True
+  | depth == 0 && not seenEq && t == TEqual = firstContentAt toks (i + 1) e :: variantBoundaryGo toks (i + 1) e depth True
+  | depth == 0 && seenEq && t == TPipe = firstContentAt toks (i + 1) e :: variantBoundaryGo toks (i + 1) e depth seenEq
+  | otherwise = variantBoundaryGo toks (i + 1) e depth seenEq
+
+-- Zip the AST variants with their boundary token indices, mirroring
+-- `lsp.mdk:variantSymChildren`: a nameOmitted record variant (`data X = { … }`,
+-- `ConNamed _ True`) expands to one index per field (the boundary points at the
+-- `{`); any other variant contributes its single ctor-name index (the boundary
+-- IS the ctor name token).  Fewer boundaries than variants → `None` fallback.
+dataChildIdxs : Array Token -> Int -> Int -> List Variant -> List (Option Int)
+dataChildIdxs toks s e variants =
+  zipVariantIdxs toks e variants (variantBoundaryIdxs toks s e)
+
+zipVariantIdxs : Array Token -> Int -> List Variant -> List Int -> List (Option Int)
+zipVariantIdxs _ _ [] _ = []
+zipVariantIdxs toks e ((Variant _ (ConNamed fs True))::vs) (b::bs) = zipFieldIdxs fs (fieldNameIdxsIn toks (b + 1) e)
+  ++ zipVariantIdxs toks e vs bs
+zipVariantIdxs toks e ((Variant _ _)::vs) (b::bs) =
+  Some b :: zipVariantIdxs toks e vs bs
+zipVariantIdxs toks e (v::vs) [] = variantNoneIdxs v
+  ++ zipVariantIdxs toks e vs []
+
+-- `None` placeholders for a variant with no boundary (shouldn't happen): one per
+-- field for a nameOmitted record, else a single `None` for the ctor.
+variantNoneIdxs : Variant -> List (Option Int)
+variantNoneIdxs (Variant _ (ConNamed fs True)) = map (_ => None) fs
+variantNoneIdxs (Variant _ _) = [None]
+
+-- Field-name token indices inside a brace group, starting just past the `{`
+-- (`i`): the first content token after `{` and after each depth-1 `,`, until the
+-- matching `}` (depth back to 0).  Mirrors `parseNamedFields`/`parseField`
+-- (`identNameP` after `{`/`,`).  A trailing `,` before `}` records nothing (the
+-- next content is the close brace, which drops depth to 0 and stops).
+fieldNameIdxsIn : Array Token -> Int -> Int -> List Int
+fieldNameIdxsIn toks i e = fieldNameGo toks i e 1 True
+
+fieldNameGo : Array Token -> Int -> Int -> Int -> Bool -> List Int
+fieldNameGo toks i e depth atStart
+  | i >= e = []
+  | depth <= 0 = []
+  | otherwise = fieldNameStep toks i e depth atStart (arrayGetUnsafe i toks)
+
+fieldNameStep : Array Token -> Int -> Int -> Int -> Bool -> Token -> List Int
+fieldNameStep toks i e depth atStart t
+  | isOpenDelim t = fieldNameGo toks (i + 1) e (depth + 1) False
+  | isCloseDelim t = fieldNameGo toks (i + 1) e (depth - 1) False
+  | depth == 1 && t == TComma = fieldNameGo toks (i + 1) e depth True
+  | isNoiseTok t = fieldNameGo toks (i + 1) e depth atStart
+  | atStart && depth == 1 = i :: fieldNameGo toks (i + 1) e depth False
+  | otherwise = fieldNameGo toks (i + 1) e depth False
+
+-- Pair AST fields 1:1 with found field-name indices (defensive `None` when the
+-- finder ran short).
+zipFieldIdxs : List Field -> List Int -> List (Option Int)
+zipFieldIdxs [] _ = []
+zipFieldIdxs (_::fs) (i::is) = Some i :: zipFieldIdxs fs is
+zipFieldIdxs (_::fs) [] = None :: zipFieldIdxs fs []
+
+-- ── interface / impl methods ────────────────────────────────────────────────
+-- Method names inside the `where INDENT … DEDENT` body: the first content token
+-- at the block's base layout depth (1) after the opening INDENT and after each
+-- base-level NEWLINE.  Nested blocks (a default method's multi-line body) raise
+-- the depth so their tokens are skipped.  Marker interfaces / single-line
+-- `where` (no INDENT) yield `[]` — matching an empty `methods` list.
+methodNameIdxs : Array Token -> Int -> Int -> List (Option Int)
+methodNameIdxs toks s e = match findWhereIdx toks s e
+  None => []
+  Some w =>
+    let after = skipNewlineToks toks (w + 1) e
+    if after < e && arrayGetUnsafe after toks == TIndent then
+      methodNameGo toks (after + 1) e 1 True
+    else
+      []
+
+findWhereIdx : Array Token -> Int -> Int -> Option Int
+findWhereIdx toks i e
+  | i >= e = None
+  | arrayGetUnsafe i toks == TWhere = Some i
+  | otherwise = findWhereIdx toks (i + 1) e
+
+-- Skip only NEWLINE tokens (not INDENT/DEDENT) — used to reach the opening
+-- INDENT of a `where` body without stepping over it.
+skipNewlineToks : Array Token -> Int -> Int -> Int
+skipNewlineToks toks i e
+  | i < e && arrayGetUnsafe i toks == TNewline = skipNewlineToks toks (i + 1) e
+  | otherwise = i
+
+methodNameGo : Array Token -> Int -> Int -> Int -> Bool -> List (Option Int)
+methodNameGo toks i e depth atStart
+  | i >= e = []
+  | depth <= 0 = []
+  | otherwise = methodNameStep toks i e depth atStart (arrayGetUnsafe i toks)
+
+methodNameStep : Array Token -> Int -> Int -> Int -> Bool -> Token -> List (Option Int)
+methodNameStep toks i e depth _ TIndent =
+  methodNameGo toks (i + 1) e (depth + 1) False
+methodNameStep toks i e depth _ TDedent =
+  methodNameGo toks (i + 1) e (depth - 1) False
+methodNameStep toks i e depth _ TNewline =
+  methodNameGo toks (i + 1) e depth (depth == 1)
+methodNameStep toks i e depth atStart _
+  | atStart && depth == 1 = Some i :: methodNameGo toks (i + 1) e depth False
+  | otherwise = methodNameGo toks (i + 1) e depth False
+
+-- The decl's CHILD name-token `Loc`s (#331, increment 2), in outline order.
+declChildSpansOf : Array Token -> Array (Int, Int) -> Array Int -> (Decl, Int, Int) -> List (Option Loc)
+declChildSpansOf toks offs lineStarts span = map
+  (idxOpt => map (idx => locOfSpanWith offs lineStarts idx (idx + 1)) idxOpt)
+  (declChildNameIdxs toks span)
+
 -- Build a DeclPos from a captured (start, end) token span: start line is the
 -- line of the first token; end line is the line of the last *content* token in
 -- the span (mirrors lib/parser_state.record_decl_pos's last_content_line fixup,
@@ -3585,6 +3765,7 @@ declPosOf toks lines offs lineStarts (d, s, e) = DeclPos
   (lineAt lines s)
   (lineAt lines (lastContentIdx toks s (e - 1)))
   (declNameSpanOf toks offs lineStarts (d, s, e))
+  (declChildSpansOf toks offs lineStarts (d, s, e))
 
 -- Re-derive a data decl's variant start lines from its token span.  Within a
 -- `data` body the only `|` at delimiter-depth 0 are variant separators (the
@@ -5561,7 +5742,7 @@ parseResultWith src tokList offList =
 (DFunDef false "declThenNoise" () (EApp (EApp (EVar "andThen") (EVar "parseDecl")) (ELam ((PVar "d")) (EApp (EApp (EVar "andThen") (EVar "skipNoise")) (ELam (PWild) (EApp (EVar "pure") (EVar "d")))))))
 (DTypeSig false "parseProgram" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "parseProgram" () (EApp (EApp (EVar "andThen") (EVar "skipNoise")) (ELam (PWild) (EApp (EVar "many") (EVar "declThenNoise")))))
-(DData Public "DeclPos" () ((variant "DeclPos" (ConPos (TyCon "Int") (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
+(DData Public "DeclPos" () ((variant "DeclPos" (ConPos (TyCon "Int") (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))) ())
 (DData Public "Positions" () ((variant "Positions" (ConPos (TyApp (TyCon "List") (TyCon "DeclPos")) (TyApp (TyCon "List") (TyCon "Int")) (TyCon "Int") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Int")))))) ())
 (DTypeSig true "positionsDecls" (TyFun (TyCon "Positions") (TyApp (TyCon "List") (TyCon "DeclPos"))))
 (DFunDef false "positionsDecls" ((PCon "Positions" (PVar "ds") PWild PWild PWild)) (EVar "ds"))
@@ -5572,11 +5753,13 @@ parseResultWith src tokList offList =
 (DTypeSig true "positionsChainLines" (TyFun (TyCon "Positions") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Int")))))
 (DFunDef false "positionsChainLines" ((PCon "Positions" PWild PWild PWild (PVar "cl"))) (EVar "cl"))
 (DTypeSig true "declPosLine" (TyFun (TyCon "DeclPos") (TyCon "Int")))
-(DFunDef false "declPosLine" ((PCon "DeclPos" (PVar "l") PWild PWild)) (EVar "l"))
+(DFunDef false "declPosLine" ((PCon "DeclPos" (PVar "l") PWild PWild PWild)) (EVar "l"))
 (DTypeSig true "declPosEndLine" (TyFun (TyCon "DeclPos") (TyCon "Int")))
-(DFunDef false "declPosEndLine" ((PCon "DeclPos" PWild (PVar "e") PWild)) (EVar "e"))
+(DFunDef false "declPosEndLine" ((PCon "DeclPos" PWild (PVar "e") PWild PWild)) (EVar "e"))
 (DTypeSig true "declPosNameLoc" (TyFun (TyCon "DeclPos") (TyApp (TyCon "Option") (TyCon "Loc"))))
-(DFunDef false "declPosNameLoc" ((PCon "DeclPos" PWild PWild (PVar "nl"))) (EVar "nl"))
+(DFunDef false "declPosNameLoc" ((PCon "DeclPos" PWild PWild (PVar "nl") PWild)) (EVar "nl"))
+(DTypeSig true "declPosChildLocs" (TyFun (TyCon "DeclPos") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))
+(DFunDef false "declPosChildLocs" ((PCon "DeclPos" PWild PWild PWild (PVar "cs"))) (EVar "cs"))
 (DTypeSig false "declWithSpan" (TyApp (TyCon "Parser") (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int"))))
 (DFunDef false "declWithSpan" () (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EVar "andThen") (EVar "parseDecl")) (ELam ((PVar "d")) (EApp (EApp (EVar "andThen") (EVar "getPos")) (ELam ((PVar "e")) (EApp (EVar "pure") (ETuple (EVar "d") (EVar "s") (EVar "e"))))))))))
 (DTypeSig false "spanDeclThenNoise" (TyApp (TyCon "Parser") (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int"))))
@@ -5630,8 +5813,54 @@ parseResultWith src tokList offList =
 (DFunDef false "declNameTokIdx" ((PVar "toks") (PVar "d") (PVar "i")) (EApp (EApp (EApp (EVar "declNameTokIdxAt") (EVar "toks")) (EVar "d")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EVar "i"))))
 (DTypeSig false "declNameSpanOf" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyTuple (TyCon "Int") (TyCon "Int"))) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyApp (TyCon "Option") (TyCon "Loc")))))))
 (DFunDef false "declNameSpanOf" ((PVar "toks") (PVar "offs") (PVar "lineStarts") (PTuple (PVar "d") (PVar "s") (PVar "_e"))) (EApp (EApp (EVar "map") (ELam ((PVar "nameIdx")) (EApp (EApp (EApp (EApp (EVar "locOfSpanWith") (EVar "offs")) (EVar "lineStarts")) (EVar "nameIdx")) (EBinOp "+" (EVar "nameIdx") (ELit (LInt 1)))))) (EApp (EApp (EApp (EVar "declNameTokIdx") (EVar "toks")) (EVar "d")) (EVar "s"))))
+(DTypeSig false "innerDeclOf" (TyFun (TyCon "Decl") (TyCon "Decl")))
+(DFunDef false "innerDeclOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "innerDeclOf") (EVar "d")))
+(DFunDef false "innerDeclOf" ((PVar "d")) (EVar "d"))
+(DTypeSig false "declChildNameIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "declChildNameIdxs" ((PVar "toks") (PTuple (PVar "d") (PVar "s") (PVar "e"))) (EMatch (EApp (EVar "innerDeclOf") (EVar "d")) (arm (PCon "DData" PWild PWild PWild (PVar "variants") PWild) () (EApp (EApp (EApp (EApp (EVar "dataChildIdxs") (EVar "toks")) (EVar "s")) (EVar "e")) (EVar "variants"))) (arm (PRec "DInterface" () true) () (EApp (EApp (EApp (EVar "methodNameIdxs") (EVar "toks")) (EVar "s")) (EVar "e"))) (arm (PRec "DImpl" () true) () (EApp (EApp (EApp (EVar "methodNameIdxs") (EVar "toks")) (EVar "s")) (EVar "e"))) (arm (PCon "DLetGroup" PWild PWild) () (EListLit (EApp (EApp (EApp (EVar "declNameTokIdx") (EVar "toks")) (EVar "d")) (EVar "s")))) (arm PWild () (EListLit))))
+(DTypeSig false "variantBoundaryIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Int"))))))
+(DFunDef false "variantBoundaryIdxs" ((PVar "toks") (PVar "s") (PVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EVar "s")) (EVar "e")) (ELit (LInt 0))) (EVar "False")))
+(DTypeSig false "variantBoundaryGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Int"))))))))
+(DFunDef false "variantBoundaryGo" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "seenEq")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EListLit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryAt") (EVar "toks")) (EVar "i")) (EVar "e")) (EVar "depth")) (EVar "seenEq")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "variantBoundaryAt" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "List") (TyCon "Int")))))))))
+(DFunDef false "variantBoundaryAt" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "seenEq") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EVar "seenEq")) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EVar "seenEq")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "not") (EVar "seenEq"))) (EBinOp "==" (EVar "t") (EVar "TEqual"))) (EApp (EApp (EApp (EVar "nextSigIsPipe") (EVar "toks")) (EVar "e")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "True")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "not") (EVar "seenEq"))) (EBinOp "==" (EVar "t") (EVar "TEqual"))) (EBinOp "::" (EApp (EApp (EApp (EVar "firstContentAt") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "True"))) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EVar "seenEq")) (EBinOp "==" (EVar "t") (EVar "TPipe"))) (EBinOp "::" (EApp (EApp (EApp (EVar "firstContentAt") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "seenEq"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "seenEq")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))))
+(DTypeSig false "dataChildIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))))
+(DFunDef false "dataChildIdxs" ((PVar "toks") (PVar "s") (PVar "e") (PVar "variants")) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "variants")) (EApp (EApp (EApp (EVar "variantBoundaryIdxs") (EVar "toks")) (EVar "s")) (EVar "e"))))
+(DTypeSig false "zipVariantIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyFun (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))))
+(DFunDef false "zipVariantIdxs" (PWild PWild (PList) PWild) (EListLit))
+(DFunDef false "zipVariantIdxs" ((PVar "toks") (PVar "e") (PCons (PCon "Variant" PWild (PCon "ConNamed" (PVar "fs") (PCon "True"))) (PVar "vs")) (PCons (PVar "b") (PVar "bs"))) (EBinOp "++" (EApp (EApp (EVar "zipFieldIdxs") (EVar "fs")) (EApp (EApp (EApp (EVar "fieldNameIdxsIn") (EVar "toks")) (EBinOp "+" (EVar "b") (ELit (LInt 1)))) (EVar "e"))) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "vs")) (EVar "bs"))))
+(DFunDef false "zipVariantIdxs" ((PVar "toks") (PVar "e") (PCons (PCon "Variant" PWild PWild) (PVar "vs")) (PCons (PVar "b") (PVar "bs"))) (EBinOp "::" (EApp (EVar "Some") (EVar "b")) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "vs")) (EVar "bs"))))
+(DFunDef false "zipVariantIdxs" ((PVar "toks") (PVar "e") (PCons (PVar "v") (PVar "vs")) (PList)) (EBinOp "++" (EApp (EVar "variantNoneIdxs") (EVar "v")) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "vs")) (EListLit))))
+(DTypeSig false "variantNoneIdxs" (TyFun (TyCon "Variant") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int")))))
+(DFunDef false "variantNoneIdxs" ((PCon "Variant" PWild (PCon "ConNamed" (PVar "fs") (PCon "True")))) (EApp (EApp (EVar "map") (ELam (PWild) (EVar "None"))) (EVar "fs")))
+(DFunDef false "variantNoneIdxs" ((PCon "Variant" PWild PWild)) (EListLit (EVar "None")))
+(DTypeSig false "fieldNameIdxsIn" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Int"))))))
+(DFunDef false "fieldNameIdxsIn" ((PVar "toks") (PVar "i") (PVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EVar "i")) (EVar "e")) (ELit (LInt 1))) (EVar "True")))
+(DTypeSig false "fieldNameGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Int"))))))))
+(DFunDef false "fieldNameGo" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EListLit) (EIf (EBinOp "<=" (EVar "depth") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameStep") (EVar "toks")) (EVar "i")) (EVar "e")) (EVar "depth")) (EVar "atStart")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "fieldNameStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "List") (TyCon "Int")))))))))
+(DFunDef false "fieldNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EVar "False")) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EVar "False")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 1))) (EBinOp "==" (EVar "t") (EVar "TComma"))) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "True")) (EIf (EApp (EVar "isNoiseTok") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "atStart")) (EIf (EBinOp "&&" (EVar "atStart") (EBinOp "==" (EVar "depth") (ELit (LInt 1)))) (EBinOp "::" (EVar "i") (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))))
+(DTypeSig false "zipFieldIdxs" (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyFun (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "zipFieldIdxs" ((PList) PWild) (EListLit))
+(DFunDef false "zipFieldIdxs" ((PCons PWild (PVar "fs")) (PCons (PVar "i") (PVar "is"))) (EBinOp "::" (EApp (EVar "Some") (EVar "i")) (EApp (EApp (EVar "zipFieldIdxs") (EVar "fs")) (EVar "is"))))
+(DFunDef false "zipFieldIdxs" ((PCons PWild (PVar "fs")) (PList)) (EBinOp "::" (EVar "None") (EApp (EApp (EVar "zipFieldIdxs") (EVar "fs")) (EListLit))))
+(DTypeSig false "methodNameIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int")))))))
+(DFunDef false "methodNameIdxs" ((PVar "toks") (PVar "s") (PVar "e")) (EMatch (EApp (EApp (EApp (EVar "findWhereIdx") (EVar "toks")) (EVar "s")) (EVar "e")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "w")) () (EBlock (DoLet false false (PVar "after") (EApp (EApp (EApp (EVar "skipNewlineToks") (EVar "toks")) (EBinOp "+" (EVar "w") (ELit (LInt 1)))) (EVar "e"))) (DoExpr (EIf (EBinOp "&&" (EBinOp "<" (EVar "after") (EVar "e")) (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "after")) (EVar "toks")) (EVar "TIndent"))) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "after") (ELit (LInt 1)))) (EVar "e")) (ELit (LInt 1))) (EVar "True")) (EListLit)))))))
+(DTypeSig false "findWhereIdx" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "findWhereIdx" ((PVar "toks") (PVar "i") (PVar "e")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EVar "None") (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks")) (EVar "TWhere")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "findWhereIdx") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "skipNewlineToks" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
+(DFunDef false "skipNewlineToks" ((PVar "toks") (PVar "i") (PVar "e")) (EIf (EBinOp "&&" (EBinOp "<" (EVar "i") (EVar "e")) (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks")) (EVar "TNewline"))) (EApp (EApp (EApp (EVar "skipNewlineToks") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EIf (EVar "otherwise") (EVar "i") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "methodNameGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int")))))))))
+(DFunDef false "methodNameGo" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EListLit) (EIf (EBinOp "<=" (EVar "depth") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "methodNameStep") (EVar "toks")) (EVar "i")) (EVar "e")) (EVar "depth")) (EVar "atStart")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "methodNameStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))))))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") PWild (PCon "TIndent")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EVar "False")))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") PWild (PCon "TDedent")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EVar "False")))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") PWild (PCon "TNewline")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EBinOp "==" (EVar "depth") (ELit (LInt 1)))))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart") PWild) (EIf (EBinOp "&&" (EVar "atStart") (EBinOp "==" (EVar "depth") (ELit (LInt 1)))) (EBinOp "::" (EApp (EVar "Some") (EVar "i")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "declChildSpansOf" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyTuple (TyCon "Int") (TyCon "Int"))) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DFunDef false "declChildSpansOf" ((PVar "toks") (PVar "offs") (PVar "lineStarts") (PVar "span")) (EApp (EApp (EVar "map") (ELam ((PVar "idxOpt")) (EApp (EApp (EVar "map") (ELam ((PVar "idx")) (EApp (EApp (EApp (EApp (EVar "locOfSpanWith") (EVar "offs")) (EVar "lineStarts")) (EVar "idx")) (EBinOp "+" (EVar "idx") (ELit (LInt 1)))))) (EVar "idxOpt")))) (EApp (EApp (EVar "declChildNameIdxs") (EVar "toks")) (EVar "span"))))
 (DTypeSig false "declPosOf" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyApp (TyCon "Array") (TyTuple (TyCon "Int") (TyCon "Int"))) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyCon "DeclPos")))))))
-(DFunDef false "declPosOf" ((PVar "toks") (PVar "lines") (PVar "offs") (PVar "lineStarts") (PTuple (PVar "d") (PVar "s") (PVar "e"))) (EApp (EApp (EApp (EVar "DeclPos") (EApp (EApp (EVar "lineAt") (EVar "lines")) (EVar "s"))) (EApp (EApp (EVar "lineAt") (EVar "lines")) (EApp (EApp (EApp (EVar "lastContentIdx") (EVar "toks")) (EVar "s")) (EBinOp "-" (EVar "e") (ELit (LInt 1)))))) (EApp (EApp (EApp (EApp (EVar "declNameSpanOf") (EVar "toks")) (EVar "offs")) (EVar "lineStarts")) (ETuple (EVar "d") (EVar "s") (EVar "e")))))
+(DFunDef false "declPosOf" ((PVar "toks") (PVar "lines") (PVar "offs") (PVar "lineStarts") (PTuple (PVar "d") (PVar "s") (PVar "e"))) (EApp (EApp (EApp (EApp (EVar "DeclPos") (EApp (EApp (EVar "lineAt") (EVar "lines")) (EVar "s"))) (EApp (EApp (EVar "lineAt") (EVar "lines")) (EApp (EApp (EApp (EVar "lastContentIdx") (EVar "toks")) (EVar "s")) (EBinOp "-" (EVar "e") (ELit (LInt 1)))))) (EApp (EApp (EApp (EApp (EVar "declNameSpanOf") (EVar "toks")) (EVar "offs")) (EVar "lineStarts")) (ETuple (EVar "d") (EVar "s") (EVar "e")))) (EApp (EApp (EApp (EApp (EVar "declChildSpansOf") (EVar "toks")) (EVar "offs")) (EVar "lineStarts")) (ETuple (EVar "d") (EVar "s") (EVar "e")))))
 (DTypeSig false "variantStartsIn" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Int")))))))
 (DFunDef false "variantStartsIn" ((PVar "toks") (PVar "lines") (PVar "i") (PVar "e")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "variantStartsGo") (EVar "toks")) (EVar "lines")) (EVar "i")) (EVar "e")) (ELit (LInt 0))) (EVar "False")))
 (DTypeSig false "variantStartsGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Int")))))))))
@@ -6968,7 +7197,7 @@ parseResultWith src tokList offList =
 (DFunDef false "declThenNoise" () (EApp (EApp (EMethodRef "andThen") (EVar "parseDecl")) (ELam ((PVar "d")) (EApp (EApp (EMethodRef "andThen") (EVar "skipNoise")) (ELam (PWild) (EApp (EMethodRef "pure") (EVar "d")))))))
 (DTypeSig false "parseProgram" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "Decl"))))
 (DFunDef false "parseProgram" () (EApp (EApp (EMethodRef "andThen") (EVar "skipNoise")) (ELam (PWild) (EApp (EVar "many") (EVar "declThenNoise")))))
-(DData Public "DeclPos" () ((variant "DeclPos" (ConPos (TyCon "Int") (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
+(DData Public "DeclPos" () ((variant "DeclPos" (ConPos (TyCon "Int") (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))) ())
 (DData Public "Positions" () ((variant "Positions" (ConPos (TyApp (TyCon "List") (TyCon "DeclPos")) (TyApp (TyCon "List") (TyCon "Int")) (TyCon "Int") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Int")))))) ())
 (DTypeSig true "positionsDecls" (TyFun (TyCon "Positions") (TyApp (TyCon "List") (TyCon "DeclPos"))))
 (DFunDef false "positionsDecls" ((PCon "Positions" (PVar "ds") PWild PWild PWild)) (EVar "ds"))
@@ -6979,11 +7208,13 @@ parseResultWith src tokList offList =
 (DTypeSig true "positionsChainLines" (TyFun (TyCon "Positions") (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Int")))))
 (DFunDef false "positionsChainLines" ((PCon "Positions" PWild PWild PWild (PVar "cl"))) (EVar "cl"))
 (DTypeSig true "declPosLine" (TyFun (TyCon "DeclPos") (TyCon "Int")))
-(DFunDef false "declPosLine" ((PCon "DeclPos" (PVar "l") PWild PWild)) (EVar "l"))
+(DFunDef false "declPosLine" ((PCon "DeclPos" (PVar "l") PWild PWild PWild)) (EVar "l"))
 (DTypeSig true "declPosEndLine" (TyFun (TyCon "DeclPos") (TyCon "Int")))
-(DFunDef false "declPosEndLine" ((PCon "DeclPos" PWild (PVar "e") PWild)) (EVar "e"))
+(DFunDef false "declPosEndLine" ((PCon "DeclPos" PWild (PVar "e") PWild PWild)) (EVar "e"))
 (DTypeSig true "declPosNameLoc" (TyFun (TyCon "DeclPos") (TyApp (TyCon "Option") (TyCon "Loc"))))
-(DFunDef false "declPosNameLoc" ((PCon "DeclPos" PWild PWild (PVar "nl"))) (EVar "nl"))
+(DFunDef false "declPosNameLoc" ((PCon "DeclPos" PWild PWild (PVar "nl") PWild)) (EVar "nl"))
+(DTypeSig true "declPosChildLocs" (TyFun (TyCon "DeclPos") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc")))))
+(DFunDef false "declPosChildLocs" ((PCon "DeclPos" PWild PWild PWild (PVar "cs"))) (EVar "cs"))
 (DTypeSig false "declWithSpan" (TyApp (TyCon "Parser") (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int"))))
 (DFunDef false "declWithSpan" () (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "s")) (EApp (EApp (EMethodRef "andThen") (EVar "parseDecl")) (ELam ((PVar "d")) (EApp (EApp (EMethodRef "andThen") (EVar "getPos")) (ELam ((PVar "e")) (EApp (EMethodRef "pure") (ETuple (EVar "d") (EVar "s") (EVar "e"))))))))))
 (DTypeSig false "spanDeclThenNoise" (TyApp (TyCon "Parser") (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int"))))
@@ -7037,8 +7268,54 @@ parseResultWith src tokList offList =
 (DFunDef false "declNameTokIdx" ((PVar "toks") (PVar "d") (PVar "i")) (EApp (EApp (EApp (EVar "declNameTokIdxAt") (EVar "toks")) (EVar "d")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EVar "i"))))
 (DTypeSig false "declNameSpanOf" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyTuple (TyCon "Int") (TyCon "Int"))) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyApp (TyCon "Option") (TyCon "Loc")))))))
 (DFunDef false "declNameSpanOf" ((PVar "toks") (PVar "offs") (PVar "lineStarts") (PTuple (PVar "d") (PVar "s") (PVar "_e"))) (EApp (EApp (EMethodRef "map") (ELam ((PVar "nameIdx")) (EApp (EApp (EApp (EApp (EVar "locOfSpanWith") (EVar "offs")) (EVar "lineStarts")) (EVar "nameIdx")) (EBinOp "+" (EVar "nameIdx") (ELit (LInt 1)))))) (EApp (EApp (EApp (EVar "declNameTokIdx") (EVar "toks")) (EVar "d")) (EVar "s"))))
+(DTypeSig false "innerDeclOf" (TyFun (TyCon "Decl") (TyCon "Decl")))
+(DFunDef false "innerDeclOf" ((PCon "DAttrib" PWild (PVar "d"))) (EApp (EVar "innerDeclOf") (EVar "d")))
+(DFunDef false "innerDeclOf" ((PVar "d")) (EVar "d"))
+(DTypeSig false "declChildNameIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "declChildNameIdxs" ((PVar "toks") (PTuple (PVar "d") (PVar "s") (PVar "e"))) (EMatch (EApp (EVar "innerDeclOf") (EVar "d")) (arm (PCon "DData" PWild PWild PWild (PVar "variants") PWild) () (EApp (EApp (EApp (EApp (EVar "dataChildIdxs") (EVar "toks")) (EVar "s")) (EVar "e")) (EVar "variants"))) (arm (PRec "DInterface" () true) () (EApp (EApp (EApp (EVar "methodNameIdxs") (EVar "toks")) (EVar "s")) (EVar "e"))) (arm (PRec "DImpl" () true) () (EApp (EApp (EApp (EVar "methodNameIdxs") (EVar "toks")) (EVar "s")) (EVar "e"))) (arm (PCon "DLetGroup" PWild PWild) () (EListLit (EApp (EApp (EApp (EVar "declNameTokIdx") (EVar "toks")) (EVar "d")) (EVar "s")))) (arm PWild () (EListLit))))
+(DTypeSig false "variantBoundaryIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Int"))))))
+(DFunDef false "variantBoundaryIdxs" ((PVar "toks") (PVar "s") (PVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EVar "s")) (EVar "e")) (ELit (LInt 0))) (EVar "False")))
+(DTypeSig false "variantBoundaryGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Int"))))))))
+(DFunDef false "variantBoundaryGo" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "seenEq")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EListLit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryAt") (EVar "toks")) (EVar "i")) (EVar "e")) (EVar "depth")) (EVar "seenEq")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "variantBoundaryAt" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "List") (TyCon "Int")))))))))
+(DFunDef false "variantBoundaryAt" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "seenEq") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EVar "seenEq")) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EVar "seenEq")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "not") (EVar "seenEq"))) (EBinOp "==" (EVar "t") (EVar "TEqual"))) (EApp (EApp (EApp (EVar "nextSigIsPipe") (EVar "toks")) (EVar "e")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "True")) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "not") (EVar "seenEq"))) (EBinOp "==" (EVar "t") (EVar "TEqual"))) (EBinOp "::" (EApp (EApp (EApp (EVar "firstContentAt") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "True"))) (EIf (EBinOp "&&" (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EVar "seenEq")) (EBinOp "==" (EVar "t") (EVar "TPipe"))) (EBinOp "::" (EApp (EApp (EApp (EVar "firstContentAt") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "seenEq"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "variantBoundaryGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "seenEq")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))))
+(DTypeSig false "dataChildIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))))
+(DFunDef false "dataChildIdxs" ((PVar "toks") (PVar "s") (PVar "e") (PVar "variants")) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "variants")) (EApp (EApp (EApp (EVar "variantBoundaryIdxs") (EVar "toks")) (EVar "s")) (EVar "e"))))
+(DTypeSig false "zipVariantIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyFun (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))))
+(DFunDef false "zipVariantIdxs" (PWild PWild (PList) PWild) (EListLit))
+(DFunDef false "zipVariantIdxs" ((PVar "toks") (PVar "e") (PCons (PCon "Variant" PWild (PCon "ConNamed" (PVar "fs") (PCon "True"))) (PVar "vs")) (PCons (PVar "b") (PVar "bs"))) (EBinOp "++" (EApp (EApp (EVar "zipFieldIdxs") (EVar "fs")) (EApp (EApp (EApp (EVar "fieldNameIdxsIn") (EVar "toks")) (EBinOp "+" (EVar "b") (ELit (LInt 1)))) (EVar "e"))) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "vs")) (EVar "bs"))))
+(DFunDef false "zipVariantIdxs" ((PVar "toks") (PVar "e") (PCons (PCon "Variant" PWild PWild) (PVar "vs")) (PCons (PVar "b") (PVar "bs"))) (EBinOp "::" (EApp (EVar "Some") (EVar "b")) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "vs")) (EVar "bs"))))
+(DFunDef false "zipVariantIdxs" ((PVar "toks") (PVar "e") (PCons (PVar "v") (PVar "vs")) (PList)) (EBinOp "++" (EApp (EVar "variantNoneIdxs") (EVar "v")) (EApp (EApp (EApp (EApp (EVar "zipVariantIdxs") (EVar "toks")) (EVar "e")) (EVar "vs")) (EListLit))))
+(DTypeSig false "variantNoneIdxs" (TyFun (TyCon "Variant") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int")))))
+(DFunDef false "variantNoneIdxs" ((PCon "Variant" PWild (PCon "ConNamed" (PVar "fs") (PCon "True")))) (EApp (EApp (EMethodRef "map") (ELam (PWild) (EVar "None"))) (EVar "fs")))
+(DFunDef false "variantNoneIdxs" ((PCon "Variant" PWild PWild)) (EListLit (EVar "None")))
+(DTypeSig false "fieldNameIdxsIn" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Int"))))))
+(DFunDef false "fieldNameIdxsIn" ((PVar "toks") (PVar "i") (PVar "e")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EVar "i")) (EVar "e")) (ELit (LInt 1))) (EVar "True")))
+(DTypeSig false "fieldNameGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Int"))))))))
+(DFunDef false "fieldNameGo" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EListLit) (EIf (EBinOp "<=" (EVar "depth") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameStep") (EVar "toks")) (EVar "i")) (EVar "e")) (EVar "depth")) (EVar "atStart")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "fieldNameStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "List") (TyCon "Int")))))))))
+(DFunDef false "fieldNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EVar "False")) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EVar "False")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 1))) (EBinOp "==" (EVar "t") (EVar "TComma"))) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "True")) (EIf (EApp (EVar "isNoiseTok") (EVar "t")) (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "atStart")) (EIf (EBinOp "&&" (EVar "atStart") (EBinOp "==" (EVar "depth") (ELit (LInt 1)))) (EBinOp "::" (EVar "i") (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "fieldNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))))))
+(DTypeSig false "zipFieldIdxs" (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyFun (TyApp (TyCon "List") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "zipFieldIdxs" ((PList) PWild) (EListLit))
+(DFunDef false "zipFieldIdxs" ((PCons PWild (PVar "fs")) (PCons (PVar "i") (PVar "is"))) (EBinOp "::" (EApp (EVar "Some") (EVar "i")) (EApp (EApp (EVar "zipFieldIdxs") (EVar "fs")) (EVar "is"))))
+(DFunDef false "zipFieldIdxs" ((PCons PWild (PVar "fs")) (PList)) (EBinOp "::" (EVar "None") (EApp (EApp (EVar "zipFieldIdxs") (EVar "fs")) (EListLit))))
+(DTypeSig false "methodNameIdxs" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int")))))))
+(DFunDef false "methodNameIdxs" ((PVar "toks") (PVar "s") (PVar "e")) (EMatch (EApp (EApp (EApp (EVar "findWhereIdx") (EVar "toks")) (EVar "s")) (EVar "e")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "w")) () (EBlock (DoLet false false (PVar "after") (EApp (EApp (EApp (EVar "skipNewlineToks") (EVar "toks")) (EBinOp "+" (EVar "w") (ELit (LInt 1)))) (EVar "e"))) (DoExpr (EIf (EBinOp "&&" (EBinOp "<" (EVar "after") (EVar "e")) (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "after")) (EVar "toks")) (EVar "TIndent"))) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "after") (ELit (LInt 1)))) (EVar "e")) (ELit (LInt 1))) (EVar "True")) (EListLit)))))))
+(DTypeSig false "findWhereIdx" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "findWhereIdx" ((PVar "toks") (PVar "i") (PVar "e")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EVar "None") (EIf (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks")) (EVar "TWhere")) (EApp (EVar "Some") (EVar "i")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "findWhereIdx") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "skipNewlineToks" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Int")))))
+(DFunDef false "skipNewlineToks" ((PVar "toks") (PVar "i") (PVar "e")) (EIf (EBinOp "&&" (EBinOp "<" (EVar "i") (EVar "e")) (EBinOp "==" (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks")) (EVar "TNewline"))) (EApp (EApp (EApp (EVar "skipNewlineToks") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EIf (EVar "otherwise") (EVar "i") (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "methodNameGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int")))))))))
+(DFunDef false "methodNameGo" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart")) (EIf (EBinOp ">=" (EVar "i") (EVar "e")) (EListLit) (EIf (EBinOp "<=" (EVar "depth") (ELit (LInt 0))) (EListLit) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "methodNameStep") (EVar "toks")) (EVar "i")) (EVar "e")) (EVar "depth")) (EVar "atStart")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "methodNameStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyFun (TyCon "Token") (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Int"))))))))))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") PWild (PCon "TIndent")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EVar "False")))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") PWild (PCon "TDedent")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EVar "False")))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") PWild (PCon "TNewline")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EBinOp "==" (EVar "depth") (ELit (LInt 1)))))
+(DFunDef false "methodNameStep" ((PVar "toks") (PVar "i") (PVar "e") (PVar "depth") (PVar "atStart") PWild) (EIf (EBinOp "&&" (EVar "atStart") (EBinOp "==" (EVar "depth") (ELit (LInt 1)))) (EBinOp "::" (EApp (EVar "Some") (EVar "i")) (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False"))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EApp (EVar "methodNameGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "e")) (EVar "depth")) (EVar "False")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "declChildSpansOf" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyTuple (TyCon "Int") (TyCon "Int"))) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyApp (TyCon "List") (TyApp (TyCon "Option") (TyCon "Loc"))))))))
+(DFunDef false "declChildSpansOf" ((PVar "toks") (PVar "offs") (PVar "lineStarts") (PVar "span")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "idxOpt")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "idx")) (EApp (EApp (EApp (EApp (EVar "locOfSpanWith") (EVar "offs")) (EVar "lineStarts")) (EVar "idx")) (EBinOp "+" (EVar "idx") (ELit (LInt 1)))))) (EVar "idxOpt")))) (EApp (EApp (EVar "declChildNameIdxs") (EVar "toks")) (EVar "span"))))
 (DTypeSig false "declPosOf" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyApp (TyCon "Array") (TyTuple (TyCon "Int") (TyCon "Int"))) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyTuple (TyCon "Decl") (TyCon "Int") (TyCon "Int")) (TyCon "DeclPos")))))))
-(DFunDef false "declPosOf" ((PVar "toks") (PVar "lines") (PVar "offs") (PVar "lineStarts") (PTuple (PVar "d") (PVar "s") (PVar "e"))) (EApp (EApp (EApp (EVar "DeclPos") (EApp (EApp (EVar "lineAt") (EVar "lines")) (EVar "s"))) (EApp (EApp (EVar "lineAt") (EVar "lines")) (EApp (EApp (EApp (EVar "lastContentIdx") (EVar "toks")) (EVar "s")) (EBinOp "-" (EVar "e") (ELit (LInt 1)))))) (EApp (EApp (EApp (EApp (EVar "declNameSpanOf") (EVar "toks")) (EVar "offs")) (EVar "lineStarts")) (ETuple (EVar "d") (EVar "s") (EVar "e")))))
+(DFunDef false "declPosOf" ((PVar "toks") (PVar "lines") (PVar "offs") (PVar "lineStarts") (PTuple (PVar "d") (PVar "s") (PVar "e"))) (EApp (EApp (EApp (EApp (EVar "DeclPos") (EApp (EApp (EVar "lineAt") (EVar "lines")) (EVar "s"))) (EApp (EApp (EVar "lineAt") (EVar "lines")) (EApp (EApp (EApp (EVar "lastContentIdx") (EVar "toks")) (EVar "s")) (EBinOp "-" (EVar "e") (ELit (LInt 1)))))) (EApp (EApp (EApp (EApp (EVar "declNameSpanOf") (EVar "toks")) (EVar "offs")) (EVar "lineStarts")) (ETuple (EVar "d") (EVar "s") (EVar "e")))) (EApp (EApp (EApp (EApp (EVar "declChildSpansOf") (EVar "toks")) (EVar "offs")) (EVar "lineStarts")) (ETuple (EVar "d") (EVar "s") (EVar "e")))))
 (DTypeSig false "variantStartsIn" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Int")))))))
 (DFunDef false "variantStartsIn" ((PVar "toks") (PVar "lines") (PVar "i") (PVar "e")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "variantStartsGo") (EVar "toks")) (EVar "lines")) (EVar "i")) (EVar "e")) (ELit (LInt 0))) (EVar "False")))
 (DTypeSig false "variantStartsGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyApp (TyCon "Array") (TyCon "Int")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Int")))))))))
