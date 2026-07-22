@@ -1,7 +1,0 @@
-interface M a where
-  peer : Ord b => a -> b -> b -> Bool
-data Dog = Dog
-impl M Dog where
-  peer d x y = x < y
-data NoOrd = NoOrd
-main = println (peer Dog NoOrd NoOrd)

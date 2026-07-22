@@ -5551,7 +5551,44 @@ recordImplObligation x mono
     None => mono
     Some (iface, typarams, mty) =>
       let _ = pushPendingObl (iface, typarams, mty, mono, currentLoc.value)
+      -- #818 (#838 I3): also record each method-level `=>` constraint slot (e.g.
+      -- `Ord b` on `peer : Ord b => a -> b -> b -> Bool`) as its OWN obligation, so an
+      -- unsatisfiable slot (`Ord NoOrd`) is rejected by the unified checker at check
+      -- time instead of silently becoming an RNone route (a wrong answer / segfault
+      -- at run/build).  Recorded here so BOTH the check path (inferVarPlainId) and the
+      -- emit path (inferMethodAt) — the two recordImplObligation callers — cover it.
+      let _ = recordMethodLevelObls typarams mty mono
       mono
+
+-- #818 (#838 I3): record one PMethodLevel obligation per method-level `=>` constraint
+-- slot of a method occurrence.  [mty] is the method's DECLARED type (with its `=>`);
+-- [occMono] is THIS occurrence's instantiated (constraint-free) type.  Align the
+-- declared function spine (constraints/effects stripped) against [occMono] with
+-- matchTyMono to recover each constraint var's concrete mono, then record
+-- `iface mono`.  matchTyMono captures the live tyvar cell, so a slot still a fresh
+-- var at record time normalizes to its solved head at check time — a ground head
+-- (`NoOrd`) with no impl hits the checker's RULE 1 reject; a still-generalized var
+-- defers via RULE 2, uniform with every other obligation.  No slots ⇒ nothing
+-- recorded (the receiver-only-method common case), and a shape mismatch (matchTyMono
+-- None) records nothing — never a false reject.
+recordMethodLevelObls : List String -> Ty -> Mono -> Unit
+recordMethodLevelObls typarams mty occMono =
+  let slots = methodLevelConstraintSlots typarams mty
+  if isEmptyL slots then ()
+  else match matchTyMono (stripLeadingMethodConstraints mty) occMono
+    None => ()
+    Some subst => recordMethodLevelSlotObls slots subst
+
+recordMethodLevelSlotObls : List (String, String) -> List (String, Mono) -> Unit
+recordMethodLevelSlotObls [] _ = ()
+recordMethodLevelSlotObls ((vname, iface)::rest) subst =
+  let _ = match lookupAssoc vname subst
+    Some m => recordObl Predicate {
+      iface = iface,
+      args = [m],
+    } 0 PMethodLevel currentLoc.value
+    None => ()
+  recordMethodLevelSlotObls rest subst
 
 -- Expected-type propagation for an application whose argument is a lambda.
 -- Inferring `andThen e (stream => Ok [JArray stream])` naively infers the lambda
@@ -13740,6 +13777,31 @@ constraintFirstNonParam : List String -> Constraint -> List String
 constraintFirstNonParam typarams c = match constraintNonParamVars typarams c
   [] => []
   n::_ => [n]
+
+-- #818 (#838 I3): (dispatch-var-name, interface-name) per method-level `=>` constraint
+-- slot — the same slots methodLevelConstraintVarNames enumerates (a non-interface-param
+-- dispatch var, in declaration order), each paired with its constraint's interface.
+-- recordMethodLevelObls uses it to attach the right iface to each slot's obligation.
+methodLevelConstraintSlots : List String -> Ty -> List (String, String)
+methodLevelConstraintSlots typarams (TyConstrained cs t) = flatMap (constraintSlotVarIface typarams) cs
+  ++ methodLevelConstraintSlots typarams t
+methodLevelConstraintSlots typarams (TyEffect _ _ t) =
+  methodLevelConstraintSlots typarams t
+methodLevelConstraintSlots _ _ = []
+
+constraintSlotVarIface : List String -> Constraint -> List (String, String)
+constraintSlotVarIface typarams c = match constraintNonParamVars typarams c
+  [] => []
+  n::_ => [(n, constraintIface c)]
+
+-- #818 (#838 I3): strip the leading `=>`/effect wrappers off a method's declared type,
+-- leaving the bare function spine so matchTyMono can align it against a constraint-free
+-- occurrence mono (mirrors the TyConstrained/TyEffect peel in methodLevelConstraintVarNames).
+stripLeadingMethodConstraints : Ty -> Ty
+stripLeadingMethodConstraints (TyConstrained _ t) =
+  stripLeadingMethodConstraints t
+stripLeadingMethodConstraints (TyEffect _ _ t) = stripLeadingMethodConstraints t
+stripLeadingMethodConstraints t = t
 
 removeAllS : List String -> List String -> List String
 removeAllS _ [] = []
