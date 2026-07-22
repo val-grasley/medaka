@@ -288,6 +288,7 @@ constraintIsMethodLevel : List String -> Constraint -> Bool
 constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
 constraintNonParamVars : List String -> Constraint -> List String
 constraintSlotId : List String -> List (String, Mono) -> Constraint -> List Int
+constraintSlotVarIface : List String -> Constraint -> List (String, String)
 constraintTyVars : Constraint -> List (String, String)
 constraintVarIfaceMonos : List (String, String) -> List (String, Mono) -> List (String, Mono)
 constraintVarNames : Constraint -> List String
@@ -862,6 +863,7 @@ methodDictArityOf : String -> Int
 methodDispatchIdx : String -> Option Int
 methodEffArgOccs : Ty -> List (String, List Atom)
 methodEffRetOccs : Ty -> List (String, List Atom)
+methodLevelConstraintSlots : List String -> Ty -> List (String, String)
 methodLevelConstraintVarNames : List String -> Ty -> List String
 methodMembersOf : List String -> Loc -> List UseMember
 methodRet : Ty -> Ty
@@ -1045,6 +1047,8 @@ recordImplObligation : String -> Mono -> Mono
 recordImporterShadowDicts : TcEnv -> String -> List (Ref Route) -> Mono -> Unit
 recordLocalBind : String -> Mono -> Unit
 recordMethodDicts : String -> Ref (List Route) -> List (Int, Mono) -> Unit
+recordMethodLevelObls : List String -> Ty -> Mono -> Unit
+recordMethodLevelSlotObls : List (String, String) -> List (String, Mono) -> Unit
 recordNumlitLoc : Mono -> Unit
 recordObl : Predicate -> Int -> Provenance -> Option Loc -> Unit
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> Unit
@@ -1240,6 +1244,7 @@ strHasSlash : String -> Bool
 strHasSlashGo : String -> Int -> Int -> Bool
 stripArrows : Mono -> Mono
 stripEff : Ty -> Ty
+stripLeadingMethodConstraints : Ty -> Ty
 stripTyConstraints : Ty -> Ty
 stripTyWrap : Ty -> Ty
 subTopOf : Param -> Param

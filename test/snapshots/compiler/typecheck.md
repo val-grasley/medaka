@@ -1,5 +1,5 @@
 # META
-source_lines=17216
+source_lines=17278
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
@@ -5555,7 +5555,44 @@ recordImplObligation x mono
     None => mono
     Some (iface, typarams, mty) =>
       let _ = pushPendingObl (iface, typarams, mty, mono, currentLoc.value)
+      -- #818 (#838 I3): also record each method-level `=>` constraint slot (e.g.
+      -- `Ord b` on `peer : Ord b => a -> b -> b -> Bool`) as its OWN obligation, so an
+      -- unsatisfiable slot (`Ord NoOrd`) is rejected by the unified checker at check
+      -- time instead of silently becoming an RNone route (a wrong answer / segfault
+      -- at run/build).  Recorded here so BOTH the check path (inferVarPlainId) and the
+      -- emit path (inferMethodAt) — the two recordImplObligation callers — cover it.
+      let _ = recordMethodLevelObls typarams mty mono
       mono
+
+-- #818 (#838 I3): record one PMethodLevel obligation per method-level `=>` constraint
+-- slot of a method occurrence.  [mty] is the method's DECLARED type (with its `=>`);
+-- [occMono] is THIS occurrence's instantiated (constraint-free) type.  Align the
+-- declared function spine (constraints/effects stripped) against [occMono] with
+-- matchTyMono to recover each constraint var's concrete mono, then record
+-- `iface mono`.  matchTyMono captures the live tyvar cell, so a slot still a fresh
+-- var at record time normalizes to its solved head at check time — a ground head
+-- (`NoOrd`) with no impl hits the checker's RULE 1 reject; a still-generalized var
+-- defers via RULE 2, uniform with every other obligation.  No slots ⇒ nothing
+-- recorded (the receiver-only-method common case), and a shape mismatch (matchTyMono
+-- None) records nothing — never a false reject.
+recordMethodLevelObls : List String -> Ty -> Mono -> Unit
+recordMethodLevelObls typarams mty occMono =
+  let slots = methodLevelConstraintSlots typarams mty
+  if isEmptyL slots then ()
+  else match matchTyMono (stripLeadingMethodConstraints mty) occMono
+    None => ()
+    Some subst => recordMethodLevelSlotObls slots subst
+
+recordMethodLevelSlotObls : List (String, String) -> List (String, Mono) -> Unit
+recordMethodLevelSlotObls [] _ = ()
+recordMethodLevelSlotObls ((vname, iface)::rest) subst =
+  let _ = match lookupAssoc vname subst
+    Some m => recordObl Predicate {
+      iface = iface,
+      args = [m],
+    } 0 PMethodLevel currentLoc.value
+    None => ()
+  recordMethodLevelSlotObls rest subst
 
 -- Expected-type propagation for an application whose argument is a lambda.
 -- Inferring `andThen e (stream => Ok [JArray stream])` naively infers the lambda
@@ -13745,6 +13782,31 @@ constraintFirstNonParam typarams c = match constraintNonParamVars typarams c
   [] => []
   n::_ => [n]
 
+-- #818 (#838 I3): (dispatch-var-name, interface-name) per method-level `=>` constraint
+-- slot — the same slots methodLevelConstraintVarNames enumerates (a non-interface-param
+-- dispatch var, in declaration order), each paired with its constraint's interface.
+-- recordMethodLevelObls uses it to attach the right iface to each slot's obligation.
+methodLevelConstraintSlots : List String -> Ty -> List (String, String)
+methodLevelConstraintSlots typarams (TyConstrained cs t) = flatMap (constraintSlotVarIface typarams) cs
+  ++ methodLevelConstraintSlots typarams t
+methodLevelConstraintSlots typarams (TyEffect _ _ t) =
+  methodLevelConstraintSlots typarams t
+methodLevelConstraintSlots _ _ = []
+
+constraintSlotVarIface : List String -> Constraint -> List (String, String)
+constraintSlotVarIface typarams c = match constraintNonParamVars typarams c
+  [] => []
+  n::_ => [(n, constraintIface c)]
+
+-- #818 (#838 I3): strip the leading `=>`/effect wrappers off a method's declared type,
+-- leaving the bare function spine so matchTyMono can align it against a constraint-free
+-- occurrence mono (mirrors the TyConstrained/TyEffect peel in methodLevelConstraintVarNames).
+stripLeadingMethodConstraints : Ty -> Ty
+stripLeadingMethodConstraints (TyConstrained _ t) =
+  stripLeadingMethodConstraints t
+stripLeadingMethodConstraints (TyEffect _ _ t) = stripLeadingMethodConstraints t
+stripLeadingMethodConstraints t = t
+
 removeAllS : List String -> List String -> List String
 removeAllS _ [] = []
 removeAllS drop (x::xs)
@@ -18516,7 +18578,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "lookupSchemeOblsByName" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupSchemeOblsByName" ((PVar "x") (PCons (PTuple (PTuple (PVar "n2") PWild) (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n2") (EVar "x")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupSchemeOblsByName") (EVar "x")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "recordImplObligation" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "recordImplObligation" ((PVar "x") (PVar "mono")) (EIf (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value"))) (EVar "mono") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EVar "omLookup") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "None") () (EVar "mono")) (arm (PCon "Some" (PTuple (PVar "iface") (PVar "typarams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EVar "pushPendingObl") (ETuple (EVar "iface") (EVar "typarams") (EVar "mty") (EVar "mono") (EFieldAccess (EVar "currentLoc") "value")))) (DoExpr (EVar "mono"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "recordImplObligation" ((PVar "x") (PVar "mono")) (EIf (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value"))) (EVar "mono") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EVar "omLookup") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "None") () (EVar "mono")) (arm (PCon "Some" (PTuple (PVar "iface") (PVar "typarams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EVar "pushPendingObl") (ETuple (EVar "iface") (EVar "typarams") (EVar "mty") (EVar "mono") (EFieldAccess (EVar "currentLoc") "value")))) (DoLet false false PWild (EApp (EApp (EApp (EVar "recordMethodLevelObls") (EVar "typarams")) (EVar "mty")) (EVar "mono"))) (DoExpr (EVar "mono"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "recordMethodLevelObls" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyFun (TyCon "Mono") (TyCon "Unit")))))
+(DFunDef false "recordMethodLevelObls" ((PVar "typarams") (PVar "mty") (PVar "occMono")) (EBlock (DoLet false false (PVar "slots") (EApp (EApp (EVar "methodLevelConstraintSlots") (EVar "typarams")) (EVar "mty"))) (DoExpr (EIf (EApp (EVar "isEmptyL") (EVar "slots")) (ELit LUnit) (EMatch (EApp (EApp (EVar "matchTyMono") (EApp (EVar "stripLeadingMethodConstraints") (EVar "mty"))) (EVar "occMono")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "subst")) () (EApp (EApp (EVar "recordMethodLevelSlotObls") (EVar "slots")) (EVar "subst"))))))))
+(DTypeSig false "recordMethodLevelSlotObls" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))
+(DFunDef false "recordMethodLevelSlotObls" ((PList) PWild) (ELit LUnit))
+(DFunDef false "recordMethodLevelSlotObls" ((PCons (PTuple (PVar "vname") (PVar "iface")) (PVar "rest")) (PVar "subst")) (EBlock (DoLet false false PWild (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "vname")) (EVar "subst")) (arm (PCon "Some" (PVar "m")) () (EApp (EApp (EApp (EApp (EVar "recordObl") (ERecordCreate "Predicate" ((fa "iface" (EVar "iface")) (fa "args" (EListLit (EVar "m")))))) (ELit (LInt 0))) (EVar "PMethodLevel")) (EFieldAccess (EVar "currentLoc") "value"))) (arm (PCon "None") () (ELit LUnit)))) (DoExpr (EApp (EApp (EVar "recordMethodLevelSlotObls") (EVar "rest")) (EVar "subst")))))
 (DTypeSig false "unlocExpr" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "unlocExpr" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "unlocExpr") (EVar "e")))
 (DFunDef false "unlocExpr" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "unlocExpr") (EVar "e")))
@@ -20397,6 +20464,16 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "methodLevelConstraintVarNames" (PWild PWild) (EListLit))
 (DTypeSig false "constraintFirstNonParam" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Constraint") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "constraintFirstNonParam" ((PVar "typarams") (PVar "c")) (EMatch (EApp (EApp (EVar "constraintNonParamVars") (EVar "typarams")) (EVar "c")) (arm (PList) () (EListLit)) (arm (PCons (PVar "n") PWild) () (EListLit (EVar "n")))))
+(DTypeSig false "methodLevelConstraintSlots" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "methodLevelConstraintSlots" ((PVar "typarams") (PCon "TyConstrained" (PVar "cs") (PVar "t"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EApp (EVar "constraintSlotVarIface") (EVar "typarams"))) (EVar "cs")) (EApp (EApp (EVar "methodLevelConstraintSlots") (EVar "typarams")) (EVar "t"))))
+(DFunDef false "methodLevelConstraintSlots" ((PVar "typarams") (PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EApp (EVar "methodLevelConstraintSlots") (EVar "typarams")) (EVar "t")))
+(DFunDef false "methodLevelConstraintSlots" (PWild PWild) (EListLit))
+(DTypeSig false "constraintSlotVarIface" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Constraint") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "constraintSlotVarIface" ((PVar "typarams") (PVar "c")) (EMatch (EApp (EApp (EVar "constraintNonParamVars") (EVar "typarams")) (EVar "c")) (arm (PList) () (EListLit)) (arm (PCons (PVar "n") PWild) () (EListLit (ETuple (EVar "n") (EApp (EVar "constraintIface") (EVar "c")))))))
+(DTypeSig false "stripLeadingMethodConstraints" (TyFun (TyCon "Ty") (TyCon "Ty")))
+(DFunDef false "stripLeadingMethodConstraints" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "stripLeadingMethodConstraints") (EVar "t")))
+(DFunDef false "stripLeadingMethodConstraints" ((PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EVar "stripLeadingMethodConstraints") (EVar "t")))
+(DFunDef false "stripLeadingMethodConstraints" ((PVar "t")) (EVar "t"))
 (DTypeSig false "removeAllS" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "removeAllS" (PWild (PList)) (EListLit))
 (DFunDef false "removeAllS" ((PVar "drop") (PCons (PVar "x") (PVar "xs"))) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "drop")) (EApp (EApp (EVar "removeAllS") (EVar "drop")) (EVar "xs")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "x") (EApp (EApp (EVar "removeAllS") (EVar "drop")) (EVar "xs"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -22460,7 +22537,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "lookupSchemeOblsByName" (PWild (PList)) (EVar "None"))
 (DFunDef false "lookupSchemeOblsByName" ((PVar "x") (PCons (PTuple (PTuple (PVar "n2") PWild) (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "n2") (EVar "x")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupSchemeOblsByName") (EVar "x")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "recordImplObligation" (TyFun (TyCon "String") (TyFun (TyCon "Mono") (TyCon "Mono"))))
-(DFunDef false "recordImplObligation" ((PVar "x") (PVar "mono")) (EIf (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value"))) (EVar "mono") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EVar "omLookup") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "None") () (EVar "mono")) (arm (PCon "Some" (PTuple (PVar "iface") (PVar "typarams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EVar "pushPendingObl") (ETuple (EVar "iface") (EVar "typarams") (EVar "mty") (EVar "mono") (EFieldAccess (EVar "currentLoc") "value")))) (DoExpr (EVar "mono"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "recordImplObligation" ((PVar "x") (PVar "mono")) (EIf (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "definerShadowNamesRef") "value")) (EApp (EApp (EVar "contains") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "standaloneValuesRef") "value"))) (EVar "mono") (EIf (EVar "otherwise") (EMatch (EApp (EApp (EVar "omLookup") (EVar "x")) (EFieldAccess (EFieldAccess (EFieldAccess (EVar "perRun") "value") "methodIfaceParamsRef") "value")) (arm (PCon "None") () (EVar "mono")) (arm (PCon "Some" (PTuple (PVar "iface") (PVar "typarams") (PVar "mty"))) () (EBlock (DoLet false false PWild (EApp (EVar "pushPendingObl") (ETuple (EVar "iface") (EVar "typarams") (EVar "mty") (EVar "mono") (EFieldAccess (EVar "currentLoc") "value")))) (DoLet false false PWild (EApp (EApp (EApp (EVar "recordMethodLevelObls") (EVar "typarams")) (EVar "mty")) (EVar "mono"))) (DoExpr (EVar "mono"))))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "recordMethodLevelObls" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyFun (TyCon "Mono") (TyCon "Unit")))))
+(DFunDef false "recordMethodLevelObls" ((PVar "typarams") (PVar "mty") (PVar "occMono")) (EBlock (DoLet false false (PVar "slots") (EApp (EApp (EVar "methodLevelConstraintSlots") (EVar "typarams")) (EVar "mty"))) (DoExpr (EIf (EApp (EVar "isEmptyL") (EVar "slots")) (ELit LUnit) (EMatch (EApp (EApp (EVar "matchTyMono") (EApp (EVar "stripLeadingMethodConstraints") (EVar "mty"))) (EVar "occMono")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "subst")) () (EApp (EApp (EVar "recordMethodLevelSlotObls") (EVar "slots")) (EVar "subst"))))))))
+(DTypeSig false "recordMethodLevelSlotObls" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyCon "Unit"))))
+(DFunDef false "recordMethodLevelSlotObls" ((PList) PWild) (ELit LUnit))
+(DFunDef false "recordMethodLevelSlotObls" ((PCons (PTuple (PVar "vname") (PVar "iface")) (PVar "rest")) (PVar "subst")) (EBlock (DoLet false false PWild (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "vname")) (EVar "subst")) (arm (PCon "Some" (PVar "m")) () (EApp (EApp (EApp (EApp (EVar "recordObl") (ERecordCreate "Predicate" ((fa "iface" (EVar "iface")) (fa "args" (EListLit (EVar "m")))))) (ELit (LInt 0))) (EVar "PMethodLevel")) (EFieldAccess (EVar "currentLoc") "value"))) (arm (PCon "None") () (ELit LUnit)))) (DoExpr (EApp (EApp (EVar "recordMethodLevelSlotObls") (EVar "rest")) (EVar "subst")))))
 (DTypeSig false "unlocExpr" (TyFun (TyCon "Expr") (TyCon "Expr")))
 (DFunDef false "unlocExpr" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "unlocExpr") (EVar "e")))
 (DFunDef false "unlocExpr" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "unlocExpr") (EVar "e")))
@@ -24341,6 +24423,16 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "methodLevelConstraintVarNames" (PWild PWild) (EListLit))
 (DTypeSig false "constraintFirstNonParam" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Constraint") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "constraintFirstNonParam" ((PVar "typarams") (PVar "c")) (EMatch (EApp (EApp (EVar "constraintNonParamVars") (EVar "typarams")) (EVar "c")) (arm (PList) () (EListLit)) (arm (PCons (PVar "n") PWild) () (EListLit (EVar "n")))))
+(DTypeSig false "methodLevelConstraintSlots" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Ty") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "methodLevelConstraintSlots" ((PVar "typarams") (PCon "TyConstrained" (PVar "cs") (PVar "t"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EApp (EVar "constraintSlotVarIface") (EVar "typarams"))) (EVar "cs")) (EApp (EApp (EVar "methodLevelConstraintSlots") (EVar "typarams")) (EVar "t"))))
+(DFunDef false "methodLevelConstraintSlots" ((PVar "typarams") (PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EApp (EVar "methodLevelConstraintSlots") (EVar "typarams")) (EVar "t")))
+(DFunDef false "methodLevelConstraintSlots" (PWild PWild) (EListLit))
+(DTypeSig false "constraintSlotVarIface" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Constraint") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "constraintSlotVarIface" ((PVar "typarams") (PVar "c")) (EMatch (EApp (EApp (EVar "constraintNonParamVars") (EVar "typarams")) (EVar "c")) (arm (PList) () (EListLit)) (arm (PCons (PVar "n") PWild) () (EListLit (ETuple (EVar "n") (EApp (EVar "constraintIface") (EVar "c")))))))
+(DTypeSig false "stripLeadingMethodConstraints" (TyFun (TyCon "Ty") (TyCon "Ty")))
+(DFunDef false "stripLeadingMethodConstraints" ((PCon "TyConstrained" PWild (PVar "t"))) (EApp (EVar "stripLeadingMethodConstraints") (EVar "t")))
+(DFunDef false "stripLeadingMethodConstraints" ((PCon "TyEffect" PWild PWild (PVar "t"))) (EApp (EVar "stripLeadingMethodConstraints") (EVar "t")))
+(DFunDef false "stripLeadingMethodConstraints" ((PVar "t")) (EVar "t"))
 (DTypeSig false "removeAllS" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "removeAllS" (PWild (PList)) (EListLit))
 (DFunDef false "removeAllS" ((PVar "drop") (PCons (PVar "x") (PVar "xs"))) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "drop")) (EApp (EApp (EVar "removeAllS") (EVar "drop")) (EVar "xs")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "x") (EApp (EApp (EVar "removeAllS") (EVar "drop")) (EVar "xs"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
