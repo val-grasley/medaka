@@ -132,6 +132,7 @@ buildImplUniverse : List Decl -> ImplUniverse
 buildKeyTable : List Decl -> Map String (List KeyEntry)
 buildStandaloneShadowsGraph : List Decl -> List Decl -> List String
 buildTupleCallHint : String -> List Expr -> Expr -> Expr -> (String, Option (Loc, String))
+callOblsWindow : Int -> List (String, List Mono, Option Loc)
 censusSuperClose : List Decl -> List (String, Int) -> List (String, Int)
 censusSuperCloseFix : List Decl -> List (String, Int) -> List (String, Int) -> List (String, Int)
 censusSuperCloseVec : List Decl -> List (String, List Int) -> List (String, List Int)
@@ -142,8 +143,8 @@ checkAnnotTooGeneral : Ty -> List Mono -> Unit
 checkArgEffVarCoverage : String -> String -> Ty -> Unit
 checkArgEffVars : String -> String -> Ty -> List (String, List Atom) -> List (String, List Atom) -> List String -> Unit
 checkBodyImpl : List (String, Scheme) -> CheckMode -> List Decl -> List (String, Scheme)
-checkCallObligations : List Decl -> List (String, List Mono, Option Loc) -> Unit
-checkCallObligationsU : ImplUniverse -> List String -> List (String, List Mono, Option Loc) -> Unit
+checkCallObligations : List Decl -> List UObligation -> Unit
+checkCallObligationsU : ImplUniverse -> List String -> List UObligation -> Unit
 checkClausesNonFunctionLocated : List String -> String -> List FunClause -> Unit
 checkCoherence : List Decl -> Unit
 checkDefaultEffectLaunder : String -> Mono -> Mono -> Option Loc -> Unit
@@ -927,6 +928,7 @@ numlitCtxKind : Option Loc -> Option String
 numlitMismatchHint : Option Loc -> List Mono -> String
 numlitMismatchMsg : Option Loc -> List Mono -> String
 numlitReframeLoc : Option Loc -> Bool
+oblAsTuple : UObligation -> (String, List Mono, Option Loc)
 oblDispatchMonos : (String, List String, Ty, Mono, Option Loc) -> List Mono
 occursAdjust : Int -> Int -> Mono -> Unit
 occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> Unit
@@ -1012,7 +1014,6 @@ propParamNamesTc : List PropParam -> List String
 publicDataDecls : List Decl -> List Decl
 publicValNames : List Decl -> List String
 pureRow : EffRow
-pushCallObl : (String, List Mono, Option Loc) -> Unit
 pushDictApp : (Ref (List Route), List Mono, List String) -> Unit
 pushIncompleteImpl : (Option Loc, String) -> Unit
 pushNoImplError : String -> Option Loc -> List Mono -> Unit
@@ -1045,8 +1046,9 @@ recordImporterShadowDicts : TcEnv -> String -> List (Ref Route) -> Mono -> Unit
 recordLocalBind : String -> Mono -> Unit
 recordMethodDicts : String -> Ref (List Route) -> List (Int, Mono) -> Unit
 recordNumlitLoc : Mono -> Unit
+recordObl : Predicate -> Int -> Provenance -> Option Loc -> Unit
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> Unit
-recordSchemeCallObligations : List (String, List Int) -> List (Int, Mono) -> Unit
+recordSchemeCallObligations : Int -> List (String, List Int) -> List (Int, Mono) -> Unit
 recordSigConstraintArgs : List Ty -> List (String, Mono) -> List (Int, Mono) -> Option (List Mono)
 recordSigConstraintObls : List Constraint -> List (String, Mono) -> List (Int, Mono) -> Unit
 recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> Mono
@@ -1355,6 +1357,13 @@ usePathModuleId : UsePath -> String
 usesImplDict : String -> Int -> Expr -> Bool
 varNameForId : List (String, Ty, List (String, Mono)) -> String -> Int -> String
 variantFieldTailNames : Variant -> List String
+wMark : Windowed a -> Int
+wNew : Unit -> Windowed a
+wPush : Windowed a -> a -> Unit
+wReset : Windowed a -> Unit
+wRestore : Windowed a -> (List a, Int) -> Unit
+wSnapshot : Windowed a -> (List a, Int)
+wWindow : Windowed a -> Int -> List a
 walkDispatch : List String -> Ty -> Mono -> List (String, Mono)
 wrapIf : Bool -> String -> String
 zerosL : Int -> List Int
