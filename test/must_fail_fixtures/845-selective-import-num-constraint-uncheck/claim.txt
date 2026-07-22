@@ -1,0 +1,57 @@
+issue: 845
+what: a Num-constrained plain function imported via SELECTIVE import (`import
+what: mod.{f}`) and called at an unsatisfiable type is not obligation-checked at
+what: the call site. This pins the CRASH VARIANT from #845's comment thread (the
+what: issue body's own explicit-signature repro no longer reproduces -- it now
+what: correctly rejects at check-time, apparently fixed by the #838 obligation-
+what: channel work; verified by hand before pinning, per this suite's own rule to
+what: never pin from the issue text alone). Here the Num constraint on `f` is
+what: INFERRED from a `where`-helper (`f x = go x where go n = n + 1`) rather
+what: than declared in a signature. `helper.mdk` exports `f`; `main.mdk` does
+what: `import helper.{f}` then calls `f "abc"` (String has no Num impl).
+what: `medaka check` exits 0 (`main : Unit`, zero diagnostics) -- the selectively
+what: imported callee's inferred constraint rides no call-obligation channel at
+what: this call site, same root cause as the issue body's variant.
+what: `medaka run` does not cleanly reject: it PANICS mid-evaluation
+what: (`runtime error [E-PANIC]: unknown op '+'`), because `+` is dispatched on
+what: a String with no Num-dispatch check ever having run.
+what: `medaka build` is WORSE than the comment describes: it SUCCEEDS (exit 0,
+what: binary produced) for this ill-typed program, and the produced binary then
+what: SEGFAULTS at runtime (`runtime error [E-FATAL-SIGNAL]: fatal memory fault`,
+what: exit 139) -- a compiled artifact crashing on a memory fault, not even a
+what: clean panic. That build/build-run half is NOT itself pinned by this
+what: fixture's cmd/control (see why-note) but was independently confirmed by
+what: hand and is worth a human's attention: it is arguably S1/S0-adjacent, not
+what: the S2 the issue currently carries.
+cmd: check main.mdk
+exit: 0
+control: check control.mdk
+why-fixture: THIS IS A MULTI-MODULE PIN, modeled on
+why-fixture: test/must_fail_fixtures/804-abstract-export-row-kind-cross-module/.
+why-fixture: main.mdk imports `f` from the sibling `helper.mdk` in the SAME
+why-fixture: fixture directory -- `medaka check main.mdk` resolves same-directory
+why-fixture: sibling imports with no medaka.toml, so a single `cmd:` line drives
+why-fixture: the real cross-module repro.
+why-control: control.mdk is BYTE-IDENTICAL to main.mdk except it calls `f 5`
+why-control: (Int, a genuine Num instance) instead of `f "abc"`. It must check
+why-control: clean (exit 0), and independently confirmed to `run` clean too
+why-control: (prints `6`) -- proving the selective cross-module import and the
+why-control: where-helper-inferred Num dispatch both work in general for a VALID
+why-control: call. That isolates the observation to the unsatisfiable-
+why-control: instantiation case specifically, not to inferred-constraint
+why-control: selective-import as a whole.
+why-note: this pin asserts only the `check`-wrongly-accepts half (per this
+why-note: suite's convention -- e.g. 792-parametric-impl-body-missing-ground-
+why-note: instance -- of pinning the check/build DISAGREEMENT via the check side
+why-note: alone, since the check-json/check verb is what every existing row in
+why-note: this corpus grades). Independently confirmed by hand outside this
+why-note: fixture's cmd/control on the built binary:
+why-note:   medaka run main.mdk        -> exit 1, "runtime error [E-PANIC]:
+why-note:                                 unknown op '+'"
+why-note:   medaka build main.mdk -o X -> exit 0, binary written
+why-note:   ./X                        -> exit 139, "runtime error
+why-note:                                 [E-FATAL-SIGNAL]: fatal memory fault
+why-note:                                 (segmentation fault)"
+why-note: A fix that makes `check` also reject this program (surfacing the
+why-note: cross-module inferred-Num obligation at check time) flips this row's
+why-note: exit from 0 to nonzero and drains it.
