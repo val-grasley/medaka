@@ -1,0 +1,12 @@
+interface Bx a where
+  bx : a -> Int
+  bx x = g 0
+    where
+      g n = n + 1
+
+impl Bx Int where
+  bx x = x
+
+g x = x
+
+main = println (g "hi")

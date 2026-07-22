@@ -123,6 +123,8 @@ exprSexp (ELit l) = node "ELit" [litSexp l]
 -- same) and the parse-fixture / OCaml↔compiler sexp diff gates keep passing.
 exprSexp (ENumLit n _ _ _) = node "ELit" [node "LInt" [intToString n]]
 exprSexp (EVar x) = node "EVar" [escStr x]
+-- #837: EVarId renders as a bare EVar so every sexp/snapshot dump stays byte-identical.
+exprSexp (EVarId x _) = node "EVar" [escStr x]
 -- EVarAt/EMethodAt are elaborated nodes introduced by annotate/typecheck
 -- (post-resolve); programToSexp only ever serializes pre-annotate (desugared)
 -- ASTs, so these arms are unreachable.

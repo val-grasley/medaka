@@ -550,6 +550,7 @@ exprPrec : Expr -> Int
 exprPrec (ELit l) = if isNegLit l then precUnary else precAtom
 exprPrec (ENumLit n _ _ _) = if n < 0 then precUnary else precAtom
 exprPrec (EVar _) = precAtom
+exprPrec (EVarId _ _) = precAtom
 exprPrec (EMethodRef _) = precAtom
 exprPrec (EDictApp _) = precAtom
 exprPrec (ETuple _) = precAtom
@@ -632,6 +633,7 @@ printExprRaw (ELit l) = printLit l
 -- decimal value, unchanged from before.
 printExprRaw (ENumLit n _ _ lx) = text (if lx == "" then intToString n else lx)
 printExprRaw (EVar n) = text n
+printExprRaw (EVarId n _) = text n
 printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n
 printExprRaw (EApp f x) =

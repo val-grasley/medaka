@@ -677,6 +677,12 @@ renameScoped rm bound (EVar n)
     Some n2 => EVar n2
     None => EVar n
   | otherwise = EVar n
+-- #837: strip the resolve-only binding-id tag, renaming exactly as bare EVar.
+renameScoped rm bound (EVarId n _)
+  | not (contains n bound) = match omLookup n rm
+    Some n2 => EVar n2
+    None => EVar n
+  | otherwise = EVar n
 -- binders
 renameScoped rm bound (ELam ps body) =
   ELam (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps ++ bound) body)

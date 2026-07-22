@@ -88,6 +88,8 @@ lower (ENumLit n r _ _) = match r.value
   Some f => CLit (LFloat f)
   None => CLit (LInt n)
 lower (EVar x) = CVar x AGlobal
+-- #837: strip the resolve-only binding-id tag; lower exactly as bare EVar.
+lower (EVarId x _) = CVar x AGlobal
 lower (EVarAt x addr) = CVar x addr
 lower (EApp f x) = CApp (lower f) (lower x)
 lower (ELam pats body) = CLam pats (lower body)
