@@ -1,0 +1,13 @@
+-- #827 regression pin (S0, fixed by #838 I2): a top-level `where` helper's
+-- inferred Num constraint was ORPHANED — `go` re-generalized over it, `go x`
+-- re-instantiated nothing, the leftover var was quietly Int-defaulted, and `f`'s
+-- scheme forwarded no constraint (`f : a -> a`), so `f "abc"` was check-GREEN and
+-- panicked at run (`unknown op '+'`).  I2 flips the local-scheme registration gate
+-- (registerLocalScheme/processLetGroup) and adds the call-obligation deferral
+-- (checkUndeterminedObligation RULE 2), so `f : Num a => a -> a` and this String
+-- call is a clean def-site reject.  If this fixture ever passes check, #827 is back.
+f x = go x
+  where
+    go n = n + 1
+
+main = println (f "abc")

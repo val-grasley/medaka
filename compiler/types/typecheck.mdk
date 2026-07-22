@@ -2759,6 +2759,7 @@ data PerRun = PerRun {
     pendingImplObligationsN : Ref Int,
     numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route)),
     poisonedVars : Ref (List Int),
+    deferrableVarIds : Ref (List Int),  -- #838 I2: QUANTIFIED (forwarded) var ids of every generalized scheme — RULE 2 defers these
     tupleCallCandidates : Ref (List (Mono, String, Option (Loc, String))),
     numlitVarLocs : Ref (List (Mono, Loc)),
     numlitUntainted : Ref (List (Mono, Loc)),
@@ -2798,7 +2799,7 @@ data PerRun = PerRun {
     currentLevel : Ref Int,
   }
 
--- Construct all 58 field-Refs fresh (each reproduces its former top-level ref's initial).
+-- Construct all 59 field-Refs fresh (each reproduces its former top-level ref's initial).
 freshPerRun : Unit -> PerRun
 freshPerRun _ = PerRun {
   tyvarCounter = Ref 0,
@@ -2826,6 +2827,7 @@ freshPerRun _ = PerRun {
   pendingImplObligationsN = Ref 0,
   numlitRefs = Ref [],
   poisonedVars = Ref [],
+  deferrableVarIds = Ref [],
   tupleCallCandidates = Ref [],
   numlitVarLocs = Ref [],
   numlitUntainted = Ref [],
@@ -7155,22 +7157,19 @@ inferRecLet env x e1 e2 =
 registerLocalScheme : String -> Scheme -> Int -> Int -> Int -> Unit
 registerLocalScheme x sch oblN0 callN0 dictN0 =
   let _ = setRef perRun.value.bodyLocalSchemesRef ((x, schemeIds sch)::perRun.value.bodyLocalSchemesRef.value)
-  -- Obligation registration is scoped to IMPL/DEFAULT bodies — the W3 channel
-  -- the round-2 alias break exploits.  Registering for every local everywhere
-  -- is the RIGHT general fix (a top-level `where` helper's orphaned constraint
-  -- is the same pre-existing S0: `f x = go x where go n = n + 1` types
-  -- `f : a -> a` and `f "abc"` panics at run), but it re-routes constraints
-  -- through the ambiguity machinery program-wide (an Ord-constrained
-  -- where-helper's use trips `Ambiguous instance` instead of deferring to the
-  -- enclosing scheme) — that generalization is tracked as its own issue and
-  -- belongs with its own blast-radius pass.
-  if perRun.value.inRigidityBodyRef.value then
-    let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
-    let callOblsDelta = callOblsWindow callN0
-    let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-    registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
-  else
-    ()
+  -- #827/#838 I2: register local-scheme obligations EVERYWHERE, not just inside
+  -- IMPL/DEFAULT bodies.  The old `inRigidityBodyRef` gate scoped this to the W3
+  -- channel because registering universally re-routed constraints through the
+  -- ambiguity machinery (an Ord-constrained where-helper's use tripped `Ambiguous
+  -- instance` instead of deferring) — a top-level `where` helper's orphaned
+  -- constraint (`f x = go x where go n = n + 1` typing `f : a -> a`, `f "abc"`
+  -- panicking at run) was the resulting S0.  I2's uniform deferral (checkUndetermined-
+  -- Obligation RULE 2, deferrableVarIds) now defers a generalizable var into the
+  -- enclosing scheme instead of rejecting, so the gate is safe to flip open.
+  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let callOblsDelta = callOblsWindow callN0
+  let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
+  registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> Mono
 inferLetSimple env pat e1 e2 =
@@ -7908,10 +7907,11 @@ processLetGroup env binds =
   let callOblsDelta = callOblsWindow callN0
   let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
   let _ = setRef perRun.value.bodyLocalSchemesRef (map (p => (fst p, schemeIds (snd p))) (groupSchemesOf genv binds) ++ perRun.value.bodyLocalSchemesRef.value)
-  let _ = if perRun.value.inRigidityBodyRef.value then
-    registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) (groupSchemesOf genv binds)
-  else
-    ()
+  -- #827/#838 I2: register EVERYWHERE (gate flipped from `inRigidityBodyRef`).  The
+  -- uniform deferral (checkUndeterminedObligation RULE 2) makes a generalizable
+  -- where/let var defer into the enclosing scheme rather than trip an ambiguity
+  -- reject, closing the orphaned-local-constraint S0 (#827).  See registerLocalScheme.
+  let _ = registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) (groupSchemesOf genv binds)
   genv
 
 -- the generalized (name, scheme) pairs of a just-closed local group
@@ -12630,9 +12630,23 @@ checkUndeterminedObligations univ iface (a::rest) loc =
 -- path (checkModuleFullImpl) and the emit/eval path, so `check` rejects too.
 checkUndeterminedObligation : ImplUniverse -> String -> Mono -> Option Loc -> Unit
 checkUndeterminedObligation univ iface occ loc
-  | iface == "Num" = ()
-  | isSome (activeDictVarOf occ) = ()
+  | iface == "Num" = ()                                              -- RULE 4a: Num → literal defaulting, never ambiguity
+  | isSome (activeDictVarOf occ) = ()                                -- forwarded enclosing-dict slot (fold-in)
   | anyIn (monoUnboundIds occ) perRun.value.poisonedVars.value = ()  -- Chunk A: primary mismatch already explained this var
+  -- RULE 2 (#838 I2, DESIGN.md §2.4): every free var of this predicate is QUANTIFIED by
+  -- some enclosing scheme (`deferrableVarIds`, populated from `schemeIds` at each
+  -- generalized group close) ⇒ it is `deferredToCaller` — the constraint is forwarded
+  -- and re-checked at each concrete use, so DEFER here.  It is what checkOneImplObligation
+  -- does unconditionally on a non-ground arg, now shared by the call channel.  Without it
+  -- a where-helper's re-instantiated `Ord a` (once #827's registration gate is flipped)
+  -- would trip the rule-3 ambiguity reject instead of deferring into the enclosing scheme
+  -- (`guard_gap_where.mdk`, #827).  Keyed on QUANTIFIED (post-generalization) ids, NOT
+  -- pre-gen member monos: a value-restricted intermediate never quantifies its var, so a
+  -- genuinely-ambiguous escaped var (`let x = mk n` under `mk : Int -> a`, ≥2 impls) is
+  -- NOT in the set and RULE 3 rejects it — the S0 the #855 review caught.
+  | isNonEmptyL (monoUnboundIds occ) && allList (i => containsI i perRun.value.deferrableVarIds.value) (monoUnboundIds occ) = ()
+  -- RULE 3: the var escaped its group anchored to NOTHING and the iface has >= 2 impls
+  -- ⇒ genuinely ambiguous (the escaped-unanchored case registerDispatchMonos records).
   | implCountForIfaceU univ iface >= 2 =
     pushTypeErrorOnceAt "T-AMBIGUOUS-INSTANCE" loc (ambiguousImplMsg iface)
   | otherwise = ()
@@ -14792,6 +14806,16 @@ maybeInferConstraint sigs m sch
 registerSchemeObligations : List (String, Int) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 registerSchemeObligations _ _ _ _ [] = ()
 registerSchemeObligations memberDefIds sigTvMaps callObls addedObls ((m, sch)::rest) =
+  -- #838 I2 / #827: record this binding's QUANTIFIED (generalized) var ids as
+  -- caller-deferrable.  A var this binding ∀-quantifies is FORWARDED to its callers
+  -- (each use re-instantiates it fresh), so an end-of-run call obligation carrying
+  -- that exact id is this binding's own deferred predicate — checkUndeterminedObligation
+  -- RULE 2 defers it into the scheme instead of a spurious `Ambiguous instance` reject.
+  -- CRITICAL (S0 #855-review): this uses the POST-generalization `schemeIds`, NOT the
+  -- pre-generalization member monos.  A value-restricted intermediate (`let x = mk n`,
+  -- `mk : Int -> a`) does NOT quantify its var (`Forall []`), so an escaped ambiguous
+  -- var never enters this set and RULE 3 correctly rejects it (a1_greet/a1_letleak).
+  let _ = setRef perRun.value.deferrableVarIds (schemeIds sch ++ perRun.value.deferrableVarIds.value)
   let obs = dedupVecObls (schemeOblsForMember sigTvMaps callObls addedObls m sch)
   let _ = if isEmptyL obs then ()
   else

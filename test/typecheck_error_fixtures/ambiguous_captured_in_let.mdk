@@ -1,0 +1,29 @@
+-- #855-review regression pin (S0): an ambiguous interface value captured into a
+-- value-restricted local (`let x = mk n`, `mk : Int -> a` return-polymorphic, with
+-- >= 2 impls of the interface) must REJECT `Ambiguous instance` at check.  The first
+-- #838 I2 attempt keyed the caller-deferral on PRE-generalization member monos in a
+-- program-wide union, so the value-restricted `let`'s own var leaked into the
+-- deferrable set and the genuinely-ambiguous obligation was over-deferred: check went
+-- GREEN and eval (`hello`) disagreed with native (`bonjour`) — arbitrary impl pick.
+-- The fix keys deferral on POST-generalization `schemeIds` only; a value-restricted
+-- binding quantifies nothing, so this stays a clean def-site ambiguity reject.
+interface Greet a where
+  mk : Int -> a
+  greet : a -> String
+
+data En = En
+data Fr = Fr
+
+impl Greet En where
+  mk _ = En
+  greet _ = "hello"
+
+impl Greet Fr where
+  mk _ = Fr
+  greet _ = "bonjour"
+
+pick n =
+  let x = mk n
+  greet x
+
+main = println (pick 0)
