@@ -1227,9 +1227,19 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 #         (The STAR dual, `starimports`, reads LINEAR on every arm — its findExports
 #         quadratic is uncounted AND dwarfed by linear buildEnvMM alloc — so it is a
 #         regression guard, NOT ledgered; see gen_starimports.)
-KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve"
+KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve manydefs:typecheck"
 KNOWN_OCEIL_match_resolve="4.3";      KNOWN_OFIXED_match_resolve="2.60"
 KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
+# manydefs:typecheck — the SAME typecheck O(decls^2) op-quadratic class as xref:typecheck
+# (issue #907), on the DEEP-only `manydefs` shape. It is NOT introduced by #881; it is a
+# pre-existing #884 op-arm signal that #884's QUICK-only validation never graded (manydefs
+# is DEEP/nightly-only, single-file, via the unchanged profile_main). Surfaced by #881's
+# full-DEEP run at the real N=4000->16000 band (op 11.7M->39.4M->142.8M, r2=3.62). Ledgered
+# here so nightly DEEP is green and it self-drains: ceiling 4.3 clears r2=3.62 by ~19% (same
+# convention as xref:typecheck); op counts are deterministic so this absorbs only unrelated
+# source drift, not runner noise. OFIXED 2.60 — drops under it when #907's root cause is
+# fixed (which likely promotes xref:typecheck out at the same time).
+KNOWN_OCEIL_manydefs_typecheck="4.3"; KNOWN_OFIXED_manydefs_typecheck="2.60"
 # Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
 # entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
 # from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):
