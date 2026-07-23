@@ -143,6 +143,12 @@
 #         JOBS=8 bash test/diff_compiler_engines.sh
 #         VERBOSE=1 bash test/diff_compiler_engines.sh    # every fixture's signature
 #         CAPTURE=1 bash test/diff_compiler_engines.sh    # rewrite the ledger (review the diff!)
+#         ONLY='llvmM/*' bash test/diff_compiler_engines.sh   # scope to a SUBSET by corpus key
+#                                                              # (CORPUS_GLOB= is an alias) —
+#                                                              # runs the real ledger/pin
+#                                                              # aggregation over just the
+#                                                              # subset; prints a LOUD subset
+#                                                              # banner (never a full-run green).
 #
 # run_gates.sh invokes every gate as `sh <gate>`, and /bin/sh is dash on Debian.  This
 # gate needs bash (`${key//\//__}` substitution, `IFS=$'\t' read`), so re-exec under
@@ -531,6 +537,50 @@ if [ -s "$REJECT_MANIFEST" ]; then
   fi
 fi
 
+# ── Corpus scoping (issue #723): ONLY=<glob> / CORPUS_GLOB=<glob> ─────────────
+# Scope the differential to the fixtures whose corpus-qualified KEY matches <glob>
+# (a shell glob, e.g. ONLY='llvmM/*' for the whole module arm, ONLY='llvm/adt_*',
+# ONLY='wasmT/record_update*'; keys are keyfor()'s output — llvm/… llvmT/… wasm/…
+# wasmT/… engine/… llvmM/<dir>).  This turns a 16-fixture module-addition or a
+# handful-of-promotions validation from a full ~7-min run into ~30s.  CORPUS_GLOB
+# is an accepted alias for ONLY.
+#
+# The full AGGREGATION below — ledger diff, PROMOTE detection, value pins, and
+# every ZERO-COMPARISON guard — STILL runs, over just the subset.  Scoping composes
+# with the aggregation; it does NOT route through the `--one` worker, which is the
+# xargs worker and skips ledger/pin comparison entirely.
+#
+# 🚨 #450 silent-narrowing hazard: a scoped run must NEVER be mistakable for a full
+# run.  It is a SUBSET, and we say so LOUDLY — a banner naming the glob and the
+# subset/total counts BEFORE the run, and a "SUBSET" summary headline + trailing
+# reminder AFTER — so a green here can never be read as the whole corpus passing.
+# Do NOT trust a scoped green as CI-equivalent; it is an iteration aid, nothing more.
+SCOPE_GLOB="${ONLY:-${CORPUS_GLOB:-}}"
+total_before_scope=""
+if [ -n "$SCOPE_GLOB" ]; then
+  total_before_scope="$(printf '%s\n' "$CORPUS" | grep -c . || true)"
+  CORPUS="$(printf '%s\n' "$CORPUS" | while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$(keyfor "$p")" in
+      $SCOPE_GLOB) printf '%s\n' "$p" ;;
+    esac
+  done)"
+  scoped_n="$(printf '%s\n' "$CORPUS" | grep -c . || true)"
+  if [ -z "$CORPUS" ] || [ "${scoped_n:-0}" -eq 0 ]; then
+    echo "ONLY/CORPUS_GLOB='$SCOPE_GLOB' matched no fixture keys — nothing to run." >&2
+    echo "  keys look like: llvm/<name>  llvmT/<name>  wasm/<name>  wasmT/<name>  engine/<name>  llvmM/<dir>" >&2
+    echo "  (the glob is matched against the corpus KEY, not the file path)." >&2
+    exit 2
+  fi
+  echo "██████████████████████████████████████████████████████████████████████"
+  echo "██  SCOPED RUN — THIS IS A SUBSET, NOT THE FULL ENGINES GATE          ██"
+  echo "██    ONLY / CORPUS_GLOB = '$SCOPE_GLOB'"
+  echo "██    running $scoped_n of $total_before_scope comparable fixtures — $((total_before_scope - scoped_n)) NOT run"
+  echo "██    A green here does NOT mean the gate passes.  Re-run WITHOUT ONLY= ██"
+  echo "██    (the full corpus) before trusting it — #450 silent-narrowing.    ██"
+  echo "██████████████████████████████████████████████████████████████████████"
+fi
+
 n_dispatched="$(printf '%s\n' "$CORPUS" | wc -l | tr -d ' ')"
 
 # Fan-out. NOTE this gate deliberately does NOT honour run_gates.sh's INNER_JOBS
@@ -647,7 +697,11 @@ t3p=$(tier 5 pass); t3f=$(tier 5 fail); t3n=$(tier 5 na)
 
 echo
 echo "══════════════════════════════════════════════════════════════════════"
-echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm ∪ llvm_typed ∪ wasm ∪ wasm_typed ∪ engine ∪ llvm_modules)"
+if [ -n "$SCOPE_GLOB" ]; then
+  echo " 3-ENGINE DIFFERENTIAL — ⚠️ SUBSET $compared of ${total_before_scope:-?} fixtures  [ONLY='$SCOPE_GLOB'] ⚠️"
+else
+  echo " 3-ENGINE DIFFERENTIAL — $compared fixtures (llvm ∪ llvm_typed ∪ wasm ∪ wasm_typed ∪ engine ∪ llvm_modules)"
+fi
 echo "══════════════════════════════════════════════════════════════════════"
 printf ' T1  eval   == native   %4d agree  %3d differ  %3d n/a\n' "$t1p" "$t1f" "$t1n"
 if [ "$WASM_OK" = 1 ]; then
@@ -705,6 +759,14 @@ if [ "${MEDAKA_REQUIRE_WASM:-0}" = 1 ] && [ "$((t2p + t2f))" -eq 0 ]; then
   echo "  ran over ZERO fixtures ($t2p agree / $t2f differ / $t2n n/a of $compared) — a" >&2
   echo "  corpus-selection bug, not a green run." >&2
   exit 1
+fi
+
+# Last word on a scoped run: repeat the SUBSET warning so a green tail can never
+# be mistaken for a full-gate pass (#450), even when only the summary is skimmed.
+if [ -n "$SCOPE_GLOB" ]; then
+  echo
+  echo "⚠️  SUBSET RUN — only $compared of ${total_before_scope:-?} fixtures ran (ONLY='$SCOPE_GLOB')."
+  echo "⚠️  This is NOT a full engines-gate pass. Re-run WITHOUT ONLY= before trusting green."
 fi
 
 [ "$regress" -eq 0 ] && [ "$promote" -eq 0 ] && [ "$pinfail" -eq 0 ]
