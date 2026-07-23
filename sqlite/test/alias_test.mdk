@@ -75,8 +75,12 @@ test "parse-render canonicalizes a bare alias to an explicit AS" =
     (Ok "SELECT a AS x FROM t AS u")
 
 -- ── A non-reserved clause keyword after a table is NOT swallowed as an alias ─
--- (an unsupported join modifier stays a loud rejection, not a silent wrong parse)
-test "RIGHT JOIN is rejected, not swallowed as a table alias" =
+-- (a still-unsupported join modifier stays a loud rejection, not a silent wrong
+-- parse.  RIGHT/FULL/CROSS are now ACCEPTED (PR #915), so this guards NATURAL —
+-- still unsupported — which must be refused, never absorbed as `t`'s alias.)
+test "NATURAL JOIN is rejected, not swallowed as a table alias" =
   expectEqual
-    (map renderSelect (parseSelect "SELECT a FROM t RIGHT JOIN u ON t.x = u.y"))
-    (Err "unsupported SQL: 'RIGHT' at 22")
+    (map
+      renderSelect
+      (parseSelect "SELECT a FROM t NATURAL JOIN u ON t.x = u.y"))
+    (Err "unsupported SQL: 'NATURAL' at 24")
