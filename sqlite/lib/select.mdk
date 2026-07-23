@@ -213,6 +213,39 @@ public export data Select =
     }
 deriving (Eq, Debug)
 
+-- | A SQL set operator combining two `selectCore`s.  `OpUnionAll` concatenates
+--   (duplicates kept); `OpUnion` concatenates then dedups; `OpIntersect` keeps
+--   the rows present in BOTH (deduped); `OpExcept` keeps the left rows absent
+--   from the right (deduped).  All four are the SAME precedence and associate
+--   LEFT — exactly SQLite.  Row identity is full-row equality with NULLs equal
+--   (`cellListEq`), matching SQLite's set-operation semantics.
+public export data SetOp =
+  | OpUnion
+  | OpUnionAll
+  | OpIntersect
+  | OpExcept
+deriving (Eq, Debug)
+
+-- | A compound query: a first `selectCore`, a (possibly empty) left-associative
+--   list of `(setOp, selectCore)` arms, and the compound-level `ORDER BY` /
+--   `LIMIT` / `OFFSET` that bind to the WHOLE result (SQLite allows these only
+--   once, at the very end — never per-arm).  An empty arm list is just a single
+--   SELECT with its trailing clauses; `runCompound` and `renderCompound` handle
+--   both uniformly.  Positional (not a record) to keep its `orderBy`/`limit`/
+--   `offset` slots from colliding with `Select`'s same-named record fields.
+public export data Compound =
+  | Compound Select (List (SetOp, Select)) (List (SqlExpr, Bool)) (Option Int) (Option Int)
+deriving (Eq, Debug)
+
+-- | The canonical SQL keyword for a set operator (`UNION ALL` is two words).
+--   Shared by `runCompound`'s column-count error message and the compound
+--   renderer so the two never drift.
+export setOpSql : SetOp -> String
+setOpSql OpUnion = "UNION"
+setOpSql OpUnionAll = "UNION ALL"
+setOpSql OpIntersect = "INTERSECT"
+setOpSql OpExcept = "EXCEPT"
+
 -- ---------------------------------------------------------------------------
 -- Phantom type-safe layer: Expr a
 --
@@ -1633,6 +1666,128 @@ queryDistinct db sel rt = do
   rows <- runPipeline db sel
   decoded <- decodeCells rt rows []
   Ok (dropTakeList (selOffset sel) (selLimit sel) (nub decoded))
+
+-- ---------------------------------------------------------------------------
+-- The compound (set-operation) executor
+--
+-- A `Compound` runs each arm's pipeline to its PROJECTED cell rows, folds them
+-- LEFT with the set operator, then applies the compound-level ORDER BY / LIMIT /
+-- OFFSET, then decodes.  It works entirely in cell-land, so — unlike DISTINCT
+-- on decoded rows — the set-op dedup needs NO `Eq a`: full-row identity is
+-- `cellListEq` (NULLs equal), exactly SQLite's set-operation rule.
+--
+-- Column count must agree across every arm (SQLite rejects a mismatch at prepare
+-- time, even on empty tables), so the count is derived STRUCTURALLY per arm
+-- (`selectColumnCount`) rather than from a materialized row.  Result column NAMES
+-- (for ORDER BY resolution) come from the FIRST arm.
+-- ---------------------------------------------------------------------------
+
+-- | Execute a `Compound` and decode each result row via `rt`.  A single-arm
+--   compound is just its `Select` with the trailing clauses applied; a
+--   multi-arm compound folds the arms left with the set operator.  Arm-level
+--   `SELECT DISTINCT` is honoured (deduped in cell-land).  No `Eq a` needed.
+export runCompound : Db -> Compound -> RowType a -> Result String (List a)
+runCompound db (Compound first rest ob lm off) rt = do
+  n0 <- selectColumnCount db first
+  firstCells <- runArmCells db first
+  combined <- foldSetOps db n0 firstCells rest
+  names <- compoundOutputNames db first
+  ordered <- applyCompoundOrder names ob combined
+  decodeCells rt (applyOffsetLimit off lm ordered) []
+
+-- Run one arm to its projected cell rows, deduping when the arm says DISTINCT
+-- (cell-level dedup, so no `Eq a`; NULLs compare equal, matching SQLite).
+runArmCells : Db -> Select -> Result String (List (List Cell))
+runArmCells db sel = do
+  cells <- runPipeline db sel
+  Ok (if sel.distinct then distinctKeys cells else cells)
+
+-- Fold the set-op arms left-to-right over the accumulated rows.  Each arm's
+-- column count must equal the first arm's (`n`); a mismatch is SQLite's
+-- prepare-time error, reproduced verbatim.
+foldSetOps : Db -> Int -> List (List Cell) -> List (SetOp, Select) -> Result String (List (List Cell))
+foldSetOps _ _ acc [] = Ok acc
+foldSetOps db n acc ((op, sel)::rest) = do
+  m <- selectColumnCount db sel
+  if m != n then Err "SELECTs to the left and right of \{setOpSql op} do not have the same number of result columns"
+  else do
+    rhs <- runArmCells db sel
+    foldSetOps db n (applySetOp op acc rhs) rest
+
+-- The set operator over two projected row sets.  UNION ALL concatenates; UNION
+-- concatenates then dedups; INTERSECT keeps left rows also present on the right;
+-- EXCEPT keeps left rows absent from the right.  The three deduping ops reuse
+-- `distinctKeys` (stable, first-occurrence) and `containsKey` (full-row
+-- `cellListEq` membership) — the same NULL-equal machinery GROUP BY uses.
+applySetOp : SetOp -> List (List Cell) -> List (List Cell) -> List (List Cell)
+applySetOp OpUnionAll l r = l ++ r
+applySetOp OpUnion l r = distinctKeys (l ++ r)
+applySetOp OpIntersect l r = distinctKeys (filter (row => containsKey row r) l)
+applySetOp OpExcept l r =
+  distinctKeys (filter (row => not (containsKey row r)) l)
+
+-- Apply the compound-level ORDER BY to the combined rows.  Keys resolve against
+-- the FIRST arm's output column names; a bare integer literal `n` is the n-th
+-- output column (SQLite's ordinal ORDER BY).  Empty ⇒ rows unchanged.
+applyCompoundOrder : List String -> List (SqlExpr, Bool) -> List (List Cell) -> Result String (List (List Cell))
+applyCompoundOrder _ [] rows = Ok rows
+applyCompoundOrder names ob rows = do
+  let ob2 = map (resolveOrderTerm names) ob
+  sortKeys <- compileSortKeys (outLookup names) ob2
+  Ok (map fst (sortPairs sortKeys (map (r => (r, r)) rows)))
+
+outLookup : List String -> String -> Option Int
+outLookup names = name => indexOfString name names
+
+-- Rewrite an ordinal ORDER BY term (`ORDER BY 2`) to a reference to that output
+-- column; leave every other term untouched.
+resolveOrderTerm : List String -> (SqlExpr, Bool) -> (SqlExpr, Bool)
+resolveOrderTerm names (ELit (LInt n), asc) = match nthName names (n - 1)
+  Some nm => (ECol nm, asc)
+  None => (ELit (LInt n), asc)
+resolveOrderTerm _ pair = pair
+
+nthName : List String -> Int -> Option String
+nthName xs i = if i < 0 then None else nthNameGo xs i
+
+nthNameGo : List String -> Int -> Option String
+nthNameGo [] _ = None
+nthNameGo (x::_) 0 = Some x
+nthNameGo (_::xs) k = nthNameGo xs (k - 1)
+
+-- | The number of result columns a `Select` produces — for the cross-arm
+--   agreement check.  Explicit projection ⇒ its length; `SELECT *` ⇒ the source
+--   width (from table plus each joined table).
+selectColumnCount : Db -> Select -> Result String Int
+selectColumnCount db sel = map length (compoundOutputNames db sel)
+
+-- | The output column NAMES of a `Select` (for compound ORDER BY resolution and
+--   the count check).  Explicit projection ⇒ per column its alias, else its bare
+--   column name, else `""` for an unnameable computed column (still counted).
+--   `SELECT *` ⇒ the source column names (from table, then each joined table in
+--   order).
+compoundOutputNames : Db -> Select -> Result String (List String)
+compoundOutputNames db (Select { from = tbl, joins = js, columns = cols, columnAliases = cas }) = match cols
+  [] => starColumnNames db tbl js
+  _ => Ok (map outName (zipAliases cols cas))
+
+outName : (SqlExpr, Option String) -> String
+outName (_, Some a) = a
+outName (ECol name, None) = name
+outName (_, None) = ""
+
+starColumnNames : Db -> String -> List Join -> Result String (List String)
+starColumnNames db tbl js = do
+  base <- columnNames db tbl
+  joinCols <- joinColumnNames db js
+  Ok (base ++ joinCols)
+
+joinColumnNames : Db -> List Join -> Result String (List String)
+joinColumnNames _ [] = Ok []
+joinColumnNames db (j::rest) = do
+  cs <- columnNames db (joinTable j)
+  more <- joinColumnNames db rest
+  Ok (cs ++ more)
 
 selLimit : Select -> Option Int
 selLimit sel = sel.limit
