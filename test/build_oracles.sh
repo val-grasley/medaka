@@ -31,6 +31,10 @@
 #          sh test/build_oracles.sh --build-one <entry>       # build exactly one
 #          sh test/build_oracles.sh --for '<gate-pattern>' …  # build only what
 #                                              # those gates read (see #398/#183)
+#          sh test/build_oracles.sh --for --list '<gate-pattern>' …
+#                                              # DERIVE ONLY: print the oracle names
+#                                              # a pattern resolves to; build nothing,
+#                                              # touch no clang/libgc/medaka (#832)
 # Exit:    0 built/up-to-date; 2 opt-in skip (no clang/libgc); 1 on a build error
 #          or an unrecognized flag.
 # ⚠️ An UNRECOGNIZED flag is a hard error (exit 1) — it does NOT fall through to
@@ -191,44 +195,71 @@ case "${1:-}" in
   ''|--for) ;;
   *)
     echo "FAIL: unknown argument: ${1:-}" >&2
-    echo "usage: $0 [--list | --build-one <entry> | --for '<gate-pattern>' ...]" >&2
+    echo "usage: $0 [--list | --build-one <entry> | --for ['--list'] '<gate-pattern>' ...]" >&2
     echo "       (no args = build all $(printf '%s\n' $ENTRIES | grep -vc '^$') oracles)" >&2
     exit 1
     ;;
 esac
 
-# ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ──────
-command -v "$CC" >/dev/null 2>&1 || {
-  echo "no C compiler ($CC) on PATH — skipping (opt-in)"; exit 2; }
-if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
-  :
-elif [ -n "${GC_PREFIX:-}" ] && [ -d "${GC_PREFIX}" ]; then
-  :
-elif [ -d /opt/homebrew/include/gc ] || [ -d /usr/local/include/gc ] || [ -d /usr/include/gc ]; then
-  :
-else
-  echo "libgc (bdw-gc) not found — skipping (opt-in; install bdw-gc or set GC_PREFIX)"; exit 2
+# ── `--for --list <pattern>...` : DERIVE ONLY, print names, build nothing (#832) ──
+#
+# `--for '<pattern>'` alone always went straight at compiling: the ONLY way to see
+# which oracles a pattern resolves to (without actually building them) was to read
+# the "building N of M oracles" count off stderr, or add a throwaway `echo`/`set -x`
+# probe. That friction is what turned a same-family pattern mismatch during #816
+# into a guessing game — each `--for 'diff_compiler_*'` run needed a separate
+# `--build-one eval_modules_main` chaser before anyone could tell whether the broad
+# pattern actually covered it (#832). It did (see the assert this landed alongside:
+# test/check_build_oracles_for_consistency.sh) — the missing piece was never the
+# derivation itself, it was having no eyes on it short of a real build.
+#
+# So: a peek mode, checked HERE (before the clang/libgc/medaka gates below) so it
+# needs none of them — this is pure `grep`/`sed` over test/*.sh and the static
+# $ENTRIES table, identical to what `--for` alone computes, just observed instead
+# of consumed. `--for` (no `--list`) is UNCHANGED below.
+_for_list_mode=0
+if [ "${1:-}" = "--for" ] && [ "${2:-}" = "--list" ]; then
+  _for_list_mode=1
 fi
 
-mkdir -p "$BINDIR"
+if [ "$_for_list_mode" -eq 0 ]; then
+  # ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ────
+  command -v "$CC" >/dev/null 2>&1 || {
+    echo "no C compiler ($CC) on PATH — skipping (opt-in)"; exit 2; }
+  if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
+    :
+  elif [ -n "${GC_PREFIX:-}" ] && [ -d "${GC_PREFIX}" ]; then
+    :
+  elif [ -d /opt/homebrew/include/gc ] || [ -d /usr/local/include/gc ] || [ -d /usr/include/gc ]; then
+    :
+  else
+    echo "libgc (bdw-gc) not found — skipping (opt-in; install bdw-gc or set GC_PREFIX)"; exit 2
+  fi
 
-# ── Ensure the native compiler exists (OCaml-free; warm make path) ─────────────
-if [ ! -x "$MEDAKA" ] || [ ! -x "$EMITTER" ]; then
-  echo "native medaka/emitter absent — bootstrapping via 'make medaka' (OCaml-free) ..."
-  ( cd "$ROOT" && make medaka ) || { echo "FAIL: could not build ./medaka"; exit 1; }
+  mkdir -p "$BINDIR"
+
+  # ── Ensure the native compiler exists (OCaml-free; warm make path) ───────────
+  if [ ! -x "$MEDAKA" ] || [ ! -x "$EMITTER" ]; then
+    echo "native medaka/emitter absent — bootstrapping via 'make medaka' (OCaml-free) ..."
+    ( cd "$ROOT" && make medaka ) || { echo "FAIL: could not build ./medaka"; exit 1; }
+  fi
+  [ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "FAIL: ./medaka or ./medaka_emitter still missing"; exit 1; }
 fi
-[ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "FAIL: ./medaka or ./medaka_emitter still missing"; exit 1; }
 
 # ── newest source mtime across everything an oracle links — any source newer
 # than a binary => rebuild it. This MUST cover stdlib/*.mdk and runtime/*.c(.h)
 # too: every test/bin/* oracle links stdlib/*.mdk and runtime/medaka_rt.c, so
 # scanning only compiler/**.mdk left all 53 oracles silently stale whenever the
 # stdlib or C runtime changed (a one-line bug — see AGENTS.md staleness gotcha).
+# Skipped in `--for --list` mode: nothing gets staleness-compared when nothing
+# gets built.
 newest_src=0
-for f in $(find "$ROOT/compiler" "$ROOT/stdlib" -name '*.mdk'; find "$ROOT/runtime" -name '*.c' -o -name '*.h'); do
-  m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
-  [ "$m" -gt "$newest_src" ] && newest_src=$m
-done
+if [ "$_for_list_mode" -eq 0 ]; then
+  for f in $(find "$ROOT/compiler" "$ROOT/stdlib" -name '*.mdk'; find "$ROOT/runtime" -name '*.c' -o -name '*.h'); do
+    m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+    [ "$m" -gt "$newest_src" ] && newest_src=$m
+  done
+fi
 
 # ── `--for <gate-pattern>...` : build ONLY the oracles those gates actually read ──
 #
@@ -250,7 +281,10 @@ done
 # source of truth for "which oracle does this gate read".
 if [ "${1:-}" = "--for" ]; then
   shift
-  [ "$#" -gt 0 ] || { echo "usage: $0 --for '<gate-pattern>' ..."; exit 1; }
+  # Consume the optional `--list` sub-flag detected above (as `_for_list_mode`)
+  # so it is never treated as a gate-name pattern.
+  [ "${1:-}" = "--list" ] && shift
+  [ "$#" -gt 0 ] || { echo "usage: $0 --for ['--list'] '<gate-pattern>' ..."; exit 1; }
   # A pattern resolves against BOTH $ROOT/test/ and $ROOT/ — same rule as
   # run_gates.sh and diff_compiler_ci_shard_coverage.sh, so a shard pattern naming a
   # gate outside test/ (e.g. 'sqlite/test/*_oracle') selects the same gate set in all
@@ -289,6 +323,14 @@ if [ "${1:-}" = "--for" ]; then
       esac
     done
   done
+  # ── `--list`: print the derived set, build nothing (#832) ────────────────────
+  # Plain names, one per line, sorted — deliberately no "note:"/"building N of M"
+  # chatter, so this is pipeable/diffable (see
+  # test/check_build_oracles_for_consistency.sh, which diffs two of these).
+  if [ "$_for_list_mode" -eq 1 ]; then
+    printf '%s\n' $_sel | sort
+    exit 0
+  fi
   # ── "needs no oracles" IS NOT "pattern matched nothing" ──────────────────────
   #
   # This used to `exit 1` with "FAIL: --for selected no oracles", conflating two
