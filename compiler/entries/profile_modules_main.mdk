@@ -10,6 +10,8 @@
 --   parse      parse + desugar runtime.mdk + core.mdk (fixed setup cost)
 --   load       loadProgram: read + lex + parse all transitive imports
 --   desugar    desugar every loaded module
+--   resolve    resolveModulesToLines over all modules — the multi-module name
+--              binder (import/export threading via findExports; issue #881)
 --   mark       returnPosMethodNames + prePassDict over all modules (RKey-only)
 --   typecheck  checkModules over pre-marked modules (HM inference)
 --
@@ -21,6 +23,7 @@
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
+import frontend.resolve.{resolveModulesToLines}
 import driver.loader.{loadProgram}
 import types.typecheck.{checkModules, markModules}
 import support.timer.{
@@ -88,6 +91,22 @@ runStaged on rsrc csrc entry roots =
       let declsOp = intToString nDecls ++ " decls"
       let tD1 = now ()
       let _ = emitPhaseAO on "desugar" (tD1 - tD0) (allocSnap () - aD0) declsOp (opSnap () - oD0)
+      -- resolve: the multi-module name-binding pass (issue #881). Production
+      -- (medaka_cli) runs resolveModulesErrorsG, which threads `known` (grows
+      -- `exp :: known`) and resolves each import via a LINEAR `findExports` scan —
+      -- an O(modules^2) shape on a star/re-export fan-out. This driver never ran it,
+      -- so a whole production pass was off the CI map. We measure it via the exported
+      -- `resolveModulesToLines` (known=[] baked in), forced with `stringLength`; on a
+      -- 0-DIAGNOSTIC fixture the rendered error list is EMPTY, so the op-count is
+      -- resolve's alone (the sexp render adds none). ADDITIVE: the `List ResError`
+      -- result is discarded and does NOT transform `mods`, so the mark/typecheck
+      -- measurements below are byte-unchanged.
+      let tR0 = now ()
+      let aR0 = allocSnap ()
+      let oR0 = opSnap ()
+      let _ = stringLength (resolveModulesToLines rDecls cDecls mods)
+      let tR1 = now ()
+      let _ = emitPhaseAO on "resolve" (tR1 - tR0) (allocSnap () - aR0) declsOp (opSnap () - oR0)
       let tM0 = now ()
       let aM0 = allocSnap ()
       let oM0 = opSnap ()
@@ -108,6 +127,10 @@ runStaged on rsrc csrc entry roots =
 -- load: loadProgram traverses transitive imports, lex+parse each file
 
 -- desugar: lower surface sugar in all loaded modules
+
+-- resolve: thread import/export bindings across modules; each import scans the
+--          growing `known` export list via findExports — O(modules^2) on a star
+--          import or a re-export fan-out (issue #881)
 
 -- mark: compute rpNames over full closure, prePassDict each module (RKey-only)
 
