@@ -1,1 +1,1 @@
-invalid escape sequence '\v'
+invalid escape sequence '\v' — Medaka's character escapes are \n \t \r \0 \\ \' and \u{...}

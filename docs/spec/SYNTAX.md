@@ -76,7 +76,15 @@ the polymorphic `minBound`/`maxBound : Bounded a => a` with a type annotation.)
 String escapes: `\n \t \r \0 \\ \"` and unicode `\u{48}` (char literals also take
 `\'`). `\{` is **not** a literal-brace escape — it is the interpolation opener (see
 `## String interpolation` below); a literal `{` needs no escaping at all
-(`"a{b}c"` prints `a{b}c`).
+(`"a{b}c"` prints `a{b}c`). There is **no `\v` or `\f`** — those escapes do not exist
+in Medaka.
+
+**The unicode escape is *always* braced.** The fixed-width `\uXXXX` spelling other
+languages use (no braces, exactly four hex digits) is **not** Medaka syntax — only
+`\u{HEX}` is. A bare `\u` followed by a hex digit is a lex error
+(`L-BARE-UNICODE-ESCAPE`) naming the braced spelling to use instead, distinct from
+`L-BAD-UNICODE-ESCAPE` below (that one covers a `\u{…}` the lexer already opened but
+had to reject).
 
 A `\u{HEX}` escape must name a **Unicode scalar value**: `\u{0}` through `\u{10FFFF}`,
 **excluding** the UTF-16 surrogate block `\u{D800}`–`\u{DFFF}` (those encode one half of

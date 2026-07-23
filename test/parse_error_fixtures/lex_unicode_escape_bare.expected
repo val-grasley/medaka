@@ -1,0 +1,1 @@
+bare unicode escape `\u0041` is not valid Medaka syntax. Medaka's unicode escape is braced — did you mean `\u{0041}`? Supported string escapes: \n \t \r \0 \\ \" and \u{...}

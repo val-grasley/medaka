@@ -9,6 +9,10 @@ applyNlTopPairs : Int -> Int -> Int -> List Int -> List RawTok -> List Int -> Op
 armsHerald : Bool -> Option Token -> Bool
 at : Array Char -> Int -> Char
 atToken : Array Char -> Int -> Token
+bareUnicodeEscMsgChar : Array Char -> Int -> Int -> String
+bareUnicodeEscMsgStr : Array Char -> Int -> Int -> String
+bareUnicodeEscSuggested : Array Char -> Int -> Int -> String
+bareUnicodeEscWritten : Array Char -> Int -> Int -> String
 bracketCloser : Token -> Bool
 bracketOpener : Token -> Bool
 bracketTok : Array Char -> Int -> Token
@@ -71,6 +75,7 @@ indentSentinel : Int
 intLitOverflows : Array Char -> Int -> Int -> Bool
 is2 : Array Char -> Int -> Int -> Char -> Char -> Bool
 is3 : Array Char -> Int -> Int -> Char -> Char -> Char -> Bool
+isBareUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
 isContinuation : Array Char -> Int -> Int -> Bool
 isExpMarker : Char -> Bool
 isExprEnd : Char -> Bool

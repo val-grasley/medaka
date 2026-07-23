@@ -234,6 +234,7 @@ parseErrCode msg
   | startsWith "unterminated block" msg = "L-UNTERMINATED-COMMENT"
   | startsWith "invalid escape" msg = "L-BAD-ESCAPE"
   | startsWith "unicode escape" msg = "L-BAD-UNICODE-ESCAPE"
+  | startsWith "bare unicode escape" msg = "L-BARE-UNICODE-ESCAPE"
   | startsWith "character literal" msg = "L-BAD-CHAR-LITERAL"
   | startsWith "unexpected '\\'" msg = "L-HS-LAMBDA"
   | startsWith "Medaka has no '$'" msg = "L-HS-DOLLAR"
@@ -283,6 +284,15 @@ parseErrHelpFix msg (Loc f sl sc el ec)
   -- safe suggested spelling (`0x_`, digits nowhere in sight), the message
   -- carries only the one `bad` backtick pair and `twoBacktickWords` returns
   -- `None` — help stays, `fix` doesn't.
+  -- Bare `\uXXXX` unicode escape (#515): the lexer's message already embeds
+  -- both spellings as the first two backtick pairs (`` `\uXXXX` `` then
+  -- `` `\u{XXXX}` ``), so this reuses the SAME (old, new) machinery the
+  -- malformed-radix/malformed-float hints use just above — no bespoke
+  -- fix-building needed.
+  | startsWith "bare unicode escape" msg = (
+    Some "Medaka's unicode escape is braced (`\\u{XXXX}`) — there is no bare `\\uXXXX` form",
+    map (oldNewFixOf f sl sc) (twoBacktickWords msg),
+  )
   | startsWith "malformed radix literal" msg = (
     Some "the digit separator '_' can only appear BETWEEN digits, never immediately after the base prefix ('0x'/'0b'/'0o')",
     map (oldNewFixOf f sl sc) (twoBacktickWords msg),

@@ -1,0 +1,7 @@
+-- Lexer error: same bare-`\uXXXX` defect (#515) as lex_unicode_escape_bare.mdk,
+-- but in a CHAR literal. `escChar` (compiler/frontend/lexer.mdk) shares the same
+-- guard as the string path (`scanStrEsc`) so both literal kinds get the same
+-- \"did you mean `\u{...}`\" diagnostic instead of the generic
+-- "invalid escape sequence '\u'".
+c : Char
+c = '\u0041'

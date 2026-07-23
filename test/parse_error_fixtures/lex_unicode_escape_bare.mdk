@@ -1,0 +1,9 @@
+-- Lexer error: bare 4-hex-digit unicode escapes (no braces) are the spelling
+-- other languages use, NOT Medaka syntax (Medaka's is braced: \u{41} / \u{0041}).
+-- Before this diagnostic existed (#515), a bare \u followed by a hex digit fell
+-- through to the generic "invalid escape sequence '\u'" every other unrecognized
+-- escape letter gets, which never mentioned that a unicode escape exists under a
+-- different (braced) spelling. An agent that hit exactly that generic message
+-- concluded unicode escapes weren't supported and hand-built a 621-case test
+-- battery out of raw char codes instead of writing \u{41}.
+x = "a\u0041z"

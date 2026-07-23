@@ -4889,6 +4889,25 @@ NEWLINE
 DEDENT
 NEWLINE
 PIPE
+IDENT "isBareUnicodeEsc"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+IDENT "e"
+EQUAL
+INDENT
+IDENT "lexErrorTok"
+IDENT "p"
+LPAREN
+IDENT "bareUnicodeEscMsgStr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PIPE
 IDENT "otherwise"
 EQUAL
 MATCH
@@ -4922,7 +4941,7 @@ IDENT "p"
 INTERP_OPEN "invalid escape sequence '\\"
 IDENT "charToStr"
 IDENT "e"
-INTERP_END "'"
+INTERP_END "' — Medaka's string escapes are \\n \\t \\r \\0 \\\\ \\\" and \\u{...}"
 NEWLINE
 DEDENT
 NEWLINE
@@ -8061,6 +8080,28 @@ IDENT "p"
 IDENT "depth"
 IDENT "id"
 IDENT "e"
+INDENT
+PIPE
+IDENT "isBareUnicodeEsc"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+IDENT "e"
+EQUAL
+INDENT
+IDENT "lexErrorTok"
+IDENT "p"
+LPAREN
+IDENT "bareUnicodeEscMsgChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PIPE
+IDENT "otherwise"
 EQUAL
 MATCH
 IDENT "charEscDecode"
@@ -8073,7 +8114,7 @@ IDENT "p"
 INTERP_OPEN "invalid escape sequence '\\"
 IDENT "charToStr"
 IDENT "e"
-INTERP_END "'"
+INTERP_END "' — Medaka's character escapes are \\n \\t \\r \\0 \\\\ \\' and \\u{...}"
 NEWLINE
 UPPER "Some"
 IDENT "s"
@@ -8131,6 +8172,8 @@ MINUS
 INT 1
 RPAREN
 IDENT "charUntermMsg"
+NEWLINE
+DEDENT
 NEWLINE
 DEDENT
 NEWLINE
@@ -8874,6 +8917,188 @@ EQUAL
 IDENT "p"
 NEWLINE
 DEDENT
+NEWLINE
+IDENT "isBareUnicodeEsc"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Char"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "isBareUnicodeEsc"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+IDENT "e"
+EQUAL
+IDENT "e"
+EQ_EQ
+CHAR "u"
+AND
+IDENT "p"
+PLUS
+INT 2
+LT
+IDENT "len"
+AND
+IDENT "isHexDigit"
+LPAREN
+IDENT "at"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+RPAREN
+AND
+IDENT "uHexEnd"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+MINUS
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+EQ_EQ
+INT 4
+NEWLINE
+IDENT "bareUnicodeEscWritten"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "bareUnicodeEscWritten"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+IDENT "substr"
+IDENT "src"
+IDENT "p"
+LPAREN
+IDENT "uHexEnd"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+RPAREN
+NEWLINE
+IDENT "bareUnicodeEscSuggested"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "bareUnicodeEscSuggested"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+INDENT
+INTERP_OPEN "\\u{"
+IDENT "substr"
+IDENT "src"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+LPAREN
+IDENT "uHexEnd"
+IDENT "src"
+IDENT "len"
+LPAREN
+IDENT "p"
+PLUS
+INT 2
+RPAREN
+RPAREN
+INTERP_END "}"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "bareUnicodeEscMsgStr"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "bareUnicodeEscMsgStr"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+INTERP_OPEN "bare unicode escape `"
+IDENT "bareUnicodeEscWritten"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INTERP_MID "` is not valid Medaka syntax. Medaka's unicode escape is braced — did you mean `"
+IDENT "bareUnicodeEscSuggested"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INTERP_END "`? Supported string escapes: \\n \\t \\r \\0 \\\\ \\\" and \\u{...}"
+NEWLINE
+IDENT "bareUnicodeEscMsgChar"
+COLON
+UPPER "Array"
+UPPER "Char"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "Int"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "bareUnicodeEscMsgChar"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+EQUAL
+INTERP_OPEN "bare unicode escape `"
+IDENT "bareUnicodeEscWritten"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INTERP_MID "` is not valid Medaka syntax. Medaka's unicode escape is braced — did you mean `"
+IDENT "bareUnicodeEscSuggested"
+IDENT "src"
+IDENT "len"
+IDENT "p"
+INTERP_END "`? Supported character escapes: \\n \\t \\r \\0 \\\\ \\' and \\u{...}"
 NEWLINE
 IDENT "isUnicodeEsc"
 COLON

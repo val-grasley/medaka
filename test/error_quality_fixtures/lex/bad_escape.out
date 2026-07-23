@@ -1,7 +1,7 @@
 cmd: medaka check
 exit: 1
 ---
-test/error_quality_fixtures/lex/bad_escape.mdk:1:20: invalid escape sequence '\q'
+test/error_quality_fixtures/lex/bad_escape.mdk:1:20: invalid escape sequence '\q' — Medaka's string escapes are \n \t \r \0 \\ \" and \u{...}
   |
 1 | main = println "bad \q escape"
   |                     ^

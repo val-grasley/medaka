@@ -1,1 +1,1 @@
-invalid escape sequence '\q'
+invalid escape sequence '\q' — Medaka's string escapes are \n \t \r \0 \\ \" and \u{...}

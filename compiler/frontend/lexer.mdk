@@ -855,9 +855,11 @@ scanStrEsc src len p startQ depth id acc e
   | isUnicodeEsc src len p e = match uniEscChar src len p
     None => lexErrorTok p (uniEscErr src len p)
     Some c => scanStr src len (uniEscEnd src len p) startQ depth id (acc ++ charToStr c)
+  | isBareUnicodeEsc src len p e =
+    lexErrorTok p (bareUnicodeEscMsgStr src len p)
   | otherwise = match commonEscDecode e
     Some s => scanStr src len (p + 2) startQ depth id (acc ++ s)
-    None => lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
+    None => lexErrorTok p "invalid escape sequence '\\\{charToStr e}' — Medaka's string escapes are \\n \\t \\r \\0 \\\\ \\\" and \\u{...}"
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
 scanInterpCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
@@ -1249,13 +1251,16 @@ charUntermMsg = "character literal is not terminated. A character is one codepoi
 -- The closing quote at `p + 2` is REQUIRED — a valid escape followed by more
 -- source (`'\na'`) is still more than one codepoint and is rejected.
 escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
-escChar src len p depth id e = match charEscDecode e
-  None => lexErrorTok p "invalid escape sequence '\\\{charToStr e}'"
-  Some s =>
-    if p + 2 < len && isApos (at src (p + 2)) then
-      RTok (TChar s) p (p + 3) :: scan src len (p + 3) depth id
-    else
-      lexErrorTok (p - 1) charUntermMsg
+escChar src len p depth id e
+  | isBareUnicodeEsc src len p e =
+    lexErrorTok p (bareUnicodeEscMsgChar src len p)
+  | otherwise = match charEscDecode e
+    None => lexErrorTok p "invalid escape sequence '\\\{charToStr e}' — Medaka's character escapes are \\n \\t \\r \\0 \\\\ \\' and \\u{...}"
+    Some s =>
+      if p + 2 < len && isApos (at src (p + 2)) then
+        RTok (TChar s) p (p + 3) :: scan src len (p + 3) depth id
+      else
+        lexErrorTok (p - 1) charUntermMsg
 
 -- A single RAW codepoint, which must be immediately closed by `'`. `at src p` is
 -- one codepoint (the source is a codepoint array), so a multi-BYTE codepoint is
@@ -1412,6 +1417,67 @@ uHexEnd : Array Char -> Int -> Int -> Int
 uHexEnd src len p
   | p < len && isHexDigit (at src p) = uHexEnd src len (p + 1)
   | otherwise = p
+
+-- ── bare `\uXXXX` unicode escape (no braces) — #515 ─────────────────────────
+-- `isUnicodeEsc` only ever recognizes `\u{` — the ONE spelling Medaka accepts.
+-- A `\u` immediately followed by a hex digit instead (`\u0041`, the
+-- fixed-width form other languages use) falls through every branch above and
+-- lands on the SAME generic "invalid escape sequence '\u'" every other
+-- unrecognized escape letter gets, which never says the accepted spelling
+-- exists at all. An agent that needed a unicode escape, hit that generic
+-- message, and concluded the feature didn't exist hand-built a 621-case test
+-- battery out of raw char codes instead of the one line `"\u{41}"` would have
+-- been (#515).
+--
+-- This is deliberately its OWN diagnostic (`L-BARE-UNICODE-ESCAPE`), not
+-- `L-BAD-UNICODE-ESCAPE`: that code is for a `\u{…}` the lexer already opened
+-- but had to reject (ill-formed run, out of range, a surrogate) — here no
+-- brace was ever written, so there is nothing to diagnose about the escape's
+-- CONTENT, only its SPELLING.
+--
+-- The message embeds both spellings as the first two backtick-quoted words
+-- (`` `\uXXXX` `` then `` `\u{XXXX}` ``), so `parseErrHelpFix`
+-- (`compiler/driver/diagnostics.mdk`) can reuse the SAME `twoBacktickWords`/
+-- `oldNewFixOf` machinery the malformed-radix/malformed-float diagnostics
+-- already use instead of needing bespoke plumbing — a machine `fix` falls out
+-- for free: replace exactly what was written with a brace-wrapped copy of the
+-- same hex digits.
+--
+-- Triggered ONLY when the hex run is EXACTLY 4 digits long (the fixed-width
+-- form the issue names, #515) — i.e. `uHexEnd` naturally stops at 4, not
+-- merely "4 digits then something else". This is deliberately narrower than
+-- "any hex digit after `\u`": hex letters (`a-f`/`A-F`) can immediately
+-- continue what looks like a finished 4-digit run — `Ab` reads as
+-- "codepoint 0041, then a literal `b`" to a reader used to the fixed-width
+-- convention, but `b` is ITSELF a hex digit, so a greedy capture would
+-- swallow it into a 5-digit run and offer `\u{0041b}` — a DIFFERENT, wrong
+-- codepoint — as the "fix". Requiring the natural digit run to stop at
+-- exactly 4 makes the rewrite unambiguous; anything else (3 digits, 5+
+-- digits) falls through to the generic "invalid escape sequence" message
+-- instead of risking a misleading auto-fix.
+isBareUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
+isBareUnicodeEsc src len p e = e == 'u'
+  && p + 2 < len
+  && isHexDigit (at src (p + 2))
+  && uHexEnd src len (p + 2) - (p + 2) == 4
+
+-- The escape exactly as written (`\u0041` — no closing brace; there isn't one).
+bareUnicodeEscWritten : Array Char -> Int -> Int -> String
+bareUnicodeEscWritten src len p = substr src p (uHexEnd src len (p + 2))
+
+-- The braced spelling it names (`\u{0041}`), wrapping the SAME hex digits —
+-- no reinterpretation, just bracing what was already written.
+bareUnicodeEscSuggested : Array Char -> Int -> Int -> String
+bareUnicodeEscSuggested src len p =
+  "\\u{\{substr src (p + 2) (uHexEnd src len (p + 2))}}"
+
+-- String-literal context: `\"` is one of the supported escapes (not `\'`).
+bareUnicodeEscMsgStr : Array Char -> Int -> Int -> String
+bareUnicodeEscMsgStr src len p = "bare unicode escape `\{bareUnicodeEscWritten src len p}` is not valid Medaka syntax. Medaka's unicode escape is braced — did you mean `\{bareUnicodeEscSuggested src len p}`? Supported string escapes: \\n \\t \\r \\0 \\\\ \\\" and \\u{...}"
+
+-- Char-literal context: `\'` is one of the supported escapes (not `\"`).
+bareUnicodeEscMsgChar : Array Char -> Int -> Int -> String
+bareUnicodeEscMsgChar src len p = "bare unicode escape `\{bareUnicodeEscWritten src len p}` is not valid Medaka syntax. Medaka's unicode escape is braced — did you mean `\{bareUnicodeEscSuggested src len p}`? Supported character escapes: \\n \\t \\r \\0 \\\\ \\' and \\u{...}"
 
 -- ── `\u{HEX}` unicode escapes inside *strings* (mirrors lib/lexer.mll's
 -- `'\\' 'u' '{' hex '}'` rule in read_string / read_triple_string /
