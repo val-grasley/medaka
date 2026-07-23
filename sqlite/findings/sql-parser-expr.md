@@ -5,8 +5,9 @@ library, via a cross-project dependency. Stage 1 of the SQL front end.
 
 **Headline:** one **soundness bug** (F1 — `medaka build` silently miscompiles a partially
 applied constructor; `check` and `run` are both clean, so this is only reachable in a
-native build) and one **diagnostics hole** (F4 — a parse error in an *imported* module is
-reported as an unlocated `E-PANIC`, even under `--json`). Both have minimal reproducers.
+native build) and one **diagnostics hole** (F4 — a parse error in an *imported* module was
+reported as an unlocated `E-PANIC`, even under `--json`; ✅ **FIXED, re-verified 2026-07-23**).
+Both have minimal reproducers.
 
 ---
 
@@ -77,7 +78,10 @@ reported as an unlocated `E-PANIC`, even under `--json`). Both have minimal repr
 
 ---
 
-## F2 — Derived `Debug` does not parenthesize nested constructor arguments
+## F2 — ✅ FIXED (re-verified 2026-07-23) — Derived `Debug` does not parenthesize nested constructor arguments
+
+**Status: FIXED.** `debug (O (I 1) (I 2))` now prints `O (I 1) (I 2)` — with parens — matching the
+"Expected" below. Left in place as the original repro.
 
 - **Category:** compiler-bug
 - **Severity:** workaround-required
@@ -155,7 +159,11 @@ reported as an unlocated `E-PANIC`, even under `--json`). Both have minimal repr
 
 ---
 
-## F4 — A parse error in an IMPORTED module is reported as an unlocated `E-PANIC`
+## F4 — ✅ FIXED (re-verified 2026-07-23) — A parse error in an IMPORTED module is reported as an unlocated `E-PANIC`
+
+**Status: FIXED.** Both `medaka check` and `medaka check --json` now locate the error correctly —
+`check` reports `P-PARSE` at `lib/t.mdk:1:42` (the imported module's own file/line/column), not an
+unlocated panic on the entry file. Left in place as the original repro.
 
 - **Category:** error-message / tooling
 - **Severity:** workaround-required

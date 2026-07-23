@@ -28,6 +28,18 @@ vs the built binary, or shipped a crashing/heap-leaking binary at exit 0.
   that names the wrong cause or leaks internal detail.
 - **S3 friction & debt** — including untested behavior worth a regression fixture.
 
+## Step 0 — run the differential fuzzer alongside the manual fan-out
+
+`test/fuzz_diff.sh [START_SEED] [COUNT] [TIER] [BATCH] [NATIVE] [NATIVE_COUNT]` is a
+complementary AUTOMATED pass, not a replacement for Steps 1-2: it generates
+type-directed random well-typed programs (`compiler/entries/fuzz_gen_main.mdk`) and
+checks invariants against the native-interp oracle at high volume. Its opt-in Tier-C
+(`NATIVE=1`) additionally `medaka build`s each program and diffs the **native-compiled
+binary** against the same oracle — mechanically hitting the exact run≠build S0 class
+this skill hunts, for free, before you spend a subagent on it. Findings land in
+`test/fuzz_failures/`; still run every candidate through Step 3's first-hand-reproduce
+discipline before filing.
+
 ## Step 1 — derive the hot veins from the tracker (do NOT guess them)
 
 The closed S0/S1 list *is* the map of where bugs breed. Read it first:

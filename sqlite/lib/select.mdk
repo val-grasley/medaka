@@ -25,11 +25,12 @@ import lib.sqlite.{
   columnNames,
   findTable,
   schemaSql,
+  pkColumnIndex,
 }
 import lib.btree.{Row}
 import lib.rowtype.{RowType, rtDecode}
 import list.{reverse, take, drop, sortBy, nub}
-import string.{join, fromChars, replaceAll}
+import string.{join, fromChars, replaceAll, toInt, toFloat}
 
 -- ---------------------------------------------------------------------------
 -- Untyped core
@@ -1372,16 +1373,118 @@ clampInt v lo hi = max lo (min v hi)
 -- otherwise coerce to CFloat.  `/`: both-int ⇒ integer division truncating
 -- toward zero (÷0 ⇒ NULL); either-real ⇒ float division (÷0.0 ⇒ NULL).  `%`:
 -- integer modulo on the integer parts (sign follows the dividend; x%0 ⇒ NULL).
--- A non-numeric (text/blob) operand is out of scope: yields NULL, never crashes.
+--
+-- A TEXT (or BLOB) operand is COERCED to a number first — SQLite's rule: take
+-- the longest leading numeric prefix, 0 if there is none (`'5'+2 = 7`,
+-- `'5abc'+2 = 7`, `'abc'+2 = 2`, `'3.5'*2 = 7.0`).  See `coerceNumericCell` for
+-- the exact prefix grammar, all verified against `sqlite3`.
 -- ---------------------------------------------------------------------------
 
 evalArith : ArithOp -> Cell -> Cell -> Cell
 evalArith op a b =
-  if cellIsNull a || cellIsNull b then CNull
-  else match op
-    AMod => evalMod a b
-    ADiv => evalDiv a b
-    _ => evalAddSubMul op a b
+  if cellIsNull a || cellIsNull b then
+    CNull
+  else
+    evalArithNum op (coerceNumericCell a) (coerceNumericCell b)
+
+-- After coercion both operands are `CInt`/`CFloat`, so the numeric arms below
+-- always fire (their `_ => CNull` fall-throughs are defensive dead code).
+evalArithNum : ArithOp -> Cell -> Cell -> Cell
+evalArithNum AMod a b = evalMod a b
+evalArithNum ADiv a b = evalDiv a b
+evalArithNum op a b = evalAddSubMul op a b
+
+-- ---------------------------------------------------------------------------
+-- SQLite text→numeric coercion (applied to an arithmetic operand).
+--
+-- Numbers pass through unchanged; a TEXT/BLOB operand yields the value of its
+-- longest leading NUMERIC PREFIX — optional leading whitespace, optional sign,
+-- integer and/or fractional digits, and an optional `e`/`E` exponent (which is
+-- only consumed when at least one exponent digit follows — `'5e'` ⇒ 5, not an
+-- error).  A prefix that carries a `.` or a valid exponent is REAL (`CFloat`),
+-- otherwise INTEGER (`CInt`); an integer that overflows Medaka's `Int` falls
+-- back to `CFloat`, mirroring SQLite's own integer→real overflow.  NO numeric
+-- prefix (`'abc'`, `''`, `'  '`, `'0x10'` past the `0`) ⇒ `CInt 0`.
+--
+-- Verified against `sqlite3`; see findings/sql-arith-rowid-coercion.md.  Two
+-- deliberately-unmatched edges are documented there: text that parses to an
+-- integer in `(2^62, 2^63)` becomes REAL here (Medaka `Int` is 63-bit, SQLite's
+-- is 64-bit), and `'inf'`/`'nan'` coerce to 0 (SQLite agrees for those literal
+-- spellings).
+coerceNumericCell : Cell -> Cell
+coerceNumericCell (CInt n) = CInt n
+coerceNumericCell (CFloat f) = CFloat f
+coerceNumericCell (CText s) = coerceTextNumeric s
+coerceNumericCell (CBlob b) = coerceTextNumeric (blobToText b)
+coerceNumericCell CNull = CNull
+
+coerceTextNumeric : String -> Cell
+coerceTextNumeric s =
+  let chars = stringToChars s
+  let n = arrayLength chars
+  let ws = skipNumWs chars 0 n
+  let afterSign = if ws < n && isSignChar chars[ws] then ws + 1 else ws
+  let intEnd = skipDigits chars afterSign n
+  let intDigits = intEnd - afterSign
+  let hasDot = intEnd < n && charCode chars[intEnd] == 46
+  let fracStart = if hasDot then intEnd + 1 else intEnd
+  let fracEnd = if hasDot then skipDigits chars fracStart n else intEnd
+  let fracDigits = fracEnd - fracStart
+  if intDigits <= 0 && fracDigits <= 0 then CInt 0
+  else
+    let expEnd = parseExpEnd chars fracEnd n
+    let hasExp = expEnd > fracEnd
+    let numEnd = if hasExp then expEnd else fracEnd
+    let prefix = stringSlice ws numEnd s
+    if hasDot || hasExp then floatCellOf prefix
+    else match toInt prefix
+      Some i => CInt i
+      None => floatCellOf prefix
+
+floatCellOf : String -> Cell
+floatCellOf s = match toFloat s
+  Some f => CFloat f
+  None => CFloat 0.0  -- defensive: an extracted prefix is always well-formed
+
+-- ASCII whitespace SQLite skips before a number: space + \t \n \v \f \r.
+isNumWs : Char -> Bool
+isNumWs c =
+  let k = charCode c
+  k == 32 || k >= 9 && k <= 13
+
+isSignChar : Char -> Bool
+isSignChar c = charCode c == 43 || charCode c == 45  -- + -
+
+isExpChar : Char -> Bool
+isExpChar c = charCode c == 101 || charCode c == 69  -- e E
+
+isDigitCode : Int -> Bool
+isDigitCode k = k >= 48 && k <= 57
+
+skipNumWs : Array Char -> Int -> Int -> Int
+skipNumWs chars i n =
+  if i < n && isNumWs chars[i] then
+    skipNumWs chars (i + 1) n
+  else
+    i
+
+skipDigits : Array Char -> Int -> Int -> Int
+skipDigits chars i n =
+  if i < n && isDigitCode (charCode chars[i]) then
+    skipDigits chars (i + 1) n
+  else
+    i
+
+-- The end index of a VALID exponent starting at `i` (`e`/`E`, optional sign,
+-- ≥1 digit), or `i` itself when there is no valid exponent — so a dangling
+-- `'5e'` / `'5e+'` leaves the number ending before the `e`.
+parseExpEnd : Array Char -> Int -> Int -> Int
+parseExpEnd chars i n =
+  if i < n && isExpChar chars[i] then
+    let j = if i + 1 < n && isSignChar chars[i + 1] then i + 2 else i + 1
+    let k = skipDigits chars j n
+    if k > j then k else i
+  else i
 
 -- `+ - *`: integer result when both operands are integers, else float.
 evalAddSubMul : ArithOp -> Cell -> Cell -> Cell
@@ -2016,8 +2119,23 @@ dropTakeList of_ lm xs =
     None => afterOffset
 
 -- Resolve column names against a CREATE TABLE statement (via columnIndex).
+-- The implicit `rowid` column (and its aliases `_rowid_` / `oid`) resolves to
+-- the INTEGER PRIMARY KEY column, whose cell already holds the rowid value
+-- (`rowCellsWithIpk`/`substituteIpk`) — matching SQLite, where those three names
+-- are aliases of the IPK on a rowid table.  columnIndex is tried FIRST, so a
+-- real user column literally named `rowid` shadows the alias (also SQLite's
+-- rule).  See findings/sql-arith-rowid-coercion.md for the non-IPK edge.
 mkLookup : String -> String -> Option Int
-mkLookup createSql = name => columnIndex createSql name
+mkLookup createSql = name => match columnIndex createSql name
+  Some i => Some i
+  None => if isRowidAlias name then pkColumnIndex createSql else None
+
+-- | True for the implicit-rowid column names, case-insensitively: `rowid`,
+--   `_rowid_`, `oid` (SQLite's three spellings).
+isRowidAlias : String -> Bool
+isRowidAlias name =
+  let l = asciiFold asciiLowerChar name
+  l == "rowid" || l == "_rowid_" || l == "oid"
 
 compileWhere : (String -> Option Int) -> Option SqlExpr -> Result String (List Cell -> Bool)
 compileWhere _ None = Ok (_ => True)
@@ -2074,15 +2192,22 @@ lookupQualified : List (String, String, Int) -> String -> String -> Option Int
 lookupQualified [] _ _ = None
 lookupQualified ((name, sql, off)::rest) tbl col =
   if name == tbl then
-    map (off + _) (columnIndex sql col)
+    map (off + _) (colOrRowid sql col)
   else
     lookupQualified rest tbl col
 
 lookupBare : List (String, String, Int) -> String -> Option Int
 lookupBare [] _ = None
-lookupBare ((_, sql, off)::rest) col = match columnIndex sql col
+lookupBare ((_, sql, off)::rest) col = match colOrRowid sql col
   Some i => Some (off + i)
   None => lookupBare rest col
+
+-- Resolve `col` within one table's schema: a real column first, else the
+-- rowid alias → the IPK column (see `mkLookup`).  Shared by both join lookups.
+colOrRowid : String -> String -> Option Int
+colOrRowid sql col = match columnIndex sql col
+  Some i => Some i
+  None => if isRowidAlias col then pkColumnIndex sql else None
 
 -- Nested-loop the tables left-to-right: start with the `from` table's rows,
 -- then for each join apply its ON predicate (compiled over the COMBINED lookup)

@@ -220,6 +220,38 @@ QUERIES=(
   "SELECT id FROM orders WHERE (amount + qty) * 2 > 105 ORDER BY id"
   "SELECT name FROM users WHERE NOT age = 30 AND age IS NOT NULL ORDER BY id"
   "SELECT id FROM orders WHERE amount > 50 AND qty < 3 OR uid = 3 ORDER BY id"
+  # -- arithmetic coerces a TEXT/BLOB operand to a number (SQLite affinity) ----
+  # Longest leading numeric prefix; 0 when there is none; NULL still propagates.
+  # A prefix carrying '.' or a valid exponent is REAL, else INTEGER.  (The giant-
+  # integer overflow→real case is pulled out of the byte-diff below — it denotes
+  # the right double but prints %g-vs-shortest differently, exactly like the avg
+  # floats.  See findings/sql-arith-rowid-coercion.md.)
+  "SELECT '5' + 2, '5abc' + 2, 'abc' + 2, '' + 2 FROM orders WHERE id = 1"
+  "SELECT '3.5' * 2, '3.5' + '2.5' FROM orders WHERE id = 1"
+  "SELECT '  5' + 2, '  -3.5 ' + 0, '+7' + 0 FROM orders WHERE id = 1"
+  "SELECT '.5' + 0, '5.' + 0, '1e3' + 0, '3.5e2' + 0 FROM orders WHERE id = 1"
+  "SELECT '5e' + 0, '5e+' + 0, '0x10' + 2, '007' + 0 FROM orders WHERE id = 1"
+  "SELECT '5' / 2, '5.0' / 2, '7' % '3' FROM orders WHERE id = 1"
+  "SELECT '1.2.3' + 0, ' 5 6' + 0, '-0' + 0 FROM orders WHERE id = 1"
+  "SELECT 'inf' + 0, 'nan' + 0 FROM orders WHERE id = 1"
+  "SELECT NULL + '5', '5' + NULL FROM orders WHERE id = 1"
+  "SELECT name + 0 FROM users ORDER BY id"
+  "SELECT city * 2 FROM users ORDER BY id"
+  "SELECT amount * '2' FROM orders ORDER BY id"
+  "SELECT id FROM orders WHERE '2abc' + 0 = qty ORDER BY id"
+  # -- the implicit rowid column (aliases _rowid_ / oid) ----------------------
+  # On a rowid table with an INTEGER PRIMARY KEY, rowid == that column; SELECT *
+  # never shows it, WHERE/ORDER BY/projection can all address it.
+  "SELECT rowid, name FROM users ORDER BY rowid"
+  "SELECT rowid, id, name FROM users ORDER BY id"
+  "SELECT _rowid_, name FROM users ORDER BY _rowid_ DESC"
+  "SELECT oid, name FROM users ORDER BY oid"
+  "SELECT * FROM users WHERE rowid = 2"
+  "SELECT name FROM users WHERE rowid > 2 ORDER BY rowid"
+  "SELECT name FROM users ORDER BY rowid DESC"
+  "SELECT rowid FROM users WHERE oid = _rowid_ ORDER BY rowid"
+  "SELECT o.rowid, o.amount FROM orders o WHERE o.rowid <= 3 ORDER BY o.rowid"
+  "SELECT users.rowid, orders.rowid FROM users JOIN orders ON users.id = orders.uid ORDER BY orders.rowid"
   # -- case-insensitivity + trailing semicolon --------------------------------
   # Mixed-case KEYWORDS (the parser's job).  Note the IDENTIFIERS stay
   # correctly-cased: sqlite3 folds identifier case, the Medaka engine's

@@ -19,6 +19,12 @@ inputs at N and 2N and checks the **allocation** growth ratio per doubling (line
 deterministic — so the gate is machine-independent and noise-free, which no timing
 gate can be on a shared runner.
 
+Running it locally while iterating: `PERF_N=<n>` shrinks the base input size (default
+250) for a faster loop, and the gate is QUICK-mode by default — it drops the two
+N=16000 bands that exist only to lift `resolve`/`lint` over the 200ms floor.
+`PERF_DEEP=1` restores that full nightly scope; use it to confirm a fix against the
+#78-class resolve detector before trusting a QUICK-mode green.
+
 ## The workflow, in order
 
 ### 1. Profile per-stage time AND allocation

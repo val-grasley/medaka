@@ -180,6 +180,12 @@ medaka lint compiler/types/typecheck.mdk          # hook is a max ratchet: any n
 make preflight                                    # derives the gate set from your diff
 ```
 
+While iterating, `make check-self` (issue #833) is the sub-minute inner loop: it
+runs the already-built `./medaka check` over the `medaka_cli.mdk` closure alone —
+no oracle build, no differential compare, gated on that one exit code (~20s).
+It is NOT a substitute for the gate below — it's the fast pre-check to run
+*before* it, on every edit.
+
 Then the gates that matter for this file specifically:
 
 ```sh
@@ -209,3 +215,9 @@ If you're not yet sure which stage or construct is at fault, use the
 **debug-pipeline** skill. For raw type dumps, run the typecheck probe entry
 (`compiler/entries/typecheck_main.mdk`) — check its `main` for the exact
 invocation form. For structured output, `./medaka check --json scratch.mdk`.
+
+Bare `./medaka check` now filters the scheme dump down to the user's own
+top-level bindings (0.1.0 UX — the prelude corpus used to print first and
+swamp it). When you need to see what a **prelude** method itself infers to
+(e.g. debugging `pure`/`when`), pass `--types` to restore the full dump
+including seeded schemes.

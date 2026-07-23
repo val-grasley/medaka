@@ -15,12 +15,14 @@
 > **When something reports FIXED: mark it closed here, and move its repro into a real regression
 > fixture so it stays closed.**
 >
-> Snapshot **re-derived 2026-07-14 on `e34e2b46` by running the script: 7 open, 4 fixed.**
-> (Was "10 open, 1 fixed". **B2, B3 and B4 had all been fixed and nobody had noticed** — including
-> BOTH of the "silent build miscompile" P0s that `PLAN.md` was still advertising as open. This is the
-> reason the header above exists. The still-open rows are **B1w, B6, B7, B8, B10** (B5 closed
-> 2026-07-16, #316). The two
-**MUT** workaround rows were reverted 2026-07-15 (#140 btree gather, #141 recordenc encoder).)
+> ⚠️ **Statuses are PER-ROW — do not trust a hard count here, it has rotted repeatedly** (this
+> snapshot line itself went from "10 open, 1 fixed" to "7 open, 4 fixed" and was stale again within
+> days). Read each **Bn** heading directly for CLOSED vs open. As of a 2026-07-23 re-verification
+> against current `main`: **B6, B7 and B10 are now also CLOSED** (see their entries below) — they
+> were still marked open as of the 2026-07-14 snapshot. **B2, B3 and B4 had all been fixed earlier**
+> and nobody had noticed at the time — including BOTH of the "silent build miscompile" P0s that
+> `PLAN.md` was still advertising as open. This is the reason this warning exists. The two
+> **MUT** workaround rows were reverted 2026-07-15 (#140 btree gather, #141 recordenc encoder).
 >
 > **The backlog now lives in GitHub Issues** (`gh issue list --label "S0: silent wrongness"`), because
 > an issue self-drains and a markdown row does not. This file stays as the *repro corpus* and the
@@ -57,7 +59,7 @@ no longer exists, which is how workarounds quietly become permanent architecture
 | bug | site | what to do when it closes |
 |-----|------|---------------------------|
 | **B1w** | `sqlite/lib/sqlparse.mdk` (×2) | ⚠️ **STILL NEEDED — for WasmGC only.** `main`'s `ced6342d` fixed this in the LLVM emitter; the **WasmGC emitter still fails to emit** a partially-applied constructor. Revert the eta-expansions only when B1 is fixed in **both** backends. |
-| **B2** | `sqlite/lib/aggregate.mdk` | ⭐ **B2 IS NOW CLOSED — this revert is OWED.** `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. |
+| **B2** | `sqlite/lib/aggregate.mdk` | ⭐ **B2 IS NOW CLOSED — this revert is OWED.** `AggQuery`'s fields are `aq`-prefixed (`aqFrom`/`aqWhere`/`aqGroupCols`/`aqAggs`/`aqHaving`) **solely** to avoid colliding with `Select`'s `from`/`where_`/`groupBy`/`having`. Rename back to the natural names. ⚠️ **In progress:** a sibling PR is reverting this `aq`-prefix workaround in `aggregate.mdk` now that B2 is confirmed closed — no code touched here, this is a status note only. |
 | ~~**B5**~~ | `sqlite/lib/select.mdk`, `sqlite/lib/recordfmt.mdk` | ✅ **CLOSED (#316, 2026-07-16).** Root cause was prelude asymmetry — `Eq (Array a)` lived in `array.mdk` while `Debug/Display/Index (Array a)` were in the prelude, so `deriving (Eq)` over an `Array` field check-passed but native-build-failed. Fixed by moving `Eq (Array a)` into `stdlib/core.mdk`. The hand-written `Eq` on `Literal`/`Cell` and their `-- lint-disable-next-line rule-hand-rolled-derivable` were reverted to `deriving (Debug, Eq)` in the same PR. (`verify_compiler_bugs.sh` reports FIXED.) |
 | ~~**MUT**~~ | `sqlite/lib/btree.mdk` | ✅ **REVERTED (#140).** The overflow gather now allocates the payload buffer once (`array.make`) and blits each region into place (`array.blit`) — O(bytes), one copy per payload byte. The pure `slice`+`concat` O(chunks × bytes) dodge is gone; no `<Mut>` (removed 2026-07-14) and no `--allow-internal` (uses the safe `array` wrappers, not the raw externs). |
 | ~~**MUT**~~ | `sqlite/lib/recordenc.mdk` | ✅ **REVERTED (#141).** `beSintBytes` now delegates to stdlib `bytebuilder.emitBeSint` (`newBuilder`/`emitBeSint`/`buildArray`); the hand-rolled two's-complement duplicate and its `beUnsignedNBytes`/`beUnsignedNGo` helpers are deleted. `<Mut>` removal (2026-07-14) mooted the signature concern. |
@@ -75,7 +77,13 @@ native binary (B1). That is a gap in the testing strategy, not just a set of bug
 
 ## P0 — `medaka fmt --write` DESTROYS SOURCE CODE
 
-### B10 ✅ VERIFIED — `fmt` rewrites a float literal ≥ 1e15 into a form the lexer cannot read
+### B10 — ✅✅ **CLOSED (fixed by issue #51, re-verified 2026-07-23)**. `fmt --write` on a float
+literal ≥ 1e15 still writes scientific notation (`9e+15`), but the lexer now reads that back
+correctly — `main = println 9000000000000000.0` → `fmt --write` → `main = println 9e+15` →
+`check`/`run` both round-trip to `9e+15`. No longer a destructive operation. Left here as the
+worked example below (historical repro + root cause).
+
+#### (historical) `fmt` rewrites a float literal ≥ 1e15 into a form the lexer cannot read
 
     big : Float
     big = 9000000000000000.0     -- valid: checks, runs, prints 9e+15
@@ -228,7 +236,10 @@ In a **well-typed** program, a `println` before a panic prints under `build` and
 your trace output disappears exactly when the program crashes — **it is what made B3 look
 unreproducible.**
 
-### B6 ✅ VERIFIED — `exit` works in `build`, is unbound under `run`
+### B6 — ✅✅ **CLOSED (re-verified 2026-07-23, no tracking issue needed)**. `run` of `exit 3` now
+prints "hi" (the preceding `println`) and exits 3, matching `build`. `exit` is implemented in eval.
+
+#### (historical) `exit` works in `build`, is unbound under `run`
     main : <IO, Panic> Unit
     main =
       println "before exit"
@@ -242,7 +253,11 @@ exit`. It *is* bound; it is simply unimplemented in eval. (This also re-demonstr
 
 ## P1 — data fidelity
 
-### B7 ✅ VERIFIED — `Float` cannot round-trip through display (~12 significant digits)
+### B7 — ✅✅ **CLOSED (fixed by issue #57, re-verified 2026-07-23)**. `floatToString` now emits
+shortest-round-trip digits — `0.1 + 0.2` prints `0.30000000000000004`, not `0.3`. See also
+`sql-parser-select.md` F3, which has the full before/after table.
+
+#### (historical) `Float` cannot round-trip through display (~12 significant digits)
 
 | expression | Medaka prints | actual IEEE double |
 |---|---|---|
@@ -283,17 +298,20 @@ old spelling. Wants one repo-wide sweep.
 
 ## P2 — diagnostics quality (all 🟡 REPORTED — leads, not verified)
 
-- A **parse error in an imported module** reports as an unlocated `E-PANIC: parse error`, even under
-  `check --json`.
-- A diagnostic in an imported module is printed with the **entry file's** name (`--json` gets it
-  right — so it's the text renderer).
+- ~~A **parse error in an imported module** reports as an unlocated `E-PANIC: parse error`, even
+  under `check --json`.~~ ✅ **FIXED (re-verified 2026-07-23)** — both `check` and `check --json`
+  now locate it correctly (see `sql-parser-expr.md` F4).
+- ~~A diagnostic in an imported module is printed with the **entry file's** name (`--json` gets it
+  right — so it's the text renderer).~~ ✅ **FIXED by issue #41 (re-verified 2026-07-23)** — see
+  `sql-parser-select.md` F5.
 - `export data` hides constructors but the error says *"has no exported name"*, which misdescribes
-  the cause.
-- Omitting `where` on an `impl` points at the wrong line and never mentions `where`.
+  the cause. (Tracked in #103.)
+- Omitting `where` on an `impl` points at the wrong line and never mentions `where`. (Tracked in
+  #103.)
 - `unexpected a number; expected a dedent` — ungrammatical, describes lexer state rather than the
-  rule, and doesn't point at the construct that caused it.
-- The same diagnostic reports a **different column** under `run` vs `build`.
-- A multi-line list literal cannot be a `match` scrutinee.
+  rule, and doesn't point at the construct that caused it. (Tracked in #103.)
+- The same diagnostic reports a **different column** under `run` vs `build`. (Tracked in #103.)
+- A multi-line list literal cannot be a `match` scrutinee. (Tracked in #103.)
 - **No bounds-checked `array.slice`** — the only slice silently clamps, which is exactly the shape
   that hides corruption in a parser (this is arguably a P1: it is the sort of thing that turns a
   bug into a *silent* bug).

@@ -197,6 +197,13 @@ make medaka          # WARM (./medaka_emitter present): 2-stage rebuild from cur
 ./medaka run yourfile.mdk
 ```
 
+**Staleness guard.** Every `./medaka` invocation recomputes a live source fingerprint over
+`<root>/compiler/*.mdk` and compares it to the one baked in at build time — a mismatch means
+you're running a binary built from OLDER compiler source than what's on disk. Default is a
+warning; **`MEDAKA_STRICT=1`** promotes it to a hard `exit 1`, useful when you need certainty
+you're not debugging or verifying against a stale binary (`checkSourceStaleness`,
+`compiler/driver/medaka_cli.mdk`).
+
 **In a worktree:** the shell cwd resets between calls, so use
 `make -C /absolute/path/to/worktree medaka`. The `./medaka` binary lands in the worktree.
 
@@ -266,6 +273,8 @@ make preflight       # ✅ THE LOOP — derives the gate set from YOUR diff, and
                      #    set from those gates. Touching parser.mdk: 9 oracles, 11 gates.
 sh test/run_gates.sh 'diff_compiler_parse*'          # ✅ targeted, by name
 sh test/build_oracles.sh --for 'diff_compiler_*'     # ✅ fresh-worktree recipe: 52 oracles, ~2 min
+sh test/build_oracles.sh --for --list '<pattern>'    # ✅ DERIVE ONLY — which oracle names a
+                                                      #    pattern resolves to, builds nothing
 FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>   # ✅ exactly one
 sh test/run_gates.sh                                 # ❌ all 83
 FORCE=1 sh test/build_oracles.sh                     # ❌ all 54 oracles. Almost never right.
@@ -276,9 +285,14 @@ loop can exceed the 10-minute foreground tool ceiling — killed at 600s with `e
 (SIGTERM). That is the CEILING, not your change hanging — do not go debug a phantom.** Same
 risk running `test/diff_compiler_perf_scaling.sh` directly (measured 654-748 s, ~11-12 min) —
 it's one of the slowest gates in the tree and just as foreground-unsafe as a single blocking
-call. **Same trap: `test/diff_compiler_engines.sh` (the 3-engine differential) is ~5-7 min — its
+call. **`PERF_N=<n>` shrinks its input size for faster local iteration (default 250); quick
+mode is the default scope, `PERF_DEEP=1` restores the full nightly scope** (`test/diff_compiler_perf_scaling.sh`).
+Same trap: `test/diff_compiler_engines.sh` (the 3-engine differential) is ~5-7 min — its
 own `ENGINE_JOBS` table reads `JOBS=3 ~5min`, and `MEDAKA_REQUIRE_WASM=1` (the CI wasm arm) pushes
-it to ~7 — so background it, or scope to a subset with `ONLY=<glob>` while iterating (#723).**
+it to ~7. **`ENGINE_JOBS=<n>` is a settable knob, not just a measurement** — override it (e.g.
+`ENGINE_JOBS=2`) to throttle the fan-out on a shared/loaded box, or scope to a subset with
+`ONLY=<glob>` while iterating (#723).
+
 **Remedy: run either one detached/backgrounded and poll for completion, not in a single
 foreground turn** (`run_in_background` in this harness, not a blocking call). Before
 committing to a run that long, reach for `PREFLIGHT_DRY=1` (fence above) — `test/preflight.sh`
@@ -350,7 +364,7 @@ make docs-index                        # regenerate docs/README.md (GENERATED �
 |------|----------------|
 | `test/diff_compiler_*.sh` | Differential: native stage output vs captured goldens |
 | `test/selfcompile_fixpoint.sh` | Emitter self-compile fixpoint (C3a/C3b) — **THE decisive gate for any compiler-source change** |
-| `test/typecheck_compiler_source.sh` | Strict-typechecks the WHOLE compiler source. Run alongside the fixpoint for any compiler `.mdk` change — the bootstrap emit path does NOT gate on type errors, so an ill-typed compiler builds green without this. ⚠️ It (and `diff_compiler_selfproc.sh`) needs its slow oracle (`diagnostics_project_main`, `check_all_main`, …) BUILT FIRST in a fresh worktree — `FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>` — and REBUILT after every compiler-source edit; a missing/stale oracle exits 2, which reads like a skip, not a failure |
+| `test/typecheck_compiler_source.sh` | Strict-typechecks the WHOLE compiler source. Run alongside the fixpoint for any compiler `.mdk` change — the bootstrap emit path does NOT gate on type errors, so an ill-typed compiler builds green without this. ⚠️ It (and `diff_compiler_selfproc.sh`) needs its slow oracle (`diagnostics_project_main`, `check_all_main`, …) BUILT FIRST in a fresh worktree — `FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one <name>` — and REBUILT after every compiler-source edit; a missing/stale oracle exits 2, which reads like a skip, not a failure. **For a fast first-line local check with no oracle build/staleness coupling, reach for `make check-self` instead** — sub-minute (~20s), runs `./medaka check` over the already-built binary's own `medaka_cli.mdk` closure; `typecheck_compiler_source.sh` remains the fuller authority (also covers `compiler/entries/*.mdk`) |
 | `test/diff_compiler_engines.sh` | **The 3-engine differential**: eval == native == wasm on the SAME programs. Found 4 bug classes on its first run. Ledger: `test/engine_divergence.txt` |
 | `test/diff_compiler_perf_scaling.sh` | **The O(n²) detector.** Inputs at N and 2N; grades the *allocation* growth ratio (linear ≈2.0×, quadratic ≈4.0×). Allocation, not wall-clock — GC bytes are deterministic, so it is machine-independent and noise-free |
 | `test/diff_compiler_capability_matrix.sh` | Every extern in `stdlib/runtime.mdk` vs what each engine actually implements (EXISTENCE). Its absence let 37 externs drift for six weeks. Ledger: `test/CAPABILITY-EXCEPTIONS.txt`. **Also (#476) the DOMAIN requirement:** every *pure* extern (no `<Cap>` annotation — derived, not hand-listed) must carry a verdict in `test/EXTERN-DOMAIN-LEDGER.txt` — `TOTAL` / `BOUNDARY` (edge cells pinned across all 3 engines) / `PENDING` (edge domain, cells owed, `#NNN`) / `EXEMPT`. A new pure extern with no row FAILS (self-drains). This is what would have caught the `floatToInt` 3-way edge divergence (#346) structurally |
@@ -359,8 +373,13 @@ make docs-index                        # regenerate docs/README.md (GENERATED �
 | `test/diff_compiler_must_fail.sh` | **The MUST-FAIL suite — the TRACKER's self-drain.** Each `test/must_fail_fixtures/*/` asserts one OPEN issue's bug **still reproduces**; when a fix lands the fixture flips green and **FAILS the gate**, naming the issue to close. **A RED here is usually a GOOD failure, not your break.** Runs in `soundness`, not a shard |
 | `test/check_removed_constructs.sh` | Tree-wide scan for stale uses of removed constructs (~2-3 min, `JOBS=` knob) |
 
-**Stale oracles:** `diff_native_cli` and the bootstrap suites are especially stale-prone —
-force-rebuild before trusting a pass/fail from those.
+**Stale oracles:** `run_gates.sh` already derives which `test/bin/*` probes the SELECTED gates
+read, compares their mtimes against `compiler/`/`stdlib/`/`runtime/` source, and REFUSES to run
+(exit 1, printing the exact narrow `--build-one`/`--for` rebuild command) rather than report a
+false pass/fail — so for any gate you run through it, staleness is already handled for you.
+Override with `NO_STALE_CHECK=1` only if you know exactly why. `diff_native_cli` and the
+bootstrap suites are especially stale-prone when invoked OUTSIDE `run_gates.sh` (e.g. bare
+`sh test/diff_native_cli.sh`) — force-rebuild before trusting a pass/fail from those.
 
 **Parallelism.** The oracle build, `run_gates.sh`, the heavy compiler gates, and every wasm
 gate fan out across an `xargs -P` pool — cap with `JOBS=n`, or `INNER_JOBS=n` for per-gate
@@ -378,10 +397,11 @@ produced a **stable-looking WRONG binary** (19/20 iterations). Anything that "ke
 file on something distinctive" is a trap; only a per-process temp dir is correct. Still run
 a newly-parallelized gate several times — a temp-collision flake shows ~1 in N.
 
-### Pre-commit hook (ACTIVE) — fmt + lint
+### Pre-commit hook (ACTIVE) — fmt + lint + snapshot + lextok
 
-`.githooks/pre-commit` runs two checks over each staged `.mdk` (`test/` fixtures excluded —
-they violate style on purpose). Re-install after a fresh clone:
+`.githooks/pre-commit` runs FOUR checks (fmt + lint always; snapshot + lextok gated on what's
+staged) over each staged `.mdk` (`test/` fixtures excluded from fmt/lint — they violate style
+on purpose). Re-install after a fresh clone:
 `cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit"`.
 
 - **Format** — `medaka fmt --check` rejects any staged unformatted `.mdk`. **Run `medaka fmt --write
@@ -402,8 +422,19 @@ they violate style on purpose). Re-install after a fresh clone:
   `-- lint-disable-file`; omit the rule to disable all). ⚠️ `medaka lint --fix` **bails on any
   decl containing an interior comment** (it would otherwise drop them) — safe, but it leaves
   comment-bearing sites unfixed.
+- **Snapshot** — CHECK ONLY (this hook can never bless): gates on `test/diff_compiler_snapshot_frontend.sh`
+  over ANY staged `.mdk` (test/ fixtures included — they're in the corpus) plus `test/snapshots/*.md`
+  itself, since a compiler-source change or even a pure `medaka fmt` reflow can move a snapshot.
+  A stale snapshot fails the commit rather than reading as tooling breakage. **Run `make
+  snapshot-check` first**; to bless a moved snapshot, `sh test/diff_compiler_snapshot_frontend.sh
+  --bless <file.mdk>` then re-stage `test/snapshots/` and read the diff (that diff is the real
+  review gate).
+- **Lextok** — OPPORTUNISTIC: only runs when `test/bin/lex_main` already exists (this hook
+  never builds an oracle), scoped to staged `.mdk` files that already have a sibling
+  `.lextok.golden`. Gates on `test/diff_compiler_lex_files.sh`. Remedy for a stale golden:
+  `CAPTURE=1 sh test/diff_compiler_lex_files.sh <files>`, then re-stage the `.lextok.golden` file(s).
 
-Emergency bypass for either: `git commit --no-verify`. If `medaka` isn't built, the hook
+Emergency bypass for any of these: `git commit --no-verify`. If `medaka` isn't built, the hook
 warns and allows.
 
 ### Debugging a `.mdk` program
@@ -416,6 +447,15 @@ for suggestion-bearing errors — a `help` string plus a machine-applicable
 `fix { range, replacement }` you can apply verbatim. **When reacting to compile errors
 programmatically, prefer `--json` and key off `code`** — it is the stable handle and doesn't
 move when wording changes.
+
+**`medaka run --json` and `medaka lint --json` emit the SAME `Diag` JSON envelope** (same
+`code`/`kind`/`range`/`severity`/`message` schema as `check --json`) — so a RUNTIME panic, not
+just a compile-time error, is machine-parseable the same way.
+
+**Bare `medaka check` filters its scheme dump to the user's OWN top-level bindings** (0.1.0
+beginner-UX change — it used to dump the whole ~120-line prelude `=== TYPES ===` corpus ahead
+of your own). **`--types` restores the full dump**, prelude schemes included — reach for it
+when you need to see what a prelude method (e.g. `pure`/`when`) actually infers to.
 
 When **writing** a diagnostic, follow `compiler/ERROR-QUALITY.md` (the rubric) and add the
 code to `compiler/DIAGNOSTIC-CODES-DESIGN.md`.
@@ -629,6 +669,9 @@ pipeline stage against goldens in `test/*_fixtures/` or `test/*_goldens/`.
 1. Add a fixture to the appropriate `test/` fixture directory (⚠️ first read the
    shared-corpus trap above).
 2. Capture a golden: `bash test/capture_goldens.sh`, or the specific gate with `CAPTURE=1`.
+   Narrower forms: `sh test/capture_goldens.sh <suffix-tag>` (e.g. `eval`) recaptures only
+   that family; `sh test/capture_goldens.sh --check` dry-runs — re-derives and diffs against
+   the committed goldens without writing anything.
 3. Verify: `bash test/diff_compiler_<name>.sh` passes.
 
 Add cases to the gate matching the stage you changed (parser change →

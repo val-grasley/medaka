@@ -1,0 +1,71 @@
+-- | In-language tests for two SQLite-semantics behaviours added to lib.select:
+--   (1) arithmetic COERCES a TEXT/BLOB operand to a number, and
+--   (2) the implicit `rowid` column (aliases `_rowid_` / `oid`) is addressable.
+--
+-- These run under the INTERPRETER (`medaka test`), so they pin the eval engine —
+-- complementing sqlite/test/sql_oracle.sh, which byte-diffs the NATIVE build
+-- against the real sqlite3 CLI.  Every expected value below is what sqlite3
+-- returns for the same query (verified in that oracle).
+--
+-- Run: `medaka test sqlite/test/arith_rowid_test.mdk` from the sqlite root.
+
+import test.{expectEqual, expectAll}
+import test.dbfix.{q}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat}
+
+-- ── (1) TEXT → numeric coercion in arithmetic ──────────────────────────────
+-- Longest leading numeric prefix; 0 when there is none.  Result is INTEGER
+-- unless the prefix carries a '.' or a valid exponent (then REAL).
+test "text arith: leading numeric prefix, 0 when none" = expectEqual
+  (q "SELECT '5' + 2, '5abc' + 2, 'abc' + 2, '' + 2 FROM users WHERE id = 1")
+  (Ok [[CInt 7, CInt 7, CInt 2, CInt 2]])
+
+test "text arith: leading spaces / sign / leading zeros" = expectEqual
+  (q "SELECT '  5' + 2, '+7' + 0, '007' + 0 FROM users WHERE id = 1")
+  (Ok [[CInt 7, CInt 7, CInt 7]])
+
+test "text arith: dangling exponent stops, hex is just its leading 0" = expectEqual
+  (q "SELECT '5e' + 0, '0x10' + 2 FROM users WHERE id = 1")
+  (Ok [[CInt 5, CInt 2]])
+
+test "text arith: a real-shaped prefix yields a Float" = expectAll
+  [
+    expectEqual (q "SELECT '3.5' * 2 FROM users WHERE id = 1") (Ok [[CFloat 7.0]]),
+    expectEqual (q "SELECT '3.5' + '2.5' FROM users WHERE id = 1") (Ok [[CFloat 6.0]]),
+    expectEqual (q "SELECT '1e3' + 0 FROM users WHERE id = 1") (Ok [[CFloat 1000.0]]),
+  ]
+
+-- A TEXT COLUMN with no numeric prefix coerces to 0 in every row.
+test "text arith: a non-numeric TEXT column coerces to 0" = expectEqual
+  (q "SELECT name + 0 FROM users ORDER BY id")
+  (Ok [[CInt 0], [CInt 0], [CInt 0], [CInt 0], [CInt 0]])
+
+-- NULL still propagates through arithmetic (checked BEFORE any coercion).
+test "text arith: NULL propagates, not coerced to 0" = expectEqual
+  (q "SELECT NULL + '5', '5' + NULL FROM users WHERE id = 1")
+  (Ok [[CNull, CNull]])
+
+-- ── (2) the implicit rowid column ──────────────────────────────────────────
+-- users.id is an INTEGER PRIMARY KEY, so rowid == id and its cell holds the
+-- rowid value; rowid / _rowid_ / oid are interchangeable spellings.
+test "rowid resolves to the IPK column" = expectEqual
+  (q "SELECT rowid, name FROM users ORDER BY rowid DESC")
+  (Ok
+    [
+      [CInt 5, CText "Eve"],
+      [CInt 4, CText "Dave"],
+      [CInt 3, CText "Carol"],
+      [CInt 2, CText "Bob"],
+      [CInt 1, CText "Alice"],
+    ])
+
+test "rowid in WHERE, and its _rowid_ / oid aliases agree" = expectAll
+  [
+    expectEqual (q "SELECT name FROM users WHERE rowid = 2") (Ok [[CText "Bob"]]),
+    expectEqual (q "SELECT name FROM users WHERE _rowid_ > 3 ORDER BY oid") (Ok [[CText "Dave"], [CText "Eve"]]),
+  ]
+
+-- A real column literally named `oid` (orders' primary key) still resolves to
+-- itself — a real column shadows the rowid alias, exactly like SQLite.
+test "a real column named oid wins over the alias" =
+  expectEqual (q "SELECT oid FROM orders WHERE _rowid_ = 11") (Ok [[CInt 11]])
