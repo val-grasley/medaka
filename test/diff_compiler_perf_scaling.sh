@@ -88,11 +88,13 @@
 # tab-delimited 5th column) has NONE of that noise — so it needs no heap-pin, no
 # min-of-K, and crucially no 200ms floor. Its unique payoff is the SMALL front-end
 # stages: `mark` (and desugar/exhaust-guards) sit under the floor on EVERY shape, so
-# the TIME arm grades them NOWHERE, while OP grades them from a single run. Same
-# sustained-both-doublings rule; same promote-an-alloc-ok-to-fail-never-downgrade
-# discipline (the SUPERLINEAR (OPS) branch sits after the alloc and time failures). See
-# grade_op_stage, stage_ops, OP_STAGES, the KNOWN_SLOW_OPS ledger, and the `marksweep`
-# money-shot.
+# the TIME arm grades them NOWHERE, while OP grades them from a single run — in fact
+# from the SAME deterministic wasm-off run the alloc arm already makes each size, so it
+# adds ZERO profiler invocations (see profile_run/ops_from). Same sustained-both-
+# doublings rule; same promote-an-alloc-ok-to-fail-never-downgrade discipline (the
+# SUPERLINEAR (OPS) branch sits after the alloc and time failures). See grade_op_stage,
+# ops_from, OP_STAGES, the KNOWN_SLOW_OPS ledger, and the `marksweep` money-shot (an
+# OP-ONLY shape — its TIME min-of-K arm is skipped).
 #
 # MEASURED MARGIN (this box, 3 independent batches, pinned, min-of-5), the
 # `xref` shape's gated stages on a CORRECT compiler:
@@ -491,12 +493,14 @@ gen_xref() {
 # exactly why it reads "ok" on a correct compiler.
 #
 # WHY IT IS THE MONEY-SHOT: `mark`'s absolute time is ~30-95 ms here — FAR under the
-# 200ms TIME_FLOOR at every N — so the TIME arm SKIPs `mark` and provides ZERO coverage
-# of it; the deterministic OP arm grades it (r2 ~1.8) from a single run. And because the
-# pool GROWS with N, a marker quadratic (e.g. a regression making `contains` scan the
-# tail redundantly) turns each scan into O(pool^2) => the op ratio jumps toward 4.0 and
-# the OP arm FAILs, while `mark`'s absolute time at the smaller N is still under the
-# floor. That is coverage TIME structurally cannot give.
+# 200ms TIME_FLOOR at every N — so the TIME arm would SKIP `mark` and provide ZERO
+# coverage of it; the deterministic OP arm grades it (r2 ~1.8) from a single run. This
+# shape is therefore run OP-ONLY (its TIME min-of-K arm is skipped in the loop — it
+# would grade nothing but cost ~K runs per size), so its op grade rides the shared
+# deterministic run. And because the pool GROWS with N, a marker quadratic (e.g. a
+# regression making `contains` scan the tail redundantly) turns each scan into
+# O(pool^2) => the op ratio jumps toward 4.0 and the OP arm FAILs on a stage the TIME
+# arm structurally cannot grade at these sizes.
 #
 # Sites (S) and refs-per-site (R) are sized so S*R (~4000) out-scales the ~125k fixed
 # prelude-marking op constant enough for a clean linear read, while keeping `mark` time
@@ -615,6 +619,35 @@ alloc_of_modules() {
     | awk '/^\[perf\] total/ { gsub(/MB/,"",$4); print $4; exit }'
 }
 
+# ── ONE run, TWO deterministic arms (alloc + op) — the shared per-shape run ────
+#
+# The ALLOC and OP arms are BOTH deterministic and BOTH read the SAME wasm-off
+# `MEDAKA_PERF=1` profiler run: allocation from the `total` line, op-counts from every
+# stage line's tab-delimited 5th column (emitPhaseAO). So the loop runs the profiler
+# ONCE per size, captures the full [perf] output, and derives both from it — the op
+# arm costs ZERO extra invocations (it used to call a separate `stage_ops` run 3× per
+# shape). `env -u MEDAKA_PERF_WASM` is identical to alloc_of's command, so the alloc
+# numbers are byte-unchanged by this sharing.
+#
+# profile_run: emit the full [perf] output of one wasm-off run to stdout.
+profile_run() {
+  env -u MEDAKA_PERF_WASM MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$1" 2>&1
+}
+
+# alloc_from: total allocated MB, from a saved profile_run output. Same awk as alloc_of.
+alloc_from() {
+  awk '/^\[perf\] total/ { gsub(/MB/,"",$4); print $4; exit }' "$1"
+}
+
+# ops_from: one "<stage> <opDelta>" line per stage, from a saved profile_run output.
+# ⚠️ PARSE WITH awk -F'\t' AND READ FIELD 5. The profiler line is
+#     [perf] <label>\t<t>s\t<MB>MB\t<ops>\t<opDelta>
+# and the <ops> field (tab-field 4) is FREE-FORM with embedded spaces ("N decls"), so a
+# whitespace split lands inside it and reads garbage. See support/timer.mdk:emitPhaseAO.
+ops_from() {
+  awk -F'\t' '/^\[perf\] / { split($1, a, " "); print a[2], $5 }' "$1"
+}
+
 # ⚠️ THE BASELINE MUST BE SUBTRACTED, OR THIS GATE IS BLIND.
 #
 # Every run pays a FIXED cost that has nothing to do with N: parsing and checking
@@ -699,19 +732,10 @@ stage_times_min_modules() {
 # exhaust-guards) that TIME physically cannot, because it is never contaminated by
 # runner noise and so needs no 200ms floor to protect it.
 #
-# Emits one "<stage> <opDelta>" line per stage.
-#
-# ⚠️ PARSE WITH awk -F'\t' AND READ FIELD 5. The profiler line is
-#     [perf] <label>\t<t>s\t<MB>MB\t<ops>\t<opDelta>
-# and the <ops> field (tab-field 4) is FREE-FORM with embedded spaces ("N decls"),
-# so a whitespace split lands inside it and reads garbage. See
-# support/timer.mdk:emitPhaseAO. The op count is independent of MEDAKA_PERF_WASM, so
-# unset it (as alloc_of does) to avoid paying for WAT rendering we never read.
-stage_ops() {
-  fixture="$1"
-  env -u MEDAKA_PERF_WASM MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$fixture" 2>&1 \
-    | awk -F'\t' '/^\[perf\] / { split($1, a, " "); print a[2], $5 }'
-}
+# The per-stage op deltas are extracted (ops_from) from the SAME wasm-off run the ALLOC
+# arm already makes each size — see the profile_run/alloc_from/ops_from block above.
+# There is deliberately no separate op-sampling invocation: both arms are deterministic
+# and share one run, so op-grading adds ZERO profiler invocations per shape.
 
 # Stages to grade. `parse-prelude` is the FIXED one-time cost of runtime+core and
 # does not scale with N, so grading it is meaningless; `total` is a sum and rule 1
@@ -1422,9 +1446,11 @@ printf -- '---------------------------------------------------------------------
 # rather than quietly running a smaller set — a gate that narrows its own scope in
 # silence reads as full coverage, which is the failure this suite is built against.
 # `marksweep` (issue #884) is the op arm's money-shot: it grades `mark`, which every
-# other shape leaves under the 200ms TIME_FLOOR so the TIME arm never grades it. It
-# rides the normal loop at the default N so the same row shows `mark` SKIPped on TIME
-# and graded on OP side by side.
+# other shape leaves under the 200ms TIME_FLOOR so the TIME arm never grades it. It runs
+# at the default N and is OP-ONLY — its TIME min-of-K arm is skipped (it exists FOR the
+# op arm, and `mark` is under the floor on every shape anyway), so per-PR it costs only
+# the 3 shared deterministic runs. That every other shape's rows show `time mark: SKIP`
+# is the standing proof that TIME grades `mark` nowhere.
 SHAPES="bindings match listlit nesting xref comments marksweep"
 if [ "$PERF_DEEP" = "1" ]; then
   SHAPES="$SHAPES manydefs"
@@ -1450,7 +1476,13 @@ for shape in $SHAPES; do
   "gen_$shape" "$n2" "$f2"
   "gen_$shape" "$n3" "$f3"
 
-  a1="$(alloc_of "$f1")"; a2="$(alloc_of "$f2")"; a3="$(alloc_of "$f3")"
+  # ONE deterministic wasm-off run per size, saved whole — it feeds BOTH the alloc arm
+  # (total line) and the op arm (per-stage 5th column). The op arm makes NO run of its
+  # own (issue #884 cost fix); the command is identical to alloc_of's, so the alloc
+  # numbers below are byte-unchanged by the sharing.
+  R1="$WORK/${shape}_run1"; R2="$WORK/${shape}_run2"; R3="$WORK/${shape}_run3"
+  profile_run "$f1" > "$R1"; profile_run "$f2" > "$R2"; profile_run "$f3" > "$R3"
+  a1="$(alloc_from "$R1")"; a2="$(alloc_from "$R2")"; a3="$(alloc_from "$R3")"
 
   # A shape that produces no measurement is a HARNESS failure, not a pass. Never
   # let "I could not measure it" read as "it is fine" — that is the silent-green
@@ -1462,47 +1494,55 @@ for shape in $SHAPES; do
   # ── TIME verdict: PER STAGE, heap-pinned, min-of-K, floor-guarded ──────────
   # Computed BEFORE the allocation branch below so it can promote an allocation
   # "ok" to a failure — never the reverse.
-  #
-  # These are written to files rather than shell vars because there is one line
-  # per stage per size and sh has no arrays.
-  TF1="$WORK/${shape}_t1"; TF2="$WORK/${shape}_t2"; TF3="$WORK/${shape}_t3"
-  # `match` is the ONLY shape whose wasm row rides the main pass — its band is the
-  # shape's band and the stage is ~0.3 s there. Every other shape runs the main pass
-  # with wasm OFF: xref grades it on its own smaller band (grade_wasm_row), and the
-  # rest do not grade it at all because on them it only ever times the prelude.
-  # A shape's wasm row rides the main pass when its own band IS the wasm band —
-  # `match` always (250/500/1000), and `xref` in QUICK, where XREF_N == XREF_WASM_N.
-  # In DEEP, xref's band is resolve's, so its wasm row needs the separate smaller-band
-  # pass instead (grade_wasm_row).
-  case "$shape" in
-    match) main_wasm=1 ;;
-    xref)  [ "$XREF_N" = "$XREF_WASM_N" ] && main_wasm=1 || main_wasm=0 ;;
-    *)     main_wasm=0 ;;
-  esac
-  stage_times_min "$f1" "$PERF_K" "$main_wasm" | sort > "$TF1"
-  stage_times_min "$f2" "$PERF_K" "$main_wasm" | sort > "$TF2"
-  stage_times_min "$f3" "$PERF_K" "$main_wasm" | sort > "$TF3"
-
   time_bad=0
   time_lines=""
-  for st in $TIME_STAGES; do
-    grade_time_stage "$shape" "$st" \
-      "$(awk -v s="$st" '$1==s{print $2}' "$TF1")" \
-      "$(awk -v s="$st" '$1==s{print $2}' "$TF2")" \
-      "$(awk -v s="$st" '$1==s{print $2}' "$TF3")" \
-      "$n1" "$n2" "$n3"
-  done
-  grade_wasm_row "$shape" "$n1" "$n2" "$n3"
+  # ⚠️ `marksweep` is an OP-ONLY shape (issue #884): it exists to op-grade `mark`,
+  # which sits UNDER the 200ms floor on every shape, so the TIME min-of-K arm would
+  # grade nothing on it while paying ~K timing runs per size. Skip that arm entirely —
+  # its op grading rides the shared runs above — so it costs the 3 shared runs, not
+  # 3 + 3*K. Every OTHER shape still runs the full TIME arm.
+  if [ "$shape" = "marksweep" ]; then
+    time_lines="           time: (OP-ONLY shape — TIME min-of-K arm skipped, #884 cost fix. mark is under the ${TIME_FLOOR}s floor on every shape, so TIME grades it nowhere; the op arm below is mark's coverage.)
+"
+  else
+    # These are written to files rather than shell vars because there is one line
+    # per stage per size and sh has no arrays.
+    TF1="$WORK/${shape}_t1"; TF2="$WORK/${shape}_t2"; TF3="$WORK/${shape}_t3"
+    # `match` is the ONLY shape whose wasm row rides the main pass — its band is the
+    # shape's band and the stage is ~0.3 s there. Every other shape runs the main pass
+    # with wasm OFF: xref grades it on its own smaller band (grade_wasm_row), and the
+    # rest do not grade it at all because on them it only ever times the prelude.
+    # A shape's wasm row rides the main pass when its own band IS the wasm band —
+    # `match` always (250/500/1000), and `xref` in QUICK, where XREF_N == XREF_WASM_N.
+    # In DEEP, xref's band is resolve's, so its wasm row needs the separate smaller-band
+    # pass instead (grade_wasm_row).
+    case "$shape" in
+      match) main_wasm=1 ;;
+      xref)  [ "$XREF_N" = "$XREF_WASM_N" ] && main_wasm=1 || main_wasm=0 ;;
+      *)     main_wasm=0 ;;
+    esac
+    stage_times_min "$f1" "$PERF_K" "$main_wasm" | sort > "$TF1"
+    stage_times_min "$f2" "$PERF_K" "$main_wasm" | sort > "$TF2"
+    stage_times_min "$f3" "$PERF_K" "$main_wasm" | sort > "$TF3"
+    for st in $TIME_STAGES; do
+      grade_time_stage "$shape" "$st" \
+        "$(awk -v s="$st" '$1==s{print $2}' "$TF1")" \
+        "$(awk -v s="$st" '$1==s{print $2}' "$TF2")" \
+        "$(awk -v s="$st" '$1==s{print $2}' "$TF3")" \
+        "$n1" "$n2" "$n3"
+    done
+    grade_wasm_row "$shape" "$n1" "$n2" "$n3"
+  fi
 
-  # ── OP verdict: PER STAGE, deterministic, single run (issue #884) ──────────
-  # No min-of-K, no heap pin, no floor — the op counter is noise-free (see stage_ops).
+  # ── OP verdict: PER STAGE, deterministic — reads the op column of the shared runs
+  # (issue #884). No min-of-K, no heap pin, no floor (the op counter is noise-free).
   # Computed alongside TIME so it, too, can only PROMOTE an allocation "ok" to a
   # failure, never downgrade one (the SUPERLINEAR (OPS) branch below sits after the
   # alloc and time failures).
   OF1="$WORK/${shape}_op1"; OF2="$WORK/${shape}_op2"; OF3="$WORK/${shape}_op3"
-  stage_ops "$f1" | sort > "$OF1"
-  stage_ops "$f2" | sort > "$OF2"
-  stage_ops "$f3" | sort > "$OF3"
+  ops_from "$R1" | sort > "$OF1"
+  ops_from "$R2" | sort > "$OF2"
+  ops_from "$R3" | sort > "$OF3"
   op_bad=0
   op_lines=""
   for st in $OP_STAGES; do
