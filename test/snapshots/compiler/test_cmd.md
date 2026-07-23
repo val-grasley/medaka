@@ -1,5 +1,5 @@
 # META
-source_lines=572
+source_lines=586
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/test_cmd.mdk — `medaka test` logic (doctests + property tests),
@@ -35,7 +35,7 @@ stages=DESUGAR,MARK
 -- resolve.  Neither path calls the flat elaborateDict/evalProgram anymore.
 
 import frontend.ast.{Decl, DData, DInterface, Expr}
-import frontend.parser.{parse, parseLocated}
+import frontend.parser.{parse, parseLocated, parseResult}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram, entrySearchRoots}
 import driver.build_cmd.{readPreludeFile}
@@ -74,6 +74,7 @@ import driver.diagnostics.{
   analyzeLocated,
   readDiagSrc,
   ppDiagCliSrc,
+  parseErrDiag,
   Diag,
   diagIsError,
 }
@@ -103,13 +104,26 @@ runTest runtimeP coreP target roots = match readPreludeFile runtimeP
       Err e =>
         let _ = ePutStrLn e
         False
-      Ok tsrc =>
-        let userDecls = desugar (parse tsrc)
-        match doctestGate target roots rsrc csrc tsrc userDecls
-          Some errText =>
-            let _ = ePutStrLn (typecheckGateFail target errText)
-            False
-          None => driveAll (desugar (parse rsrc)) (desugar (parse csrc)) target tsrc roots
+      -- A FILE-LEVEL parse error in the target must surface as the SAME located
+      -- `file:L:C:` diagnostic `medaka check` prints — not the unlocated
+      -- `panic "parse error"` the bare `desugar (parse tsrc)` below would raise
+      -- (issue #892).  Route through the non-panicking `parseResult` first (the
+      -- exact gate `check` uses) and, on failure, render the structured
+      -- `ParseError` through the shared `parseErrDiag`/`ppDiagCliSrc` machinery,
+      -- returning False so the caller exits nonzero — accumulate-and-report, not
+      -- panic.  (Issue #55 fixed parse errors in an individual doctest EXAMPLE;
+      -- this covers a parse error in the module SOURCE itself.)
+      Ok tsrc => match parseResult tsrc
+        Err e =>
+          let _ = ePutStrLn (ppDiagCliSrc tsrc target (parseErrDiag target e))
+          False
+        Ok _ =>
+          let userDecls = desugar (parse tsrc)
+          match doctestGate target roots rsrc csrc tsrc userDecls
+            Some errText =>
+              let _ = ePutStrLn (typecheckGateFail target errText)
+              False
+            None => driveAll (desugar (parse rsrc)) (desugar (parse csrc)) target tsrc roots
 
 -- ── doctest typecheck gate (issue #260) ──────────────────────────────────────
 -- `medaka test` used to GREEN-LIGHT a module whose DOCTESTS `medaka check`
@@ -576,7 +590,7 @@ propsReportMulti runtimeDecls coreDecls target userDecls roots = match loadProgr
     runAllPropsResults env rootProps
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "DData" false) (mem "DInterface" false) (mem "Expr" false))))
-(DUse false (UseGroup ("frontend" "parser") ((mem "parse" false) (mem "parseLocated" false))))
+(DUse false (UseGroup ("frontend" "parser") ((mem "parse" false) (mem "parseLocated" false) (mem "parseResult" false))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("driver" "loader") ((mem "loadProgram" false) (mem "entrySearchRoots" false))))
 (DUse false (UseGroup ("driver" "build_cmd") ((mem "readPreludeFile" false))))
@@ -586,14 +600,14 @@ propsReportMulti runtimeDecls coreDecls target userDecls roots = match loadProgr
 (DUse false (UseGroup ("tools" "doctest") ((mem "Example" false) (mem "ExResult" true) (mem "RunResult" true) (mem "extractExamples" false) (mem "buildSynthResults" false) (mem "buildSynthDecls" false) (mem "buildDetails" false) (mem "hasUseDecls" false) (mem "runDetails" false) (mem "runPassed" false) (mem "runFailed" false) (mem "runErrors" false) (mem "exampleInput" false) (mem "exampleLine" false) (mem "synthName" false))))
 (DUse false (UseGroup ("tools" "prop_runner") ((mem "runAllProps" false) (mem "hasProps" false) (mem "runAllPropsResults" false) (mem "PropResult" false))))
 (DUse false (UseGroup ("tools" "test_runner") ((mem "collectTests" false) (mem "runOneTest" false) (mem "hasTests" false))))
-(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "readDiagSrc" false) (mem "ppDiagCliSrc" false) (mem "Diag" false) (mem "diagIsError" false))))
+(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "readDiagSrc" false) (mem "ppDiagCliSrc" false) (mem "parseErrDiag" false) (mem "Diag" false) (mem "diagIsError" false))))
 (DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "joinNl" false))))
 (DUse false (UseGroup ("support" "path") ((mem "dirOf" false))))
 (DTypeSig true "rootsOrDefault" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "rootsOrDefault" ((PVar "target") (PList)) (EListLit (EApp (EVar "dirOf") (EVar "target"))))
 (DFunDef false "rootsOrDefault" (PWild (PVar "roots")) (EVar "roots"))
 (DTypeSig true "runTest" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Bool")))))))
-(DFunDef false "runTest" ((PVar "runtimeP") (PVar "coreP") (PVar "target") (PVar "roots")) (EMatch (EApp (EVar "readPreludeFile") (EVar "runtimeP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "coreP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "csrc")) () (EMatch (EApp (EVar "readFile") (EVar "target")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "tsrc")) () (EBlock (DoLet false false (PVar "userDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "tsrc")))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "doctestGate") (EVar "target")) (EVar "roots")) (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "userDecls")) (arm (PCon "Some" (PVar "errText")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EApp (EApp (EVar "typecheckGateFail") (EVar "target")) (EVar "errText")))) (DoExpr (EVar "False")))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EApp (EVar "driveAll") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (EVar "target")) (EVar "tsrc")) (EVar "roots")))))))))))))
+(DFunDef false "runTest" ((PVar "runtimeP") (PVar "coreP") (PVar "target") (PVar "roots")) (EMatch (EApp (EVar "readPreludeFile") (EVar "runtimeP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "coreP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "csrc")) () (EMatch (EApp (EVar "readFile") (EVar "target")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "tsrc")) () (EMatch (EApp (EVar "parseResult") (EVar "tsrc")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EApp (EApp (EApp (EVar "ppDiagCliSrc") (EVar "tsrc")) (EVar "target")) (EApp (EApp (EVar "parseErrDiag") (EVar "target")) (EVar "e"))))) (DoExpr (EVar "False")))) (arm (PCon "Ok" PWild) () (EBlock (DoLet false false (PVar "userDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "tsrc")))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "doctestGate") (EVar "target")) (EVar "roots")) (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "userDecls")) (arm (PCon "Some" (PVar "errText")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EApp (EApp (EVar "typecheckGateFail") (EVar "target")) (EVar "errText")))) (DoExpr (EVar "False")))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EApp (EVar "driveAll") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (EVar "target")) (EVar "tsrc")) (EVar "roots")))))))))))))))
 (DTypeSig false "doctestGate" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyApp (TyCon "Option") (TyCon "String"))))))))))
 (DFunDef false "doctestGate" ((PVar "target") (PVar "roots") (PVar "rsrc") (PVar "csrc") (PVar "tsrc") (PVar "userDecls")) (EMatch (EApp (EVar "extractExamples") (EApp (EVar "collectComments") (EVar "tsrc"))) (arm (PList) () (EVar "None")) (arm PWild () (EApp (EApp (EApp (EApp (EApp (EApp (EVar "typecheckErrors") (EVar "target")) (EVar "roots")) (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "userDecls")))))
 (DTypeSig false "typecheckErrors" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyApp (TyCon "Option") (TyCon "String"))))))))))
@@ -691,7 +705,7 @@ propsReportMulti runtimeDecls coreDecls target userDecls roots = match loadProgr
 (DFunDef false "propsReportMulti" ((PVar "runtimeDecls") (PVar "coreDecls") (PVar "target") (PVar "userDecls") (PVar "roots")) (EMatch (EApp (EApp (EVar "loadProgram") (EVar "target")) (EVar "roots")) (arm (PCon "Err" PWild) () (EListLit)) (arm (PCon "Ok" (PVar "mods")) () (EBlock (DoLet false false (PVar "elaborated") (EApp (EApp (EApp (EVar "elaborateModules") (EVar "runtimeDecls")) (EVar "coreDecls")) (EApp (EApp (EVar "map") (EVar "desugarPair")) (EVar "mods")))) (DoLet false false (PVar "env") (EApp (EApp (EApp (EVar "evalModulesRootEnvWith") (EApp (EVar "testCapableExterns") (ELit LUnit))) (EApp (EVar "fst") (EVar "elaborated"))) (EApp (EVar "snd") (EVar "elaborated")))) (DoLet false false (PVar "rootProps") (EApp (EApp (EApp (EVar "elaboratedRootProps") (EVar "target")) (EApp (EVar "snd") (EVar "elaborated"))) (EVar "userDecls"))) (DoExpr (EApp (EApp (EVar "runAllPropsResults") (EVar "env")) (EVar "rootProps")))))))
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "DData" false) (mem "DInterface" false) (mem "Expr" false))))
-(DUse false (UseGroup ("frontend" "parser") ((mem "parse" false) (mem "parseLocated" false))))
+(DUse false (UseGroup ("frontend" "parser") ((mem "parse" false) (mem "parseLocated" false) (mem "parseResult" false))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("driver" "loader") ((mem "loadProgram" false) (mem "entrySearchRoots" false))))
 (DUse false (UseGroup ("driver" "build_cmd") ((mem "readPreludeFile" false))))
@@ -701,14 +715,14 @@ propsReportMulti runtimeDecls coreDecls target userDecls roots = match loadProgr
 (DUse false (UseGroup ("tools" "doctest") ((mem "Example" false) (mem "ExResult" true) (mem "RunResult" true) (mem "extractExamples" false) (mem "buildSynthResults" false) (mem "buildSynthDecls" false) (mem "buildDetails" false) (mem "hasUseDecls" false) (mem "runDetails" false) (mem "runPassed" false) (mem "runFailed" false) (mem "runErrors" false) (mem "exampleInput" false) (mem "exampleLine" false) (mem "synthName" false))))
 (DUse false (UseGroup ("tools" "prop_runner") ((mem "runAllProps" false) (mem "hasProps" false) (mem "runAllPropsResults" false) (mem "PropResult" false))))
 (DUse false (UseGroup ("tools" "test_runner") ((mem "collectTests" false) (mem "runOneTest" false) (mem "hasTests" false))))
-(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "readDiagSrc" false) (mem "ppDiagCliSrc" false) (mem "Diag" false) (mem "diagIsError" false))))
+(DUse false (UseGroup ("driver" "diagnostics") ((mem "analyzeProject" false) (mem "analyzeLocated" false) (mem "readDiagSrc" false) (mem "ppDiagCliSrc" false) (mem "parseErrDiag" false) (mem "Diag" false) (mem "diagIsError" false))))
 (DUse false (UseGroup ("support" "util") ((mem "listLen" false) (mem "joinNl" false))))
 (DUse false (UseGroup ("support" "path") ((mem "dirOf" false))))
 (DTypeSig true "rootsOrDefault" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "rootsOrDefault" ((PVar "target") (PList)) (EListLit (EApp (EVar "dirOf") (EVar "target"))))
 (DFunDef false "rootsOrDefault" (PWild (PVar "roots")) (EVar "roots"))
 (DTypeSig true "runTest" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Bool")))))))
-(DFunDef false "runTest" ((PVar "runtimeP") (PVar "coreP") (PVar "target") (PVar "roots")) (EMatch (EApp (EVar "readPreludeFile") (EVar "runtimeP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "coreP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "csrc")) () (EMatch (EApp (EVar "readFile") (EVar "target")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "tsrc")) () (EBlock (DoLet false false (PVar "userDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "tsrc")))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "doctestGate") (EVar "target")) (EVar "roots")) (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "userDecls")) (arm (PCon "Some" (PVar "errText")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EApp (EApp (EVar "typecheckGateFail") (EVar "target")) (EVar "errText")))) (DoExpr (EVar "False")))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EApp (EVar "driveAll") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (EVar "target")) (EVar "tsrc")) (EVar "roots")))))))))))))
+(DFunDef false "runTest" ((PVar "runtimeP") (PVar "coreP") (PVar "target") (PVar "roots")) (EMatch (EApp (EVar "readPreludeFile") (EVar "runtimeP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "rsrc")) () (EMatch (EApp (EVar "readPreludeFile") (EVar "coreP")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "csrc")) () (EMatch (EApp (EVar "readFile") (EVar "target")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EVar "e"))) (DoExpr (EVar "False")))) (arm (PCon "Ok" (PVar "tsrc")) () (EMatch (EApp (EVar "parseResult") (EVar "tsrc")) (arm (PCon "Err" (PVar "e")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EApp (EApp (EApp (EVar "ppDiagCliSrc") (EVar "tsrc")) (EVar "target")) (EApp (EApp (EVar "parseErrDiag") (EVar "target")) (EVar "e"))))) (DoExpr (EVar "False")))) (arm (PCon "Ok" PWild) () (EBlock (DoLet false false (PVar "userDecls") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "tsrc")))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EApp (EApp (EVar "doctestGate") (EVar "target")) (EVar "roots")) (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "userDecls")) (arm (PCon "Some" (PVar "errText")) () (EBlock (DoLet false false PWild (EApp (EVar "ePutStrLn") (EApp (EApp (EVar "typecheckGateFail") (EVar "target")) (EVar "errText")))) (DoExpr (EVar "False")))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EApp (EVar "driveAll") (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "rsrc")))) (EApp (EVar "desugar") (EApp (EVar "parse") (EVar "csrc")))) (EVar "target")) (EVar "tsrc")) (EVar "roots")))))))))))))))
 (DTypeSig false "doctestGate" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyApp (TyCon "Option") (TyCon "String"))))))))))
 (DFunDef false "doctestGate" ((PVar "target") (PVar "roots") (PVar "rsrc") (PVar "csrc") (PVar "tsrc") (PVar "userDecls")) (EMatch (EApp (EVar "extractExamples") (EApp (EVar "collectComments") (EVar "tsrc"))) (arm (PList) () (EVar "None")) (arm PWild () (EApp (EApp (EApp (EApp (EApp (EApp (EVar "typecheckErrors") (EVar "target")) (EVar "roots")) (EVar "rsrc")) (EVar "csrc")) (EVar "tsrc")) (EVar "userDecls")))))
 (DTypeSig false "typecheckErrors" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyEffect ("IO") None (TyApp (TyCon "Option") (TyCon "String"))))))))))

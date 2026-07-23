@@ -231,6 +231,27 @@ else
   fail=$((fail + 1)); printf 'FAIL hash_negative_hash.mdk report mismatch\n  --- expected ---\n%s\n  --- actual ---\n%s\n' "$nh_expected" "$nh_out"
 fi
 
+# Issue #892 (S2): a FILE-LEVEL parse error in the TARGET must surface as the SAME
+# located `file:L:C:` diagnostic `medaka check` prints, on STDERR, not the unlocated
+# `runtime error [E-PANIC]: parse error` panic `medaka test` used to raise (which
+# gave an agent nothing to point at where `check` would have located it exactly).
+# The located diagnostic goes to STDERR, so capture 2>&1 and assert BOTH: the
+# `parse_error.mdk:1:0:` located header is present AND `E-PANIC` is absent — a
+# panic and the fix both exit 1, so the exit code alone can't discriminate; the
+# STDERR CONTENT is the only signal. (#55 fixed a parse error in a doctest EXAMPLE;
+# this is a parse error in the module SOURCE itself.)
+pe="$ROOT/test/compiler_test_fixtures/parse_error.mdk"
+pe_out="$("$RUN" "$RUNTIME" "$CORE" "$pe" "$ROOT/test/compiler_test_fixtures" 2>&1 | sed "s#$ROOT/##g")"
+pe_code=0
+"$RUN" "$RUNTIME" "$CORE" "$pe" "$ROOT/test/compiler_test_fixtures" >/dev/null 2>&1 || pe_code=$?
+if printf '%s' "$pe_out" | grep -qF "test/compiler_test_fixtures/parse_error.mdk:1:0:" \
+  && ! printf '%s' "$pe_out" | grep -qF "E-PANIC" \
+  && [ "$pe_code" -ne 0 ]; then
+  pass=$((pass + 1)); printf 'ok   parse_error.mdk (#892: file-level parse error is LOCATED, not an unlocated panic)\n'
+else
+  fail=$((fail + 1)); printf 'FAIL parse_error.mdk (#892): expected a located file:L:C: diagnostic (no E-PANIC), exit!=0\n  --- actual (exit %d) ---\n%s\n' "$pe_code" "$pe_out"
+fi
+
 fi # scoped
 
 printf '\n%d matched, %d differing\n' "$pass" "$fail"
