@@ -31,6 +31,11 @@
 #          sh test/build_oracles.sh --build-one <entry>       # build exactly one
 #          sh test/build_oracles.sh --for '<gate-pattern>' …  # build only what
 #                                              # those gates read (see #398/#183)
+#                                              # each pattern is its OWN quoted arg:
+#                                              # --for 'a' 'b', not --for 'a b' — a
+#                                              # single whitespace-joined arg IS split
+#                                              # into multiple patterns automatically
+#                                              # (#743), so either form works
 #          sh test/build_oracles.sh --for --list '<gate-pattern>' …
 #                                              # DERIVE ONLY: print the oracle names
 #                                              # a pattern resolves to; build nothing,
@@ -285,6 +290,24 @@ if [ "${1:-}" = "--for" ]; then
   # so it is never treated as a gate-name pattern.
   [ "${1:-}" = "--list" ] && shift
   [ "$#" -gt 0 ] || { echo "usage: $0 --for ['--list'] '<gate-pattern>' ..."; exit 1; }
+  # ── Tolerate a single whitespace-joined pattern string (#743) ────────────────
+  # `--for 'a b'` (one arg, space-joined — the form agents keep getting handed by
+  # a copy-pasted prompt/CI line) used to resolve as ONE literal pattern named
+  # "a b", match no gate file, and fall straight into the "matched no gates"
+  # FAIL below with no clue why. Split every arg on whitespace before matching,
+  # so both `--for 'a' 'b'` and `--for 'a b'` land on the same gate set.
+  # `set -f` (noglob) guards this: an UNQUOTED word-split of a real glob
+  # pattern like 'diff_compiler_parse*' would otherwise let the shell expand
+  # it against $PWD before we ever get to match it against a gate filename.
+  set -f
+  _split=""
+  for _raw in "$@"; do
+    for _w in $_raw; do
+      _split="$_split $_w"
+    done
+  done
+  set -- $_split
+  set +f
   # A pattern resolves against BOTH $ROOT/test/ and $ROOT/ — same rule as
   # run_gates.sh and diff_compiler_ci_shard_coverage.sh, so a shard pattern naming a
   # gate outside test/ (e.g. 'sqlite/test/*_oracle') selects the same gate set in all
@@ -299,7 +322,15 @@ if [ "${1:-}" = "--for" ]; then
       case " $_gates " in *" $_g "*) ;; *) _gates="$_gates $_g" ;; esac
     done
   done
-  [ -n "$_gates" ] || { echo "FAIL: --for matched no gates: $*"; exit 1; }
+  if [ -z "$_gates" ]; then
+    echo "FAIL: --for matched no gates: $*" >&2
+    echo "  hint: each pattern is a SEPARATE quoted arg -- \`--for 'a' 'b'\`, not \`--for 'a b'\`" >&2
+    echo "        (a single whitespace-joined arg IS split automatically now — #743 — so this" >&2
+    echo "        usually means a genuine typo, not that shape)" >&2
+    echo "  example valid gate names: diff_compiler_check, diff_compiler_fmt" >&2
+    echo "  list every gate name a pattern resolves to (builds nothing): $0 --for --list '<pattern>' ..." >&2
+    exit 1
+  fi
   _sel=""
   _foreign=""
   for _g in $_gates; do
