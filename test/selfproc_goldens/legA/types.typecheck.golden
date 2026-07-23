@@ -1135,7 +1135,6 @@ resolveRLocalSites : List Decl -> Map String (List ImplEntry) -> Map String (Lis
 resolveRecMono : String -> Mono -> Route
 resolveSite : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> Unit
 resolveSites : Map String (List ImplEntry) -> Map String (List KeyEntry) -> List String -> List PendingEntry -> Unit
-restorePendingObls : List (String, List String, Ty, Mono, Option Loc) -> Int -> Unit
 retOccsEscape : List Atom -> List (String, List Atom) -> List Atom
 returnPosMethod : List String -> IfaceMethod -> List String
 returnPosMethodNames : List Decl -> List String

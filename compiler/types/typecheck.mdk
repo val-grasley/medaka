@@ -1794,20 +1794,16 @@ driverState = Ref (freshDriverState ())
 -- PERF: the obligation list's length, in O(1).  That list grows with every
 -- constrained occurrence in the program and is NEVER trimmed, yet each top-level
 -- group brackets its inference with a length-before / length-after pair to recover
--- the obligations IT added (they are consed on the front, so `takeFirst` recovers
+-- the obligations IT added (they are consed on the front, so `wWindow` recovers
 -- them).  Measuring that length by walking the list was O(N) over an O(N) list once
 -- per group — O(N²), and the single hottest symbol in the typecheck stage on a large
--- file.  This counter mirrors the list's length exactly; the ONLY mutators of the
--- list are `resetState` (clears both), `pushPendingObl` (extends both), and
--- inferDefaultMethodBody's error rollback (restores both from a snapshot).
+-- file.  #841 ports this channel onto `Windowed` (see `implObls` below): `wPush`,
+-- `resetState` (whole-PerRun re-mint), and `wRestore` (inferDefaultMethodBody's error
+-- rollback) are its only mutators, so the list and its length can no longer drift.
 
--- The one and only way to add an obligation: keeps the length counter in step.
+-- The one and only way to add an obligation.
 pushPendingObl : (String, List String, Ty, Mono, Option Loc) -> Unit
-pushPendingObl obl =
-  let _ = setRef perRun.value.pendingImplObligations (obl::perRun.value.pendingImplObligations.value)
-  setRef
-    perRun.value.pendingImplObligationsN
-    (perRun.value.pendingImplObligationsN.value + 1)
+pushPendingObl obl = wPush perRun.value.implObls obl
 
 -- PLAN.md #11: one entry per source integer literal (ENumLit):
 -- (litVar, fref, n, dref).  [litVar] is the literal's fresh Num-obligated type var;
@@ -1929,19 +1925,20 @@ recordLocalBind name v =
 -- ONLY mutators are its own six ops.  wPush/wReset/wRestore are the sole writers, so
 -- the invariant cannot drift; wMark/wWindow replace the `N0 = …N.value` snapshot +
 -- `takeFirst (…N.value - N0) …value` bracket pattern every channel repeats.  #838 I1
--- ports ONLY `pendingCallObligations`/`pendingCallObligationsN` onto this — see
--- `compiler/types/typecheck.mdk`'s `obls` field below.  `pendingImplObligations` and
--- `pendingDictApps` are deliberately left AS-IS (later increments, #838 §5.1).
+-- ports `pendingCallObligations`/`pendingCallObligationsN` onto this — see
+-- `compiler/types/typecheck.mdk`'s `obls` field below.  #841 ports the remaining two
+-- channels, `pendingImplObligations` and `pendingDictApps`, onto it too — see the
+-- `implObls`/`dictApps` fields below.
 data Windowed a = Windowed { items : Ref (List a), n : Ref Int }
 
 wNew : Unit -> Windowed a
 wNew _ = Windowed { items = Ref [], n = Ref 0 }
 
--- the ONLY reset.  Unused in #838 I1 — `freshPerRun` re-mints `obls` via `wNew`
--- rather than resetting an existing one (per-module reset is a whole-PerRun re-mint
--- here, not a per-field reset), so this call channel never needs a reset-in-place.
--- Kept as part of the `Windowed` API surface for #841/#838's later increments
--- (I4/I5, when `pendingImplObligations`/`pendingDictApps` port onto it too).
+-- the ONLY reset.  Unused — `freshPerRun` re-mints `obls`/`implObls`/`dictApps` via
+-- `wNew` rather than resetting an existing one (per-module reset is a whole-PerRun
+-- re-mint here, not a per-field reset), so none of these channels ever needs a
+-- reset-in-place.  Kept as part of the `Windowed` API surface for a future channel
+-- whose reset lifecycle is narrower than a whole-PerRun re-mint.
 wReset : Windowed a -> Unit
 -- lint-disable-next-line rule-dead-code
 wReset w =
@@ -2089,14 +2086,13 @@ callOblsWindow mark = map oblAsTuple (wWindow perRun.value.obls mark)
 -- impl → a concrete RKey to it; ≥2 → an AmbiguousImpl error.  Recorded from the same
 -- `expanded` (iface, id) pairing inferDictAtFound already builds for recordCallObligations.
 
--- PERF: `pendingDictApps`' length in O(1) — same O(N²)-per-group length scan the call
--- channel had before #838 I1 ported it onto `Windowed` (see `wMark` above).  Mutated
--- ONLY by `resetState` and `pushDictApp`.
+-- PERF: this channel's length in O(1) — same O(N²)-per-group length scan the call
+-- channel had before #838 I1 ported it onto `Windowed` (see `wMark` above).  #841
+-- ports `pendingDictApps` onto `Windowed` too (see `dictApps` below); mutated ONLY
+-- by `resetState` and `pushDictApp`.
 
 pushDictApp : (Ref (List Route), List Mono, List String) -> Unit
-pushDictApp app =
-  let _ = setRef perRun.value.pendingDictApps (app::perRun.value.pendingDictApps.value)
-  setRef perRun.value.pendingDictAppsN (perRun.value.pendingDictAppsN.value + 1)
+pushDictApp app = wPush perRun.value.dictApps app
 
 -- method-level-constraint dict-passing (the reference's res_method_dicts, Phase
 -- 69.x-e).  An interface method whose signature carries a `=>` constraint over a
@@ -2724,11 +2720,12 @@ hadMatchWarnings _ = match driverState.value.matchWarnings.value
 -- resetState clears" == "what PerRun holds" — enforced by the constructor: a new per-module
 -- accumulator cannot be added without appearing in freshPerRun (and thus the reset).  This
 -- is a record OF Refs (fields stay `Ref …`), NOT a record of values: the hot accumulators
--- (pendingSites, typeErrors, pendingImplObligations, activeDictVars, …) are pushed with
+-- (pendingSites, typeErrors, activeDictVars, …) are pushed with
 -- `setRef x (v :: x.value)`, so the field must be a Ref for that to stay one Ref-write — a
--- record of values would rebuild the whole 58-field record on every push.  (`obls`, #838
--- I1, is the one exception: a small `Windowed a` VALUE whose own two fields are Refs —
--- see `wPush` — so pushing through it is still one Ref-write, not a whole-record rebuild.)
+-- record of values would rebuild the whole 58-field record on every push.  (`obls`,
+-- `implObls`, `dictApps` — #838 I1 / #841 — are the exceptions: each a small `Windowed
+-- a` VALUE whose own two fields are Refs — see `wPush` — so pushing through one is
+-- still one Ref-write, not a whole-record rebuild.)
 -- (#158 PR4 extracted shadowHeadCtxRef OUT of here into `Toggles`; its resetState clearing is
 -- preserved by freshToggles being minted in the same resetState — see resetState below.)
 data PerRun = PerRun {
@@ -2752,8 +2749,7 @@ data PerRun = PerRun {
     pendingArithSites : Ref (List (Ref Route, Mono)),
     methodIfaceParamsRef : Ref (OrdMap (String, List String, Ty)),
     registeredIfacesRef : Ref (OrdMap Unit),
-    pendingImplObligations : Ref (List (String, List String, Ty, Mono, Option Loc)),
-    pendingImplObligationsN : Ref Int,
+    implObls : Windowed (String, List String, Ty, Mono, Option Loc),  -- #841: pendingImplObligations/N, ported onto Windowed
     numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route)),
     poisonedVars : Ref (List Int),
     deferrableVarIds : Ref (List Int),  -- #838 I2: QUANTIFIED (forwarded) var ids of every generalized scheme — RULE 2 defers these
@@ -2772,8 +2768,7 @@ data PerRun = PerRun {
     funConstraintIfacesRef : Ref (List (String, List String)),
     currentImportDefinersRef : Ref (List (String, String)),
     currentImportOriginsRef : Ref (List (String, String)),
-    pendingDictApps : Ref (List (Ref (List Route), List Mono, List String)),
-    pendingDictAppsN : Ref Int,
+    dictApps : Windowed (Ref (List Route), List Mono, List String),  -- #841: pendingDictApps/N, ported onto Windowed
     obls : Windowed UObligation,  -- #838 I1: the call channel (pendingCallObligations/N), ported onto Windowed
     schemeObligationsRef : Ref (List ((String, Int), List (String, List Int))),  -- #837: keyed by (binding-name, binding-id) — the id from resolve's
     schemeDefIdsRef : Ref (List (String, Int)),  -- stampBindingIds, so a where-helper `g`'s obligations can no longer leak
@@ -2819,8 +2814,7 @@ freshPerRun _ = PerRun {
   pendingArithSites = Ref [],
   methodIfaceParamsRef = Ref omEmpty,
   registeredIfacesRef = Ref omEmpty,
-  pendingImplObligations = Ref [],
-  pendingImplObligationsN = Ref 0,
+  implObls = wNew (),
   numlitRefs = Ref [],
   poisonedVars = Ref [],
   deferrableVarIds = Ref [],
@@ -2839,8 +2833,7 @@ freshPerRun _ = PerRun {
   funConstraintIfacesRef = Ref [],
   currentImportDefinersRef = Ref [],
   currentImportOriginsRef = Ref [],
-  pendingDictApps = Ref [],
-  pendingDictAppsN = Ref 0,
+  dictApps = wNew (),
   obls = wNew (),
   schemeObligationsRef = Ref [],
   schemeDefIdsRef = Ref [],
@@ -4598,15 +4591,15 @@ blockRecLet : TcEnv -> String -> Expr -> TcEnv
 blockRecLet env x e =
   let _ = checkRecBindNonFunction x e  -- #799
   let _ = enterLevel ()
-  let oblN0 = perRun.value.pendingImplObligationsN.value
+  let oblN0 = wMark perRun.value.implObls
   let callN0 = wMark perRun.value.obls
-  let dictN0 = perRun.value.pendingDictAppsN.value
+  let dictN0 = wMark perRun.value.dictApps
   let placeholder = freshVar ()
   let envSelf = extendLocalVar env x (monoScheme placeholder)
   let t1 = infer envSelf e
   let _ = unify placeholder t1
   let _ = exitLevel ()
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   let _ = defaultAmbiguousNum addedObls t1  -- PLAN.md #11
   let _ = registerAmbiguousConstraints addedObls [t1]  -- RETPOS soundness
   let _ = recordLocalBind x t1  -- LSP hover (block rec-let bypasses inferPat)
@@ -4617,12 +4610,12 @@ blockRecLet env x e =
 blockLet : TcEnv -> Pat -> Expr -> TcEnv
 blockLet env (PVar x) e =
   let _ = enterLevel ()
-  let oblN0 = perRun.value.pendingImplObligationsN.value
+  let oblN0 = wMark perRun.value.implObls
   let callN0 = wMark perRun.value.obls
-  let dictN0 = perRun.value.pendingDictAppsN.value
+  let dictN0 = wMark perRun.value.dictApps
   let t = infer env e
   let _ = exitLevel ()
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   let _ = defaultAmbiguousNum addedObls t   -- PLAN.md #11
   let _ = registerAmbiguousConstraints addedObls [t]   -- RETPOS soundness
   let _ = recordLocalBind x t   -- LSP hover (block let bypasses inferPat)
@@ -7186,15 +7179,15 @@ inferRecLet : TcEnv -> String -> Expr -> Expr -> Mono
 inferRecLet env x e1 e2 =
   let _ = checkRecBindNonFunction x e1  -- #799
   let _ = enterLevel ()
-  let oblN0 = perRun.value.pendingImplObligationsN.value
+  let oblN0 = wMark perRun.value.implObls
   let callN0 = wMark perRun.value.obls
-  let dictN0 = perRun.value.pendingDictAppsN.value
+  let dictN0 = wMark perRun.value.dictApps
   let placeholder = freshVar ()
   let envSelf = extendLocalVar env x (monoScheme placeholder)
   let t1 = infer envSelf e1
   let _ = unify placeholder t1
   let _ = exitLevel ()
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   let _ = defaultAmbiguousNum addedObls t1  -- PLAN.md #11
   let _ = registerAmbiguousConstraints addedObls [t1]  -- RETPOS soundness
   let _ = recordLocalBind x t1  -- LSP hover (recursive PVar let bypasses inferPat)
@@ -7223,7 +7216,7 @@ registerLocalScheme x sch oblN0 callN0 dictN0 =
   -- panicking at run) was the resulting S0.  I2's uniform deferral (checkUndetermined-
   -- Obligation RULE 2, deferrableVarIds) now defers a generalizable var into the
   -- enclosing scheme instead of rejecting, so the gate is safe to flip open.
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   let callOblsDelta = callOblsWindow callN0
   -- #838 I5: the dict-slot's forwarded obligation is ALREADY in callOblsDelta as the
   -- mirroring PCallSlot obligation recorded at inferDictAtFound (recordCallObligations,
@@ -7234,15 +7227,15 @@ registerLocalScheme x sch oblN0 callN0 dictN0 =
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> Mono
 inferLetSimple env pat e1 e2 =
   let _ = enterLevel ()
-  let oblN0 = perRun.value.pendingImplObligationsN.value
+  let oblN0 = wMark perRun.value.implObls
   let callN0 = wMark perRun.value.obls
-  let dictN0 = perRun.value.pendingDictAppsN.value
+  let dictN0 = wMark perRun.value.dictApps
   let t1 = infer env e1
   let _ = exitLevel ()
   -- PLAN.md #11: ground an ambiguous Num-only var before this inner let
   -- generalizes, so `let z = 2 in y + z` (y:Float) is a clean type error and
   -- never leaks an unbound Num var.  Scoped to this binding's new obligations.
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   let _ = defaultAmbiguousNum addedObls t1
   let _ = registerAmbiguousConstraints addedObls [t1]   -- RETPOS soundness
   inferLetBody env pat t1 e1 e2 oblN0 callN0 dictN0
@@ -7938,9 +7931,9 @@ groupNames ((n, _)::rest) seen = match omLookup n seen
 processLetGroup : TcEnv -> List LetBind -> TcEnv
 processLetGroup env binds =
   let _ = enterLevel ()
-  let oblN0 = perRun.value.pendingImplObligationsN.value
+  let oblN0 = wMark perRun.value.implObls
   let callN0 = wMark perRun.value.obls
-  let dictN0 = perRun.value.pendingDictAppsN.value
+  let dictN0 = wMark perRun.value.dictApps
   let placeholders = map letBindPlaceholder binds
   let env2 = extendLocalVars env placeholders
   let _ = inferLetBinds env2 (zipL binds placeholders)
@@ -7948,7 +7941,7 @@ processLetGroup env binds =
   -- PLAN.md #11: ground ambiguous Num-only vars (not arg-reachable from any
   -- where-binding's type) before this group generalizes.  Scoped to this group's
   -- newly added obligations.
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   let _ = defaultGroupNum addedObls (map (p => schemeMono (snd p)) placeholders)
   let _ = registerAmbiguousConstraints addedObls (map (p => schemeMono (snd p)) placeholders)   -- RETPOS soundness
   let genv = generalizeGroup env (zipL binds placeholders)
@@ -8384,7 +8377,7 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = resolveOpSites False implTable keyTable perRun.value.pendingUnopSites.value
   let _ = resolveArithSites perRun.value.pendingArithSites.value
   let _ = realizeRecDictApps perRun.value.pendingRecDictApps.value
-  let _ = resolveDictApps prog2 implTable keyTable perRun.value.pendingDictApps.value
+  let _ = resolveDictApps prog2 implTable keyTable perRun.value.dictApps.items.value
   let _ = resolveMethodDicts implTable keyTable perRun.value.pendingMethodDicts.value
   let _ = resolveArgStamps implTable keyTable perRun.value.pendingArgStamps.value
   dictPass allNames prog2
@@ -11982,7 +11975,7 @@ checkBodyImpl seed mode prog0 =
       let _ = setRef crossRun.value.crossModuleMethodConstraintsQualRef
         (attributeMethodModuleArities mid prog perRun.value.methodConstraintsRef.value ++ crossRun.value.crossModuleMethodConstraintsQualRef.value)
       ()
-  let _ = groundMultiParamObligations groundUniverse perRun.value.pendingImplObligations.value
+  let _ = groundMultiParamObligations groundUniverse perRun.value.implObls.items.value
   -- P0-17: impl missing a required method.  #154 PR1: the Module path looks the required
   -- methods up in the accumulated iface→required map instead of rescanning fullUniverse.
   let _ = match mode
@@ -12000,7 +11993,7 @@ checkBodyImpl seed mode prog0 =
       -- Impl channel = (deferNonGround=True, dedup=False) — retired checkImplObligationsU
       -- semantics: defer non-ground, and check EVERY obligation (no seen skip; S0 #863).
       -- Call channel = (deferNonGround=False, dedup=True): RULE 2/3 + the seen dedup.
-      let _ = checkCallObligations True False fullUniverse (map implOblToU perRun.value.pendingImplObligations.value)
+      let _ = checkCallObligations True False fullUniverse (map implOblToU perRun.value.implObls.items.value)
       let _ = checkCallObligations False True fullUniverse perRun.value.obls.items.value
       let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
       ()
@@ -12019,7 +12012,7 @@ checkBodyImpl seed mode prog0 =
                 -- #838 I4: unified checker, same `obUniv`, same `not implInferEnabled`
                 -- gate and same order relative to setNumlitFloats as the retired checker.
                 -- Impl channel = (deferNonGround=True, dedup=False); call channel = (False, True).
-                let _ = checkCallObligationsU True False obUniv [] (map implOblToU perRun.value.pendingImplObligations.value)
+                let _ = checkCallObligationsU True False obUniv [] (map implOblToU perRun.value.implObls.items.value)
                 setNumlitFloats ()
               else ()
       let _ = checkCallObligationsU False True obUniv [] perRun.value.obls.items.value
@@ -12220,12 +12213,10 @@ inferUserImplBodies env allProg decls =
   -- abstract-var false positives.  A parametric impl over a concrete field (a rarer
   -- nesting) therefore stays deferred to `build` exactly as before — a residual, not a
   -- regression, identical to the ground-only behaviour it replaces.
-  let implObls = perRun.value.pendingImplObligations.value
-  let implOblsN = perRun.value.pendingImplObligationsN.value
+  let implOblsSnap = wSnapshot perRun.value.implObls
   let callSnap = wSnapshot perRun.value.obls
   let _ = inferImplBodies env allProg rpNames (filterList implHeadParametric decls)
-  let _ = setRef perRun.value.pendingImplObligations implObls
-  let _ = setRef perRun.value.pendingImplObligationsN implOblsN
+  let _ = wRestore perRun.value.implObls implOblsSnap
   let _ = wRestore perRun.value.obls callSnap
   let _ = setRef useFastIfaceMethodTy False
   -- The errors pushed DURING inference are the head of the list (consed); savedErrs is
@@ -12334,7 +12325,7 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   let inst = instantiateTracked (fst st)
   -- W3 on the GENERIC default path (adversarial break 1): window this body's
   -- obligations on both channels, exactly as inferImplMethod does.
-  let oblN0 = perRun.value.pendingImplObligationsN.value
+  let oblN0 = wMark perRun.value.implObls
   let callN0 = wMark perRun.value.obls
   let defLoc = orElseLoc (implBodyLoc body) (firstTyConLoc mty)
   let subject = defaultSubject iface mname
@@ -12357,7 +12348,7 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
     checkImplEffVarRigidity subject mty effMap2 False defLoc
   else
     ()
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   let addedCallObls = callOblsWindow callN0
   let _ = checkDefaultMethodRigidity
     iface
@@ -12397,8 +12388,7 @@ inferDefaultMethod _ _ _ _ = ()
 -- spurious `No impl of Num for Bool`.
 inferDefaultMethodBody : String -> String -> Mono -> Option Loc -> TcEnv -> Mono -> List Pat -> Expr -> Mono
 inferDefaultMethodBody mname subject expected2 defLoc env expectedTy pats body =
-  let oblSnapshot = perRun.value.pendingImplObligations.value
-  let oblSnapshotN = perRun.value.pendingImplObligationsN.value
+  let oblSnapshot = wSnapshot perRun.value.implObls
   let errsBefore = listLen perRun.value.typeErrors.value
   let actualTy = inferClauses env [(pats, body)]
   let errsAfter = listLen perRun.value.typeErrors.value
@@ -12414,7 +12404,7 @@ inferDefaultMethodBody mname subject expected2 defLoc env expectedTy pats body =
     let _ = setRef currentMethodMismatch None
     -- mismatch reported ⇒ restore the pre-body obligation list (drop the body's
     -- own added `Num <wrong-type>` cascade, prepended at the front)
-    if listLen perRun.value.typeErrors.value != errsPreUnify then restorePendingObls oblSnapshot oblSnapshotN else ()
+    if listLen perRun.value.typeErrors.value != errsPreUnify then wRestore perRun.value.implObls oblSnapshot else ()
   actualTy
 
 -- the #803 per-arrow intrinsic-atom bound, phrased for a DEFAULT body (the impl
@@ -12423,12 +12413,6 @@ checkDefaultEffectLaunder : String -> Mono -> Mono -> Option Loc -> Unit
 checkDefaultEffectLaunder subject expected actual loc = match arrowLaunderEscape (allArrowEffs expected) (allArrowEffs actual)
   [] => ()
   escaping => pushTypeErrorOnceAt "T-EFFECT-LAUNDER" loc (defaultEffectLaunderMsg subject escaping)
-
--- Restore the obligation list (and its length counter) to a snapshot.
-restorePendingObls : List (String, List String, Ty, Mono, Option Loc) -> Int -> Unit
-restorePendingObls obls n =
-  let _ = setRef perRun.value.pendingImplObligations obls
-  setRef perRun.value.pendingImplObligationsN n
 
 -- ── Error-path B4: missing-impl dispatch-obligation check ──────────────────
 -- Mirror lib/typecheck.ml's check_method_usages (the `No impl of … for …` reject,
@@ -13284,7 +13268,7 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- #518: window this body's newly-added obligations, exactly as processLetGroup /
     -- checkProgramSeeded do for a let-group, so the Num defaulting below is scoped to
     -- THIS method and can never touch an already-generalized outer var.
-    let oblN0 = perRun.value.pendingImplObligationsN.value
+    let oblN0 = wMark perRun.value.implObls
     let callN0 = wMark perRun.value.obls
     -- build the method type's tv map explicitly (instead of expectedMethodType,
     -- which hides it) so the impl method's OWN method-level constraint vars
@@ -13347,7 +13331,7 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- var* rather than a constructed type (`mk d = 42` pins b to a Num-obligated
     -- var, still a TVar) escapes the distinctness check, but its obligation on a
     -- caller-owned var is the same lie — gen-sig's `Q_sig ⊩ P'` on the impl side.
-    let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+    let addedObls = wWindow perRun.value.implObls oblN0
     -- ALSO the CALL-obligation window: a predicate reaching a scheme var through
     -- a constrained HELPER call (`hh : Num x => x -> x`; body `meth d x = hh x`)
     -- is recorded by recordCallObligations, never by recordImplObligation — the
@@ -14444,9 +14428,9 @@ processSCC : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> Lis
 processSCC env sigs grouped members =
   let _ = scopeShadowsForGroup members
   let _ = enterLevel ()
-  let oblN0 = perRun.value.pendingImplObligationsN.value
+  let oblN0 = wMark perRun.value.implObls
   let callN0 = wMark perRun.value.obls
-  let dictN0 = perRun.value.pendingDictAppsN.value
+  let dictN0 = wMark perRun.value.dictApps
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
   let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
@@ -14475,7 +14459,7 @@ processSCC env sigs grouped members =
   -- added obligations (prepended at the front) so an earlier group's already-
   -- generalized var is never touched.  Mirrors lib/typecheck.ml's
   -- process_letrec_group group-level pass + per-binding default_ambiguous_num.
-  let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
+  let addedObls = wWindow perRun.value.implObls oblN0
   -- #23: also ground an ambiguous Num var that reaches this group ONLY through a
   -- constrained-callee instantiation (its Num obligation lives on the call/dict deltas,
   -- not pendingImplObligations).  See numCallObls/numDictObls.  The synthetic entries
@@ -14483,7 +14467,7 @@ processSCC env sigs grouped members =
   -- ambiguous-constraint/scheme-obligation registration below.
   let extraNumObls =
         numCallObls (callOblsWindow callN0)
-        ++ numDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
+        ++ numDictObls (wWindow perRun.value.dictApps dictN0)
   let defaultObls = addedObls ++ extraNumObls
   let _ = defaultGroupNum defaultObls (map snd placeholders)
   let _ = defaultEachMember defaultObls placeholders
@@ -15285,7 +15269,7 @@ ifaceForInferredId m id =
   if direct != "" then direct
   else match lookupSchemeIface m id perRun.value.schemeObligationsRef.value
     Some s => s
-    None => ifaceFromDictApps id perRun.value.pendingDictApps.value
+    None => ifaceFromDictApps id perRun.value.dictApps.items.value
 
 -- #837: keyed by member NAME only (the id here is a SCHEME-VAR id, not a binding
 -- id) — match the name component of the (name, binding-id) key, first match wins.
@@ -15336,7 +15320,7 @@ ifaceAtMonoId id (m::ms) (i::is) = match normalize m
 -- polymorphic head defers regardless of iface, so a blank iface never over-rejects.
 ifaceForConstraintId : Int -> String
 ifaceForConstraintId id =
-  ifaceForConstraintIdGo id perRun.value.pendingImplObligations.value
+  ifaceForConstraintIdGo id perRun.value.implObls.items.value
 
 ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> String
 ifaceForConstraintIdGo _ [] = ""
@@ -17235,7 +17219,7 @@ elabModuleStamp mid seedVars accData implDecls prog =
   let _ = resolveArgStamps stampImplTable stampKeyTable perRun.value.pendingArgStamps.value
   let _ = resolveRLocalSites implDecls stampImplTable stampKeyTable perRun.value.pendingRLocalSites.value
   let _ = realizeRecDictApps perRun.value.pendingRecDictApps.value
-  let _ = resolveDictApps implDecls stampImplTable stampKeyTable perRun.value.pendingDictApps.value
+  let _ = resolveDictApps implDecls stampImplTable stampKeyTable perRun.value.dictApps.items.value
   let _ = resolveMethodDicts stampImplTable stampKeyTable perRun.value.pendingMethodDicts.value
   schemes
 -- DRIVER-COLLAPSE Phase 2: pass the return-position method names (was `[]`) so
