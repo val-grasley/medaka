@@ -1,0 +1,26 @@
+-- #873 (S0, CLOSED by PR #891): a body-local ambiguous Num literal in an
+-- interface-default method was grounded to Int ONLY when the impl providing
+-- that default lives in the SAME module as the interface (the specialized
+-- impl path). `impl T Foo` lives HERE, in a DIFFERENT module from interface T
+-- (tface.mdk), so the default is checked via the generic-default path, which
+-- pre-#891 had no such grounding: the element var of `s [1, 2]` (in T's
+-- default body) stayed unbound, `s` saw a receiver of `List _a`, and the
+-- GENERAL `impl S (List a)` (999) was picked instead of the specific
+-- `impl S (List Int)` (1) — a silent wrong VALUE, `check` green either way,
+-- keyed purely on module placement. See test/eval_typed_modules_fixtures/
+-- default_method_numlit_crossmodule/ for the real-prelude twin of this
+-- fixture; this one runs the same shape through the eval/native/wasm
+-- three-engine differential (test/diff_compiler_engines.sh) and native-only
+-- emit gates (diff_compiler_llvm_modules.sh, selfcompile_emit.sh), which is
+-- why it stays prelude-free (putStrLn/intToString, not println).
+--
+-- Must print 1. A regression to 999 means the generic-default path has again
+-- lost the body-local Num grounding.
+import tface.{T(..), t}
+
+data Foo = Foo
+
+impl T Foo where
+  
+
+main = putStrLn (intToString (t Foo))

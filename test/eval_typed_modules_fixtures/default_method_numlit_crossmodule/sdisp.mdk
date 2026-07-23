@@ -1,0 +1,13 @@
+-- Regression fixture for #873 (fixed by PR #891): an interface-default method
+-- body that consumes an ambiguous Num literal body-locally must be grounded to
+-- Int on BOTH the same-module (impl) path and the cross-module (generic-default)
+-- path. See tface.mdk and main.mdk for the shape that discriminates the two.
+
+export interface S a where
+  s : a -> Int
+
+export impl S (List a) where
+  s _ = 999
+
+export impl S (List Int) where
+  s _ = 1

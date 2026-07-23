@@ -1,0 +1,13 @@
+-- Regression fixture for #873 (fixed by PR #891) — the native/three-engine arm.
+-- See tface.mdk and entry.mdk for the shape that discriminates same-module vs
+-- cross-module default-method checking. PRELUDE-FREE (runtime externs only) —
+-- this corpus is also consumed by diff_compiler_llvm_modules.sh and
+-- selfcompile_emit.sh, both of which pass an EMPTY core.mdk.
+export interface S a where
+  s : a -> Int
+
+export impl S (List a) where
+  s _ = 999
+
+export impl S (List Int) where
+  s _ = 1
