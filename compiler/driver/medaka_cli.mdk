@@ -1299,6 +1299,18 @@ runRunCmd argv =
     [] =>
       let _ = ePutStrLn "usage: medaka run [--release] [--json] <file.mdk>"
       exit 1
+    -- #219: a leading-`-` token `dropFlags` didn't recognize (e.g. `-e`) used
+    -- to fall through as the entry `target`, so the loader rejected it as
+    -- "unknown module: -e" — a message that sends the reader debugging a
+    -- module path for what is actually a typo'd/unsupported flag. Report it
+    -- as a flag error instead, mirroring `runFmtCmd`'s "-"-prefix detection
+    -- (`parseFmtArgs`) and its "unknown flag: <x>" wording. Only the FIRST
+    -- positional is checked — anything after it is the program's own
+    -- passthrough args (ARGS NOTE above), which may legitimately start with
+    -- `-`.
+    target::_ if stringLength target > 0 && stringSlice 0 1 target == "-" =>
+      let _ = ePutStrLn ("medaka run: unknown flag: " ++ target)
+      exit 1
     target::progArgs =>
       let root = envOr "MEDAKA_ROOT" defaultMedakaRoot
       let rtPath = root ++ "/stdlib/runtime.mdk"
