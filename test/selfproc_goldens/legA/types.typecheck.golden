@@ -25,7 +25,6 @@ alignedMethodConstraintIds : String -> List (Int, Mono) -> Option (List Int)
 allArrowEffs : Mono -> List EffRow
 allConcreteHeads : List Mono -> Bool
 allCoreFns : List String -> Bool
-allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
 allEVars : Expr -> List String
 allHeadArgsMatch : List (Ty, Mono) -> Bool
 allIfaceMethodNames : List Decl -> List String
