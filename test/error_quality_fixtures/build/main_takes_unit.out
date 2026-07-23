@@ -2,4 +2,4 @@ cmd: medaka build
 exit: 1
 ---
 error: emitter failed compiling test/error_quality_fixtures/build/main_takes_unit.mdk
-llvm spike: `main` must be a nullary value (main = ...)
+runtime error [E-PANIC]: llvm: 'main' in test/error_quality_fixtures/build/main_takes_unit.mdk must be a zero-arg value: write 'main = …', not 'main () = …' or 'main x = …'. ('medaka run'/'build' never applies main; it forces a zero-arg main for its effects.)
