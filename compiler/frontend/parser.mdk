@@ -3544,13 +3544,19 @@ tokIdxOrNone toks i = if i >= 0 && i < arrayLength toks then Some i else None
 -- — but scanning TOKEN KINDS structurally instead of walking the `Ty` AST, so
 -- #331 stays channel-first (no AST field added; SOURCE-POSITION-DESIGN.md
 -- F2). A `TyCon` can only start at a `TUpper` token (`parseTyAtom`), so the
--- first depth-0 `TUpper` IS the first `TyCon` in source order — no need to
--- walk each `Ty`'s structure separately.  `i` is the index just past the
--- impl's interface name, i.e. where `tyargs <- many parseTyAtom` starts
--- (`implRest`).  Stops (returns `None`) at the depth-0 `requires`/`where`/
--- layout-noise boundary that ends the tyargs region — a fully-parametric head
--- (`impl Foo a where`) has no `TyCon` anywhere in it, so this correctly finds
--- none; the caller then falls back to the `impl` keyword itself.
+-- first `TUpper` IS the first `TyCon` in source order — no need to walk each
+-- `Ty`'s structure separately.  ⚠️ The match is AT ANY PAREN DEPTH, not just
+-- depth 0: `tyFirstLoc (TyApp f x) = orElseLoc (tyFirstLoc f) (tyFirstLoc x)`
+-- (typecheck.mdk) walks INTO a `TyApp` regardless of parens — so a
+-- parenthesized head like `impl Eq (List a) where` must still blame `List`,
+-- not fall through to `a` (no TyCon) or land on a later BARE type argument.
+-- Depth is tracked and gates ONLY the `where`/`requires`/layout-noise STOP
+-- condition below — those tokens can never legally appear nested inside a
+-- type expression, so a depth-0 stop is correct there.  `i` is the index just
+-- past the impl's interface name, i.e. where `tyargs <- many parseTyAtom`
+-- starts (`implRest`).  A fully-parametric head (`impl Foo a where`) has no
+-- `TyCon` anywhere in it, so this correctly finds none; the caller then falls
+-- back to the `impl` keyword itself.
 implHeadTokIdx : Array Token -> Int -> Option Int
 implHeadTokIdx toks i = implHeadTokGo toks i 0
 
@@ -3563,7 +3569,7 @@ implHeadTokStep : Array Token -> Int -> Int -> Token -> Option Int
 implHeadTokStep toks i depth t
   | isOpenDelim t = implHeadTokGo toks (i + 1) (depth + 1)
   | isCloseDelim t = implHeadTokGo toks (i + 1) (depth - 1)
-  | depth == 0 && isTUpperTok t = Some i
+  | isTUpperTok t = Some i
   | depth == 0 && (t == TWhere || t == TRequires || isNoiseTok t) = None
   | otherwise = implHeadTokGo toks (i + 1) depth
 

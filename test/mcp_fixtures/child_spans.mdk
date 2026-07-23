@@ -20,3 +20,23 @@ impl Shape Color where
   describe c = "color"
 
 let rec spin n = spin n
+
+-- #331 increment 5 Part A regression guard: a PARENTHESIZED impl head must
+-- still blame the head TyCon inside the parens (`tyFirstLoc` walks INTO a
+-- `TyApp` regardless of parens, typecheck.mdk) — not fall back to `impl`
+-- (a depth-0-only scan misses it entirely) and not, in the multi-arg case,
+-- land on a later BARE type argument (a depth-0-only scan matches `Int`
+-- instead of the parenthesized `Box`). Columns hand-verified below.
+interface Wrap a where
+  unwrap : a -> Int
+
+data Box a = Box a
+
+impl Wrap (Box a) where
+  unwrap b = 0
+
+interface Access a b where
+  get2 : a -> b -> Int
+
+impl Access (Box a) Int where
+  get2 b i = i
