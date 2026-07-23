@@ -13,7 +13,7 @@
 MEDAKA_SCRATCH ?= /var/tmp/medaka-scratch
 export TMPDIR := $(shell mkdir -p $(MEDAKA_SCRATCH) 2>/dev/null && echo $(MEDAKA_SCRATCH) || echo /tmp)
 
-.PHONY: medaka emitter seed bootstrap seed-health test gates snapshot-check preflight ci clean help docs-links docs-index agent-doc-symbols
+.PHONY: medaka emitter seed bootstrap seed-health check-self test gates snapshot-check preflight ci clean help docs-links docs-index agent-doc-symbols
 
 ## medaka  — build the native OCaml-free `medaka` CLI (CANONICAL).
 ##           WARM (./medaka_emitter present): 2-stage rebuild from current source,
@@ -43,6 +43,20 @@ seed-health:
 ## seed    — RE-MINT the gzipped IR seed via the NATIVE emitter (OCaml-free)
 seed:
 	sh test/refresh_seed.sh
+
+## check-self — FAST "is the compiler source type-clean" gate over the
+##           ALREADY-BUILT ./medaka alone (does NOT rebuild it — run `make
+##           medaka` first). No oracle build, no differential compare: just
+##           `./medaka check` over the medaka_cli.mdk closure, gated on ITS
+##           OWN exit code. Sub-minute (~20s). This is
+##           test/typecheck_compiler_source.sh's first PASS
+##           ("medaka_cli.mdk closure is type-clean") factored out to skip
+##           that gate's oracle-staleness coupling — reach for this during a
+##           tight edit-verify loop on compiler-source/typechecker work
+##           (issue #833); typecheck_compiler_source.sh remains the fuller
+##           gate (it additionally covers compiler/entries/*.mdk, issue #472).
+check-self:
+	sh test/check_self.sh
 
 ## preflight — THE AGENT LOOP. Build + run only what your DIFF touches.
 ##             Derives the gate set from `git diff --name-only`, derives the ORACLE
