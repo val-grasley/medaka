@@ -1,1 +1,1 @@
-{"files":[{"file":"<fixture>","diagnostics":[{"code":"R-DUPLICATE-DEF","kind":"resolve","message":"Duplicate type: T","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":1,"source":"medaka"}]}]}
+{"files":[{"file":"<fixture>","diagnostics":[{"code":"R-DUPLICATE-DEF","kind":"resolve","message":"Duplicate type: T","range":null,"severity":1,"source":"medaka"}]}]}

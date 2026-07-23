@@ -156,7 +156,9 @@ except Exception as e:
     sys.exit(0)
 for f in doc.get("files", []):
     for d in f.get("diagnostics", []):
-        r = d.get("range", {})
+        # An unlocated diagnostic renders `range: null` (#789) — `or {}` treats
+        # both a null and a missing range as empty, yielding None:None-None:None.
+        r = d.get("range") or {}
         s, e = r.get("start", {}), r.get("end", {})
         print("%s %s:%s-%s:%s %s" % (d.get("code"), s.get("line"), s.get("character"),
                                      e.get("line"), e.get("character"), d.get("message")))

@@ -1,5 +1,5 @@
 # META
-source_lines=1092
+source_lines=1096
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/diagnostics.mdk — structured error pipeline (Phase A.4)
@@ -82,7 +82,7 @@ import support.util.{
   filterList,
   contains,
 }
-import json.{Json, JInt, JString, JArray, jObject, stringify}
+import json.{Json, JInt, JString, JArray, JNull, jObject, stringify}
 
 -- ── types ──────────────────────────────────────────────────────────────────
 
@@ -903,14 +903,18 @@ export cjRange : Int -> Int -> Int -> Int -> Json
 cjRange sl sc el ec =
   jObject [("end", cjPosition el ec), ("start", cjPosition sl sc)]
 
--- Map an Option Loc to a range (mirror of rangeOfLoc in lsp.mdk).
--- A `None` loc renders the oracle's dummy range {0,0}-{0,0} (lib/diagnostics.ml's
--- `loc_or_dummy` → `dummy_loc` = line 1 col 0 → 0-based {0,0}), NOT a whole-doc
--- span — so resolve / build-phase errors with no node span (Stage B) match the
--- oracle byte-for-byte.
+-- Map an Option Loc to a range JSON (mirror of rangeOfLoc in lsp.mdk).
+-- A `None` loc (a genuinely unlocated diagnostic — e.g. R-MODULE-LOAD, or any
+-- span-less resolve / build-phase error) renders `null`, NOT a fabricated {0,0}
+-- range: {0,0} is a real position on source line 1 that a reader/editor would
+-- trust, so consumers must be able to tell "unlocated" from a diagnostic that
+-- genuinely sits at 0,0. This mirrors the human path's `<unknown location>`.
+-- The key is present with a null value (not omitted) so consumers distinguish
+-- "unlocated" from "field missing". See the Diag JSON contract in
+-- compiler/DIAGNOSTIC-CODES-DESIGN.md.
 export cjRangeOfLoc : String -> Option Loc -> Json
 cjRangeOfLoc src (Some (Loc _ sl sc el ec)) = cjRange (sl - 1) sc (el - 1) ec
-cjRangeOfLoc src None = cjRange 0 0 0 0
+cjRangeOfLoc src None = JNull
 
 -- Severity code: Error=1, Warning=2.
 cjSevCode : Severity -> Int
@@ -1105,7 +1109,7 @@ checkJsonFile allowInternal rsrc csrc target stdlibDir =
 (DUse false (UseGroup ("support" "path") ((mem "dirOf" false))))
 (DUse false (UseGroup ("driver" "main_autoprint") ((mem "shouldAutoPrintMain" false) (mem "autoPrintWrapModules" false) (mem "underivedMainDiags" false))))
 (DUse false (UseGroup ("support" "util") ((mem "joinNl" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "anyList" false) (mem "filterList" false) (mem "contains" false))))
-(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JInt" false) (mem "JString" false) (mem "JArray" false) (mem "jObject" false) (mem "stringify" false))))
+(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JInt" false) (mem "JString" false) (mem "JArray" false) (mem "JNull" false) (mem "jObject" false) (mem "stringify" false))))
 (DData Public "Severity" () ((variant "SevError" (ConPos)) (variant "SevWarning" (ConPos))) ())
 (DData Public "Fix" () ((variant "Fix" (ConPos (TyCon "Loc") (TyCon "String")))) ())
 (DData Public "Diag" () ((variant "Diag" (ConPos (TyCon "Severity") (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Fix"))))) ())
@@ -1258,7 +1262,7 @@ checkJsonFile allowInternal rsrc csrc target stdlibDir =
 (DFunDef false "cjRange" ((PVar "sl") (PVar "sc") (PVar "el") (PVar "ec")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "end")) (EApp (EApp (EVar "cjPosition") (EVar "el")) (EVar "ec"))) (ETuple (ELit (LString "start")) (EApp (EApp (EVar "cjPosition") (EVar "sl")) (EVar "sc"))))))
 (DTypeSig true "cjRangeOfLoc" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyCon "Json"))))
 (DFunDef false "cjRangeOfLoc" ((PVar "src") (PCon "Some" (PCon "Loc" PWild (PVar "sl") (PVar "sc") (PVar "el") (PVar "ec")))) (EApp (EApp (EApp (EApp (EVar "cjRange") (EBinOp "-" (EVar "sl") (ELit (LInt 1)))) (EVar "sc")) (EBinOp "-" (EVar "el") (ELit (LInt 1)))) (EVar "ec")))
-(DFunDef false "cjRangeOfLoc" ((PVar "src") (PCon "None")) (EApp (EApp (EApp (EApp (EVar "cjRange") (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))))
+(DFunDef false "cjRangeOfLoc" ((PVar "src") (PCon "None")) (EVar "JNull"))
 (DTypeSig false "cjSevCode" (TyFun (TyCon "Severity") (TyCon "Int")))
 (DFunDef false "cjSevCode" ((PCon "SevError")) (ELit (LInt 1)))
 (DFunDef false "cjSevCode" (PWild) (ELit (LInt 2)))
@@ -1305,7 +1309,7 @@ checkJsonFile allowInternal rsrc csrc target stdlibDir =
 (DUse false (UseGroup ("support" "path") ((mem "dirOf" false))))
 (DUse false (UseGroup ("driver" "main_autoprint") ((mem "shouldAutoPrintMain" false) (mem "autoPrintWrapModules" false) (mem "underivedMainDiags" false))))
 (DUse false (UseGroup ("support" "util") ((mem "joinNl" false) (mem "lookupAssoc" false) (mem "startsWith" false) (mem "anyList" false) (mem "filterList" false) (mem "contains" false))))
-(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JInt" false) (mem "JString" false) (mem "JArray" false) (mem "jObject" false) (mem "stringify" false))))
+(DUse false (UseGroup ("json") ((mem "Json" false) (mem "JInt" false) (mem "JString" false) (mem "JArray" false) (mem "JNull" false) (mem "jObject" false) (mem "stringify" false))))
 (DData Public "Severity" () ((variant "SevError" (ConPos)) (variant "SevWarning" (ConPos))) ())
 (DData Public "Fix" () ((variant "Fix" (ConPos (TyCon "Loc") (TyCon "String")))) ())
 (DData Public "Diag" () ((variant "Diag" (ConPos (TyCon "Severity") (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Fix"))))) ())
@@ -1458,7 +1462,7 @@ checkJsonFile allowInternal rsrc csrc target stdlibDir =
 (DFunDef false "cjRange" ((PVar "sl") (PVar "sc") (PVar "el") (PVar "ec")) (EApp (EVar "jObject") (EListLit (ETuple (ELit (LString "end")) (EApp (EApp (EVar "cjPosition") (EVar "el")) (EVar "ec"))) (ETuple (ELit (LString "start")) (EApp (EApp (EVar "cjPosition") (EVar "sl")) (EVar "sc"))))))
 (DTypeSig true "cjRangeOfLoc" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyCon "Json"))))
 (DFunDef false "cjRangeOfLoc" ((PVar "src") (PCon "Some" (PCon "Loc" PWild (PVar "sl") (PVar "sc") (PVar "el") (PVar "ec")))) (EApp (EApp (EApp (EApp (EVar "cjRange") (EBinOp "-" (EVar "sl") (ELit (LInt 1)))) (EVar "sc")) (EBinOp "-" (EVar "el") (ELit (LInt 1)))) (EVar "ec")))
-(DFunDef false "cjRangeOfLoc" ((PVar "src") (PCon "None")) (EApp (EApp (EApp (EApp (EVar "cjRange") (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))))
+(DFunDef false "cjRangeOfLoc" ((PVar "src") (PCon "None")) (EVar "JNull"))
 (DTypeSig false "cjSevCode" (TyFun (TyCon "Severity") (TyCon "Int")))
 (DFunDef false "cjSevCode" ((PCon "SevError")) (ELit (LInt 1)))
 (DFunDef false "cjSevCode" (PWild) (ELit (LInt 2)))

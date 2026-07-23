@@ -21,6 +21,18 @@ decisions" §1 (code scheme) and §5 (warning-range regression).
   proposed in §2.
 - **Staging** — Stage 1 = codes + `kind` + the warning `{0,0}`-range fix; Stage 2
   = `help`/`fix` JSON fields. Both designed here; Stage 1 detailed.
+- **`range` for an UNLOCATED diagnostic is `null`, never `{0,0}`** (#789). A `Diag`
+  with `loc = None` (a genuinely span-less diagnostic — `R-MODULE-LOAD` and every
+  other resolve/build-phase error with no node span) renders its `range` as JSON
+  `null`. The key is **present with a null value, not omitted**, so a consumer can
+  distinguish "diagnostic is unlocated" from "field is missing / older schema".
+  `{0,0}` is a real position on source line 1 that a reader or editor would trust,
+  so it must never stand in for "no location" — this mirrors the human path's
+  `<unknown location>`. A diagnostic that genuinely sits at 0,0 carries a
+  `Some (Loc … 0 0 …)` and still renders a real `{0,0}` range; only `None` becomes
+  `null`. Renderer: `cjRangeOfLoc`'s `None` arm (`compiler/driver/diagnostics.mdk`).
+  The `{0,0}` was OCaml-oracle byte-compat; the oracle was removed 2026-06-26, so
+  the rationale is retired.
 
 ---
 

@@ -4,7 +4,7 @@ what: no-such-file-here") instead of a file-not-found error. It treats a path as
 what: name, so a typo'd filename is diagnosed as a missing stdlib import.
 cmd: check-json no-such-file-here.mdk
 exit: 1
-diag-code: R-MODULE-LOAD 0:0-0:0
+diag-code: R-MODULE-LOAD None:None-None:None
 control: check-json control.mdk
 why-fixture: there is deliberately NO main.mdk in this directory — the missing file IS the
 why-fixture: fixture. `cmd:` names a path that must not exist.
@@ -16,3 +16,9 @@ why-diag-code: async, base64, …"), so a full `diag:` pin would FALSELY DRAIN t
 why-diag-code: adds a stdlib module — an event with no connection to #333. The defect here
 why-diag-code: IS the code (R-MODULE-LOAD rather than file-not-found), so the code is
 why-diag-code: exactly what to pin.
+why-range: the range is `None:None-None:None` (an UNLOCATED diagnostic — R-MODULE-LOAD
+why-range: carries no source span) because #789 fixed `check --json` to render `range:
+why-range: null` for span-less diagnostics instead of a fabricated `{0,0}`. That is now
+why-range: CORRECT behavior and is NOT part of #333's defect; #333 is still the wrong
+why-range: CODE, which persists. The pin still self-drains the day #333 is fixed (the
+why-range: code becomes file-not-found, changing column 1).
