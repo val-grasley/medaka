@@ -8,6 +8,13 @@ line-granular, `character` hardcoded to 0) as increment 1.
 
 ## Decisions (locked 2026-07-22 by Val)
 
+**Arc status (2026-07-23):** Increments **1–3 SHIPPED** (decl-name spans #856; child-name spans #858;
+parse-entry unification / I6 #860 — all channel-first, on `main`). Increment **4 DECLINED** — see the
+🛑 status block in §4; the name-span feature already ships channel-first, so the AST-field migration is a
+~300-site zero-value relocation. Increment **5** (impl-head span #414 + child go-to-def + references/rename
+#254) remains **optional feature work** on the channel, not started. The user-facing goal (real name-column
+spans for decls + children) is **met** by 1–3.
+
 The §6 forks are resolved as below — this is the scope the implementation increments build to.
 Sequencing (which increment lands when, and `typecheck.mdk` ordering vs the concurrent
 typecheck refactor) is deliberately deferred; see §4/§5, decided per-increment.
@@ -422,6 +429,27 @@ tier: **Sonnet**.
 ---
 
 ### Increment 4 — retire the line-only name path; `declNameLoc` as the single truth (I1/I3)
+
+> **🛑 STATUS: DECLINED (2026-07-23, Val). Do NOT implement — the analysis below is kept for provenance.**
+> Two read-only scoping passes (`scratchpad` `INCREMENT-4-SCOPING.md`, `CODEMOD-ARITY-EXTENSION-SCOPING.md`)
+> independently concluded this migration is not worth doing:
+> - **The feature already ships.** Increments 1–2 delivered correct decl+child name spans **channel-first**
+>   — increment 2 went channel-first *specifically to avoid this arity migration*. Increment 4 is a
+>   **zero-behavior-change storage relocation**, not a capability.
+> - **The cost is ~300 loud break sites** across 20+ files (Variant/IfaceMethod/ImplMethod/LetBind/Field
+>   are each 70–170 refs; verified by recount) — every one a mechanical `_`/`None` append. The naive
+>   "field on every node" is the shape; a `DLoc` wrapper is REJECTED (a new `Decl` ctor is silently
+>   swallowed by wildcard arms — the RESOLVER-doc Fork-1 hazard; `DAttrib` is stripped ad-hoc at ~150
+>   sites with no central helper, so a wrapper inherits that too).
+> - **Codemod can't cheaply mechanize it.** codemod is a `Ty -> Ty` in-place rewriter that forbids arity
+>   changes and has no `Pat` traversal; a constructor-arity extension is ~500–650 lines of source-mutating
+>   tooling that is type-blind (no completeness guarantee), whose verbatim-net residue is worst in
+>   `typecheck.mdk` (42% comments). It saves ~200 trivial inserts the compiler already guides — break-even
+>   at best, and the project has twice chosen to route *around* arity migrations.
+> - **What was banked instead:** the desync increment 4 would prevent is structurally impossible already
+>   (decl list and position list both `map` the same `spans`), fixture-guarded (`child_spans.mdk`), and
+>   worst-case cosmetic. **Revisit only if** a *worth-doing* refactor of this shape appears — then build the
+>   codemod extension for THAT and let increment 4 ride along.
 
 **Goal.** Close G3/G4 conceptually: the decl **name** carrier moves from the `Positions`
 side-channel into an AST decl-node `Option Loc` field (or a single `declNameLoc : Decl ->
