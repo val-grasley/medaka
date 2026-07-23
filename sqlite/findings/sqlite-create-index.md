@@ -63,6 +63,24 @@ exceed one page, is a clean `Err` (`encodeIndexLeafCell` / `buildIndexLeafPage`)
 single-page discipline the table writer already uses. A silently-truncated index key would be an
 S0, so this is a hard reject.
 
+### 4b. COMPLETENESS at the fill boundary — the S0 `integrity_check` can't catch
+
+`PRAGMA integrity_check` validates STRUCTURE (record format, page types, sort order), but a
+silently-*truncated* index — fewer entries than table rows, e.g. an off-by-one in the
+single-page-fill / overflow detection — could pass it yet return WRONG rows when sqlite3 SERVES a
+query from the index. The oracle therefore binary-searches the exact fill boundary and proves
+completeness at it, rather than trusting `integrity_check` and a 5-row test.
+
+Empirically (for `nums(id INTEGER PRIMARY KEY, v INTEGER)`, `v=id`, U=4096): **434 rows is the
+largest index that fits one leaf page; 435 overflows.** At exactly 434 the index is COMPLETE — a
+FORCED index scan (`SELECT count(*) FROM nums INDEXED BY idx_v WHERE v BETWEEN 1 AND 434`) returns
+434, equal to the full-table scan AND to sqlite3's OWN freshly-rebuilt index, and both the first
+(`v=1`) and last (`v=434`) keys resolve. At 435 the writer prints its clean `Error:` and writes NO
+file (`buildTableWithIndexes` fails in `buildIndexLeafPage` before `writeFileBytes` runs) — the
+failure mode is a loud refusal, never a structurally-valid-but-short index. The oracle's boundary
+search is self-calibrating, so if the record encoding ever changes it re-derives the boundary
+instead of pinning a brittle `434`.
+
 ### 5. Indexing the INTEGER PRIMARY KEY column is refused (v1 limitation)
 
 For an index on the rowid-alias column, SQLite stores the key as NULL (the value lives in the

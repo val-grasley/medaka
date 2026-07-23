@@ -1,0 +1,57 @@
+-- Index page-fill boundary demo / completeness + overflow-boundary oracle entry.
+--
+-- Usage: medaka build sqlite/index_fill_demo.mdk -o index_fill_demo
+--        ./index_fill_demo <n> <out.db>
+--
+-- Writes  CREATE TABLE nums(id INTEGER PRIMARY KEY, v INTEGER)  with rows
+-- id = 1..n and v = id, plus  CREATE INDEX idx_v ON nums(v).  Used to probe the
+-- SINGLE-index-leaf-page fill boundary: a large-but-fitting `n` proves the index
+-- is COMPLETE (every table row has an entry — a truncated index would return
+-- fewer rows via a forced index scan), and an `n` past the boundary proves the
+-- writer REFUSES cleanly ("multi-page index not supported") rather than emitting
+-- a structurally-valid-but-incomplete index.
+--
+-- On an Err the program prints `Error: <msg>` (and exits 0), so the oracle can
+-- grep stdout to distinguish a clean refusal from a silent short index.
+
+-- Demos are intentionally self-contained; row/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.writer.{
+  TableSchema,
+  Column,
+  ColType,
+  TInteger,
+  writeTableWithIndexes,
+}
+import lib.recordfmt.{Cell, CInt}
+import list.{reverse}
+import demo_support.{parseN}
+
+numsSchema : TableSchema
+numsSchema = TableSchema {
+  schemaTableName = "nums",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = True },
+    Column { colName = "v", colType = TInteger, isPrimaryKey = False },
+  ],
+}
+
+numsRows : Int -> Int -> List (List Cell) -> List (List Cell)
+numsRows i n acc =
+  if i > n then
+    reverse acc
+  else
+    numsRows (i + 1) n ([CInt i, CInt i]::acc)
+
+main : <IO> Unit
+main = match args ()
+  [nStr, out] => run (parseN nStr) out
+  _ => println "usage: index_fill_demo <n> <out.db>"
+
+run : Int -> String -> <IO> Unit
+run n out =
+  let rows = numsRows 1 n []
+  match writeTableWithIndexes out numsSchema rows [("idx_v", "v")]
+    Err e => println "Error: \{e}"
+    Ok _ => println "wrote \{out} (nums=\{intToString n}, index idx_v)"

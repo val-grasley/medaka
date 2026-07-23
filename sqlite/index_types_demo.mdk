@@ -1,0 +1,63 @@
+-- REAL-keyed and BLOB-keyed secondary-index demo / oracle entry.
+--
+-- Usage: medaka build sqlite/index_types_demo.mdk -o index_types_demo
+--        ./index_types_demo <out.db>
+--
+-- Writes  CREATE TABLE mixed(id INTEGER PRIMARY KEY, r REAL, b BLOB)  plus a
+-- REAL-keyed index on `r` and a BLOB-keyed index on `b`, exercising the two key
+-- storage classes that `index_write_demo` (int/text) does not:
+--
+--     1  1.5  X'01'
+--     2  2.5  X'0203'
+--     3  1.5  X'00'      -- duplicate REAL key 1.5
+--     4  3.5  X'0203'    -- duplicate BLOB key X'0203'
+--     5  2.5  X'ff'      -- duplicate REAL key 2.5
+--
+--   CREATE INDEX idx_r ON mixed (r)   -- REAL-keyed  (numeric record order)
+--   CREATE INDEX idx_b ON mixed (b)   -- BLOB-keyed  (BINARY / memcmp order)
+
+-- Demos are intentionally self-contained; row/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.writer.{
+  TableSchema,
+  Column,
+  ColType,
+  TInteger,
+  TReal,
+  TBlob,
+  writeTableWithIndexes,
+}
+import lib.recordfmt.{Cell, CInt, CFloat, CBlob}
+
+mixedSchema : TableSchema
+mixedSchema = TableSchema {
+  schemaTableName = "mixed",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = True },
+    Column { colName = "r", colType = TReal, isPrimaryKey = False },
+    Column { colName = "b", colType = TBlob, isPrimaryKey = False },
+  ],
+}
+
+mixedRows : List (List Cell)
+mixedRows = [
+  [CInt 1, CFloat 1.5, CBlob (arrayFromList [1])],
+  [CInt 2, CFloat 2.5, CBlob (arrayFromList [2, 3])],
+  [CInt 3, CFloat 1.5, CBlob (arrayFromList [0])],
+  [CInt 4, CFloat 3.5, CBlob (arrayFromList [2, 3])],
+  [CInt 5, CFloat 2.5, CBlob (arrayFromList [255])],
+]
+
+indexes : List (String, String)
+indexes = [("idx_r", "r"), ("idx_b", "b")]
+
+main : <IO> Unit
+main = match args ()
+  [out] => run out
+  _ => println "usage: index_types_demo <out.db>"
+
+run : String -> <IO> Unit
+run out = match writeTableWithIndexes out mixedSchema mixedRows indexes
+  Err e => println "Error: \{e}"
+  Ok _ => println "wrote \{out} (mixed=5, indexes: idx_r REAL, idx_b BLOB)"
