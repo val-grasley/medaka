@@ -1,4 +1,0 @@
-f x = match x
-  Some n | n > 1 => n
-  _ => 0
-main = println (f (Some 2))
