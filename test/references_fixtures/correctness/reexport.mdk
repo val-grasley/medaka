@@ -1,0 +1,3 @@
+-- module `reexport` — re-exports `helper`, whose true origin is `defs`.  A use of
+-- `helper` reached THROUGH this module must resolve to defs' helper key.
+export import defs.{helper}

@@ -1,0 +1,7 @@
+-- module `other` — defines its OWN `shared`, same spelling as defs.shared but a
+-- DIFFERENT binder (different module ⇒ different key).
+export shared : Int
+shared = 2
+
+export useShared : Int
+useShared = shared + shared

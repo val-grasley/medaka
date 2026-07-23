@@ -1,5 +1,5 @@
 # META
-source_lines=2792
+source_lines=2795
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
@@ -2586,8 +2586,11 @@ ppResErrorLocatedF fallbackFile e = match resErrorLoc e
 -- binders are pushed into scope as a frame of (name, 0) so SHADOWING is correct
 -- (an inner `g` still hides a top-level `g`), but their occurrences carry the
 -- sentinel id 0 and typecheck reads those through the bare-name fallback (exactly
--- today's behaviour).  TODO(#837 incr2): mint where-group / local binders too so
--- `bodyLocalSchemesRef` / `isBodyLocalScheme` can be retired.
+-- today's behaviour).  `bodyLocalSchemesRef` / `isBodyLocalScheme` were retired
+-- separately (incr2, PR #861) via a `TcEnv` is-local flag — NOT local-id minting.
+-- Minting real local ids to retire the id-0 fallback (#837 Axis B) stays deferred:
+-- the fallback is provably sound (substMonos can only drop, never mis-attribute)
+-- and the change is byte-identical — pure precision, see #837.
 --
 -- Runs AFTER mark, BEFORE typecheck.  The walk is a pure deterministic
 -- left-to-right traversal, so ids are stable run-to-run and NEVER reach the

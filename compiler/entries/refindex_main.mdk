@@ -1,0 +1,88 @@
+-- compiler/entries/refindex_main.mdk — CLI driver for the cross-file reference
+-- index (#254 Stage 0, compiler/tools/refindex.mdk).  Runs via `medaka run`
+-- (interpreted) — the index build is deterministic, so op-count is stable
+-- regardless of interpretation speed.
+--
+--   medaka run compiler/entries/refindex_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--     -> three lines the scaling gate reads:
+--          OPS  <riOps>       -- total O(1) build ops (hash gets/sets + pushes)
+--          DEFS <#binders>    -- indexed def keys
+--          OCC  <n>           -- occurrences a binderAt on <entry> would scan
+--
+--   medaka run … refindex_main.mdk --dump <runtime> <core> <entry> [root ...]
+--     -> one line per binder key (tabs shown as `|`): the def site, use count,
+--        and every use site — the correctness dump.
+
+import tools.refindex.{
+  RefIndex,
+  buildRefIndexDisk,
+  defOf,
+  usesOf,
+  riOps,
+  allDefKeys,
+  occCountFor,
+}
+import frontend.ast.{Loc(..)}
+import support.util.{sortUniqS, joinWith, splitOnChar, listLen}
+import support.path.{dirOf}
+
+usage : String
+usage = "usage: medaka run refindex_main.mdk [--dump] <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+main : <IO> Unit
+main = match args ()
+  "--dump"::rest => dispatch True rest
+  rest => dispatch False rest
+
+dispatch : Bool -> List String -> <IO> Unit
+dispatch dump (runtimeP::coreP::entry::roots) =
+  run dump runtimeP coreP entry (rootsOrDefault entry roots)
+dispatch _ _ = ePutStrLn usage
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+run : Bool -> String -> String -> String -> List String -> <IO> Unit
+run dump runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc =>
+      let idx = buildRefIndexDisk entry roots rsrc csrc
+      if dump then dumpIndex idx else printStats idx entry
+
+printStats : RefIndex -> String -> <IO> Unit
+printStats idx entry =
+  let _ = println ("OPS " ++ intToString (riOps idx))
+  let _ = println ("DEFS " ++ intToString (listLen (allDefKeys idx)))
+  println ("OCC " ++ intToString (occCountFor idx entry))
+
+dumpIndex : RefIndex -> <IO> Unit
+dumpIndex idx = dumpKeys idx (sortUniqS (allDefKeys idx))
+
+dumpKeys : RefIndex -> List String -> <IO> Unit
+dumpKeys _ [] = ()
+dumpKeys idx (k::rest) =
+  let _ = println (dumpLine idx k)
+  dumpKeys idx rest
+
+dumpLine : RefIndex -> String -> String
+dumpLine idx k =
+  let dsite = match defOf idx k
+    Some (u, l) => showUL u l
+    None => "-"
+  let us = usesOf idx k
+  "\{showKey k}  DEF \{dsite}  USES \{intToString (listLen us)}  \{joinWith " " (map showUL2 us)}"
+
+showUL2 : (String, Loc) -> String
+showUL2 (u, l) = showUL u l
+
+showUL : String -> Loc -> String
+showUL uri l = "\{uri}:\{showLoc l}"
+
+showLoc : Loc -> String
+showLoc (Loc _ sl sc _ _) = "\{intToString sl}:\{intToString sc}"
+
+showKey : String -> String
+showKey k = joinWith "|" (splitOnChar '\t' k)

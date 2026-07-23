@@ -1,5 +1,5 @@
 # META
-source_lines=4673
+source_lines=4679
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -3548,13 +3548,19 @@ tokIdxOrNone toks i = if i >= 0 && i < arrayLength toks then Some i else None
 -- — but scanning TOKEN KINDS structurally instead of walking the `Ty` AST, so
 -- #331 stays channel-first (no AST field added; SOURCE-POSITION-DESIGN.md
 -- F2). A `TyCon` can only start at a `TUpper` token (`parseTyAtom`), so the
--- first depth-0 `TUpper` IS the first `TyCon` in source order — no need to
--- walk each `Ty`'s structure separately.  `i` is the index just past the
--- impl's interface name, i.e. where `tyargs <- many parseTyAtom` starts
--- (`implRest`).  Stops (returns `None`) at the depth-0 `requires`/`where`/
--- layout-noise boundary that ends the tyargs region — a fully-parametric head
--- (`impl Foo a where`) has no `TyCon` anywhere in it, so this correctly finds
--- none; the caller then falls back to the `impl` keyword itself.
+-- first `TUpper` IS the first `TyCon` in source order — no need to walk each
+-- `Ty`'s structure separately.  ⚠️ The match is AT ANY PAREN DEPTH, not just
+-- depth 0: `tyFirstLoc (TyApp f x) = orElseLoc (tyFirstLoc f) (tyFirstLoc x)`
+-- (typecheck.mdk) walks INTO a `TyApp` regardless of parens — so a
+-- parenthesized head like `impl Eq (List a) where` must still blame `List`,
+-- not fall through to `a` (no TyCon) or land on a later BARE type argument.
+-- Depth is tracked and gates ONLY the `where`/`requires`/layout-noise STOP
+-- condition below — those tokens can never legally appear nested inside a
+-- type expression, so a depth-0 stop is correct there.  `i` is the index just
+-- past the impl's interface name, i.e. where `tyargs <- many parseTyAtom`
+-- starts (`implRest`).  A fully-parametric head (`impl Foo a where`) has no
+-- `TyCon` anywhere in it, so this correctly finds none; the caller then falls
+-- back to the `impl` keyword itself.
 implHeadTokIdx : Array Token -> Int -> Option Int
 implHeadTokIdx toks i = implHeadTokGo toks i 0
 
@@ -3567,7 +3573,7 @@ implHeadTokStep : Array Token -> Int -> Int -> Token -> Option Int
 implHeadTokStep toks i depth t
   | isOpenDelim t = implHeadTokGo toks (i + 1) (depth + 1)
   | isCloseDelim t = implHeadTokGo toks (i + 1) (depth - 1)
-  | depth == 0 && isTUpperTok t = Some i
+  | isTUpperTok t = Some i
   | depth == 0 && (t == TWhere || t == TRequires || isNoiseTok t) = None
   | otherwise = implHeadTokGo toks (i + 1) depth
 
@@ -5847,7 +5853,7 @@ parseResultWith src tokList offList =
 (DTypeSig false "implHeadTokGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "implHeadTokGo" ((PVar "toks") (PVar "i") (PVar "depth")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "implHeadTokStep") (EVar "toks")) (EVar "i")) (EVar "depth")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "implHeadTokStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Option") (TyCon "Int")))))))
-(DFunDef false "implHeadTokStep" ((PVar "toks") (PVar "i") (PVar "depth") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "isTUpperTok") (EVar "t"))) (EApp (EVar "Some") (EVar "i")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "t") (EVar "TWhere")) (EBinOp "==" (EVar "t") (EVar "TRequires"))) (EApp (EVar "isNoiseTok") (EVar "t")))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
+(DFunDef false "implHeadTokStep" ((PVar "toks") (PVar "i") (PVar "depth") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isTUpperTok") (EVar "t")) (EApp (EVar "Some") (EVar "i")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "t") (EVar "TWhere")) (EBinOp "==" (EVar "t") (EVar "TRequires"))) (EApp (EVar "isNoiseTok") (EVar "t")))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DTypeSig false "isTUpperTok" (TyFun (TyCon "Token") (TyCon "Bool")))
 (DFunDef false "isTUpperTok" ((PCon "TUpper" PWild)) (EVar "True"))
 (DFunDef false "isTUpperTok" (PWild) (EVar "False"))
@@ -7311,7 +7317,7 @@ parseResultWith src tokList offList =
 (DTypeSig false "implHeadTokGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "implHeadTokGo" ((PVar "toks") (PVar "i") (PVar "depth")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "implHeadTokStep") (EVar "toks")) (EVar "i")) (EVar "depth")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "implHeadTokStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Option") (TyCon "Int")))))))
-(DFunDef false "implHeadTokStep" ((PVar "toks") (PVar "i") (PVar "depth") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "isTUpperTok") (EVar "t"))) (EApp (EVar "Some") (EVar "i")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "t") (EVar "TWhere")) (EBinOp "==" (EVar "t") (EVar "TRequires"))) (EApp (EVar "isNoiseTok") (EVar "t")))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
+(DFunDef false "implHeadTokStep" ((PVar "toks") (PVar "i") (PVar "depth") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isTUpperTok") (EVar "t")) (EApp (EVar "Some") (EVar "i")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "t") (EVar "TWhere")) (EBinOp "==" (EVar "t") (EVar "TRequires"))) (EApp (EVar "isNoiseTok") (EVar "t")))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DTypeSig false "isTUpperTok" (TyFun (TyCon "Token") (TyCon "Bool")))
 (DFunDef false "isTUpperTok" ((PCon "TUpper" PWild)) (EVar "True"))
 (DFunDef false "isTUpperTok" (PWild) (EVar "False"))
