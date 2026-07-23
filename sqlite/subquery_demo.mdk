@@ -1,0 +1,104 @@
+-- | subquery_demo — `WHERE col [NOT] IN (SELECT …)` driven from SQL TEXT, entirely
+-- in memory (no `.sqlite` file).
+--
+-- Builds `users` + `orders` in memory (`buildDatabaseMulti` → `fromBytes`), then
+-- runs a handful of SQL strings through `parseSelect` → `query`, exactly as a user
+-- would type them.  This is the whole subquery front-to-back path: the expression
+-- grammar parses `IN (SELECT …)` via the forward-referenced compound parser, the
+-- executor MATERIALIZES the non-correlated subquery once, and membership routes
+-- through the same three-valued `IN` evaluator as a literal value list — so the
+-- NULL-poison cases (a NULL in the subquery result, `NOT IN` over such a set) come
+-- out exactly as SQLite computes them.  Same schema/data as test/sql_oracle.sh.
+--
+-- Run:  ./medaka run sqlite/subquery_demo.mdk
+
+-- Self-contained demo; row-type/helper bodies duplicate other probes by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.dbwriter.{buildDatabaseMulti}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CNull, CInt, CText}
+import lib.rowtype.{tCells}
+import lib.sqlstmt.{queryString}
+import demo_support.{printRows, showCellRow}
+
+usersSql : String
+usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER, city TEXT)"
+
+ordersSql : String
+ordersSql = "CREATE TABLE orders(id INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER, qty INTEGER)"
+
+usersRows : List (List Cell)
+usersRows = [
+  [CInt 1, CText "ada", CInt 30, CText "pdx"],
+  [CInt 2, CText "bob", CNull, CText "nyc"],
+  [CInt 3, CText "cyd", CInt 24, CText "pdx"],
+  [CInt 4, CText "dee", CInt 30, CNull],
+]
+
+ordersRows : List (List Cell)
+ordersRows = [
+  [CInt 1, CInt 1, CInt 100, CInt 2],
+  [CInt 2, CInt 1, CInt 200, CInt 3],
+  [CInt 3, CInt 2, CInt 150, CInt 1],
+  [CInt 4, CInt 3, CInt 75, CInt 5],
+  [CInt 5, CInt 3, CNull, CInt 2],
+  [CInt 6, CInt 1, CInt 300, CInt 1],
+]
+
+specs : List (String, String, Option Int, List (List Cell))
+specs = [
+  ("users", usersSql, Some 0, usersRows),
+  ("orders", ordersSql, Some 0, ordersRows),
+]
+
+-- Echo the SQL, then its rows (or its error) — so the output names each query.
+runSql : Db -> String -> <IO> Unit
+runSql db sql =
+  let _ = println "-- \{sql}"
+  match queryString db sql tCells
+    Err e => println "error: \{e}"
+    Ok rows => printRows showCellRow rows
+
+runAll : Db -> List String -> <IO> Unit
+runAll _ [] = ()
+runAll db (sql::rest) =
+  let _ = runSql db sql
+  runAll db rest
+
+queries : List String
+queries = [
+  -- plain membership (uids present in orders) and its negation
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders) ORDER BY id",
+  "SELECT name FROM users WHERE id NOT IN (SELECT uid FROM orders) ORDER BY id",
+  -- three-valued NULL: subquery result contains a NULL age, outer bob is NULL too
+  "SELECT name FROM users WHERE age IN (SELECT age FROM users) ORDER BY id",
+  -- NOT IN over a subquery that contains a NULL ⇒ EVERY row UNKNOWN ⇒ empty
+  "SELECT name FROM users WHERE age NOT IN (SELECT age FROM users WHERE name = 'bob') ORDER BY id",
+  -- empty subquery: IN ⇒ none, NOT IN ⇒ all (even the NULL-age outer row)
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE amount > 10000) ORDER BY id",
+  "SELECT name FROM users WHERE age NOT IN (SELECT age FROM users WHERE age > 1000) ORDER BY id",
+  -- the subquery is a full compound (DISTINCT / UNION), nested under AND
+  "SELECT name FROM users WHERE id IN (SELECT DISTINCT uid FROM orders WHERE amount > 100) ORDER BY id",
+  "SELECT name FROM users WHERE city = 'pdx' AND id IN (SELECT uid FROM orders WHERE qty >= 2) ORDER BY id",
+]
+
+rejects : List String
+rejects = [
+  -- a subquery must project exactly ONE column (SQLite's own message shape)
+  "SELECT name FROM users WHERE id IN (SELECT uid, amount FROM orders)",
+  -- a CORRELATED subquery is out of scope — a clean unknown-column error
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE amount = users.age)",
+]
+
+main : <IO> Unit
+main =
+  let _ = println "-- CREATE users + orders (in-memory) --"
+  match buildDatabaseMulti specs
+    Err e => println "build error: \{e}"
+    Ok bytes => match fromBytes bytes
+      Err e => println "fromBytes error: \{e}"
+      Ok db =>
+        let _ = runAll db queries
+        let _ = println "-- REJECTIONS (each must be a clean error) --"
+        runAll db rejects

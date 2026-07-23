@@ -305,6 +305,12 @@ REJECTS=(
   "DELETE FROM t ORDER BY id"
   "TRUNCATE t"
   "SELEC * FROM t"
+  # an IN (SELECT …) subquery in an UPDATE/DELETE WHERE: the expression grammar is
+  # shared with SELECT so it PARSES, but only the SELECT pipeline materializes a
+  # subquery — mutate refuses it with a clean message and no partial write, rather
+  # than reaching compileTri's internal-error arm.
+  "UPDATE t SET n = 0 WHERE id IN (SELECT id FROM t)"
+  "DELETE FROM t WHERE id NOT IN (SELECT id FROM t)"
 )
 rpass=0
 for q in "${REJECTS[@]}"; do

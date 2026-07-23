@@ -98,7 +98,14 @@ import lib.schemadef.{
   applyAffinity,
   ipkAgrees,
 }
-import lib.select.{Expr, SqlExpr, unExpr, compilePred, compileValue}
+import lib.select.{
+  Expr,
+  SqlExpr,
+  unExpr,
+  compilePred,
+  compileValue,
+  containsInSubquery,
+}
 import list.{reverse, get, sortBy, zip}
 
 -- ---------------------------------------------------------------------------
@@ -307,8 +314,21 @@ delete path table where_ = rewriteTable
 
 deleteRows : String -> List (Int, List Cell) -> SqlExpr -> Result String (List (Int, List Cell), Int)
 deleteRows sql rows whereExpr = do
+  _ <- refuseSubquery whereExpr
   pred <- compilePred (columnIndex sql) whereExpr
   Ok (partitionRows pred rows)
+
+-- Only the SELECT pipeline materializes an `IN (SELECT …)` subquery; UPDATE/DELETE
+-- compile their WHERE straight to a per-row predicate, so a subquery there would
+-- reach `compileTri`'s internal-error arm.  Reject it up front with a clean
+-- message instead (the SQL parses — the expression grammar is shared — but this
+-- engine does not execute it outside a SELECT).
+refuseSubquery : SqlExpr -> Result String Unit
+refuseSubquery whereExpr =
+  if containsInSubquery whereExpr then
+    Err "IN (SELECT …) subqueries are not supported in UPDATE/DELETE (only in SELECT)"
+  else
+    Ok ()
 
 partitionRows : (List Cell -> Bool) -> List (Int, List Cell) -> (List (Int, List Cell), Int)
 partitionRows pred rows = partitionGo pred rows [] 0
@@ -358,6 +378,7 @@ update path table assigns where_ = rewriteTable
 
 updateRows : String -> List (Int, List Cell) -> List Assign -> SqlExpr -> Result String (List (Int, List Cell), Int)
 updateRows sql rows assigns whereExpr = do
+  _ <- refuseSubquery whereExpr
   ct <- targetSchema sql
   let lookup = columnIndex sql
   _ <- refuseIpkAssign (ctIpkIndex ct) ct assigns

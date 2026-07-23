@@ -94,7 +94,12 @@ deriving (Eq, Debug)
 --   numbers are coerced to text — SQLite semantics).  `ELike x pat` is `x LIKE
 --   pat` (case-insensitive for ASCII only, `%`/`_` wildcards); `NOT LIKE` is
 --   just `ENot (ELike ..)`.  `EIn x vs` is `x IN (v1, .., vn)`; `NOT IN` is
---   `ENot (EIn ..)`.  There is no `EBetween` — `x BETWEEN a AND b` desugars at
+--   `ENot (EIn ..)`.  `EInSubquery x q` is `x IN (SELECT …)` — a NON-CORRELATED
+--   subquery (`q` may not reference outer-row columns): the executor evaluates
+--   `q` ONCE (`materializeSelect`, before the outer row scan), requires it to
+--   project EXACTLY ONE column, and rewrites the node to an ordinary `EIn x
+--   [literals]` so the same three-valued IN/NULL semantics apply.  `NOT IN
+--   (SELECT …)` is `ENot (EInSubquery ..)`.  There is no `EBetween` — `x BETWEEN a AND b` desugars at
 --   PARSE time to `EAnd (EBin OpGe x a) (EBin OpLe x b)` (exactly SQLite's own
 --   definition), so it needs no new evaluator code and renders/round-trips
 --   through the existing AND/comparison machinery.  `ECase` is CASE/WHEN/THEN/
@@ -119,6 +124,7 @@ public export data SqlExpr =
   | ENotNull SqlExpr
   | ELike SqlExpr SqlExpr
   | EIn SqlExpr (List SqlExpr)
+  | EInSubquery SqlExpr Compound
   | ECase (List (SqlExpr, SqlExpr)) (Option SqlExpr)
   | ECoalesce (List SqlExpr)
   | EFn String (List SqlExpr)
@@ -874,6 +880,10 @@ renderExpr (EIn x vs) = do
   (xsql, xbinds) <- renderExpr x
   (partsSql, partsBinds) <- renderColumnParts vs
   Ok ("(\{xsql} IN (\{join ", " partsSql}))", xbinds ++ partsBinds)
+renderExpr (EInSubquery x q) = do
+  (xsql, xbinds) <- renderExpr x
+  (qsql, qbinds) <- renderCompoundParam q
+  Ok ("(\{xsql} IN (\{qsql}))", xbinds ++ qbinds)
 renderExpr (ECase whens els) = do
   (whenSql, whenBinds) <- renderCaseWhens whens
   (elsSql, elsBinds) <- renderCaseElse els
@@ -904,6 +914,29 @@ renderBinary opSql l r = do
   (lsql, lbinds) <- renderExpr l
   (rsql, rbinds) <- renderExpr r
   Ok ("(\{lsql} \{opSql} \{rsql})", lbinds ++ rbinds)
+
+-- Render a subquery `Compound` to PLACEHOLDER SQL (reusing `render` per arm), for
+-- the `EInSubquery` case of the injection-safe `render`/`renderExpr` projection.
+-- The INLINE round-trip renderer lives in lib.sqlstmt (`renderCompound`); this is
+-- its `?`-placeholder sibling, kept here so `render` stays TOTAL on a subquery.
+renderCompoundParam : Compound -> Result String (String, List Literal)
+renderCompoundParam (Compound first rest ob lm off) = do
+  (fsql, fbinds) <- render first
+  (asql, abinds) <- renderSetArmsParam rest
+  (osql, obinds) <- renderOrderBy ob
+  let lo = renderLimitOffset lm off
+  Ok
+    (
+      "\{fsql}\{asql}\{osql}\{limOffSql lo}",
+      fbinds ++ abinds ++ obinds ++ limOffBinds lo lm off,
+    )
+
+renderSetArmsParam : List (SetOp, Select) -> Result String (String, List Literal)
+renderSetArmsParam [] = Ok ("", [])
+renderSetArmsParam ((op, sel)::rest) = do
+  (ssql, sbinds) <- render sel
+  (rsql, rbinds) <- renderSetArmsParam rest
+  Ok (" \{setOpSql op} \{ssql}\{rsql}", sbinds ++ rbinds)
 
 -- | The canonical SQL name of an aggregate function.  Rendering `EAgg` through
 --   this reproduces exactly the strings the legacy `lib.aggregate.aggName` puns
@@ -1100,6 +1133,12 @@ compileTri lookup (EIn x vs) = do
   gx <- compileOperand lookup x
   gvs <- compileProjections lookup vs
   Ok (cells => inTri (gx cells) (map (g => g cells) gvs))
+-- An `EInSubquery` is lowered to `EIn` by `materializeSelect` BEFORE any predicate
+-- is compiled, so reaching here means materialization was skipped — a bug, not a
+-- user error.  (Kept total; never fires on the real pipeline.)
+compileTri _ (EInSubquery _ _) =
+  Err
+    "internal: IN-subquery reached compileTri unmaterialized (materializeSelect must run first)"
 compileTri lookup (ECase whens els) = do
   g <- compileOperand lookup (ECase whens els)
   Ok (cells => cellTri (g cells))
@@ -1766,13 +1805,23 @@ queryDistinct db sel rt = do
 --   multi-arm compound folds the arms left with the set operator.  Arm-level
 --   `SELECT DISTINCT` is honoured (deduped in cell-land).  No `Eq a` needed.
 export runCompound : Db -> Compound -> RowType a -> Result String (List a)
-runCompound db (Compound first rest ob lm off) rt = do
+runCompound db comp rt = do
+  finalCells <- runCompoundCells db comp
+  decodeCells rt finalCells []
+
+-- | Execute a `Compound` to its FINAL projected cell rows (all arms folded with
+--   the set operator, then the compound-level ORDER BY / LIMIT / OFFSET applied),
+--   stopping just before decode.  This is `runCompound` minus the `RowType`
+--   decode, exposed so `materializeSelect` can evaluate an `IN (SELECT …)`
+--   subquery straight to cells without inventing a decoder.
+export runCompoundCells : Db -> Compound -> Result String (List (List Cell))
+runCompoundCells db (Compound first rest ob lm off) = do
   n0 <- selectColumnCount db first
   firstCells <- runArmCells db first
   combined <- foldSetOps db n0 firstCells rest
   names <- compoundOutputNames db first
   ordered <- applyCompoundOrder names ob combined
-  decodeCells rt (applyOffsetLimit off lm ordered) []
+  Ok (applyOffsetLimit off lm ordered)
 
 -- Run one arm to its projected cell rows, deduping when the arm says DISTINCT
 -- (cell-level dedup, so no `Eq a`; NULLs compare equal, matching SQLite).
@@ -1874,10 +1923,175 @@ selLimit sel = sel.limit
 selOffset : Select -> Option Int
 selOffset sel = sel.offset
 
+-- ---------------------------------------------------------------------------
+-- IN-subquery materialization
+--
+-- A `WHERE col IN (SELECT …)` node (`EInSubquery col q`) is NON-CORRELATED: `q`
+-- may not reference any outer-row column, so it can be — and is — evaluated
+-- exactly ONCE, before the outer row scan, independent of every outer row.  We
+-- run `q` to its single-column cell result, then rewrite the node to an ordinary
+-- `EIn col [ELit lit, …]`.  That rewrite is deliberate: it routes membership
+-- through the SAME `inTri` three-valued evaluator the literal `IN (1,2,3)` form
+-- uses, so SQLite's subtle NULL rules (a NULL in the result set poisons a
+-- non-match to UNKNOWN; `NOT IN` over such a set drops every row) fall out for
+-- free rather than being re-derived.  `q` must project EXACTLY one column,
+-- matching SQLite's `sub-select returns N columns - expected 1`.
+--
+-- `materializeSelect` is invoked at the top of `runPipeline`, and it runs `q`
+-- through `runCompoundCells` → `runArmCells` → `runPipeline` → `materializeSelect`
+-- again, so a subquery nested inside a subquery is materialized recursively.
+-- ---------------------------------------------------------------------------
+
+-- Convert a result `Cell` back to a `Literal` (the inverse of `litToCell`), so a
+-- subquery's single-column result set can become an `EIn` value list.
+cellToLiteral : Cell -> Literal
+cellToLiteral CNull = LNull
+cellToLiteral (CInt n) = LInt n
+cellToLiteral (CText s) = LText s
+cellToLiteral (CFloat f) = LFloat f
+cellToLiteral (CBlob b) = LBlob b
+
+-- Rewrite every `EInSubquery` in a `Select` (WHERE, join ONs, GROUP BY, HAVING,
+-- ORDER BY, projection) into an `EIn` value list.  After this the Select holds no
+-- `EInSubquery`, so the rest of the pipeline needs no subquery awareness.
+materializeSelect : Db -> Select -> Result String Select
+materializeSelect db sel = do
+  w2 <- materializeOpt db sel.where_
+  js2 <- materializeJoins db sel.joins
+  gb2 <- materializeList db sel.groupBy
+  h2 <- materializeOpt db sel.having
+  ob2 <- materializeOrder db sel.orderBy
+  cols2 <- materializeList db sel.columns
+  let sel2 = { sel | where_ = w2, joins = js2, groupBy = gb2, having = h2, orderBy = ob2, columns = cols2 }
+  Ok sel2
+
+materializeJoins : Db -> List Join -> Result String (List Join)
+materializeJoins _ [] = Ok []
+materializeJoins db (j::rest) = do
+  j2 <- materializeJoin db j
+  rest2 <- materializeJoins db rest
+  Ok (j2::rest2)
+
+materializeJoin : Db -> Join -> Result String Join
+materializeJoin db (Join { table = t, kind = k, alias = a, on = e }) = do
+  e2 <- materializeExpr db e
+  Ok Join { table = t, kind = k, alias = a, on = e2 }
+
+materializeOpt : Db -> Option SqlExpr -> Result String (Option SqlExpr)
+materializeOpt _ None = Ok None
+materializeOpt db (Some e) = map Some (materializeExpr db e)
+
+materializeList : Db -> List SqlExpr -> Result String (List SqlExpr)
+materializeList _ [] = Ok []
+materializeList db (e::rest) = do
+  e2 <- materializeExpr db e
+  rest2 <- materializeList db rest
+  Ok (e2::rest2)
+
+materializeOrder : Db -> List (SqlExpr, Bool) -> Result String (List (SqlExpr, Bool))
+materializeOrder _ [] = Ok []
+materializeOrder db ((e, asc)::rest) = do
+  e2 <- materializeExpr db e
+  rest2 <- materializeOrder db rest
+  Ok ((e2, asc)::rest2)
+
+materializeCaseWhens : Db -> List (SqlExpr, SqlExpr) -> Result String (List (SqlExpr, SqlExpr))
+materializeCaseWhens _ [] = Ok []
+materializeCaseWhens db ((c, r)::rest) = do
+  c2 <- materializeExpr db c
+  r2 <- materializeExpr db r
+  rest2 <- materializeCaseWhens db rest
+  Ok ((c2, r2)::rest2)
+
+-- Recurse through an expression, materializing any `EInSubquery` and leaving every
+-- other node structurally identical (but with materialized children).  Every
+-- constructor is rebuilt via FULL application (never a partially-applied
+-- constructor passed as a value — see the WasmGC B1w workaround in lib.sqlparse).
+materializeExpr : Db -> SqlExpr -> Result String SqlExpr
+materializeExpr _ (ECol name) = Ok (ECol name)
+materializeExpr _ (ELit lit) = Ok (ELit lit)
+materializeExpr db (EAgg fn operand) = do
+  operand2 <- materializeOpt db operand
+  Ok (EAgg fn operand2)
+materializeExpr db (EBin op l r) = do
+  l2 <- materializeExpr db l
+  r2 <- materializeExpr db r
+  Ok (EBin op l2 r2)
+materializeExpr db (EArith op l r) = do
+  l2 <- materializeExpr db l
+  r2 <- materializeExpr db r
+  Ok (EArith op l2 r2)
+materializeExpr db (EConcat l r) = do
+  l2 <- materializeExpr db l
+  r2 <- materializeExpr db r
+  Ok (EConcat l2 r2)
+materializeExpr db (EAnd l r) = do
+  l2 <- materializeExpr db l
+  r2 <- materializeExpr db r
+  Ok (EAnd l2 r2)
+materializeExpr db (EOr l r) = do
+  l2 <- materializeExpr db l
+  r2 <- materializeExpr db r
+  Ok (EOr l2 r2)
+materializeExpr db (ENot e) = map ENot (materializeExpr db e)
+materializeExpr db (EIsNull e) = map EIsNull (materializeExpr db e)
+materializeExpr db (ENotNull e) = map ENotNull (materializeExpr db e)
+materializeExpr db (ELike x p) = do
+  x2 <- materializeExpr db x
+  p2 <- materializeExpr db p
+  Ok (ELike x2 p2)
+materializeExpr db (EIn x vs) = do
+  x2 <- materializeExpr db x
+  vs2 <- materializeList db vs
+  Ok (EIn x2 vs2)
+materializeExpr db (EInSubquery x q) = do
+  x2 <- materializeExpr db x
+  lits <- runInSubquery db q
+  Ok (EIn x2 (map (l => ELit l) lits))
+materializeExpr db (ECase whens els) = do
+  whens2 <- materializeCaseWhens db whens
+  els2 <- materializeOpt db els
+  Ok (ECase whens2 els2)
+materializeExpr db (ECoalesce es) = do
+  es2 <- materializeList db es
+  Ok (ECoalesce es2)
+materializeExpr db (EFn name args) = do
+  args2 <- materializeList db args
+  Ok (EFn name args2)
+
+-- Run a subquery `q` to its single-column result set, returned as `Literal`s.
+-- Rejects a subquery that projects a number of columns other than one, with
+-- SQLite's own message shape.
+runInSubquery : Db -> Compound -> Result String (List Literal)
+runInSubquery db q = do
+  n <- selectColumnCount db (compoundFirstArm q)
+  if n != 1 then Err "sub-select returns \{n} columns - expected 1"
+  else do
+    rows <- runCompoundCells db q
+    Ok (map (row => cellToLiteral (firstCellOf row)) rows)
+
+compoundFirstArm : Compound -> Select
+compoundFirstArm (Compound first _ _ _ _) = first
+
+firstCellOf : List Cell -> Cell
+firstCellOf [] = CNull
+firstCellOf (c::_) = c
+
 -- The shared engine: source rows → WHERE → (grouped | flat) → ordered, projected
 -- cell rows.  Everything except DISTINCT, LIMIT/OFFSET, and decode.
+--
+-- FIRST it materializes every non-correlated `IN (SELECT …)` subquery in the
+-- Select into an ordinary `EIn value-list` (evaluating each subquery ONCE, here,
+-- independent of the outer row scan — the whole point of "non-correlated").  So
+-- everything downstream (`compileWhere`/`compileTri`/the grouped rewrite) only
+-- ever sees `EIn`, never `EInSubquery`.
 runPipeline : Db -> Select -> Result String (List (List Cell))
-runPipeline db (Select { from = tbl, fromAlias = fa, joins = js, where_ = w, groupBy = gb, having = h, orderBy = ob, columns = cols }) = do
+runPipeline db sel0 = do
+  sel <- materializeSelect db sel0
+  runPipelineCore db sel
+
+runPipelineCore : Db -> Select -> Result String (List (List Cell))
+runPipelineCore db (Select { from = tbl, fromAlias = fa, joins = js, where_ = w, groupBy = gb, having = h, orderBy = ob, columns = cols }) = do
   (lookup, rawRows) <- sourceRows db tbl fa js
   pred <- compileWhere lookup w
   let kept = filter pred rawRows
@@ -2040,6 +2254,11 @@ aggsIn (EIsNull e) = aggsIn e
 aggsIn (ENotNull e) = aggsIn e
 aggsIn (ELike x p) = aggsIn x ++ aggsIn p
 aggsIn (EIn x vs) = aggsIn x ++ concatAggs vs
+-- The subquery is a SEPARATE, non-correlated query; its own aggregates belong to
+-- IT, not the outer query, so we only look in the outer LHS.  (In practice
+-- `materializeSelect` has already turned this into `EIn` before aggregate
+-- collection runs.)
+aggsIn (EInSubquery x _) = aggsIn x
 aggsIn (ECase whens els) = concatAggs (aggsCasePairs whens)
   ++ concatAggs (optionToList els)
 aggsIn (ECoalesce es) = concatAggs es
@@ -2053,6 +2272,39 @@ containsAgg : List SqlExpr -> Bool
 containsAgg es = match concatAggs es
   [] => False
   _ => True
+
+-- | Does this expression tree contain an `EInSubquery` anywhere?  Only the SELECT
+--   pipeline materializes subqueries (`materializeSelect`), so `lib.mutate` uses
+--   this to reject `IN (SELECT …)` in an UPDATE/DELETE WHERE with a clean message
+--   rather than reaching `compileTri`'s internal-error arm.
+export containsInSubquery : SqlExpr -> Bool
+containsInSubquery (ECol _) = False
+containsInSubquery (ELit _) = False
+containsInSubquery (EAgg _ operand) = match operand
+  None => False
+  Some e => containsInSubquery e
+containsInSubquery (EBin _ l r) = containsInSubquery l || containsInSubquery r
+containsInSubquery (EArith _ l r) = containsInSubquery l || containsInSubquery r
+containsInSubquery (EConcat l r) = containsInSubquery l || containsInSubquery r
+containsInSubquery (EAnd l r) = containsInSubquery l || containsInSubquery r
+containsInSubquery (EOr l r) = containsInSubquery l || containsInSubquery r
+containsInSubquery (ENot e) = containsInSubquery e
+containsInSubquery (EIsNull e) = containsInSubquery e
+containsInSubquery (ENotNull e) = containsInSubquery e
+containsInSubquery (ELike x p) = containsInSubquery x || containsInSubquery p
+containsInSubquery (EIn x vs) = containsInSubquery x
+  || any containsInSubquery vs
+containsInSubquery (EInSubquery _ _) = True
+containsInSubquery (ECase whens els) = any subInPair whens || subInOpt els
+containsInSubquery (ECoalesce es) = any containsInSubquery es
+containsInSubquery (EFn _ args) = any containsInSubquery args
+
+subInPair : (SqlExpr, SqlExpr) -> Bool
+subInPair (c, r) = containsInSubquery c || containsInSubquery r
+
+subInOpt : Option SqlExpr -> Bool
+subInOpt None = False
+subInOpt (Some e) = containsInSubquery e
 
 -- Compile each aggregate to a `group rows -> Cell` reducer.
 compileAggs : (String -> Option Int) -> List SqlExpr -> Result String (List (List (List Cell) -> Cell))
@@ -2217,6 +2469,12 @@ rewriteInner gb aggs (EIn x vs) = do
   x2 <- rewritePostGroup gb aggs x
   vs2 <- rewriteAllPostGroup gb aggs vs
   Ok (EIn x2 vs2)
+-- Only the outer LHS is rewritten against the synthetic group row; the subquery
+-- is a separate query and is left intact.  (`materializeSelect` runs before the
+-- grouped path, so this arm never fires in practice — kept for totality.)
+rewriteInner gb aggs (EInSubquery x q) = do
+  x2 <- rewritePostGroup gb aggs x
+  Ok (EInSubquery x2 q)
 rewriteInner gb aggs (ECase whens els) = do
   whens2 <- rewriteCaseWhens gb aggs whens
   els2 <- rewriteOptPostGroup gb aggs els

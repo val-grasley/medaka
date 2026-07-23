@@ -146,6 +146,14 @@ corpus = [
   "SELECT substr(name, -2) FROM users",
   "SELECT trim(name), ltrim(name), rtrim(name) FROM users",
   "SELECT replace(name, 'a', 'X') FROM users",
+  -- non-correlated IN (SELECT …) subqueries — value list, NOT IN, a compound
+  -- (UNION) subquery, DISTINCT, and a subquery nested under AND: each round-trips
+  -- to a canonical fixpoint through the subquery-render forward reference.
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders)",
+  "SELECT name FROM users WHERE id NOT IN (SELECT uid FROM orders) ORDER BY id",
+  "SELECT name FROM users WHERE city = 'pdx' AND id IN (SELECT uid FROM orders)",
+  "SELECT name FROM users WHERE id IN (SELECT DISTINCT uid FROM orders WHERE amount > 100)",
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE amount > 200 UNION SELECT id FROM users WHERE city = 'nyc')",
 ]
 
 data RT = RtOk | RtFail String
@@ -189,7 +197,10 @@ rejects = [
   "SELECT a FROM t INTERSECT SELECT b FROM u",
   "SELECT a FROM t EXCEPT SELECT b FROM u",
   "WITH x AS (SELECT 1) SELECT * FROM x",
-  "SELECT id FROM users WHERE id IN (SELECT uid FROM orders)",
+  -- a non-correlated `IN (SELECT …)` is now SUPPORTED (round-trip corpus above);
+  -- a MULTI-COLUMN subquery is still a parse-clean but execution-time reject, and
+  -- a CORRELATED subquery is out of scope — both are covered by test/sql_oracle.sh
+  -- (they need a live DB, so they cannot be asserted here at parse time).
   -- unsupported expression syntax
   "SELECT name FROM users WHERE name LIKE 'a%' ESCAPE '\\'",
   "SELECT name FROM users WHERE name GLOB 'a*'",
