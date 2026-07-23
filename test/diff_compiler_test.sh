@@ -21,15 +21,16 @@
 #   stdlib/toml.mdk   multi-module doctests (imports string)
 #   stdlib/list.mdk   multi-module doctests + passing props
 #   stdlib/set.mdk    single-file doctests + props (Set literal, EHeadAnnot)
+#   stdlib/string.mdk single-file doctests, 64/64 (#447 corrected the two
+#     doctests that used to assert full-Unicode case-folding to the ASCII-only
+#     truth the native runtime actually implements; #505 un-deferred once that
+#     was confirmed on a fresh build)
 #   test/compiler_test_fixtures/mixed.mdk  passing + FAILING doctest + prop
 #   test/compiler_test_fixtures/blockquote_and_valid.mdk  GH #55: a malformed
 #     example (Markdown blockquote) does not abort the file — the valid
 #     examples before AND after it still run
 #
 # DEFERRED (pre-existing compiler/native gaps, NOT gate-rerooting regressions):
-#   stdlib/string.mdk  — full Unicode case-folding: native toUpper "Straße" yields
-#     "STRAßE" not "STRASSE" (the native runtime's toUpper/toLower don't expand ß /
-#     fold accented chars).  2 doctest FAILs vs the OCaml golden.
 #   stdlib/{mut_array,array,map}.mdk — the #55 `$dict_sum_1` panic on the eval/test
 #     path is FIXED (see test/compiler_test_fixtures/sum_dict.mdk, now in the default
 #     set, for the focused regression).  These full modules stay DEFERRED only for
@@ -86,6 +87,7 @@ else
          $ROOT/stdlib/toml.mdk \
          $ROOT/stdlib/list.mdk \
          $ROOT/stdlib/set.mdk \
+         $ROOT/stdlib/string.mdk \
          $ROOT/stdlib/async.mdk \
          $ROOT/stdlib/byteparser.mdk \
          $ROOT/stdlib/bytebuilder.mdk \
