@@ -255,6 +255,14 @@ Linux and macOS** (the Mac is retained for macOS smoke-testing; there is no alte
 When you touch a script, keep both arms alive — `stat -c %Y` *or* `stat -f %m`,
 `pkg-config`/`-lgc` *or* `brew --prefix bdw-gc`, no Mach-O-only link flags.
 
+⚠️ **That invariant is upheld by convention, not by a gate — CI is 100% `ubuntu-latest`**
+(`grep -rn runs-on .github/workflows/*.yml`: 11/11 hits across `ci.yml` and `nightly.yml`
+are `ubuntu-latest`; zero `macos`/`darwin` mentions in either file). A macOS-only break —
+a missed `stat -f %m` arm, a `brew --prefix bdw-gc` path, a Mach-O-only link flag — ships
+with every required check green; nothing mechanical would catch it before a release. Until
+a macOS job exists, the mitigation is a manual macOS smoke test before tagging a release
+(#549).
+
 Two platform facts worth not rediscovering: the emitted LLVM IR carries **no target
 triple**, so the checked-in seed cold-bootstraps on x86 *or* arm from the same bytes; and
 the deeply-recursive compiler gets its stack from a **256 MB GC-aware worker pthread**
