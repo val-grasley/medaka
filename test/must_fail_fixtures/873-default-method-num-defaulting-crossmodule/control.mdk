@@ -1,0 +1,25 @@
+-- CONTROL: byte-for-byte the SAME program as the sdisp/tface/main triple, but
+-- with interface T and `impl T Foo` in ONE module (same-module).  fillImplDefaults
+-- specializes the default into the impl => it is checked via inferImplMethod, whose
+-- defaultBodyLocalNum grounds the body-local Num var to Int => `List Int` =>
+-- the specific `impl S (List Int)` => the CORRECT answer, 1.  The ONLY difference
+-- from the bug is module placement, which isolates that as the distinguishing
+-- feature.  Must run clean (exit 0).
+interface S a where
+  s : a -> Int
+
+impl S (List a) where
+  s _ = 999
+
+impl S (List Int) where
+  s _ = 1
+
+data Foo = Foo
+
+interface T a where
+  t : a -> Int
+  t _ = s [1, 2]
+
+impl T Foo where
+
+main = println (t Foo)

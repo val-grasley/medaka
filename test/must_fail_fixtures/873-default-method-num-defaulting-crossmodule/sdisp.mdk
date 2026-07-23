@@ -1,0 +1,8 @@
+export interface S a where
+  s : a -> Int
+
+export impl S (List a) where
+  s _ = 999
+
+export impl S (List Int) where
+  s _ = 1

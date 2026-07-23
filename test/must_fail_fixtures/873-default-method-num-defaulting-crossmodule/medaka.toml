@@ -1,0 +1,6 @@
+[project]
+name = "mf873"
+version = "0.1.0"
+
+[entry]
+main = "main.mdk"
