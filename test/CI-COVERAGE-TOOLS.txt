@@ -46,6 +46,7 @@ test/refresh_seed              re-mints compiler/seed/emitter.ll.gz. A maintenan
 # ── harness / driver ──
 test/run_gates                 THE gate runner. Running it IS running the gates.
 test/preflight                 the agent inner loop — derives a gate subset from `git diff`.
+test/check_self                a fast local "is the compiler type-clean" convenience target (#833) — soundness's typecheck_compiler_source.sh is CI's authority; not a CI gate.
 test/capture_goldens           (re)captures goldens. A blessing action, not a check.
 
 # ── golden capture ──
