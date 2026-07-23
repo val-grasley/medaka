@@ -459,7 +459,6 @@ entryHeadMatches : Ty -> List Ty -> List Mono -> Bool
 entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
 envAlphaLets : TcEnv -> List (String, Expr)
 eqCompareOp : Mono -> Mono -> Mono
-eqIdList : List Int -> List Int -> Bool
 eqInt : Int -> Int -> Bool
 eqIntList : List Int -> List Int -> Bool
 eqStr : String -> String -> Bool
@@ -474,6 +473,8 @@ expandSupersPairs : List Decl -> List (String, Int) -> List (String, Int)
 expandSupersTable : List Decl -> Unit
 expectedParamTypes : Mono -> Int -> List Mono
 exprLoc : Expr -> Option Loc
+extendLocalVar : TcEnv -> String -> Scheme -> TcEnv
+extendLocalVars : TcEnv -> List (String, Scheme) -> TcEnv
 extendPropParams : TcEnv -> List PropParam -> TcEnv
 extendVar : TcEnv -> String -> Scheme -> TcEnv
 extendVars : TcEnv -> List (String, Scheme) -> TcEnv
@@ -756,7 +757,6 @@ instantiateVarTrackedId : String -> Int -> Scheme -> Mono
 intercalateComma : List String -> String
 ioAliasLabels : List String
 isArithBinop : String -> Bool
-isBodyLocalScheme : String -> Scheme -> Bool
 isConPat : Pat -> Bool
 isConstrainedTy : Ty -> Bool
 isCtorAppHead : Expr -> Bool
@@ -766,6 +766,7 @@ isHoleStr : String -> Bool
 isLetrecGroup : List String -> Bool
 isLitArg : Expr -> Bool
 isMangledFor : String -> String -> Bool
+isMonoScheme : Scheme -> Bool
 isNonexpansive : Expr -> Bool
 isShadowStandalone : String -> Bool
 isSubTop : Param -> Bool
@@ -811,6 +812,7 @@ lookupCtor : TcEnv -> String -> Option Scheme
 lookupCtxKind : Loc -> List (Loc, String) -> Option String
 lookupDomain : String -> List (String, Param) -> Param
 lookupIfaceById : Int -> List (String, List Int) -> Option String
+lookupLocalFlag : TcEnv -> String -> Bool
 lookupQualArity : String -> String -> List ((String, String), List Int) -> Option (List Int)
 lookupQualIfaces : String -> String -> List ((String, String), List String) -> Option (List String)
 lookupRecordByMangledHead : String -> String -> Option (String, RecordInfo)

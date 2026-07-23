@@ -2735,7 +2735,6 @@ hadMatchWarnings _ = match driverState.value.matchWarnings.value
 -- preserved by freshToggles being minted in the same resetState — see resetState below.)
 data PerRun = PerRun {
     tyvarCounter : Ref Int,
-    bodyLocalSchemesRef : Ref (List (String, List Int)),
     inRigidityBodyRef : Ref Bool,  -- True while an IMPL or DEFAULT method body is being inferred — the scope
     effvarCounter : Ref Int,  -- in which registerLocalScheme records obligations (see its comment)
     curEffect : Ref EffRow,  -- names GENERALIZED inside the top-level body currently being inferred
@@ -2803,7 +2802,6 @@ data PerRun = PerRun {
 freshPerRun : Unit -> PerRun
 freshPerRun _ = PerRun {
   tyvarCounter = Ref 0,
-  bodyLocalSchemesRef = Ref [],
   inRigidityBodyRef = Ref False,
   effvarCounter = Ref 0,
   curEffect = Ref (EffRow [] None),
@@ -3732,35 +3730,60 @@ krowArgVarNames (_::ks) (_::as2) = krowArgVarNames ks as2
 -- initial `lets`.  A literal laundered through a helper stays ⊤ (spec §5
 -- non-goal).  Sound: only turns over-rejections into acceptances.  (Mirror of
 -- lib/typecheck.ml's env.alpha_lets.)
+-- #837 incr2 (Axis A): the 4th field is a name→is-local channel — a FAITHFUL
+-- lexical-scope carrier for "does this name currently denote a body-local
+-- binding?", replacing the reset-at-body-entry `bodyLocalSchemesRef` proxy.  It
+-- is immutable and restored on inference return, so an out-of-scope local is
+-- simply ABSENT — no stale entries, no lifetime management (the exact wish the
+-- old `(name, schemeIds)` key worked around).  Only `extendLocalVar[s]` set it;
+-- top-level / interface-method / ctor / SCC seeds use `extendVar[s]` and leave
+-- it absent.  Read by `lookupLocalFlag` at the two `recordImplObligation` guards.
 public export data TcEnv =
-  | TcEnv (OrdMap Scheme) (OrdMap Scheme) (List (String, Expr))  -- vars, ctors, alphaLets
+  | TcEnv (OrdMap Scheme) (OrdMap Scheme) (List (String, Expr)) (OrdMap Bool)  -- vars, ctors, alphaLets, isLocal
 
 lookupVar : TcEnv -> String -> Option Scheme
-lookupVar (TcEnv vs cs _) n = match omLookup n vs
+lookupVar (TcEnv vs cs _ _) n = match omLookup n vs
   Some s => Some s
   None => omLookup n cs
 
 lookupCtor : TcEnv -> String -> Option Scheme
-lookupCtor (TcEnv _ cs _) n = omLookup n cs
+lookupCtor (TcEnv _ cs _ _) n = omLookup n cs
 
 extendVar : TcEnv -> String -> Scheme -> TcEnv
-extendVar (TcEnv vs cs al) n s = TcEnv (omInsert n s vs) cs al
+extendVar (TcEnv vs cs al lc) n s = TcEnv (omInsert n s vs) cs al lc
 
 extendVars : TcEnv -> List (String, Scheme) -> TcEnv
 extendVars env [] = env
 extendVars env ((n, s)::rest) = extendVars (extendVar env n s) rest
 
+-- #837 incr2: like extendVar/extendVars, but FLAG the introduced names local.
+-- Route every genuine body-local binder (let/where/lambda/pattern/prop/do
+-- binders) through these; the is-local flag then answers the two guard sites.
+extendLocalVar : TcEnv -> String -> Scheme -> TcEnv
+extendLocalVar (TcEnv vs cs al lc) n s =
+  TcEnv (omInsert n s vs) cs al (omInsert n True lc)
+
+extendLocalVars : TcEnv -> List (String, Scheme) -> TcEnv
+extendLocalVars env [] = env
+extendLocalVars env ((n, s)::rest) =
+  extendLocalVars (extendLocalVar env n s) rest
+
+-- #837 incr2: is `n` currently bound as a BODY-LOCAL binding?  Presence in the
+-- is-local map means local (only `extendLocalVar[s]` insert, always True).
+lookupLocalFlag : TcEnv -> String -> Bool
+lookupLocalFlag (TcEnv _ _ _ lc) n = omHasKey n lc
+
 addCtor : TcEnv -> String -> Scheme -> TcEnv
-addCtor (TcEnv vs cs al) n s = TcEnv vs (omInsert n s cs) al
+addCtor (TcEnv vs cs al lc) n s = TcEnv vs (omInsert n s cs) al lc
 
 -- EFFECTS WS-2: seed α's known-prefix scope with a same-function-body let RHS.
 -- Prepended (most-recent-first) to mirror α's own `(x,e1)::lets` accumulation.
 seedAlphaLets : TcEnv -> String -> Expr -> TcEnv
-seedAlphaLets (TcEnv vs cs al) n rhs = TcEnv vs cs ((n, rhs)::al)
+seedAlphaLets (TcEnv vs cs al lc) n rhs = TcEnv vs cs ((n, rhs)::al) lc
 
 -- read the accumulated α-let scope (for the hole-fill site)
 envAlphaLets : TcEnv -> List (String, Expr)
-envAlphaLets (TcEnv _ _ al) = al
+envAlphaLets (TcEnv _ _ al _) = al
 
 monoScheme : Mono -> Scheme
 monoScheme t = Forall [] [] t
@@ -4014,7 +4037,7 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
     -- occurrence.  (Top-LEVEL shadows are already suppressed inside
     -- recordImplObligation via definerShadowNamesRef/standaloneValuesRef; this
     -- is the local-binding sibling.)
-    let _ = if isBodyLocalScheme name s then
+    let _ = if lookupLocalFlag env name || isMonoScheme s then
       fst inst
     else
       recordImplObligation name (fst inst)
@@ -4557,7 +4580,7 @@ inferStmt env (DoExpr e) =
   env
 inferStmt env (DoLet _ True (PVar x) e) = blockRecLet env x e
 inferStmt env (DoLet _ _ pat e) = blockLet env pat e
-inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
+inferStmt env (DoAssign x e) = extendLocalVar env x (monoScheme (infer env e))
 -- A `<-` bind (DoBind) reaching a bare block is a user error: `<-` is
 -- monadic-`do`-only, and a monadic `do` lowers to EDo (desugared before
 -- typecheck), so only a bare-block `<-` arrives here.  Emit a clean LOCATED
@@ -4570,7 +4593,7 @@ inferStmt env (DoBind pat e) =
   let _ = pushTypeError "T-BIND-OUTSIDE-DO" bindOutsideDoMsg
   let pr = inferPat env pat
   let _ = unify (fst pr) t
-  extendVars env (snd pr)
+  extendLocalVars env (snd pr)
 inferStmt _ _ = panic "typecheck: unsupported block statement"
 
 blockRecLet : TcEnv -> String -> Expr -> TcEnv
@@ -4581,7 +4604,7 @@ blockRecLet env x e =
   let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let placeholder = freshVar ()
-  let envSelf = extendVar env x (monoScheme placeholder)
+  let envSelf = extendLocalVar env x (monoScheme placeholder)
   let t1 = infer envSelf e
   let _ = unify placeholder t1
   let _ = exitLevel ()
@@ -4591,7 +4614,7 @@ blockRecLet env x e =
   let _ = recordLocalBind x t1  -- LSP hover (block rec-let bypasses inferPat)
   let sch = generalize t1
   let _ = registerLocalScheme x sch oblN0 callN0 dictN0
-  seedAlphaLets (extendVar env x sch) x e  -- WS-2: α scope-seed
+  seedAlphaLets (extendLocalVar env x sch) x e  -- WS-2: α scope-seed
 
 blockLet : TcEnv -> Pat -> Expr -> TcEnv
 blockLet env (PVar x) e =
@@ -4608,12 +4631,12 @@ blockLet env (PVar x) e =
   let sch = genRestricted (isNonexpansive e) t
   let _ = registerLocalScheme x sch oblN0 callN0 dictN0
   -- WS-2: α scope-seed — bindings are immutable, so the prefix is stable.
-  seedAlphaLets (extendVar env x sch) x e
+  seedAlphaLets (extendLocalVar env x sch) x e
 blockLet env pat e =
   let t = infer env e
   let pr = inferPat env pat
   let _ = unify (fst pr) t
-  extendVars env (snd pr)
+  extendLocalVars env (snd pr)
 
 inferRecordCreate : TcEnv -> String -> List FieldAssign -> Mono
 inferRecordCreate env name fields = match lookupRecordByName name
@@ -5415,7 +5438,7 @@ inferVarPlainId env x id = match lookupVar env x
     -- predicate on whatever the local unifies with (see inferMethodAt's
     -- identical guard for the marked path — the prelude `filter p t = …`
     -- default under a user interface with a method named `p`)
-    if isBodyLocalScheme x s then
+    if lookupLocalFlag env x || isMonoScheme s then
       mono
     else
       recordImplObligation x mono
@@ -6842,7 +6865,7 @@ inferLamChecked env expected pats body =
   let _ = unifyParamsExpected (fst pr) expected
   let saved = perRun.value.curEffect.value
   let _ = setRef perRun.value.curEffect (openRow ())
-  let bodyTy = infer (extendVars env (snd pr)) body
+  let bodyTy = infer (extendLocalVars env (snd pr)) body
   let bodyEff = perRun.value.curEffect.value
   let _ = setRef perRun.value.curEffect saved
   arrowsWithLastEffect (fst pr) bodyEff bodyTy
@@ -7141,7 +7164,7 @@ inferLam env pats body =
   let pr = inferPats env pats
   let saved = perRun.value.curEffect.value
   let _ = setRef perRun.value.curEffect (openRow ())
-  let bodyTy = infer (extendVars env (snd pr)) body
+  let bodyTy = infer (extendLocalVars env (snd pr)) body
   let bodyEff = perRun.value.curEffect.value
   let _ = setRef perRun.value.curEffect saved
   arrowsWithLastEffect (fst pr) bodyEff bodyTy
@@ -7169,7 +7192,7 @@ inferRecLet env x e1 e2 =
   let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let placeholder = freshVar ()
-  let envSelf = extendVar env x (monoScheme placeholder)
+  let envSelf = extendLocalVar env x (monoScheme placeholder)
   let t1 = infer envSelf e1
   let _ = unify placeholder t1
   let _ = exitLevel ()
@@ -7179,7 +7202,7 @@ inferRecLet env x e1 e2 =
   let _ = recordLocalBind x t1  -- LSP hover (recursive PVar let bypasses inferPat)
   let sch = generalize t1
   let _ = registerLocalScheme x sch oblN0 callN0 dictN0
-  infer (seedAlphaLets (extendVar env x sch) x e1) e2  -- WS-2: α scope-seed
+  infer (seedAlphaLets (extendLocalVar env x sch) x e1) e2  -- WS-2: α scope-seed
 
 -- Round-2 adversarial break "let-alias evasion" (#816): register a LOCAL
 -- binding's generalized scheme obligations exactly as processSCC does for
@@ -7193,7 +7216,6 @@ inferRecLet env x e1 e2 =
 -- and substMonos skips ids a different scheme's instantiation does not map.
 registerLocalScheme : String -> Scheme -> Int -> Int -> Int -> Unit
 registerLocalScheme x sch oblN0 callN0 dictN0 =
-  let _ = setRef perRun.value.bodyLocalSchemesRef ((x, schemeIds sch)::perRun.value.bodyLocalSchemesRef.value)
   -- #827/#838 I2: register local-scheme obligations EVERYWHERE, not just inside
   -- IMPL/DEFAULT bodies.  The old `inRigidityBodyRef` gate scoped this to the W3
   -- channel because registering universally re-routed constraints through the
@@ -7229,11 +7251,11 @@ inferLetBody env (PVar x) t1 e1 e2 oblN0 callN0 dictN0 =
   let _ = recordLocalBind x t1  -- LSP hover (PVar let bypasses inferPat)
   let sch = genRestricted (isNonexpansive e1) t1
   let _ = registerLocalScheme x sch oblN0 callN0 dictN0
-  infer (seedAlphaLets (extendVar env x sch) x e1) e2  -- WS-2: α scope-seed
+  infer (seedAlphaLets (extendLocalVar env x sch) x e1) e2  -- WS-2: α scope-seed
 inferLetBody env pat t1 _ e2 _ _ _ =
   let pr = inferPat env pat
   let _ = unify (fst pr) t1
-  infer (extendVars env (snd pr)) e2
+  infer (extendLocalVars env (snd pr)) e2
 
 inferIf : TcEnv -> Expr -> Expr -> Expr -> Mono
 inferIf env c t e =
@@ -7484,7 +7506,7 @@ inferArm : TcEnv -> Mono -> Mono -> Pat -> List Guard -> Expr -> Unit
 inferArm env scrutTy result pat gs body =
   let pr = inferPat env pat
   let _ = unify (fst pr) scrutTy
-  let envBody = inferArmGuards (extendVars env (snd pr)) gs
+  let envBody = inferArmGuards (extendLocalVars env (snd pr)) gs
   unify result (infer envBody body)
 
 -- Thread an arm's guard qualifiers left-to-right (mirror of lib/typecheck.ml's
@@ -7500,7 +7522,7 @@ inferArmGuards env ((GBind p e)::rest) =
   let te = infer env e
   let pr = inferPat env p
   let _ = unify (fst pr) te
-  inferArmGuards (extendVars env (snd pr)) rest
+  inferArmGuards (extendLocalVars env (snd pr)) rest
 
 inferLetGroup : TcEnv -> List LetBind -> Expr -> Mono
 inferLetGroup env binds body =
@@ -7919,7 +7941,7 @@ processLetGroup env binds =
   let callN0 = wMark perRun.value.obls
   let dictN0 = perRun.value.pendingDictAppsN.value
   let placeholders = map letBindPlaceholder binds
-  let env2 = extendVars env placeholders
+  let env2 = extendLocalVars env placeholders
   let _ = inferLetBinds env2 (zipL binds placeholders)
   let _ = exitLevel ()
   -- PLAN.md #11: ground ambiguous Num-only vars (not arg-reachable from any
@@ -7943,7 +7965,6 @@ processLetGroup env binds =
   -- instantiation does not map.
   let callOblsDelta = callOblsWindow callN0
   let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-  let _ = setRef perRun.value.bodyLocalSchemesRef (map (p => (fst p, schemeIds (snd p))) (groupSchemesOf genv binds) ++ perRun.value.bodyLocalSchemesRef.value)
   -- #827/#838 I2: register EVERYWHERE (gate flipped from `inRigidityBodyRef`).  The
   -- uniform deferral (checkUndeterminedObligation RULE 2) makes a generalizable
   -- where/let var defer into the enclosing scheme rather than trip an ambiguity
@@ -8253,7 +8274,7 @@ generalizeGroup env (((LetBind name clauses), (_, sch))::rest) =
   -- WS-2: α scope-seed — single-clause zero-param bindings only (mirror α's
   -- alphaCollectBinds rule); a multi-clause / parameterized binding is not a
   -- known prefix.
-  let env1 = extendVar env name (genRestricted isVal mono)
+  let env1 = extendLocalVar env name (genRestricted isVal mono)
   let env2 = match clauses
     [FunClause [] rhs] => seedAlphaLets env1 name rhs
     _ => env1
@@ -12085,7 +12106,7 @@ extendPropParams : TcEnv -> List PropParam -> TcEnv
 extendPropParams env [] = env
 extendPropParams env ((PropParam x ty)::rest) =
   let scheme = monoScheme (fromAstType (freshTvMap (dedup (tyVarNames ty))) ty)
-  extendPropParams (extendVar env x scheme) rest
+  extendPropParams (extendLocalVar env x scheme) rest
 
 -- gate: impl-body inference runs only when the elaborate/dict path turned it on.
 -- FLAT-PATH SHADOW SCOPING: the impl decls to WALK [decls] are given separately from the
@@ -12296,7 +12317,6 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   let st = sigToSchemeTvs mty
   let ids = methodConstraintSlotIds typarams mty (snd st)
   let _ = setRef perRun.value.currentFn ""
-  let _ = setRef perRun.value.bodyLocalSchemesRef []
   let _ = setRef perRun.value.inRigidityBodyRef True
   -- #837: the schemeObligationsRef snapshot/restore window is RETIRED — a where-helper
   -- named like a top-level binding can no longer leak, now that registration/lookup key
@@ -13220,7 +13240,6 @@ inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats bod
     -- compare so there was no collision; universal default specialization exposes it.
     let _ = setRef perRun.value.currentFn mname
     let _ = setRef perRun.value.currentImplBody True
-    let _ = setRef perRun.value.bodyLocalSchemesRef []
     let _ = setRef perRun.value.inRigidityBodyRef True
     -- #837: schemeObligationsRef snapshot/restore window RETIRED — (name, binding-id)
     -- keying makes a where-helper name collision structurally impossible.
@@ -13600,31 +13619,18 @@ isUnboundTvar m = match normalize m
   TVar _ => True
   _ => False
 
--- a binding introduced INSIDE the body currently being inferred: monomorphic
--- (a lambda/pattern var, scheme `Forall [] []`), or a name this body itself
--- generalized (a local `let`/`where` helper — tracked by bodyLocalSchemesRef at
--- the registerLocalScheme sites; round-2 adversarial break 3: `let p =
--- (y => True)` generalizes, so a mono-only test missed it and a phantom
--- obligation was recorded for the method name it shadows).  Either way the
--- occurrence denotes the local, and recording a method obligation for it
--- would invent a predicate on whatever the local's vars unify with.
--- keyed by BINDING IDENTITY, not bare name (round-3 adversarial breaks C1/C4):
--- an entry matches only when the occurrence resolved to the SAME generalized
--- scheme (its quantified-id list — generalization mints globally fresh ids, so
--- id-list equality identifies the scheme).  A stale entry from a dead nested
--- scope, or a sibling SCC member's where-helper, can then never blind a
--- GENUINE method occurrence: the method scheme's ids differ.  No lifetime
--- management needed — out-of-scope locals cannot be resolved-to anymore.
-isBodyLocalScheme : String -> Scheme -> Bool
-isBodyLocalScheme _ (Forall [] [] _) = True
-isBodyLocalScheme name sch = anyList
-  (p => fst p == name && eqIdList (snd p) (schemeIds sch))
-  perRun.value.bodyLocalSchemesRef.value
-
-eqIdList : List Int -> List Int -> Bool
-eqIdList [] [] = True
-eqIdList (x::xs) (y::ys) = x == y && eqIdList xs ys
-eqIdList _ _ = False
+-- #837 incr2 (Axis A): the value-restricted arm of the old `isBodyLocalScheme`,
+-- kept as a pure STRUCTURAL test.  A monomorphic scheme (`Forall [] []`) is never
+-- a genuine interface-method occurrence — every real method quantifies at least
+-- its interface parameter — so a mono scheme reaching a `recordImplObligation`
+-- guard denotes a value-restricted local (a lambda/pattern var, or a
+-- value-restricted simple `let`) and must NOT record a method obligation.  This
+-- arm is retained verbatim; the old `(name, schemeIds) ∈ bodyLocalSchemesRef`
+-- membership arm (generalized locals) is now the ENV is-local flag
+-- (`lookupLocalFlag`, §TcEnv), which is lexically scoped and cannot go stale.
+isMonoScheme : Scheme -> Bool
+isMonoScheme (Forall [] [] _) = True
+isMonoScheme _ = False
 
 -- any member of [xs] present in [ys] (tiny per-method var lists)
 anyContainsI : List Int -> List Int -> Bool
@@ -14174,6 +14180,7 @@ initialEnv =
       (monoScheme (TCon "Bool"))
       (omInsert "False" (monoScheme (TCon "Bool")) omEmpty))
     []
+    omEmpty
 
 registerAllData : TcEnv -> List Decl -> TcEnv
 registerAllData env [] = env
@@ -14415,7 +14422,6 @@ processSCC env sigs grouped members =
   -- them (`neq x y = not (eq x y)` under `neq : Eq a => …`) is seen as a DISPATCH and
   -- not monomorphised to the shadowing standalone's declared domain.
   let _ = setRef perRun.value.groupConstraintMonosRef (flatMap snd regs)
-  let _ = setRef perRun.value.bodyLocalSchemesRef []
   -- #837: the schemeObligationsRef snapshot/restore window is RETIRED.  It existed
   -- because registerLocalScheme entries were NAME-KEYED and body-scoped: a prelude
   -- where-helper named `g` (core's `find`) leaked obligations onto an unrelated
@@ -14664,7 +14670,7 @@ inferClauseEff env peel (pats, body) =
   let _ = peelOntoParams peel (fst pr) pats
   let saved = perRun.value.curEffect.value
   let _ = setRef perRun.value.curEffect (openRow ())
-  let bodyTy = infer (extendVars env (snd pr)) body
+  let bodyTy = infer (extendLocalVars env (snd pr)) body
   let bodyEff = perRun.value.curEffect.value
   let _ = setRef perRun.value.curEffect saved
   (arrowsWithLastEffect (fst pr) bodyEff bodyTy, effrowLabels bodyEff)
