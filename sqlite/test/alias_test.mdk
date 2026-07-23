@@ -1,0 +1,82 @@
+-- | In-language tests for `AS` ALIASES (column + table, PR #879), driven
+--   through the shared in-memory fixture (`test.dbfix`).
+--
+-- The base round-trip suite (`roundtrip_test.mdk`) deliberately excluded
+-- aliasing when it was written (#878) because the feature didn't exist yet;
+-- this file is that coverage now that it has landed.
+--
+-- Every expected value here was harvested from the freshly-built binary and is
+-- cross-checked against `lib.sqlstmt`'s own doctests (which cover the same
+-- shapes against a smaller ad hoc fixture) and `sqlite/alias_demo.mdk`.
+-- Run with: `medaka test sqlite/test/alias_test.mdk` from the sqlite project root.
+
+import test.{expectEqual}
+import test.dbfix.{q}
+import lib.recordfmt.{Cell, CNull, CInt, CText}
+import lib.sqlstmt.{parseSelect, renderSelect}
+
+-- ── Column output alias (`AS` and the bare form) ────────────────────────────
+test "SELECT … AS alias renames the output column" = expectEqual
+  (q "SELECT name AS n FROM users ORDER BY id")
+  (Ok
+    [
+      [CText "Alice"],
+      [CText "Bob"],
+      [CText "Carol"],
+      [CText "Dave"],
+      [CText "Eve"],
+    ])
+
+test "SELECT … bare alias (no AS) is equivalent" = expectEqual
+  (q "SELECT name n FROM users ORDER BY id")
+  (Ok
+    [
+      [CText "Alice"],
+      [CText "Bob"],
+      [CText "Carol"],
+      [CText "Dave"],
+      [CText "Eve"],
+    ])
+
+test "count(*) AS c aliases an aggregate" =
+  expectEqual (q "SELECT count(*) AS c FROM users") (Ok [[CInt 5]])
+
+-- ── Table alias + alias-qualified column ref (`AS` and the bare form) ───────
+test "table alias (AS) resolves an alias-qualified column ref" = expectEqual
+  (q "SELECT u.name FROM users AS u WHERE u.age > 20 ORDER BY u.id")
+  (Ok [[CText "Alice"], [CText "Carol"], [CText "Dave"]])
+
+test "table alias (bare, no AS) is equivalent" = expectEqual
+  (q "SELECT u.name FROM users u WHERE u.age > 20 ORDER BY u.id")
+  (Ok [[CText "Alice"], [CText "Carol"], [CText "Dave"]])
+
+-- ── Aliased JOIN, alias-qualified on both sides ─────────────────────────────
+-- users id 1..5; orders (oid,uid,amount) — oid 14's uid 99 has no matching
+-- user, so INNER JOIN drops it; oid 12's amount is NULL and still matches.
+test "aliased INNER JOIN keeps only matching rows, alias-qualified both sides" = expectEqual (q "SELECT o.amount FROM users u INNER JOIN orders o ON u.id = o.uid ORDER BY o.oid") (Ok [[CInt 100], [CInt 250], [CNull], [CInt 50]])
+
+-- ── Column alias + table alias together, with GROUP BY ──────────────────────
+test "column alias + table alias together, with GROUP BY" = expectEqual
+  (q
+    "SELECT u.name AS who, count(*) AS c FROM users u GROUP BY u.name ORDER BY u.name")
+  (Ok
+    [
+      [CText "Alice", CInt 1],
+      [CText "Bob", CInt 1],
+      [CText "Carol", CInt 1],
+      [CText "Dave", CInt 1],
+      [CText "Eve", CInt 1],
+    ])
+
+-- ── parse ∘ render canonicalizes AS aliases (column + table) ───────────────
+test "parse-render canonicalizes a bare alias to an explicit AS" =
+  expectEqual
+    (map renderSelect (parseSelect "SELECT a x FROM t u"))
+    (Ok "SELECT a AS x FROM t AS u")
+
+-- ── A non-reserved clause keyword after a table is NOT swallowed as an alias ─
+-- (an unsupported join modifier stays a loud rejection, not a silent wrong parse)
+test "RIGHT JOIN is rejected, not swallowed as a table alias" =
+  expectEqual
+    (map renderSelect (parseSelect "SELECT a FROM t RIGHT JOIN u ON t.x = u.y"))
+    (Err "unsupported SQL: 'RIGHT' at 22")
