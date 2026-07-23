@@ -143,8 +143,8 @@ checkAnnotTooGeneral : Ty -> List Mono -> Unit
 checkArgEffVarCoverage : String -> String -> Ty -> Unit
 checkArgEffVars : String -> String -> Ty -> List (String, List Atom) -> List (String, List Atom) -> List String -> Unit
 checkBodyImpl : List (String, Scheme) -> CheckMode -> List Decl -> List (String, Scheme)
-checkCallObligations : List Decl -> List UObligation -> Unit
-checkCallObligationsU : ImplUniverse -> List String -> List UObligation -> Unit
+checkCallObligations : Bool -> Bool -> List Decl -> List UObligation -> Unit
+checkCallObligationsU : Bool -> Bool -> ImplUniverse -> List String -> List UObligation -> Unit
 checkClausesNonFunctionLocated : List String -> String -> List FunClause -> Unit
 checkCoherence : List Decl -> Unit
 checkDefaultEffectLaunder : String -> Mono -> Mono -> Option Loc -> Unit
@@ -163,8 +163,6 @@ checkImplCompletenessMap : Map String (List String) -> List Decl -> Unit
 checkImplEffVarRigidity : String -> Ty -> List (String, Ref Effvar) -> Bool -> Option Loc -> Unit
 checkImplEffectLaunder : String -> String -> Mono -> Mono -> Option Loc -> Unit
 checkImplMethodRigidity : String -> String -> Ty -> List Mono -> List (String, Mono) -> List (String, Ref Effvar) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, List Mono, Option Loc) -> Bool -> Option Loc -> Unit
-checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> Unit
-checkImplObligationsU : ImplUniverse -> List (String, List String, Ty, Mono, Option Loc) -> Unit
 checkInterfaceCycles : List Decl -> Unit
 checkLetBind : String -> List FunClause -> Unit
 checkLetBinds : List LetBind -> Unit
@@ -188,10 +186,9 @@ checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> 
 checkModulesPreamble : List Decl -> List Decl -> List (String, List Decl) -> (List (String, Scheme), List (String, Scheme))
 checkNestedReqs : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
 checkOneAxis : String -> String -> Param -> Unit
-checkOneCallObligation : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkOneCallObligation : Bool -> ImplUniverse -> String -> List Mono -> Option Loc -> Unit
 checkOneEffectParam : String -> String -> Unit
 checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> Unit
-checkOneImplObligation : ImplUniverse -> String -> List String -> Ty -> Mono -> Option Loc -> Unit
 checkPhantomMethods : List Decl -> Unit
 checkProductAxes : String -> Param -> Unit
 checkProductAxesGo : String -> List (String, Param) -> Unit
@@ -462,7 +459,6 @@ eqCompareOp : Mono -> Mono -> Mono
 eqInt : Int -> Int -> Bool
 eqIntList : List Int -> List Int -> Bool
 eqStr : String -> String -> Bool
-eqUnimplementableHead : Mono -> Bool
 exitLevel : Unit -> Unit
 expandIoInBound : List Atom -> List Atom
 expandSupersCross : List Decl -> List (String, List Int) -> List (String, List String) -> (List (String, List Int), List (String, List String))
@@ -633,6 +629,7 @@ implMatchesSuper : String -> List Ty -> Decl -> Bool
 implMatchesU : ImplUniverse -> String -> List Mono -> Bool
 implMethodName : ImplMethod -> String
 implMethodNameTc : ImplMethod -> String
+implOblToU : (String, List String, Ty, Mono, Option Loc) -> UObligation
 implSubject : String -> String -> String
 implTysIfMatch : String -> String -> Decl -> List (List Ty)
 importDefinersOf : List Decl -> List (String, String)
@@ -941,7 +938,6 @@ opDictVarOf : Bool -> String -> Mono -> Bool -> String -> Option String
 openRow : Unit -> EffRow
 orElseLoc : Option Loc -> Option Loc -> Option Loc
 ordCompareOp : Mono -> Mono -> Mono
-ordUnimplementableHead : Mono -> Bool
 overAppliedMsg : String -> Int -> Int -> String
 pairIface : String -> Int -> List (String, Int)
 pairRecordByName : String -> Option (String, RecordInfo)

@@ -11993,8 +11993,13 @@ checkBodyImpl seed mode prog0 =
   -- setNumlitFloats-vs-checkCallObligations ordering also differs per path — preserved.
   let _ = match mode
     Flat _ =>
-      let _ = checkImplObligations fullUniverse perRun.value.pendingImplObligations.value
-      let _ = checkCallObligations fullUniverse perRun.value.obls.items.value
+      -- #838 I4: impl obligations now go through the unified checkCallObligations
+      -- (projected via implOblToU), same universe/order as before the checker swap.
+      -- Impl channel = (deferNonGround=True, dedup=False) — retired checkImplObligationsU
+      -- semantics: defer non-ground, and check EVERY obligation (no seen skip; S0 #863).
+      -- Call channel = (deferNonGround=False, dedup=True): RULE 2/3 + the seen dedup.
+      let _ = checkCallObligations True False fullUniverse (map implOblToU perRun.value.pendingImplObligations.value)
+      let _ = checkCallObligations False True fullUniverse perRun.value.obls.items.value
       let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
       ()
     Module _ _ _ =>
@@ -12009,10 +12014,13 @@ checkBodyImpl seed mode prog0 =
       -- single-param obligations the perf `modules` shape exercises.
       let obUniv = ImplUniverse crossRun.value.obUnivConcreteRef.value crossRun.value.obUnivHeadlessRef.value crossRun.value.obUnivIfaceTagsRef.value
       let _ = if not driverState.value.implInferEnabled.value then
-                let _ = checkImplObligationsU obUniv perRun.value.pendingImplObligations.value
+                -- #838 I4: unified checker, same `obUniv`, same `not implInferEnabled`
+                -- gate and same order relative to setNumlitFloats as the retired checker.
+                -- Impl channel = (deferNonGround=True, dedup=False); call channel = (False, True).
+                let _ = checkCallObligationsU True False obUniv [] (map implOblToU perRun.value.pendingImplObligations.value)
                 setNumlitFloats ()
               else ()
-      let _ = checkCallObligationsU obUniv [] perRun.value.obls.items.value
+      let _ = checkCallObligationsU False True obUniv [] perRun.value.obls.items.value
       ()
   let _ = setRef perRun.value.localSchemesOut (mapLocalSchemes perRun.value.localBindRefs.value)
   let _ = setRef perRun.value.seedSchemesOut seed
@@ -12588,17 +12596,23 @@ univHeadless (ImplUniverse _ hl _) iface = bucketOf iface hl
 -- a constrained-generic `Ord a =>` site whose receiver is still `a` is correctly
 -- deferred to the caller) — verify the program declares a matching impl.  None →
 -- `No impl of <iface> for <args>`.
--- FLAT entry: builds the keyed universe from `prog`.  MODULE entry: checkImplObligationsU
--- with the persistent accumulated universe (no per-module rebuild — #154 PR3).
-checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> Unit
-checkImplObligations prog obligations =
-  checkImplObligationsU (buildImplUniverse prog) obligations
-
-checkImplObligationsU : ImplUniverse -> List (String, List String, Ty, Mono, Option Loc) -> Unit
-checkImplObligationsU _ [] = ()
-checkImplObligationsU univ ((iface, typarams, mty, occ, loc)::rest) =
-  let _ = checkOneImplObligation univ iface typarams mty occ loc
-  checkImplObligationsU univ rest
+-- #838 I4: the second obligation checker (checkImplObligations/checkImplObligationsU/
+-- checkOneImplObligation) is RETIRED — impl obligations now route through the unified
+-- checkOneCallObligation (so a rule lands ONCE).  This projects a surviving
+-- `pendingImplObligations` 5-tuple to the `UObligation` shape the call channel consumes.
+-- The projection is at CHECK time via `dispatchMonosOf` (NOT `oblDispatchMonos`, which
+-- special-cases Num → [] and would drop a numeric literal's operand) — byte-faithful to
+-- what checkOneImplObligation projected.  `originId`/`prov` are inert here: the checker
+-- reads only pred.iface/pred.args/loc, never prov (§2.3(a) — one conservative prov).
+-- `groundMultiParamObligations` runs BEFORE the gate on both arms and grounds the shared
+-- mono cells, so the projected args are already ground for multi-param obligations.
+implOblToU : (String, List String, Ty, Mono, Option Loc) -> UObligation
+implOblToU (iface, typarams, mty, occ, loc) = UObligation {
+  pred = Predicate { iface = iface, args = dispatchMonosOf typarams mty occ },
+  originId = 0,
+  prov = PMethodOcc,
+  loc = loc,
+}
 
 -- #11 soundness (native obligation hole): check each constrained-fn CALL site's
 -- instantiated obligation.  When `f : C a => …` is applied (`g = f "hello"`),
@@ -12611,9 +12625,44 @@ checkImplObligationsU univ ((iface, typarams, mty, occ, loc)::rest) =
 -- #838 I1: takes `List UObligation` (the ported call channel) instead of the old bare
 -- tuple.  Deferral is BYTE-IDENTICAL to before the port — checkOneCallObligation still
 -- reads (iface, occs, loc) exactly as it did; only the storage/read shape changed.
-checkCallObligations : List Decl -> List UObligation -> Unit
-checkCallObligations prog obligations =
-  checkCallObligationsU (buildImplUniverse prog) [] obligations
+-- #838 I4: [deferNonGround] selects the ONE rule that genuinely differs between the two
+-- obligation channels this single checker now serves (all GROUND rules — no-prelude-Num,
+-- unimplementable-head, function-reject, accept/nested-reqs, reportNumOrNoImpl reframe —
+-- are shared, which is the payoff).  False = the CALL channel: a non-ground obligation
+-- runs checkUndeterminedObligations (RULE 2/3 ambiguity).  True = the retired IMPL
+-- channel's semantics: a non-ground impl obligation DEFERS unconditionally (old
+-- checkOneImplObligation step 7).  This is NOT a mode fork on elaboration — it is the
+-- same fact the two checkers always encoded: the impl channel's genuinely-ambiguous
+-- subset is caught out-of-band by registerAmbiguousConstraints (which re-records the
+-- escaped-unanchored var as a PCallSlot CALL obligation → RULE 3), so applying RULE 3
+-- to the impl channel directly would ALSO reject the benign non-ground impl obligations
+-- (prelude interface-method occurrences: a bare receiver var recorded outside any
+-- generalized-group-close window, so in neither deferrableVarIds nor the RETPOS pass) —
+-- a spurious `Ambiguous instance` on essentially every program.  Adding those vars to
+-- deferrableVarIds instead is UNSOUND: it is shared with the call channel's RULE 2, and
+-- the RETPOS-registered ambiguous var must stay OUT of it or the genuine ambiguity would
+-- defer too.  So the disposition is per-channel, byte-identical to each retired checker.
+-- #838 I4 (S0 fix, PR #863 review): [dedup] is the SECOND per-channel fact.  The CALL
+-- channel dedups by (iface, every-arg-head-tycon) [seen] because the SAME call obligation
+-- is recorded by more than one path (EVar + EDictAt).  The retired checkImplObligationsU
+-- had NO seen — it checked EVERY element.  Sharing the CALL channel's seen with the impl
+-- window SILENTLY DROPS a failing obligation whose key collides with a PASSING sibling:
+-- a tuple's head tycon is `__tuple2__` regardless of element types, so `Debug (Color,3)`
+-- and `Debug (1,2)` share key `Debug,__tuple2__`; LIFO checks the passing one first, adds
+-- the key to seen, and SKIPS the failing one — its checkNestedReqs (the `No impl Debug
+-- Color` reject) never runs → check-green, run-CRASH (any parametric conditional instance:
+-- tuple/List/Option).  So the IMPL channel passes dedup=False (check every obligation,
+-- like the retired checker); the CALL channel keeps dedup=True.  This drops only the
+-- check-level SKIP of a DIFFERENT-verdict same-key obligation; the EMISSION-level collapse
+-- of two IDENTICAL rejects is unchanged (checkOneCallObligation's pushTypeErrorOnceAt).
+checkCallObligations : Bool -> Bool -> List Decl -> List UObligation -> Unit
+checkCallObligations deferNonGround dedup prog obligations =
+  checkCallObligationsU
+    deferNonGround
+    dedup
+    (buildImplUniverse prog)
+    []
+    obligations
 
 -- [seen] dedups by (iface, EVERY argument's concrete-head-tycon): the SAME
 -- unsatisfiable obligation can be recorded by more than one path (a use marked both
@@ -12622,17 +12671,20 @@ checkCallObligations prog obligations =
 -- head-of-arg-0-only key conflated `Ix Int Bool` with `Ix Int Char` and reported
 -- only the first (#607).
 -- ORDER of errors follows the OBLIGATION list (unchanged), never the impl universe.
-checkCallObligationsU : ImplUniverse -> List String -> List UObligation -> Unit
-checkCallObligationsU _ _ [] = ()
-checkCallObligationsU univ seen (o::rest) =
+checkCallObligationsU : Bool -> Bool -> ImplUniverse -> List String -> List UObligation -> Unit
+checkCallObligationsU _ _ _ _ [] = ()
+checkCallObligationsU deferNonGround dedup univ seen (o::rest) =
   let iface = o.pred.iface
   let occs = o.pred.args
   let loc = o.loc
   let key = joinWith "," (iface :: map (o2 => fromOption "" (headTyconMono o2)) occs)
-  if contains key seen then checkCallObligationsU univ seen rest
+  -- dedup=False (IMPL channel): never SKIP — check every obligation like the retired
+  -- checkImplObligationsU (S0 #863: a same-key different-verdict obligation must not be
+  -- dropped).  dedup=True (CALL channel): skip a repeat of an already-checked key.
+  if dedup && contains key seen then checkCallObligationsU deferNonGround dedup univ seen rest
   else
-    let _ = checkOneCallObligation univ iface occs loc
-    checkCallObligationsU univ (key::seen) rest
+    let _ = checkOneCallObligation deferNonGround univ iface occs loc
+    checkCallObligationsU deferNonGround dedup univ (key::seen) rest
 
 -- [occs] is the predicate's whole argument vector.  At arity 1 the match test stays
 -- implMatchesReceiverU (byte-identical to the pre-#607 behaviour: for a 1-param
@@ -12640,26 +12692,44 @@ checkCallObligationsU univ seen (o::rest) =
 -- matches the FULL head vector — the difference between "is there an impl of Ix whose
 -- receiver is String" (yes-ish, vacuously) and "is there an impl of Ix for
 -- (String, Bool)" (no).
-checkOneCallObligation : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
-checkOneCallObligation univ iface occs loc =
+checkOneCallObligation : Bool -> ImplUniverse -> String -> List Mono -> Option Loc -> Unit
+checkOneCallObligation deferNonGround univ iface occs loc =
   let args = map normalize occs
   if isEmptyL args then ()
   else if iface == "Num" && anyListM numUnimplementableHead args then
     pushNoImplError iface loc args
   -- A function-typed constraint obligation is fully ground yet has no impl — report
   -- `No impl of <iface> for <a -> b>` (not the emit path's misleading "Ambiguous").
+  -- Placed BEFORE the no-prelude-Num skip below so a no-prelude `Num (a -> b)` still
+  -- rejects structurally (mirrors checkOneImplObligation, where the Num/Eq/Ord
+  -- unimplementable-head rejects precede the no-prelude skip).
   else if anyListM monoIsFunction args && not (implMatchesArgsU univ iface args) then
     pushNoImplError iface loc args
+  -- #838 I4 (was checkOneImplObligation step 4): no-prelude Num skip.  A grounded
+  -- `Num Int` literal in a prelude-free program (bare-HM oracle, `ifaceRegistered "Num"`
+  -- False) has no `impl Num Int`; without this guard the ground path below reports a
+  -- spurious `No impl of Num for Int`, breaking `typecheck_main`/tc_probe oracle parity.
+  else if iface == "Num" && not (ifaceRegistered "Num") then ()
+  -- #838 I4: the ONE per-channel branch (see checkCallObligations).  IMPL channel
+  -- (deferNonGround) defers a non-ground obligation unconditionally — byte-identical to
+  -- the retired checkOneImplObligation step 7; its genuine ambiguities arrive via the
+  -- CALL channel (registerAmbiguousConstraints → PCallSlot).  CALL channel runs the
+  -- RULE 2/3 undetermined-var analysis.
   else if not (allConcreteHeads args) then
-    checkUndeterminedObligations univ iface args loc
+    if deferNonGround then () else checkUndeterminedObligations univ iface args loc
   else if implMatchesArgsU univ iface args then
     -- Recurse into a matched CONDITIONAL instance's `requires` (`impl Display (a, b)
     -- requires Display a, Display b`) so an unsatisfied element constraint surfaces
     -- (`main = (Red, 5)` → `No impl of Display for Color`) instead of the head-only
     -- match silently accepting (→ null element dict → SIGSEGV at runtime).
     checkNestedReqs univ iface args loc
+  -- #838 I4 (was checkOneImplObligation step 9): reportNumOrNoImpl is a strict superset
+  -- of pushNoImplError — it reframes a ground `Num`-obligation tracing to a numeric
+  -- LITERAL (loc-keyed `numlitReframeLoc`, not prov-keyed) into `T-TYPE-MISMATCH`, and
+  -- degrades to pushNoImplError verbatim for any non-literal (every call obligation) —
+  -- so this restores the impl channel's literal-mismatch diagnostic quality byte-for-byte.
   else
-    pushNoImplError iface loc args
+    reportNumOrNoImpl iface args loc
 
 -- match test for a call obligation's argument vector: receiver-only at arity 1 (the
 -- historical, deliberately lenient 1-param shape), full head-vector at arity >= 2.
@@ -12808,28 +12878,6 @@ substTyVars sub (TyTuple ts) = TyTuple (map (substTyVars sub) ts)
 substTyVars sub (TyEffect es eff t) = TyEffect es eff (substTyVars sub t)
 substTyVars sub (TyConstrained cs t) = TyConstrained cs (substTyVars sub t)
 
-checkOneImplObligation : ImplUniverse -> String -> List String -> Ty -> Mono -> Option Loc -> Unit
-checkOneImplObligation univ iface typarams mty occ loc =
-  let args = dispatchMonosOf typarams mty occ
-  -- PLAN.md #11 soundness: under Num-polymorphic literals a literal's var can unify
-  -- with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`) or be forced
-  -- into an abstract HKT position (`do x <- 42` ⇒ `Num (m a)` with an unbound head
-  -- `m`).  Pre-#11 these failed at unification (the literal was concretely Int); now
-  -- the obligation is non-concrete and would be deferred-then-DROPPED → a silent
-  -- accept.  A function / unbound-headed application can never have a `Num` impl, so
-  -- REJECT here even though inner vars are still free, restoring the structural error.
-  -- Mirror of lib/typecheck.ml's check_method_usages Num guards.
-  --
-  -- No-prelude (`Num` unregistered): a numeric literal still records a Num obligation
-  -- (inferNumLitBare) so value-level defaulting can ground it to Int, but the bare-HM
-  -- oracle imposes NO `impl Num` constraint — so SKIP the reject here (there is no
-  -- `impl Num Int` to match in the prelude-free program).  This keeps the no-prelude
-  -- `typecheck_main`/tc_probe oracle parity: a grounded `Num Int` literal types Int
-  -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
-  -- (function/unbound `m`) stays even no-prelude — it is a structural unification
-  -- error, not a missing-impl one.
-  if iface == "Num" && anyListM numUnimplementableHead args then pushNoImplError iface loc args else if iface == "Eq" && anyListM eqUnimplementableHead args then pushNoImplError iface loc args else if iface == "Ord" && anyListM ordUnimplementableHead args then pushNoImplError iface loc args else if iface == "Num" && not (ifaceRegistered "Num") then () else if isEmptyL args then () else if anyListM monoIsFunction args && not (implMatchesU univ iface args) then pushNoImplError iface loc args else if not (allConcreteHeads args) then () else if implMatchesU univ iface args then checkNestedReqs univ iface args loc else reportNumOrNoImpl iface args loc
-
 -- A function-typed dispatch mono is fully GROUND — its head is `->`, structurally
 -- un-implementable for an ordinary interface (no `impl Display (a -> b)` exists).
 -- So a function-typed obligation with no matching impl is a genuine `No impl of
@@ -12915,22 +12963,10 @@ checkReqOne univ iface args loc
   | implMatchesU univ iface args = checkNestedReqs univ iface args loc
   | otherwise = pushNoImplError iface loc args
 
--- a mono no `Ord` impl can ever match: a function type (`<` on functions).  Like
--- Eq (and unlike Num) an unbound spine head DEFERS — a downstream `Ord a =>`
--- constraint resolves it — so only functions are structurally un-Ord.
-ordUnimplementableHead : Mono -> Bool
-ordUnimplementableHead m = match normalize m
-  TFun _ _ _ => True
-  _ => False
-
--- a mono no `Eq` impl can ever match: a function type (`==` on functions).  Unlike
--- Num we do NOT reject an unbound spine head (`m a`) — for Eq that is a genuinely
--- polymorphic operand that a downstream `Eq a =>` constraint resolves, so it must
--- DEFER (allConcreteHeads), not reject.  Only functions are structurally un-Eq.
-eqUnimplementableHead : Mono -> Bool
-eqUnimplementableHead m = match normalize m
-  TFun _ _ _ => True
-  _ => False
+-- #838 I4: the function-typed Ord/Eq unimplementable-head rejects were only used by the
+-- retired checkOneImplObligation.  Both fired only on TFun, which checkOneCallObligation's
+-- generic `anyListM monoIsFunction args && not implMatchesArgsU` rule already subsumes, so
+-- they are removed rather than left dead.
 
 -- a mono no `Num` impl can ever match: a function type, or an application whose
 -- spine head is still an unbound tyvar (a literal forced into `m a` monad position)
