@@ -124,15 +124,27 @@ queries = [
   "SELECT name FROM users WHERE name LIKE 'a%'",
   "SELECT name FROM users WHERE age BETWEEN 20 AND 30",
   "SELECT upper(name) FROM users",
+  -- Column aliases (#879) and RIGHT JOIN (#915) also grew in after this
+  -- probe was first written and used to live in the rejection corpus below.
+  "SELECT name AS n FROM users",
+  "SELECT users.name FROM users RIGHT JOIN orders ON users.id = orders.uid",
+  -- UNION (#911): the rejection corpus's placeholder query ("SELECT a FROM
+  -- t UNION SELECT b FROM u") never exercised set-op support either way —
+  -- `t`/`u` don't exist in this probe's schema, so it errors on table
+  -- lookup regardless of whether UNION itself parses. Re-tested against
+  -- this probe's real schema instead:
+  "SELECT name FROM users WHERE city = 'pdx' UNION SELECT name FROM users WHERE age = 24 ORDER BY name",
 ]
 
 -- Unsupported SQL: each MUST come back as a clean `error: ...`.
 rejects : List String
 rejects = [
-  "SELECT a FROM t UNION SELECT b FROM u",
-  "SELECT name AS n FROM users",
+  -- `flag` doesn't exist — this is an unknown-column rejection (like
+  -- `nosuch` below), not a test of the `TRUE` literal: `TRUE`/`FALSE` have
+  -- been plain literals (parsed to `LInt 1` / `LInt 0`) since the
+  -- expression grammar's very first commit, so `= TRUE` itself has never
+  -- been rejected.
   "SELECT name FROM users WHERE flag = TRUE",
-  "SELECT users.name FROM users RIGHT JOIN orders ON users.id = orders.uid",
   "SELECT name FROM users WHERE count(*) > 1",
   "SELECT sum(*) FROM orders",
   "SELECT name, count(*) FROM users GROUP BY city",
