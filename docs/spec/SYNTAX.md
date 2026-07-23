@@ -802,6 +802,71 @@ just choke, it names the removal and points at a replacement. Tree-wide gate:
 
 ---
 
+## Reserved words / keywords
+
+These spellings are **never legal as an ordinary identifier** — a variable,
+function, field, or pattern-binding name. All 31 come from the lexer's own
+keyword table, `keywordOrIdent` (`compiler/frontend/lexer.mdk:426-456`); any
+spelling not in that table lexes as a plain `TIdent` and is fair game as a
+name.
+
+⚠️ **If `medaka check` reports `expected a dedent` (or another confusing,
+mis-located error) on code that looks syntactically fine, check whether one of
+your identifiers is on this list first** — that is the classic symptom of
+hitting a reserved word where the parser expected a name, and it is a much
+more common cause than an actual parser bug.
+
+```
+as        bench     data      default   deriving  do        effect
+else      export    extern    function  if        impl      import
+in        interface let       match     mut       newtype   of
+prop      public    record    rec       requires  test      then
+type      where     with
+```
+
+(31 distinct spellings, alphabetized, wrapped for width — no repeats.)
+
+They fall into three groups, by how misusing one as an identifier actually
+fails:
+
+1. **Clean, located `P-RESERVED-KEYWORD` diagnostic** — the common case. 22 of
+   the 31 (`in`, `match`, `data`, `interface`, `default`, `impl`, `import`,
+   `export`, `public`, `where`, `of`, `do`, `as`, `extern`, `requires`,
+   `deriving`, `type`, `newtype`, `prop`, `test`, `bench`, `effect`) are
+   checked by `reservedIdentKeyword` wherever a pattern/identifier is expected
+   (`compiler/frontend/parser.mdk:1562-1589`) and produce a message of the
+   shape `` `test` is a reserved keyword — it can't be used as a variable or
+   pattern name. Rename it (e.g. `test_`). `` with a machine-applicable fix
+   (`medaka check --json` reports this as diagnostic code `P-RESERVED-KEYWORD`
+   — see `compiler/DIAGNOSTIC-CODES-DESIGN.md`).
+2. **Reserved-but-removed constructs** — `mut`, `record`, `function`, `with`
+   have *no remaining valid grammar use at all* (unlike group 1's keywords,
+   which are legal in their own declaration form — just not as a name
+   elsewhere). A dedicated pre-grammar scan in `parser.mdk` (`firstMutIdx`,
+   `firstRecordIdx`, `firstFunctionIdx`, `firstWithIdx`, around
+   `compiler/frontend/parser.mdk:4378-4500`) catches every occurrence of these
+   four before the generic diagnostic ever fires, and reports the *removal*
+   directly — e.g. a bare `mut = 5` fails as `` `let mut` has been removed —
+   bindings are immutable… `` (verified on the current binary; diagnostic code
+   `P-PARSE`, not `P-RESERVED-KEYWORD` — these four are removal errors, not
+   reserved-identifier errors) — see "Removed — do not use" below for the
+   full table.
+3. **Contextual keywords with no dedicated message** — `let`, `rec`, `if`,
+   `then`, `else` are deliberately **absent** from `reservedIdentKeyword`
+   (`compiler/frontend/parser.mdk:1555-1561`) because each is legitimately
+   expected to follow a pattern in some position (`rec` after `let`, `if` as a
+   match-arm guard's leading token, etc.), so the parser can't treat their
+   mere appearance as fatal. Using one of these five as a plain identifier is
+   still a hard parse error — there is just no clean located hint for it, so
+   it is the group most likely to surface as a bare `expected a dedent`/
+   `expected pattern` with a confusing caret position.
+
+None of the 31 can be redefined or shadowed as a name in any of the three
+groups; group is only about *how clear the resulting error is*, not whether
+the word is usable.
+
+---
+
 ## Verification
 
 Every ` ```medaka ` (single-file) and ` ```medaka-project ` (multi-file, using
