@@ -1,0 +1,8 @@
+needsOrd : Ord a => a -> a -> Bool
+needsOrd x y = x < y
+
+top a b = h a b
+  where
+    h x y = needsOrd x y
+
+main = println (top 3 4)
