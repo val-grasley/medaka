@@ -167,7 +167,7 @@ typecheck_main check_main check_batch \
 check_modules_main check_all_main check_match_main exhaust_main lint_main lint_fix_main \
 diagnostics_main diagnostics_project_main \
 fmt_main new_main test_main repl_main fuzz_gen_main \
- profile_main profile_modules_main"
+ profile_main profile_modules_main refindex_main"
 
 # ── --list : print every oracle name this script knows how to build ───────────
 # Derived from $ENTRIES (the single source of truth a few lines up), never
