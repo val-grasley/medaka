@@ -1,0 +1,31 @@
+-- Positive fixture for rule-self-shadow-extern (#266): a top-level binding that
+-- unconditionally forwards to itself is an infinite self-recursion, not a forward
+-- to a same-named extern/definition. Legit recursion (a base case) must NOT fire.
+-- (Exported so rule-dead-code stays quiet; signed so rule-missing-signature does.)
+
+-- FIRES: the #266 shape — an extern re-export written under the same name.
+export stringLength : String -> Int
+stringLength s = stringLength s
+
+-- FIRES: a self-referential value (`x = x`).
+export loopVal : Int
+loopVal = loopVal
+
+-- FIRES: unconditional self-call with a different argument — still no base case.
+export incLoop : Int -> Int
+incLoop n = incLoop (n + 1)
+
+-- does NOT fire: base case via `if`.
+export fac : Int -> Int
+fac n = if n == 0 then 1 else n * fac (n - 1)
+
+-- does NOT fire: base case via a sibling clause.
+export countdown : Int -> Int
+countdown 0 = 0
+countdown n = countdown (n - 1)
+
+-- does NOT fire: body is the bare function value (a partial application, no loop),
+-- an `EVar` rather than a self-call spine. (Lint runs pre-typecheck, so the shape
+-- is what matters here, not this binding's type.)
+export getSelf : Int -> Int
+getSelf x = getSelf

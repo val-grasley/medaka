@@ -177,6 +177,9 @@ ruleNameDeadCode = "rule-dead-code"
 ruleNameConcatToInterp : String
 ruleNameConcatToInterp = "rule-concat-to-interp"
 
+ruleNameSelfShadowExtern : String
+ruleNameSelfShadowExtern = "rule-self-shadow-extern"
+
 -- ── the registry ─────────────────────────────────────────────────────────────
 -- Each Rule is its own top-level binding (rather than an inline element of the
 -- `allRules` list literal) so the LLVM emitter's record-field scanner — which
@@ -373,6 +376,16 @@ concatToInterpRule = Rule {
   fix = Some concatToInterpFix,
 }
 
+selfShadowExternRule : Rule
+selfShadowExternRule = Rule {
+  name = ruleNameSelfShadowExtern,
+  descr = "top-level binding unconditionally forwards to itself (`f s = f s`, `x = x`) — an infinite self-recursion, not a forward to a same-named extern (#266)",
+  severity = SevWarning,
+  enabled = True,
+  check = ruleSelfShadowExtern,
+  fix = None,
+}
+
 export allRules : List Rule
 allRules = [
   matchParamRule,
@@ -394,6 +407,7 @@ allRules = [
   bindChainToDoRule,
   deadCodeRule,
   concatToInterpRule,
+  selfShadowExternRule,
 ]
 
 -- ── the cross-file registry ───────────────────────────────────────────────────
@@ -1308,6 +1322,94 @@ missingSigFinding : (String, Option Loc) -> Finding
 missingSigFinding (name, loc) = Finding {
   rule = ruleNameMissingSignature,
   message = "top-level '\{name}' has no type signature. Add a `\{name} : …` declaration",
+  severity = SevWarning,
+  loc = loc,
+}
+
+-- ── rule: self-shadow-extern (#266) ───────────────────────────────────────────
+-- A top-level binding that UNCONDITIONALLY forwards to itself, with no branch that
+-- could supply a base case.  The classic shape is an extern re-export written under
+-- the SAME name — `stringLength s = stringLength s`, intending to forward to the
+-- `stringLength` extern but in fact recursing into the local binding forever — and
+-- its value-level sibling `x = x`.  Both typecheck with ZERO diagnostics and
+-- stack-overflow at runtime (#266, the repo's #1 check-green/run-dies class).
+--
+-- The predicate is extern-AGNOSTIC — decided from the raw AST alone:
+--   * NULLARY binding `x = <body>` fires iff `<body>` is EXACTLY the bare self
+--     reference `EVar x` (after stripping ELoc/EAnnot).  That is the forcing loop
+--     `x = x`.  `x = f x` / `x = x + 1` are NOT flagged (head isn't the bare self).
+--   * N-ARY binding `f a… = <body>` fires iff `<body>` is an application SPINE
+--     whose head (after stripping wrappers) is `EVar f` — `f s = f s`,
+--     `stringLength s = stringLength s`, `f s = f (s + 1)`: every one loops forever
+--     because nothing between the `=` and the self-call can terminate it.
+-- A body headed by `if`/`match`/`EGuards`/`let`/lambda is NOT an unconditional
+-- self-call (the self-call, if any, sits inside a branch that may also NOT be
+-- taken), so legitimate recursion — `fac`, `map`, ANY base-case recursion — is
+-- skipped: it never has a bare self-call at the head.  `f x = f` (returns a partial
+-- application, no loop) is skipped too — its body is an `EVar`, not an `EApp`.
+--
+-- To stay sound under MULTI-CLAUSE definitions, a name fires only when EVERY clause
+-- of that name is an unconditional self-call: a single non-self clause is a
+-- candidate base case (`f [] = 0` beside `f xs = f (tail xs)`), so the whole name
+-- is spared.  Purely syntactic, no false-fire risk beyond genuinely-looping code.
+ruleSelfShadowExtern : String -> String -> Positions -> List Decl -> List Finding
+ruleSelfShadowExtern _ _ pos prog =
+  selfShadowFindings (flatMap selfShadowClauseL (declLocList pos prog))
+
+selfShadowFindings : List (String, List Pat, Expr, Option Loc) -> List Finding
+selfShadowFindings clauses =
+  map
+    selfShadowFinding
+    (filterList
+      (allClausesSelfCall clauses)
+      (dedupBy fst (map clauseNameLoc clauses)))
+
+-- one (name, params, body, loc) tuple per top-level DFunDef (through DAttrib)
+selfShadowClauseL : (Decl, Option Loc) -> List (String, List Pat, Expr, Option Loc)
+selfShadowClauseL (DFunDef _ name pats body, loc) = [(name, pats, body, loc)]
+selfShadowClauseL (DAttrib _ d, loc) = selfShadowClauseL (d, loc)
+selfShadowClauseL _ = []
+
+clauseNameLoc : (String, List Pat, Expr, Option Loc) -> (String, Option Loc)
+clauseNameLoc (n, _, _, l) = (n, l)
+
+-- every clause defining `name` is an unconditional self-call
+allClausesSelfCall : List (String, List Pat, Expr, Option Loc) -> (String, Option Loc) -> Bool
+allClausesSelfCall clauses (name, _) =
+  allList (clauseSelfCallOrOther name) clauses
+
+clauseSelfCallOrOther : String -> (String, List Pat, Expr, Option Loc) -> Bool
+clauseSelfCallOrOther name (cn, pats, body, _) = cn != name
+  || unconditionalSelfCall name pats body
+
+-- nullary: body is exactly the bare self reference; n-ary: body is an application
+-- spine whose head is the bare self reference.
+unconditionalSelfCall : String -> List Pat -> Expr -> Bool
+unconditionalSelfCall name [] body = isBareSelf name (stripWrap body)
+unconditionalSelfCall name _ body = isHeadSelfApp name (stripWrap body)
+
+stripWrap : Expr -> Expr
+stripWrap (ELoc _ e) = stripWrap e
+stripWrap (EAnnot e _) = stripWrap e
+stripWrap e = e
+
+isBareSelf : String -> Expr -> Bool
+isBareSelf name (EVar w) = name == w
+isBareSelf _ _ = False
+
+isHeadSelfApp : String -> Expr -> Bool
+isHeadSelfApp name (EApp f a) = isBareSelf name (appHead (stripWrap f))
+isHeadSelfApp _ _ = False
+
+appHead : Expr -> Expr
+appHead e = match stripWrap e
+  EApp f _ => appHead f
+  x => x
+
+selfShadowFinding : (String, Option Loc) -> Finding
+selfShadowFinding (name, loc) = Finding {
+  rule = ruleNameSelfShadowExtern,
+  message = "top-level '\{name}' unconditionally calls itself with no base case — an infinite self-recursion, not a forward to a same-named extern/definition. Rename the binding (give it a distinct name) or add a terminating `match`/`if`/guard",
   severity = SevWarning,
   loc = loc,
 }
