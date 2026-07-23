@@ -1,5 +1,5 @@
 # META
-source_lines=1876
+source_lines=1885
 stages=DESUGAR,MARK
 # SOURCE
 -- lint-disable-file rule-duplicate-body
@@ -84,7 +84,7 @@ import types.typecheck.{
   currentSeedSchemes,
 }
 import tools.fmt.{formatSource}
-import tools.refindex.{RefIndex, buildRefIndex, binderAt, usesOf, defOf}
+import tools.refindex.{RefIndex, buildRefIndexProject, binderAt, usesOf, defOf}
 import frontend.ast.{
   Decl,
   DTypeSig,
@@ -1664,17 +1664,27 @@ handleReferences runtimeSrc coreSrc idJson params docs =
       Some src => referencesResult runtimeSrc coreSrc uri src params docs
   writeMessage (responseMsg idJson result)
 
--- Exported for `medaka_references` (#254) — cross-file, intra-project (F1):
--- `binderAt`/`usesOf`/`defOf` resolve through import origin + re-export
--- chains + lexical scope (never spelling), so shadowing, `import m as A`,
--- selective/`as`-renamed imports, and same-name-in-two-modules are each
--- resolved correctly by construction (compiler/REFERENCES-RENAME-DESIGN.md
--- §5). `uri` is the Docs-table key for the CLICKED buffer (so unsaved edits
--- there win, exactly like `projectEntryEnv`); every OTHER project file is
--- read through the same `docs`-then-disk override the loader already uses
--- elsewhere, so an unsaved sibling buffer's edits are seen too. Each result
--- entry's own `uri` is a `file://` URI built from the index's recorded
--- (loader-)path via `uriOfPath`, independent of the query's own `uri` shape.
+-- Exported for `medaka_references` (#254) — TRUE WHOLE-PROJECT scope, not
+-- one entry's import closure (#254 Stage 1.1: the entry-rooted
+-- `buildRefIndex` only walks the clicked file's OWN imports downward, so a
+-- query on a leaf module's DEFINITION missed every use in a file that
+-- IMPORTS it — a reverse-dependent is never on that closure. `findProjectRoot`
+-- + `tools.refindex.buildRefIndexProject` fixes this: enumerate every `.mdk`
+-- under the project root and index all of them, so a click anywhere in the
+-- project finds uses anywhere else in the project). `binderAt`/`usesOf`/
+-- `defOf` resolve through import origin + re-export chains + lexical scope
+-- (never spelling), so shadowing, `import m as A`, selective/`as`-renamed
+-- imports, and same-name-in-two-modules are each resolved correctly by
+-- construction (compiler/REFERENCES-RENAME-DESIGN.md §5). `uri` is the
+-- Docs-table key for the CLICKED buffer (so unsaved edits there win, exactly
+-- like `projectEntryEnv`); every OTHER project file is read through the same
+-- `docs`-then-disk override the loader already uses elsewhere, so an unsaved
+-- sibling buffer's edits are seen too. Each result entry's own `uri` is a
+-- `file://` URI built from the index's recorded (loader-)path via
+-- `uriOfPath`, independent of the query's own `uri` shape. F1 (locked):
+-- intra-project only — `buildRefIndexProject` enumerates under the project
+-- root alone, never the separate stdlib root, so it never descends into
+-- stdlib/prelude bodies.
 export referencesResult : String -> String -> String -> String -> Json -> Docs -> <IO> Json
 referencesResult runtimeSrc coreSrc uri src params docs = match (positionLine params, positionChar params)
   (Some line, Some col) => match identifierAt src line col
@@ -1682,9 +1692,8 @@ referencesResult runtimeSrc coreSrc uri src params docs = match (positionLine pa
     Some _ =>
       let rootFile = pathOfUri uri
       let projectDir = findProjectRoot (dirOfPath rootFile)
-      let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
       let read = path => docsGet (uriOfPath path) docs
-      let idx = buildRefIndex read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
+      let idx = buildRefIndexProject read projectDir runtimeSrc coreSrc
       -- `binderAt` wants a 1-based line (the `Loc` convention); LSP positions
       -- are 0-based, hence `line + 1`. `col` is 0-based in both conventions.
       match binderAt idx rootFile (line + 1) col
@@ -1890,7 +1899,7 @@ unit = ()
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "checkProgramSchemes" false) (mem "checkProgramSchemesWithRuntime" false) (mem "ppSchemeNamed" false) (mem "Scheme" true) (mem "currentLocalSchemes" false) (mem "currentSeedSchemes" false))))
 (DUse false (UseGroup ("tools" "fmt") ((mem "formatSource" false))))
-(DUse false (UseGroup ("tools" "refindex") ((mem "RefIndex" false) (mem "buildRefIndex" false) (mem "binderAt" false) (mem "usesOf" false) (mem "defOf" false))))
+(DUse false (UseGroup ("tools" "refindex") ((mem "RefIndex" false) (mem "buildRefIndexProject" false) (mem "binderAt" false) (mem "usesOf" false) (mem "defOf" false))))
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "DTypeSig" false) (mem "DExtern" false) (mem "DFunDef" false) (mem "DData" false) (mem "DUse" false) (mem "DEffect" false) (mem "DProp" false) (mem "DTest" false) (mem "DBench" false) (mem "DInterface" false) (mem "DImpl" false) (mem "DTypeAlias" false) (mem "DNewtype" false) (mem "DLetGroup" false) (mem "DAttrib" false) (mem "Ty" false) (mem "TyEffect" false) (mem "Loc" true) (mem "Variant" false) (mem "ConPayload" true) (mem "Field" false) (mem "IfaceMethod" false) (mem "ImplMethod" false) (mem "LetBind" false) (mem "UsePath" false) (mem "UseName" false) (mem "UseGroup" false) (mem "UseWild" false) (mem "UseAlias" false))))
 (DData Public "Docs" () ((variant "Docs" (ConPos (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))) ())
 (DTypeSig true "emptyDocs" (TyCon "Docs"))
@@ -2289,7 +2298,7 @@ unit = ()
 (DTypeSig false "handleReferences" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyFun (TyCon "Json") (TyFun (TyCon "Docs") (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "handleReferences" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "idJson") (PVar "params") (PVar "docs")) (EBlock (DoLet false false (PVar "result") (EMatch (EApp (EVar "requestUri") (EVar "params")) (arm (PCon "None") () (EVar "JNull")) (arm (PCon "Some" (PVar "uri")) () (EMatch (EApp (EApp (EVar "docsGet") (EVar "uri")) (EVar "docs")) (arm (PCon "None") () (EVar "JNull")) (arm (PCon "Some" (PVar "src")) () (EApp (EApp (EApp (EApp (EApp (EApp (EVar "referencesResult") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "uri")) (EVar "src")) (EVar "params")) (EVar "docs"))))))) (DoExpr (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "result"))))))
 (DTypeSig true "referencesResult" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyFun (TyCon "Docs") (TyEffect ("IO") None (TyCon "Json")))))))))
-(DFunDef false "referencesResult" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "uri") (PVar "src") (PVar "params") (PVar "docs")) (EMatch (ETuple (EApp (EVar "positionLine") (EVar "params")) (EApp (EVar "positionChar") (EVar "params"))) (arm (PTuple (PCon "Some" (PVar "line")) (PCon "Some" (PVar "col"))) () (EMatch (EApp (EApp (EApp (EVar "identifierAt") (EVar "src")) (EVar "line")) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "rootFile") (EApp (EVar "pathOfUri") (EVar "uri"))) (DoLet false false (PVar "projectDir") (EApp (EVar "findProjectRoot") (EApp (EVar "dirOfPath") (EVar "rootFile")))) (DoLet false false (PVar "stdlibDir") (EBinOp "++" (EApp (EVar "lspMedakaRoot") (ELit (LString "."))) (ELit (LString "/stdlib")))) (DoLet false false (PVar "read") (ELam ((PVar "path")) (EApp (EApp (EVar "docsGet") (EApp (EVar "uriOfPath") (EVar "path"))) (EVar "docs")))) (DoLet false false (PVar "idx") (EApp (EApp (EApp (EApp (EApp (EVar "buildRefIndex") (EVar "read")) (EVar "rootFile")) (EListLit (EVar "projectDir") (EVar "stdlibDir"))) (EVar "runtimeSrc")) (EVar "coreSrc"))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EVar "binderAt") (EVar "idx")) (EVar "rootFile")) (EBinOp "+" (EVar "line") (ELit (LInt 1)))) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" (PVar "key")) () (EApp (EVar "jArray") (EApp (EApp (EApp (EVar "referenceLocations") (EVar "idx")) (EVar "key")) (EApp (EVar "includeDeclarationOf") (EVar "params"))))))))))) (arm PWild () (EApp (EVar "jArray") (EListLit)))))
+(DFunDef false "referencesResult" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "uri") (PVar "src") (PVar "params") (PVar "docs")) (EMatch (ETuple (EApp (EVar "positionLine") (EVar "params")) (EApp (EVar "positionChar") (EVar "params"))) (arm (PTuple (PCon "Some" (PVar "line")) (PCon "Some" (PVar "col"))) () (EMatch (EApp (EApp (EApp (EVar "identifierAt") (EVar "src")) (EVar "line")) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "rootFile") (EApp (EVar "pathOfUri") (EVar "uri"))) (DoLet false false (PVar "projectDir") (EApp (EVar "findProjectRoot") (EApp (EVar "dirOfPath") (EVar "rootFile")))) (DoLet false false (PVar "read") (ELam ((PVar "path")) (EApp (EApp (EVar "docsGet") (EApp (EVar "uriOfPath") (EVar "path"))) (EVar "docs")))) (DoLet false false (PVar "idx") (EApp (EApp (EApp (EApp (EVar "buildRefIndexProject") (EVar "read")) (EVar "projectDir")) (EVar "runtimeSrc")) (EVar "coreSrc"))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EVar "binderAt") (EVar "idx")) (EVar "rootFile")) (EBinOp "+" (EVar "line") (ELit (LInt 1)))) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" (PVar "key")) () (EApp (EVar "jArray") (EApp (EApp (EApp (EVar "referenceLocations") (EVar "idx")) (EVar "key")) (EApp (EVar "includeDeclarationOf") (EVar "params"))))))))))) (arm PWild () (EApp (EVar "jArray") (EListLit)))))
 (DTypeSig false "referenceLocations" (TyFun (TyCon "RefIndex") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Json"))))))
 (DFunDef false "referenceLocations" ((PVar "idx") (PVar "key") (PVar "includeDecl")) (EBlock (DoLet false false (PVar "useJsons") (EApp (EApp (EVar "map") (EVar "locationJson")) (EApp (EApp (EVar "usesOf") (EVar "idx")) (EVar "key")))) (DoExpr (EIf (EVar "includeDecl") (EMatch (EApp (EApp (EVar "defOf") (EVar "idx")) (EVar "key")) (arm (PCon "Some" (PVar "entry")) () (EBinOp "::" (EApp (EVar "locationJson") (EVar "entry")) (EVar "useJsons"))) (arm (PCon "None") () (EVar "useJsons"))) (EVar "useJsons")))))
 (DTypeSig false "locationJson" (TyFun (TyTuple (TyCon "String") (TyCon "Loc")) (TyCon "Json")))
@@ -2336,7 +2345,7 @@ unit = ()
 (DUse false (UseGroup ("frontend" "desugar") ((mem "desugar" false))))
 (DUse false (UseGroup ("types" "typecheck") ((mem "checkProgramSchemes" false) (mem "checkProgramSchemesWithRuntime" false) (mem "ppSchemeNamed" false) (mem "Scheme" true) (mem "currentLocalSchemes" false) (mem "currentSeedSchemes" false))))
 (DUse false (UseGroup ("tools" "fmt") ((mem "formatSource" false))))
-(DUse false (UseGroup ("tools" "refindex") ((mem "RefIndex" false) (mem "buildRefIndex" false) (mem "binderAt" false) (mem "usesOf" false) (mem "defOf" false))))
+(DUse false (UseGroup ("tools" "refindex") ((mem "RefIndex" false) (mem "buildRefIndexProject" false) (mem "binderAt" false) (mem "usesOf" false) (mem "defOf" false))))
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" false) (mem "DTypeSig" false) (mem "DExtern" false) (mem "DFunDef" false) (mem "DData" false) (mem "DUse" false) (mem "DEffect" false) (mem "DProp" false) (mem "DTest" false) (mem "DBench" false) (mem "DInterface" false) (mem "DImpl" false) (mem "DTypeAlias" false) (mem "DNewtype" false) (mem "DLetGroup" false) (mem "DAttrib" false) (mem "Ty" false) (mem "TyEffect" false) (mem "Loc" true) (mem "Variant" false) (mem "ConPayload" true) (mem "Field" false) (mem "IfaceMethod" false) (mem "ImplMethod" false) (mem "LetBind" false) (mem "UsePath" false) (mem "UseName" false) (mem "UseGroup" false) (mem "UseWild" false) (mem "UseAlias" false))))
 (DData Public "Docs" () ((variant "Docs" (ConPos (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))) ())
 (DTypeSig true "emptyDocs" (TyCon "Docs"))
@@ -2735,7 +2744,7 @@ unit = ()
 (DTypeSig false "handleReferences" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyFun (TyCon "Json") (TyFun (TyCon "Docs") (TyEffect ("IO") None (TyCon "Unit"))))))))
 (DFunDef false "handleReferences" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "idJson") (PVar "params") (PVar "docs")) (EBlock (DoLet false false (PVar "result") (EMatch (EApp (EVar "requestUri") (EVar "params")) (arm (PCon "None") () (EVar "JNull")) (arm (PCon "Some" (PVar "uri")) () (EMatch (EApp (EApp (EVar "docsGet") (EVar "uri")) (EVar "docs")) (arm (PCon "None") () (EVar "JNull")) (arm (PCon "Some" (PVar "src")) () (EApp (EApp (EApp (EApp (EApp (EApp (EVar "referencesResult") (EVar "runtimeSrc")) (EVar "coreSrc")) (EVar "uri")) (EVar "src")) (EVar "params")) (EVar "docs"))))))) (DoExpr (EApp (EVar "writeMessage") (EApp (EApp (EVar "responseMsg") (EVar "idJson")) (EVar "result"))))))
 (DTypeSig true "referencesResult" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Json") (TyFun (TyCon "Docs") (TyEffect ("IO") None (TyCon "Json")))))))))
-(DFunDef false "referencesResult" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "uri") (PVar "src") (PVar "params") (PVar "docs")) (EMatch (ETuple (EApp (EVar "positionLine") (EVar "params")) (EApp (EVar "positionChar") (EVar "params"))) (arm (PTuple (PCon "Some" (PVar "line")) (PCon "Some" (PVar "col"))) () (EMatch (EApp (EApp (EApp (EVar "identifierAt") (EVar "src")) (EVar "line")) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "rootFile") (EApp (EVar "pathOfUri") (EVar "uri"))) (DoLet false false (PVar "projectDir") (EApp (EVar "findProjectRoot") (EApp (EVar "dirOfPath") (EVar "rootFile")))) (DoLet false false (PVar "stdlibDir") (EBinOp "++" (EApp (EVar "lspMedakaRoot") (ELit (LString "."))) (ELit (LString "/stdlib")))) (DoLet false false (PVar "read") (ELam ((PVar "path")) (EApp (EApp (EVar "docsGet") (EApp (EVar "uriOfPath") (EVar "path"))) (EVar "docs")))) (DoLet false false (PVar "idx") (EApp (EApp (EApp (EApp (EApp (EVar "buildRefIndex") (EVar "read")) (EVar "rootFile")) (EListLit (EVar "projectDir") (EVar "stdlibDir"))) (EVar "runtimeSrc")) (EVar "coreSrc"))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EVar "binderAt") (EVar "idx")) (EVar "rootFile")) (EBinOp "+" (EVar "line") (ELit (LInt 1)))) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" (PVar "key")) () (EApp (EVar "jArray") (EApp (EApp (EApp (EVar "referenceLocations") (EVar "idx")) (EVar "key")) (EApp (EVar "includeDeclarationOf") (EVar "params"))))))))))) (arm PWild () (EApp (EVar "jArray") (EListLit)))))
+(DFunDef false "referencesResult" ((PVar "runtimeSrc") (PVar "coreSrc") (PVar "uri") (PVar "src") (PVar "params") (PVar "docs")) (EMatch (ETuple (EApp (EVar "positionLine") (EVar "params")) (EApp (EVar "positionChar") (EVar "params"))) (arm (PTuple (PCon "Some" (PVar "line")) (PCon "Some" (PVar "col"))) () (EMatch (EApp (EApp (EApp (EVar "identifierAt") (EVar "src")) (EVar "line")) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" PWild) () (EBlock (DoLet false false (PVar "rootFile") (EApp (EVar "pathOfUri") (EVar "uri"))) (DoLet false false (PVar "projectDir") (EApp (EVar "findProjectRoot") (EApp (EVar "dirOfPath") (EVar "rootFile")))) (DoLet false false (PVar "read") (ELam ((PVar "path")) (EApp (EApp (EVar "docsGet") (EApp (EVar "uriOfPath") (EVar "path"))) (EVar "docs")))) (DoLet false false (PVar "idx") (EApp (EApp (EApp (EApp (EVar "buildRefIndexProject") (EVar "read")) (EVar "projectDir")) (EVar "runtimeSrc")) (EVar "coreSrc"))) (DoExpr (EMatch (EApp (EApp (EApp (EApp (EVar "binderAt") (EVar "idx")) (EVar "rootFile")) (EBinOp "+" (EVar "line") (ELit (LInt 1)))) (EVar "col")) (arm (PCon "None") () (EApp (EVar "jArray") (EListLit))) (arm (PCon "Some" (PVar "key")) () (EApp (EVar "jArray") (EApp (EApp (EApp (EVar "referenceLocations") (EVar "idx")) (EVar "key")) (EApp (EVar "includeDeclarationOf") (EVar "params"))))))))))) (arm PWild () (EApp (EVar "jArray") (EListLit)))))
 (DTypeSig false "referenceLocations" (TyFun (TyCon "RefIndex") (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyApp (TyCon "List") (TyCon "Json"))))))
 (DFunDef false "referenceLocations" ((PVar "idx") (PVar "key") (PVar "includeDecl")) (EBlock (DoLet false false (PVar "useJsons") (EApp (EApp (EMethodRef "map") (EVar "locationJson")) (EApp (EApp (EVar "usesOf") (EVar "idx")) (EVar "key")))) (DoExpr (EIf (EVar "includeDecl") (EMatch (EApp (EApp (EVar "defOf") (EVar "idx")) (EVar "key")) (arm (PCon "Some" (PVar "entry")) () (EBinOp "::" (EApp (EVar "locationJson") (EVar "entry")) (EVar "useJsons"))) (arm (PCon "None") () (EVar "useJsons"))) (EVar "useJsons")))))
 (DTypeSig false "locationJson" (TyFun (TyTuple (TyCon "String") (TyCon "Loc")) (TyCon "Json")))

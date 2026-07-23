@@ -12,10 +12,17 @@
 --   medaka run … refindex_main.mdk --dump <runtime> <core> <entry> [root ...]
 --     -> one line per binder key (tabs shown as `|`): the def site, use count,
 --        and every use site — the correctness dump.
+--
+--   medaka run … refindex_main.mdk --project <runtime> <core> <projectRoot> <queryFile>
+--     -> the SAME three OPS/DEFS/OCC lines, but over `buildRefIndexProject`
+--        (#254 Stage 1.1: whole-project scope, not one entry's import
+--        closure) — `queryFile` is the file `occCountFor` is measured
+--        against (there is no single "entry" in whole-project mode).
 
 import tools.refindex.{
   RefIndex,
   buildRefIndexDisk,
+  buildRefIndexProjectDisk,
   defOf,
   usesOf,
   riOps,
@@ -27,11 +34,12 @@ import support.util.{sortUniqS, joinWith, splitOnChar, listLen}
 import support.path.{dirOf}
 
 usage : String
-usage = "usage: medaka run refindex_main.mdk [--dump] <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+usage = "usage: medaka run refindex_main.mdk [--dump] <runtime.mdk> <core.mdk> <entry.mdk> [root ...]\n       medaka run refindex_main.mdk --project <runtime.mdk> <core.mdk> <projectRoot> <queryFile>"
 
 main : <IO> Unit
 main = match args ()
   "--dump"::rest => dispatch True rest
+  "--project"::rest => dispatchProject rest
   rest => dispatch False rest
 
 dispatch : Bool -> List String -> <IO> Unit
@@ -51,6 +59,21 @@ run dump runtimeP coreP entry roots = match readFile runtimeP
     Ok csrc =>
       let idx = buildRefIndexDisk entry roots rsrc csrc
       if dump then dumpIndex idx else printStats idx entry
+
+-- `--project` mode: same OPS/DEFS/OCC report, over the whole-project index.
+dispatchProject : List String -> <IO> Unit
+dispatchProject (runtimeP::coreP::root::queryFile::_) =
+  runProject runtimeP coreP root queryFile
+dispatchProject _ = ePutStrLn usage
+
+runProject : String -> String -> String -> String -> <IO> Unit
+runProject runtimeP coreP root queryFile = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc =>
+      let idx = buildRefIndexProjectDisk root rsrc csrc
+      printStats idx queryFile
 
 printStats : RefIndex -> String -> <IO> Unit
 printStats idx entry =

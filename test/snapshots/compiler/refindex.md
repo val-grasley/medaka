@@ -1,5 +1,5 @@
 # META
-source_lines=1096
+source_lines=1287
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/refindex.mdk — cross-file reference index (#254 Stage 0).
@@ -81,8 +81,13 @@ import frontend.parser.{
   DeclPos,
   declPosNameLoc,
 }
-import driver.loader.{loadProgramFilesLocatedCached}
-import support.util.{zipL}
+import driver.loader.{
+  loadProgramFilesLocatedCached,
+  moduleIdOfPath,
+  importModId,
+}
+import support.util.{zipL, startsWith, endsWith}
+import support.path.{joinPath}
 import support.char.{isUpper}
 import array.{get as arrayGet}
 import hash_map.{
@@ -1018,6 +1023,192 @@ buildRefIndexDisk entry roots runtimeSrc coreSrc =
 noOverride : String -> Option String
 noOverride _ = None
 
+-- ── WHOLE-PROJECT index build (#254 Stage 1.1) ───────────────────────────────
+--
+-- `buildRefIndex` above is ENTRY-ROOTED: `loadProgramFilesLocatedCached` walks
+-- only the clicked file's OWN imports (downward), so a `references` query on a
+-- leaf module's definition misses every use in a file that IMPORTS it (a
+-- reverse-dependent is never on the entry's own import closure). This section
+-- closes that gap: enumerate every `.mdk` file under the PROJECT ROOT
+-- (recursive `listDir`, F1-scoped — never descends into stdlib, which is a
+-- SEPARATE root never nested under a project root) and feed the SAME
+-- `processModules` walk `buildRefIndex` already uses, just over the FULL file
+-- set instead of one entry's closure. F2 (best-effort) is inherited for free:
+-- `processModules` -> `indexModule` already no-ops a file that fails to parse
+-- (`parseWithPositionsOpt … None => ()`) — one broken sibling never aborts the
+-- whole build, whole-project or entry-rooted alike.
+--
+-- LINEARITY: `processModules ctx read mods` is UNCHANGED (still one O(1)
+-- hash/push per token, per file) — the only new cost is the recursive
+-- directory walk itself, O(#dirs + #files) with an O(1) `Ref`-list push per
+-- discovered file, never a `List`-as-set/`++`-in-a-fold. Total build stays
+-- O(total project tokens); see test/diff_compiler_references_scaling.sh's
+-- `--project` measurement.
+--
+-- Module id per file: `moduleIdOfPath [projectRoot] path` — the SAME
+-- path-to-id function the entry-rooted loader itself uses (now exported from
+-- `driver.loader`), so a file discovered by directory walk gets the IDENTICAL
+-- BinderKey module prefix a sibling's `import <id>` would resolve to. This
+-- does NOT replicate the loader's `[dependencies]` multi-root canonicalization
+-- (`rewriteDecls`/`canonicalModId`) — a no-op for the common single-root
+-- project (no declared deps), and out of scope for this fast-follow; a
+-- declared-dependency project's cross-package aliasing is a documented
+-- residual, not attempted here.
+
+-- Recursively enumerate every `.mdk` file under `root`, depth-first, skipping
+-- dot-entries (dotfiles/dot-dirs, e.g. `.git`) — mirrors
+-- `medaka_cli.mdk`'s `collectMdkFiles`/`collectMdkFilesRec` idiom (that
+-- module doesn't export it, hence this scoped copy). `listDir` on an entry
+-- doubles as the dir/file discriminator: `Ok` = directory (recurse), `Err` =
+-- a file (or unreadable — either way, no further recursion). Best-effort
+-- (F2): an unlistable directory just contributes nothing, never aborts the
+-- walk. O(#dirs + #files); an O(1) `Ref`-list push per file, never `++`.
+enumerateMdkFiles : String -> <IO> List String
+enumerateMdkFiles root =
+  let acc = Ref []
+  let _ = enumerateDir acc root
+  reverseList acc.value
+
+enumerateDir : Ref (List String) -> String -> <IO> Unit
+enumerateDir acc dir = match listDir dir
+  Err _ => ()
+  Ok entries => enumerateEntries acc dir (dropDotEntries entries)
+
+enumerateEntries : Ref (List String) -> String -> List String -> <IO> Unit
+enumerateEntries _ _ [] = ()
+enumerateEntries acc dir (name::rest) =
+  let _ = enumerateOne acc dir name
+  enumerateEntries acc dir rest
+
+enumerateOne : Ref (List String) -> String -> String -> <IO> Unit
+enumerateOne acc dir name =
+  let full = joinPath dir name
+  match listDir full
+    Ok _ => enumerateDir acc full
+    Err _ => if endsWith ".mdk" name then acc := full::acc.value else ()
+
+dropDotEntries : List String -> List String
+dropDotEntries [] = []
+dropDotEntries (n::rest)
+  | startsWith "." n = dropDotEntries rest
+  | otherwise = n :: dropDotEntries rest
+
+-- Every enumerated file paired with its loader-consistent module id.
+midPathsOf : String -> <IO> List (String, String)
+midPathsOf root =
+  map (path => (moduleIdOfPath [root] path, path)) (enumerateMdkFiles root)
+
+-- ── dependency-first ORDERING (the part `listDir` doesn't give you) ─────────
+--
+-- `processModules`/`indexModule` (shared with entry-rooted `buildRefIndex`)
+-- assume dependency-first order: `registerReExports`/`processImports` look up
+-- an imported module's origin in `ctx.originOf`, which is only populated once
+-- THAT module has itself been indexed (`registerOwnExports`). The entry-
+-- rooted loader's DFS guarantees this by construction (a module is only
+-- appended to its result after every import it walked); a plain `listDir`
+-- enumeration has NO such guarantee — filesystem order is arbitrary, and
+-- indexing a re-exporting module (`reexport.mdk`) before the module it
+-- re-exports (`defs.mdk`) SILENTLY drops the re-export (a no-op lookup miss,
+-- not an error), which then makes every USE reached only through that
+-- re-export land under an `?ext` (unresolved) key instead of joining the real
+-- BinderKey — a real regression a first cut of this feature reproduced and
+-- caught right here. Fix: a standard multi-root, dependency-first DFS over
+-- the WHOLE enumerated set (not just one entry), same shape as the loader's
+-- own `visitModF` — visited-set is a `HashMap String Unit` (O(1) membership,
+-- never a `List`-as-set), and an import outside the enumerated set (stdlib,
+-- an unreadable sibling) is simply not followed further (F2: best-effort,
+-- never fatal; a cycle is broken the same way — mark-before-recurse).
+--
+-- COST: this parses every file ONCE here (to read its own `DUse` imports)
+-- and `processModules` parses it AGAIN afterwards — a bounded 2x constant,
+-- not a re-walk of OTHER files' work, so the build stays O(total project
+-- tokens) (see test/diff_compiler_references_scaling.sh's `--project` run).
+-- The ordering pass's own hash-map ops are routed through the SAME `ctx`
+-- op-counting wrappers (`hmGetC`/`hmSetC`) as the rest of the build, so this
+-- cost is NOT invisible to `riOps` / the scaling gate.
+directImportIds : List Decl -> List String
+directImportIds [] = []
+directImportIds ((DUse _ path _)::rest) =
+  let m = importModId path
+  if m == "core" then directImportIds rest else m :: directImportIds rest
+directImportIds ((DAttrib _ inner)::rest) = directImportIds (inner::rest)
+directImportIds (_::rest) = directImportIds rest
+
+registerMidPaths : Ctx -> HashMap String String -> List (String, String) -> Unit
+registerMidPaths _ _ [] = ()
+registerMidPaths ctx byMid ((mid, path)::rest) =
+  let _ = hmSetC ctx byMid mid path
+  registerMidPaths ctx byMid rest
+
+midsOf : List (String, String) -> List String
+midsOf [] = []
+midsOf ((mid, _)::rest) = mid :: midsOf rest
+
+topoVisitAll : Ctx -> (String -> Option String) -> HashMap String String -> HashMap String Unit -> Ref (List (String, String, List Decl)) -> List String -> <IO> Unit
+topoVisitAll _ _ _ _ _ [] = ()
+topoVisitAll ctx read byMid visited acc (mid::rest) =
+  let _ = topoVisit ctx read byMid visited acc mid
+  topoVisitAll ctx read byMid visited acc rest
+
+-- Visit one module: mark it visited FIRST (breaks a cycle without looping),
+-- then recurse into its OWN direct imports (dependency-first) before
+-- appending it — a post-order DFS emit, so a dependency always lands earlier
+-- in `acc` than its dependent. `mid`s outside the enumerated set (`byMid`
+-- miss) or a file that fails to parse both no-op (F2: best-effort).
+topoVisit : Ctx -> (String -> Option String) -> HashMap String String -> HashMap String Unit -> Ref (List (String, String, List Decl)) -> String -> <IO> Unit
+topoVisit ctx read byMid visited acc mid = match hmGetC ctx visited mid
+  Some _ => ()
+  None => match hmGetC ctx byMid mid
+    None => ()
+    Some path =>
+      let _ = hmSetC ctx visited mid ()
+      match getSrc read path
+        None => ()
+        Some src => match parseWithPositionsOpt src
+          None => ()
+          Some (decls, _) =>
+            let _ = topoVisitAll ctx read byMid visited acc (directImportIds decls)
+            acc := (mid, path, decls)::acc.value
+
+-- Order the whole-project file set dependency-first (see block comment
+-- above). O(N) — each enumerated file is visited (parsed once, hashed twice)
+-- exactly once, regardless of how many OTHER files import it.
+topoOrderModules : Ctx -> (String -> Option String) -> List (String, String) -> <IO> List (String, String, List Decl)
+topoOrderModules ctx read midPaths =
+  let byMid = hmNew ()
+  let _ = registerMidPaths ctx byMid midPaths
+  let visited = hmNew ()
+  let acc = Ref []
+  let _ = topoVisitAll ctx read byMid visited acc (midsOf midPaths)
+  reverseList acc.value
+
+-- Build the reference index over EVERY `.mdk` file under `projectRoot` — true
+-- whole-project scope (see the section header above for why this differs
+-- from `buildRefIndex`). `read` is the same editor-buffer override callback
+-- (unsaved buffers win over disk).
+export buildRefIndexProject : (String -> Option String) -> String -> String -> String -> <IO> RefIndex
+buildRefIndexProject read projectRoot runtimeSrc coreSrc =
+  let ctx = newCtx ()
+  let _ = seedPrelude ctx "runtime" runtimeSrc
+  let _ = seedPrelude ctx "core" coreSrc
+  -- Reset AFTER prelude seeding, same rationale as `buildRefIndex`: `riOps`
+  -- must measure only the project-indexing work the scaling gate grades.
+  let _ = ctx.opCnt := 0
+  let midPaths = midPathsOf projectRoot
+  let mods = topoOrderModules ctx read midPaths
+  let _ = processModules ctx read mods
+  RefIndex {
+      defs = ctx.defs,
+      refs = ctx.refs,
+      occ = ctx.occ,
+      ops = ctx.opCnt.value,
+    }
+
+-- Disk-only convenience (no editor-buffer overrides) — the CLI/probe entry.
+export buildRefIndexProjectDisk : String -> String -> String -> <IO> RefIndex
+buildRefIndexProjectDisk projectRoot runtimeSrc coreSrc =
+  buildRefIndexProject noOverride projectRoot runtimeSrc coreSrc
+
 -- The definition site of a binder, if it is defined inside the project.  O(1).
 export defOf : RefIndex -> String -> Option (String, Loc)
 defOf idx key = hmGet key idx.defs
@@ -1101,8 +1292,9 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Ty" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberOrigin" false) (mem "useMemberLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseWithPositionsOpt" false) (mem "positionsDecls" false) (mem "DeclPos" false) (mem "declPosNameLoc" false))))
-(DUse false (UseGroup ("driver" "loader") ((mem "loadProgramFilesLocatedCached" false))))
-(DUse false (UseGroup ("support" "util") ((mem "zipL" false))))
+(DUse false (UseGroup ("driver" "loader") ((mem "loadProgramFilesLocatedCached" false) (mem "moduleIdOfPath" false) (mem "importModId" false))))
+(DUse false (UseGroup ("support" "util") ((mem "zipL" false) (mem "startsWith" false) (mem "endsWith" false))))
+(DUse false (UseGroup ("support" "path") ((mem "joinPath" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
 (DUse false (UseGroup ("array") ((mem "get" false "arrayGet"))))
 (DUse false (UseGroup ("hash_map") ((mem "HashMap" false) (mem "new" false "hmNew") (mem "get" false "hmGet") (mem "set" false "hmSet") (mem "keys" false "hmKeys"))))
@@ -1484,6 +1676,42 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "buildRefIndexDisk" ((PVar "entry") (PVar "roots") (PVar "runtimeSrc") (PVar "coreSrc")) (EApp (EApp (EApp (EApp (EApp (EVar "buildRefIndex") (EVar "noOverride")) (EVar "entry")) (EVar "roots")) (EVar "runtimeSrc")) (EVar "coreSrc")))
 (DTypeSig false "noOverride" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "noOverride" (PWild) (EVar "None"))
+(DTypeSig false "enumerateMdkFiles" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "enumerateMdkFiles" ((PVar "root")) (EBlock (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "root"))) (DoExpr (EApp (EVar "reverseList") (EFieldAccess (EVar "acc") "value")))))
+(DTypeSig false "enumerateDir" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))
+(DFunDef false "enumerateDir" ((PVar "acc") (PVar "dir")) (EMatch (EApp (EVar "listDir") (EVar "dir")) (arm (PCon "Err" PWild) () (ELit LUnit)) (arm (PCon "Ok" (PVar "entries")) () (EApp (EApp (EApp (EVar "enumerateEntries") (EVar "acc")) (EVar "dir")) (EApp (EVar "dropDotEntries") (EVar "entries"))))))
+(DTypeSig false "enumerateEntries" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))))
+(DFunDef false "enumerateEntries" (PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "enumerateEntries" ((PVar "acc") (PVar "dir") (PCons (PVar "name") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "enumerateOne") (EVar "acc")) (EVar "dir")) (EVar "name"))) (DoExpr (EApp (EApp (EApp (EVar "enumerateEntries") (EVar "acc")) (EVar "dir")) (EVar "rest")))))
+(DTypeSig false "enumerateOne" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))
+(DFunDef false "enumerateOne" ((PVar "acc") (PVar "dir") (PVar "name")) (EBlock (DoLet false false (PVar "full") (EApp (EApp (EVar "joinPath") (EVar "dir")) (EVar "name"))) (DoExpr (EMatch (EApp (EVar "listDir") (EVar "full")) (arm (PCon "Ok" PWild) () (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "full"))) (arm (PCon "Err" PWild) () (EIf (EApp (EApp (EVar "endsWith") (ELit (LString ".mdk"))) (EVar "name")) (EApp (EApp (EVar "setRef") (EVar "acc")) (EBinOp "::" (EVar "full") (EFieldAccess (EVar "acc") "value"))) (ELit LUnit)))))))
+(DTypeSig false "dropDotEntries" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "dropDotEntries" ((PList)) (EListLit))
+(DFunDef false "dropDotEntries" ((PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "startsWith") (ELit (LString "."))) (EVar "n")) (EApp (EVar "dropDotEntries") (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "n") (EApp (EVar "dropDotEntries") (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "midPathsOf" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "midPathsOf" ((PVar "root")) (EApp (EApp (EVar "map") (ELam ((PVar "path")) (ETuple (EApp (EApp (EVar "moduleIdOfPath") (EListLit (EVar "root"))) (EVar "path")) (EVar "path")))) (EApp (EVar "enumerateMdkFiles") (EVar "root"))))
+(DTypeSig false "directImportIds" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "directImportIds" ((PList)) (EListLit))
+(DFunDef false "directImportIds" ((PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false (PVar "m") (EApp (EVar "importModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "m") (ELit (LString "core"))) (EApp (EVar "directImportIds") (EVar "rest")) (EBinOp "::" (EVar "m") (EApp (EVar "directImportIds") (EVar "rest")))))))
+(DFunDef false "directImportIds" ((PCons (PCon "DAttrib" PWild (PVar "inner")) (PVar "rest"))) (EApp (EVar "directImportIds") (EBinOp "::" (EVar "inner") (EVar "rest"))))
+(DFunDef false "directImportIds" ((PCons PWild (PVar "rest"))) (EApp (EVar "directImportIds") (EVar "rest")))
+(DTypeSig false "registerMidPaths" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyCon "Unit")))))
+(DFunDef false "registerMidPaths" (PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "registerMidPaths" ((PVar "ctx") (PVar "byMid") (PCons (PTuple (PVar "mid") (PVar "path")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "byMid")) (EVar "mid")) (EVar "path"))) (DoExpr (EApp (EApp (EApp (EVar "registerMidPaths") (EVar "ctx")) (EVar "byMid")) (EVar "rest")))))
+(DTypeSig false "midsOf" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "midsOf" ((PList)) (EListLit))
+(DFunDef false "midsOf" ((PCons (PTuple (PVar "mid") PWild) (PVar "rest"))) (EBinOp "::" (EVar "mid") (EApp (EVar "midsOf") (EVar "rest"))))
+(DTypeSig false "topoVisitAll" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit")))))))))
+(DFunDef false "topoVisitAll" (PWild PWild PWild PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "topoVisitAll" ((PVar "ctx") (PVar "read") (PVar "byMid") (PVar "visited") (PVar "acc") (PCons (PVar "mid") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisit") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EVar "mid"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisitAll") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EVar "rest")))))
+(DTypeSig false "topoVisit" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))))))
+(DFunDef false "topoVisit" ((PVar "ctx") (PVar "read") (PVar "byMid") (PVar "visited") (PVar "acc") (PVar "mid")) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "visited")) (EVar "mid")) (arm (PCon "Some" PWild) () (ELit LUnit)) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "byMid")) (EVar "mid")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "path")) () (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "visited")) (EVar "mid")) (ELit LUnit))) (DoExpr (EMatch (EApp (EApp (EVar "getSrc") (EVar "read")) (EVar "path")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "src")) () (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "decls") PWild)) () (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisitAll") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EApp (EVar "directImportIds") (EVar "decls")))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "acc")) (EBinOp "::" (ETuple (EVar "mid") (EVar "path") (EVar "decls")) (EFieldAccess (EVar "acc") "value"))))))))))))))))
+(DTypeSig false "topoOrderModules" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyEffect ("IO") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))))))))
+(DFunDef false "topoOrderModules" ((PVar "ctx") (PVar "read") (PVar "midPaths")) (EBlock (DoLet false false (PVar "byMid") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EApp (EVar "registerMidPaths") (EVar "ctx")) (EVar "byMid")) (EVar "midPaths"))) (DoLet false false (PVar "visited") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisitAll") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EApp (EVar "midsOf") (EVar "midPaths")))) (DoExpr (EApp (EVar "reverseList") (EFieldAccess (EVar "acc") "value")))))
+(DTypeSig true "buildRefIndexProject" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "RefIndex")))))))
+(DFunDef false "buildRefIndexProject" ((PVar "read") (PVar "projectRoot") (PVar "runtimeSrc") (PVar "coreSrc")) (EBlock (DoLet false false (PVar "ctx") (EApp (EVar "newCtx") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EApp (EVar "seedPrelude") (EVar "ctx")) (ELit (LString "runtime"))) (EVar "runtimeSrc"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "seedPrelude") (EVar "ctx")) (ELit (LString "core"))) (EVar "coreSrc"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EVar "ctx") "opCnt")) (ELit (LInt 0)))) (DoLet false false (PVar "midPaths") (EApp (EVar "midPathsOf") (EVar "projectRoot"))) (DoLet false false (PVar "mods") (EApp (EApp (EApp (EVar "topoOrderModules") (EVar "ctx")) (EVar "read")) (EVar "midPaths"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "processModules") (EVar "ctx")) (EVar "read")) (EVar "mods"))) (DoExpr (ERecordCreate "RefIndex" ((fa "defs" (EFieldAccess (EVar "ctx") "defs")) (fa "refs" (EFieldAccess (EVar "ctx") "refs")) (fa "occ" (EFieldAccess (EVar "ctx") "occ")) (fa "ops" (EFieldAccess (EFieldAccess (EVar "ctx") "opCnt") "value")))))))
+(DTypeSig true "buildRefIndexProjectDisk" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "RefIndex"))))))
+(DFunDef false "buildRefIndexProjectDisk" ((PVar "projectRoot") (PVar "runtimeSrc") (PVar "coreSrc")) (EApp (EApp (EApp (EApp (EVar "buildRefIndexProject") (EVar "noOverride")) (EVar "projectRoot")) (EVar "runtimeSrc")) (EVar "coreSrc")))
 (DTypeSig true "defOf" (TyFun (TyCon "RefIndex") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Loc"))))))
 (DFunDef false "defOf" ((PVar "idx") (PVar "key")) (EApp (EApp (EVar "hmGet") (EVar "key")) (EFieldAccess (EVar "idx") "defs")))
 (DTypeSig true "usesOf" (TyFun (TyCon "RefIndex") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Loc"))))))
@@ -1524,8 +1752,9 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Ty" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberOrigin" false) (mem "useMemberLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("frontend" "parser") ((mem "parseWithPositionsOpt" false) (mem "positionsDecls" false) (mem "DeclPos" false) (mem "declPosNameLoc" false))))
-(DUse false (UseGroup ("driver" "loader") ((mem "loadProgramFilesLocatedCached" false))))
-(DUse false (UseGroup ("support" "util") ((mem "zipL" false))))
+(DUse false (UseGroup ("driver" "loader") ((mem "loadProgramFilesLocatedCached" false) (mem "moduleIdOfPath" false) (mem "importModId" false))))
+(DUse false (UseGroup ("support" "util") ((mem "zipL" false) (mem "startsWith" false) (mem "endsWith" false))))
+(DUse false (UseGroup ("support" "path") ((mem "joinPath" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
 (DUse false (UseGroup ("array") ((mem "get" false "arrayGet"))))
 (DUse false (UseGroup ("hash_map") ((mem "HashMap" false) (mem "new" false "hmNew") (mem "get" false "hmGet") (mem "set" false "hmSet") (mem "keys" false "hmKeys"))))
@@ -1907,6 +2136,42 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "buildRefIndexDisk" ((PVar "entry") (PVar "roots") (PVar "runtimeSrc") (PVar "coreSrc")) (EApp (EApp (EApp (EApp (EApp (EVar "buildRefIndex") (EVar "noOverride")) (EVar "entry")) (EVar "roots")) (EVar "runtimeSrc")) (EVar "coreSrc")))
 (DTypeSig false "noOverride" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "noOverride" (PWild) (EVar "None"))
+(DTypeSig false "enumerateMdkFiles" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "enumerateMdkFiles" ((PVar "root")) (EBlock (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "root"))) (DoExpr (EApp (EVar "reverseList") (EFieldAccess (EVar "acc") "value")))))
+(DTypeSig false "enumerateDir" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))
+(DFunDef false "enumerateDir" ((PVar "acc") (PVar "dir")) (EMatch (EApp (EVar "listDir") (EVar "dir")) (arm (PCon "Err" PWild) () (ELit LUnit)) (arm (PCon "Ok" (PVar "entries")) () (EApp (EApp (EApp (EVar "enumerateEntries") (EVar "acc")) (EVar "dir")) (EApp (EVar "dropDotEntries") (EVar "entries"))))))
+(DTypeSig false "enumerateEntries" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))))
+(DFunDef false "enumerateEntries" (PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "enumerateEntries" ((PVar "acc") (PVar "dir") (PCons (PVar "name") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "enumerateOne") (EVar "acc")) (EVar "dir")) (EVar "name"))) (DoExpr (EApp (EApp (EApp (EVar "enumerateEntries") (EVar "acc")) (EVar "dir")) (EVar "rest")))))
+(DTypeSig false "enumerateOne" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit"))))))
+(DFunDef false "enumerateOne" ((PVar "acc") (PVar "dir") (PVar "name")) (EBlock (DoLet false false (PVar "full") (EApp (EApp (EVar "joinPath") (EVar "dir")) (EVar "name"))) (DoExpr (EMatch (EApp (EVar "listDir") (EVar "full")) (arm (PCon "Ok" PWild) () (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "full"))) (arm (PCon "Err" PWild) () (EIf (EApp (EApp (EVar "endsWith") (ELit (LString ".mdk"))) (EVar "name")) (EApp (EApp (EVar "setRef") (EVar "acc")) (EBinOp "::" (EVar "full") (EFieldAccess (EVar "acc") "value"))) (ELit LUnit)))))))
+(DTypeSig false "dropDotEntries" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "dropDotEntries" ((PList)) (EListLit))
+(DFunDef false "dropDotEntries" ((PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "startsWith") (ELit (LString "."))) (EVar "n")) (EApp (EVar "dropDotEntries") (EVar "rest")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "n") (EApp (EVar "dropDotEntries") (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "midPathsOf" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
+(DFunDef false "midPathsOf" ((PVar "root")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "path")) (ETuple (EApp (EApp (EVar "moduleIdOfPath") (EListLit (EVar "root"))) (EVar "path")) (EVar "path")))) (EApp (EVar "enumerateMdkFiles") (EVar "root"))))
+(DTypeSig false "directImportIds" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "directImportIds" ((PList)) (EListLit))
+(DFunDef false "directImportIds" ((PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false (PVar "m") (EApp (EVar "importModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "m") (ELit (LString "core"))) (EApp (EVar "directImportIds") (EVar "rest")) (EBinOp "::" (EVar "m") (EApp (EVar "directImportIds") (EVar "rest")))))))
+(DFunDef false "directImportIds" ((PCons (PCon "DAttrib" PWild (PVar "inner")) (PVar "rest"))) (EApp (EVar "directImportIds") (EBinOp "::" (EVar "inner") (EVar "rest"))))
+(DFunDef false "directImportIds" ((PCons PWild (PVar "rest"))) (EApp (EVar "directImportIds") (EVar "rest")))
+(DTypeSig false "registerMidPaths" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyCon "Unit")))))
+(DFunDef false "registerMidPaths" (PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "registerMidPaths" ((PVar "ctx") (PVar "byMid") (PCons (PTuple (PVar "mid") (PVar "path")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "byMid")) (EVar "mid")) (EVar "path"))) (DoExpr (EApp (EApp (EApp (EVar "registerMidPaths") (EVar "ctx")) (EVar "byMid")) (EVar "rest")))))
+(DTypeSig false "midsOf" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String"))))
+(DFunDef false "midsOf" ((PList)) (EListLit))
+(DFunDef false "midsOf" ((PCons (PTuple (PVar "mid") PWild) (PVar "rest"))) (EBinOp "::" (EVar "mid") (EApp (EVar "midsOf") (EVar "rest"))))
+(DTypeSig false "topoVisitAll" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit")))))))))
+(DFunDef false "topoVisitAll" (PWild PWild PWild PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "topoVisitAll" ((PVar "ctx") (PVar "read") (PVar "byMid") (PVar "visited") (PVar "acc") (PCons (PVar "mid") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisit") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EVar "mid"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisitAll") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EVar "rest")))))
+(DTypeSig false "topoVisit" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "Unit")) (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl"))))) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))))))
+(DFunDef false "topoVisit" ((PVar "ctx") (PVar "read") (PVar "byMid") (PVar "visited") (PVar "acc") (PVar "mid")) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "visited")) (EVar "mid")) (arm (PCon "Some" PWild) () (ELit LUnit)) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "byMid")) (EVar "mid")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "path")) () (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "visited")) (EVar "mid")) (ELit LUnit))) (DoExpr (EMatch (EApp (EApp (EVar "getSrc") (EVar "read")) (EVar "path")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "src")) () (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "decls") PWild)) () (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisitAll") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EApp (EVar "directImportIds") (EVar "decls")))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "acc")) (EBinOp "::" (ETuple (EVar "mid") (EVar "path") (EVar "decls")) (EFieldAccess (EVar "acc") "value"))))))))))))))))
+(DTypeSig false "topoOrderModules" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyEffect ("IO") None (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))))))))
+(DFunDef false "topoOrderModules" ((PVar "ctx") (PVar "read") (PVar "midPaths")) (EBlock (DoLet false false (PVar "byMid") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EApp (EVar "registerMidPaths") (EVar "ctx")) (EVar "byMid")) (EVar "midPaths"))) (DoLet false false (PVar "visited") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "topoVisitAll") (EVar "ctx")) (EVar "read")) (EVar "byMid")) (EVar "visited")) (EVar "acc")) (EApp (EVar "midsOf") (EVar "midPaths")))) (DoExpr (EApp (EVar "reverseList") (EFieldAccess (EVar "acc") "value")))))
+(DTypeSig true "buildRefIndexProject" (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "RefIndex")))))))
+(DFunDef false "buildRefIndexProject" ((PVar "read") (PVar "projectRoot") (PVar "runtimeSrc") (PVar "coreSrc")) (EBlock (DoLet false false (PVar "ctx") (EApp (EVar "newCtx") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EApp (EVar "seedPrelude") (EVar "ctx")) (ELit (LString "runtime"))) (EVar "runtimeSrc"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "seedPrelude") (EVar "ctx")) (ELit (LString "core"))) (EVar "coreSrc"))) (DoLet false false PWild (EApp (EApp (EVar "setRef") (EFieldAccess (EVar "ctx") "opCnt")) (ELit (LInt 0)))) (DoLet false false (PVar "midPaths") (EApp (EVar "midPathsOf") (EVar "projectRoot"))) (DoLet false false (PVar "mods") (EApp (EApp (EApp (EVar "topoOrderModules") (EVar "ctx")) (EVar "read")) (EVar "midPaths"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "processModules") (EVar "ctx")) (EVar "read")) (EVar "mods"))) (DoExpr (ERecordCreate "RefIndex" ((fa "defs" (EFieldAccess (EVar "ctx") "defs")) (fa "refs" (EFieldAccess (EVar "ctx") "refs")) (fa "occ" (EFieldAccess (EVar "ctx") "occ")) (fa "ops" (EFieldAccess (EFieldAccess (EVar "ctx") "opCnt") "value")))))))
+(DTypeSig true "buildRefIndexProjectDisk" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "RefIndex"))))))
+(DFunDef false "buildRefIndexProjectDisk" ((PVar "projectRoot") (PVar "runtimeSrc") (PVar "coreSrc")) (EApp (EApp (EApp (EApp (EVar "buildRefIndexProject") (EVar "noOverride")) (EVar "projectRoot")) (EVar "runtimeSrc")) (EVar "coreSrc")))
 (DTypeSig true "defOf" (TyFun (TyCon "RefIndex") (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "Loc"))))))
 (DFunDef false "defOf" ((PVar "idx") (PVar "key")) (EApp (EApp (EVar "hmGet") (EVar "key")) (EFieldAccess (EVar "idx") "defs")))
 (DTypeSig true "usesOf" (TyFun (TyCon "RefIndex") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Loc"))))))

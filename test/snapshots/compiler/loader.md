@@ -1,5 +1,5 @@
 # META
-source_lines=843
+source_lines=848
 stages=DESUGAR,MARK
 # SOURCE
 -- Port of lib/loader.ml: parse a root .mdk file's transitive imports and return
@@ -113,7 +113,12 @@ relUnderRoots (r::rs) path =
   else
     relUnderRoots rs path
 
-moduleIdOfPath : List String -> String -> String
+-- Exported for `refindex.mdk`'s whole-project index build (#254 Stage 1.1):
+-- given the project root as the sole "root", it derives the SAME module id a
+-- sibling file's `import <id>` would use to reach an enumerated file — so a
+-- file discovered by directory walk (not by following an import edge) still
+-- lands under the identical BinderKey namespace as the entry-rooted loader.
+export moduleIdOfPath : List String -> String -> String
 moduleIdOfPath roots path =
   slashToDot (stripSuffixStr ".mdk" (relUnderRoots roots path))
 
@@ -872,7 +877,7 @@ loadProgramFilesLocatedCachedE parseCacheRef read entry roots =
 (DTypeSig false "relUnderRoots" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "relUnderRoots" ((PList) (PVar "path")) (EVar "path"))
 (DFunDef false "relUnderRoots" ((PCons (PVar "r") (PVar "rs")) (PVar "path")) (EBlock (DoLet false false (PVar "pre") (EApp (EVar "stringConcat") (EListLit (EVar "r") (ELit (LString "/"))))) (DoExpr (EIf (EApp (EApp (EVar "startsWith") (EVar "pre")) (EVar "path")) (EApp (EApp (EVar "dropPrefix") (EApp (EVar "stringLength") (EVar "pre"))) (EVar "path")) (EApp (EApp (EVar "relUnderRoots") (EVar "rs")) (EVar "path"))))))
-(DTypeSig false "moduleIdOfPath" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String"))))
+(DTypeSig true "moduleIdOfPath" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "moduleIdOfPath" ((PVar "roots") (PVar "path")) (EApp (EVar "slashToDot") (EApp (EApp (EVar "stripSuffixStr") (ELit (LString ".mdk"))) (EApp (EApp (EVar "relUnderRoots") (EVar "roots")) (EVar "path")))))
 (DTypeSig true "findProjectRoot" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "String"))))
 (DFunDef false "findProjectRoot" ((PVar "startDir")) (EApp (EApp (EVar "findRootGo") (EVar "startDir")) (EVar "startDir")))
@@ -1040,7 +1045,7 @@ loadProgramFilesLocatedCachedE parseCacheRef read entry roots =
 (DTypeSig false "relUnderRoots" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "relUnderRoots" ((PList) (PVar "path")) (EVar "path"))
 (DFunDef false "relUnderRoots" ((PCons (PVar "r") (PVar "rs")) (PVar "path")) (EBlock (DoLet false false (PVar "pre") (EApp (EVar "stringConcat") (EListLit (EVar "r") (ELit (LString "/"))))) (DoExpr (EIf (EApp (EApp (EVar "startsWith") (EVar "pre")) (EVar "path")) (EApp (EApp (EVar "dropPrefix") (EApp (EVar "stringLength") (EVar "pre"))) (EVar "path")) (EApp (EApp (EVar "relUnderRoots") (EVar "rs")) (EVar "path"))))))
-(DTypeSig false "moduleIdOfPath" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String"))))
+(DTypeSig true "moduleIdOfPath" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "moduleIdOfPath" ((PVar "roots") (PVar "path")) (EApp (EVar "slashToDot") (EApp (EApp (EVar "stripSuffixStr") (ELit (LString ".mdk"))) (EApp (EApp (EVar "relUnderRoots") (EVar "roots")) (EVar "path")))))
 (DTypeSig true "findProjectRoot" (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "String"))))
 (DFunDef false "findProjectRoot" ((PVar "startDir")) (EApp (EApp (EVar "findRootGo") (EVar "startDir")) (EVar "startDir")))
