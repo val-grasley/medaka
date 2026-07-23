@@ -95,7 +95,8 @@ import bytebuilder.{
   emitBeUint,
   buildArray,
 }
-import list.{reverse, get}
+import list.{reverse, get, sortBy}
+import string.{toUtf8}
 import lib.header.{magicBytes}
 import lib.varint.{sqVarintBytes}
 import lib.overflow.{localPayloadSize, overflowCapacity, overflowPageCount}
@@ -128,6 +129,11 @@ pageTableLeafByte = 13  -- 0x0D
 pageTableInteriorByte : Int
 pageTableInteriorByte = 5  -- 0x05
 
+-- Index-leaf page type (0x0A).  A secondary index's records live in their own
+-- B-tree; v1 emits a SINGLE index-leaf page per index (no index-interior 0x02).
+pageIndexLeafByte : Int
+pageIndexLeafByte = 10  -- 0x0A
+
 -- We reserve no bytes per page (file-header byte 20 = 0), so the USABLE page
 -- size — the size SQLite's overflow arithmetic is defined over — is the whole
 -- page.  Named separately because `lib.overflow` is parameterized by it.
@@ -139,6 +145,14 @@ usableSize = pageSize
 -- `sum(cellLen) + 2*count <= leafCapacity`.
 leafCapacity : Int
 leafCapacity = pageSize - leafHeaderSize  -- 4088
+
+-- The largest index-record payload that fits entirely in an index-leaf cell
+-- (SQLite's index max-local-payload: `((U - 12) * 64 / 255) - 23`; for U=4096
+-- this is 1002).  A key record larger than this would need an overflow chain,
+-- which v1 does not emit for indexes — `encodeIndexLeafCell` refuses it cleanly
+-- rather than emit a truncated (corrupt) index key.
+indexMaxLocalPayload : Int -> Int
+indexMaxLocalPayload usable = (usable - 12) * 64 / 255 - 23
 
 -- A valid sqlite-version-number constant (integrity_check ignores it).
 sqliteVersionNumber : Int
@@ -245,11 +259,18 @@ packCells page (cell::rest)  cpStart contentTop floor i errMsg =
     set (ptrOff + 1) (bitAnd newTop 255)         page
     packCells page rest cpStart newTop floor (i + 1) errMsg
 
--- Write the 8-byte leaf page header at `hdrOff`.
+-- Write the 8-byte TABLE-leaf page header (type 0x0D) at `hdrOff`.
 writeLeafHeader : Array Int -> Int -> Int -> Int -> Unit
 writeLeafHeader page hdrOff nCells contentStart =
+  writeLeafHeaderTyped page hdrOff pageTableLeafByte nCells contentStart
+
+-- Write the 8-byte leaf page header at `hdrOff` with an explicit page-type byte
+-- (0x0D table-leaf or 0x0A index-leaf).  Both leaf kinds share the identical
+-- 8-byte header layout; only the type byte differs.
+writeLeafHeaderTyped : Array Int -> Int -> Int -> Int -> Int -> Unit
+writeLeafHeaderTyped page hdrOff typeByte nCells contentStart =
   -- +0 page type
-  set hdrOff pageTableLeafByte page
+  set hdrOff typeByte page
   -- +1 first freeblock (u16) = 0
   set (hdrOff + 1) 0 page
   set (hdrOff + 2) 0 page
@@ -672,16 +693,48 @@ planTables ((name, sql, ipk, rows)::rest) acc = do
 --   2 .. btreeTotal          the tables' b-trees (unchanged by overflow)
 --   btreeTotal+1 .. endPage-1  the overflow chains, in row order
 assembleImage : List (String, String, List (List (Int, Array Int, Array Int))) -> Result String (Array Int)
-assembleImage plans = do
+assembleImage plans = assembleImageWithIndexes plans []
+
+-- | Assemble the whole file image, adding zero or more single-page secondary
+--   indexes AFTER every table b-tree page and BEFORE the overflow region.
+--
+--   Page map (an extension of `assembleImage`'s):
+--     1                                sqlite_master leaf (table + index rows)
+--     2 .. btreeTotal                  the tables' b-trees
+--     btreeTotal+1 .. +nIndexes        one index-leaf page (0x0A) per index
+--     +nIndexes+1 .. endPage-1         the overflow chains, in row order
+--
+--   When `indexPlans` is empty the byte image is IDENTICAL to the pre-index
+--   writer's: no index pages, no index master rows, and overflow still starts at
+--   `btreeTotal + 1`.  Every existing write gate therefore stays byte-for-byte
+--   green.
+--
+--   Each `indexPlan` is `(name, tblName, sql, cells)` — its sqlite_master
+--   metadata plus the already-sorted, already-encoded index-leaf cells (built by
+--   `planIndexes`).
+assembleImageWithIndexes : List (String, String, List (List (Int, Array Int, Array Int))) -> List (String, String, String, List (Array Int)) -> Result String (Array Int)
+assembleImageWithIndexes plans indexPlans = do
   let btreeTotal = totalPageCount plans 1
-  masterRows <- buildMasterRows plans 2 1 []
+  let nIndexes = length indexPlans
+  let indexBase = btreeTotal + 1
+  masterRows <- buildMasterRowsAll plans indexPlans indexBase
   _ <- refuseMasterOverflow masterRows
-  let (endPage, ovRev) = assignOverflowPlans plans (btreeTotal + 1) []
+  let (endPage, ovRev) = assignOverflowPlans plans (btreeTotal + nIndexes + 1) []
   tablePages <- buildAllTablePages plans 2 []
+  indexPages <- buildAllIndexPages indexPlans []
   page1 <- mapErr (e => "sqlite_master overflow: \{e}") (buildLeafPage fileHeaderSize (map prowCell masterRows))
   let fileHdr = buildFileHeader (endPage - 1)
   let _ = blit fileHdr 0 page1 0 fileHeaderSize
-  Ok (concatPageList (page1 :: tablePages ++ reverse ovRev))
+  Ok (concatPageList (page1 :: tablePages ++ indexPages ++ reverse ovRev))
+
+-- The sqlite_master pending rows: one per table (rowids 1..T, rootpages walked
+-- from page 2), then one per index (rowids T+1.., rootpages from `indexBase`).
+-- Table rows are byte-identical to the pre-index writer's.
+buildMasterRowsAll : List (String, String, List (List (Int, Array Int, Array Int))) -> List (String, String, String, List (Array Int)) -> Int -> Result String (List (Int, Array Int, Array Int))
+buildMasterRowsAll plans indexPlans indexBase = do
+  tableRows <- buildMasterRows plans 2 1 []
+  indexRows <- buildIndexMasterRows indexPlans indexBase (length plans + 1) []
+  Ok (tableRows ++ indexRows)
 
 -- One sqlite_master pending row per table: (type, name, tbl_name, rootpage,
 -- sql), rowid 1..N.  Each table's rootpage is the first page of its contiguous
@@ -788,6 +841,171 @@ blitPages (p::rest) file off =
   let n = arrayLength p
   let _ = blit p 0 file off n
   blitPages rest file (off + n)
+
+-- ---------------------------------------------------------------------------
+-- Secondary indexes (single-column, single-page) — the emission machinery
+-- ---------------------------------------------------------------------------
+--
+-- A secondary index for `CREATE INDEX ix ON t(col)` is stored as its OWN
+-- B-tree.  v1 emits a SINGLE index-leaf page (0x0A) whose cells are records of
+-- `[col-value, rowid]` (NO separate rowid varint — an index cell is just
+-- `[payload-len varint][record]`, unlike a table-leaf cell), SORTED ascending by
+-- SQLite's record-comparison order:
+--
+--   * NULL < numbers < text < blob  (storage-class rank);
+--   * numbers by numeric value;
+--   * text by BINARY collation (memcmp of the UTF-8 bytes);
+--   * ties on the key are broken by the trailing rowid (numeric).
+--
+-- Getting this order wrong produces a database `sqlite3` reads but that
+-- `PRAGMA integrity_check` reports as corrupt ("row … missing from index" / "…
+-- out of order"), so the comparison is the load-bearing part of the feature.
+
+-- | Storage-class rank, per SQLite's record comparison: NULL(0) < numbers(1) <
+--   text(2) < blob(3).
+cellClassRank : Cell -> Int
+cellClassRank CNull = 0
+cellClassRank (CInt _) = 1
+cellClassRank (CFloat _) = 1
+cellClassRank (CText _) = 2
+cellClassRank (CBlob _) = 3
+
+-- | Compare two cells in SQLite's record order.  Different storage classes
+--   compare by rank; within numbers by numeric value (INTEGER/REAL mixed via
+--   Float); within text/blob by lexicographic byte comparison (BINARY collation).
+compareCellsSqlite : Cell -> Cell -> Ordering
+compareCellsSqlite a b =
+  let ra = cellClassRank a
+  let rb = cellClassRank b
+  if ra != rb then compare ra rb else compareSameClass a b
+
+compareSameClass : Cell -> Cell -> Ordering
+compareSameClass CNull CNull = Eq
+compareSameClass (CInt x) (CInt y) = compare x y
+compareSameClass (CFloat x) (CFloat y) = compare x y
+compareSameClass (CInt x) (CFloat y) = compare (intToFloat x) y
+compareSameClass (CFloat x) (CInt y) = compare x (intToFloat y)
+compareSameClass (CText x) (CText y) = compareBytesLex (toUtf8 x) (toUtf8 y)
+compareSameClass (CBlob x) (CBlob y) = compareBytesLex x y
+compareSameClass _ _ = Eq
+
+-- | Lexicographic (memcmp) comparison of two byte arrays: shorter-prefix wins a
+--   tie, exactly as SQLite's BINARY collation compares text/blob bodies.
+compareBytesLex : Array Int -> Array Int -> Ordering
+compareBytesLex a b = compareBytesGo a b 0 (arrayLength a) (arrayLength b)
+
+compareBytesGo : Array Int -> Array Int -> Int -> Int -> Int -> Ordering
+compareBytesGo a b i la lb =
+  if i >= la && i >= lb then
+    Eq
+  else if i >= la then
+    Lt
+  else if i >= lb then
+    Gt
+  else if a[i] != b[i] then
+    compare a[i] b[i]
+  else
+    compareBytesGo a b (i + 1) la lb
+
+-- | Order two index entries `(keyCell, rowid)`: by key first, then by rowid.
+--   Because every row's rowid is distinct, this is a TOTAL order, so the sort is
+--   deterministic even across duplicate keys.
+compareIndexEntry : (Cell, Int) -> (Cell, Int) -> Ordering
+compareIndexEntry (k1, r1) (k2, r2) = match compareCellsSqlite k1 k2
+  Eq => compare r1 r2
+  o => o
+
+-- | Encode one index-leaf cell: `[payload-len varint][record bytes]`.  There is
+--   NO rowid varint (that is a table-leaf-only field — the rowid rides inside the
+--   record as its trailing column).  A record too large to fit locally would need
+--   an overflow chain, which v1 does not emit for indexes, so it is refused.
+encodeIndexLeafCell : Array Int -> Result String (Array Int)
+encodeIndexLeafCell recBytes =
+  let plen = arrayLength recBytes
+  if plen > indexMaxLocalPayload usableSize then Err "index key record of \{intToString plen} bytes needs an overflow page; multi-page/overflow indexes are not supported in v1"
+  else
+    let buf = newBuilder ()
+    let _ = emitBytes (sqVarintBytes plen) buf
+    let _ = emitBytes (toList recBytes) buf
+    Ok (buildArray buf)
+
+-- | Encode every `(keyCell, rowid)` entry of one index into a sorted list of
+--   index-leaf cells: sort by SQLite record order, then encode each as the
+--   record `[keyCell, CInt rowid]` wrapped in its `[len][record]` cell.
+encodeIndexCells : List (Cell, Int) -> List (Array Int) -> Result String (List (Array Int))
+encodeIndexCells [] acc = Ok (reverse acc)
+encodeIndexCells ((k, rid)::rest) acc = do
+  recBytes <- encodeRecord [k, CInt rid]
+  cell <- encodeIndexLeafCell recBytes
+  encodeIndexCells rest (cell::acc)
+
+-- | Plan every index: sort its entries and pre-encode its cells, yielding
+--   `(name, tblName, sql, cells)` so the page count (always 1) is known before
+--   page assignment.
+planIndexes : List (String, String, String, List (Cell, Int)) -> List (String, String, String, List (Array Int)) -> Result String (List (String, String, String, List (Array Int)))
+planIndexes [] acc = Ok (reverse acc)
+planIndexes ((name, tbl, sql, entries)::rest) acc = do
+  cells <- encodeIndexCells (sortBy compareIndexEntry entries) []
+  planIndexes rest ((name, tbl, sql, cells)::acc)
+
+-- | Build the single index-leaf page (0x0A) from a list of sorted, encoded
+--   index cells.  Cell pointers are written in the supplied (ascending-key)
+--   order, so the caller MUST pass sorted cells (`planIndexes` does).  Returns
+--   `Err` if the cells overflow one page (multi-page indexes are out of scope).
+buildIndexLeafPage : List (Array Int) -> Result String (Array Int)
+buildIndexLeafPage cells = do
+  let nCells = length cells
+  let page = arrayMake pageSize 0
+  let cpStart = leafHeaderSize
+  let cpEnd = cpStart + nCells * 2
+  contentStart <- packCells page cells cpStart pageSize cpEnd 0 "index has more entries than fit one page; multi-page indexes are not supported in v1"
+  let _ = writeLeafHeaderTyped page 0 pageIndexLeafByte nCells contentStart
+  Ok page
+
+-- | Build one index-leaf page per index plan, in plan order (which matches the
+--   `indexBase`-onward page numbering used for their rootpages).
+buildAllIndexPages : List (String, String, String, List (Array Int)) -> List (Array Int) -> Result String (List (Array Int))
+buildAllIndexPages [] acc = Ok (reverse acc)
+buildAllIndexPages ((_, _, _, cells)::rest) acc = do
+  page <- mapErr (e => "index page: \{e}") (buildIndexLeafPage cells)
+  buildAllIndexPages rest (page::acc)
+
+-- The five sqlite_master columns of an index row: type='index', the index name,
+-- the table it belongs to, its rootpage, and the stored CREATE INDEX text.
+indexMasterCells : String -> String -> String -> Int -> List Cell
+indexMasterCells name tbl sql rootPage =
+  [CText "index", CText name, CText tbl, CInt rootPage, CText sql]
+
+-- One sqlite_master pending row per index, rootpages walked from `indexBase` and
+-- rowids continuing after the table rows.
+buildIndexMasterRows : List (String, String, String, List (Array Int)) -> Int -> Int -> List (Int, Array Int, Array Int) -> Result String (List (Int, Array Int, Array Int))
+buildIndexMasterRows [] _ _ acc = Ok (reverse acc)
+buildIndexMasterRows ((name, tbl, sql, _)::rest) page rid acc = do
+  recBytes <- mapErr (e => "sqlite_master index record: \{e}") (encodeRecord (indexMasterCells name tbl sql page))
+  let (cell, spill) = encodeLeafCell rid recBytes
+  buildIndexMasterRows rest (page + 1) (rid + 1) ((rid, cell, spill)::acc)
+
+-- ---------------------------------------------------------------------------
+-- Public: multi-table + secondary indexes
+-- ---------------------------------------------------------------------------
+
+-- | Build the byte image of a multi-table database that ALSO carries one or more
+--   single-column secondary indexes.  `specs` is exactly `buildDatabaseMulti`'s
+--   table list; each `indexSpec` is `(indexName, tableName, createIndexSql,
+--   entries)` where `entries` is the UNSORTED list of `(keyCell, rowid)` pairs
+--   for the indexed column (this writer sorts them into SQLite record order).
+--
+--   The caller is responsible for supplying entries whose `rowid` matches the
+--   rowid the table writer assigns each row (the IPK column value for an IPK
+--   table, else the 1..N auto-rowid) and whose `keyCell` is the indexed column's
+--   value — `lib.writer.buildTableWithIndexes` derives both from the schema.
+--
+--   With an empty `indexSpecs` this is byte-identical to `buildDatabaseMulti`.
+export buildDatabaseMultiWithIndexes : List (String, String, Option Int, List (List Cell)) -> List (String, String, String, List (Cell, Int)) -> Result String (Array Int)
+buildDatabaseMultiWithIndexes specs indexSpecs = do
+  plans <- planTables specs []
+  indexPlans <- planIndexes indexSpecs []
+  assembleImageWithIndexes plans indexPlans
 
 -- ---------------------------------------------------------------------------
 -- writeDatabase — the IO wrapper

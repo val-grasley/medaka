@@ -609,6 +609,197 @@ export ipkAgrees : CreateTable -> Option Int -> Bool
 ipkAgrees ct readerIpk = ctIpkIndex ct == readerIpk
 
 -- ---------------------------------------------------------------------------
+-- CREATE INDEX — the single-column secondary-index model (v1)
+-- ---------------------------------------------------------------------------
+--
+-- The write path (`lib.dbwriter`) can emit ONE single-column secondary index as
+-- its own index-leaf B-tree.  This is the DDL front end for it: a deliberately
+-- narrow grammar
+--
+--   create_index := CREATE INDEX [IF NOT EXISTS] name ON table '(' column ')'
+--
+-- and a LOUD rejection (never a silently-dropped clause) for every form v1
+-- cannot honour: `UNIQUE`, a second column, a `WHERE` (partial), `COLLATE`,
+-- `ASC`/`DESC`, and expression / function indexes.  Each rejection NAMES what it
+-- refused so the caller learns exactly which construct is out of scope, rather
+-- than discovering a silently-missing uniqueness or ordering constraint later.
+--
+-- This is kept SEPARATE from the `Stmt` dispatcher in `lib.sqlstmt`: the executor
+-- (`lib.sqlexec` / `lib.mutate`) refuses to touch a database that already holds an
+-- index, so there is no SQL-driven execution path to wire it into.  The writer
+-- library and its demo drive the emission directly.
+
+-- | A parsed single-column `CREATE INDEX`: the index name, the table it is on,
+--   and the single indexed column name.
+public export data CreateIndex =
+  | CreateIndex String String String
+deriving (Eq, Debug)
+
+-- | The index's name.
+--
+-- > ixName (CreateIndex "idx_name" "people" "name")
+-- "idx_name"
+export ixName : CreateIndex -> String
+ixName (CreateIndex n _ _) = n
+
+-- | The table the index is on.
+--
+-- > ixTable (CreateIndex "idx_name" "people" "name")
+-- "people"
+export ixTable : CreateIndex -> String
+ixTable (CreateIndex _ t _) = t
+
+-- | The single indexed column.
+--
+-- > ixColumn (CreateIndex "idx_name" "people" "name")
+-- "name"
+export ixColumn : CreateIndex -> String
+ixColumn (CreateIndex _ _ c) = c
+
+-- | Render a `CreateIndex` to the canonical `CREATE INDEX …` text that is stored
+--   in `sqlite_master` (and that `sqlite3` accepts verbatim).
+--
+-- > renderCreateIndex (CreateIndex "idx_name" "people" "name")
+-- "CREATE INDEX idx_name ON people (name)"
+export renderCreateIndex : CreateIndex -> String
+renderCreateIndex (CreateIndex n t c) = "CREATE INDEX \{n} ON \{t} (\{c})"
+
+-- | Parse a whole `CREATE INDEX` statement.  A trailing `;` is tolerated;
+--   every unsupported form is a named `Err`, never a dropped clause.
+--
+-- > map renderCreateIndex (parseCreateIndex "CREATE INDEX idx_name ON people(name)")
+-- Ok "CREATE INDEX idx_name ON people (name)"
+--
+-- Whitespace and case are free, `IF NOT EXISTS` and a trailing `;` are fine:
+--
+-- > map renderCreateIndex (parseCreateIndex "create index if not exists idx_age on people ( age ) ;")
+-- Ok "CREATE INDEX idx_age ON people (age)"
+--
+-- Every v1-unsupported form is named, not silently dropped:
+--
+-- > parseCreateIndex "CREATE UNIQUE INDEX u ON t(a)"
+-- Err "UNIQUE indexes are not supported — v1 emits a plain (non-unique) secondary index at 14"
+-- > parseCreateIndex "CREATE INDEX i ON t(a, b)"
+-- Err "multi-column indexes are not supported — v1 indexes a single column at 23"
+-- > parseCreateIndex "CREATE INDEX i ON t(a) WHERE a > 0"
+-- Err "partial indexes (a WHERE clause) are not supported — v1 indexes every row at 29"
+-- > parseCreateIndex "CREATE INDEX i ON t(a COLLATE NOCASE)"
+-- Err "COLLATE in an index is not supported — v1 uses the default (BINARY) collation at 30"
+-- > parseCreateIndex "CREATE INDEX i ON t(a DESC)"
+-- Err "DESC ordering in an index is not supported — v1 indexes ascending only at 26"
+-- > parseCreateIndex "CREATE INDEX i ON t(lower(a))"
+-- Err "expression / function indexes are not supported — v1 indexes a single bare column name at 26"
+export parseCreateIndex : String -> Result String CreateIndex
+parseCreateIndex s = runParser createIndexStatement s
+
+createIndexStatement : Parser CreateIndex
+createIndexStatement = do
+  _ <- spaces
+  ci <- createIndexP
+  _ <- optional (symbol ";")
+  _ <- eof
+  pure ci
+
+-- | The `CREATE INDEX` parser WITHOUT the end-of-input demand.
+--
+-- > map ixName (runParser createIndexP "CREATE INDEX i ON t(a)")
+-- Ok "i"
+export createIndexP : Parser CreateIndex
+createIndexP = do
+  _ <- keyword "CREATE"
+  _ <- rejectUniqueIndex
+  _ <- keyword "INDEX"
+  _ <- optional ifNotExistsP
+  name <- sqlIdent
+  _ <- keyword "ON"
+  table <- sqlIdent
+  _ <- symbol "("
+  col <- sqlIdent
+  _ <- rejectFuncIndex
+  _ <- rejectExtraColumn
+  _ <- rejectColSuffix col
+  _ <- symbol ")"
+  _ <- rejectPartial
+  pure (CreateIndex name table col)
+
+-- `UNIQUE` before `INDEX` needs an enforced uniqueness constraint v1 cannot
+-- provide, so it is refused rather than silently emitted as a plain index.
+rejectUniqueIndex : Parser Unit
+rejectUniqueIndex = do
+  u <- optional (keyword "UNIQUE")
+  when
+    (isSome u)
+    (failWith
+      "UNIQUE indexes are not supported — v1 emits a plain (non-unique) secondary index")
+
+ifNotExistsP : Parser Unit
+ifNotExistsP = attempt
+  (do
+    _ <- keyword "IF"
+    _ <- keyword "NOT"
+    keyword "EXISTS")
+
+-- An indexed column immediately followed by `(` is a function/expression index
+-- (`lower(a)`, `substr(a,1)`), which v1 does not support.
+rejectFuncIndex : Parser Unit
+rejectFuncIndex = do
+  p <- optional (symbol "(")
+  when
+    (isSome p)
+    (failWith
+      "expression / function indexes are not supported — v1 indexes a single bare column name")
+
+-- A `,` after the first column is a multi-column index.
+rejectExtraColumn : Parser Unit
+rejectExtraColumn = do
+  c <- optional (symbol ",")
+  when
+    (isSome c)
+    (failWith
+      "multi-column indexes are not supported — v1 indexes a single column")
+
+-- After the column, the only legal token is `)`.  `DESC`/`ASC` (ordering) and
+-- `COLLATE` are named explicitly; any other trailing word is an expression index.
+rejectColSuffix : String -> Parser Unit
+rejectColSuffix col = do
+  w <- optional (attempt (lexeme word))
+  rejectColSuffixWord col w
+
+rejectColSuffixWord : String -> Option String -> Parser Unit
+rejectColSuffixWord _ None = pure ()
+rejectColSuffixWord col (Some w) = colSuffixReject col (toUpper w) w
+
+colSuffixReject : String -> String -> String -> Parser Unit
+colSuffixReject _ "DESC" _ =
+  failWith
+    "DESC ordering in an index is not supported — v1 indexes ascending only"
+colSuffixReject _ "ASC" _ =
+  failWith
+    "ASC ordering in an index is not supported — v1 indexes ascending only"
+colSuffixReject _ "COLLATE" _ =
+  failWith
+    "COLLATE in an index is not supported — v1 uses the default (BINARY) collation"
+colSuffixReject _ _ w =
+  failWith
+    "expression / function indexes are not supported — v1 indexes a single bare column name (got '\{w}')"
+
+-- A `WHERE` after the `)` is a partial index.
+rejectPartial : Parser Unit
+rejectPartial = do
+  w <- optional (attempt (lexeme word))
+  rejectPartialWord w
+
+rejectPartialWord : Option String -> Parser Unit
+rejectPartialWord None = pure ()
+rejectPartialWord (Some w) = partialReject (toUpper w) w
+
+partialReject : String -> String -> Parser Unit
+partialReject "WHERE" _ =
+  failWith
+    "partial indexes (a WHERE clause) are not supported — v1 indexes every row"
+partialReject _ w = failWith "unsupported SQL after CREATE INDEX: '\{w}'"
+
+-- ---------------------------------------------------------------------------
 -- Committed combinators (shared with lib.sqlstmt)
 -- ---------------------------------------------------------------------------
 

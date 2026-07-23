@@ -1,0 +1,30 @@
+# integrity_check
+ok
+# schema
+table|people|people|2
+index|idx_name|people|3
+index|idx_age|people|4
+# people
+1|bob|30
+2|alice|25
+3|carol|
+4|bob|40
+5|dave|25
+# name index (WHERE name='bob')
+1|bob
+4|bob
+# age index (WHERE age=25)
+2|25
+5|25
+# age index ordered (NULL first)
+3|
+2|25
+5|25
+1|30
+4|40
+# medaka reader
+1|bob|30
+2|alice|25
+3|carol|
+4|bob|40
+5|dave|25

@@ -1,0 +1,67 @@
+-- Secondary-index writer demo / index-write-oracle entry.
+--
+-- Usage: medaka build sqlite/index_write_demo.mdk -o index_write_demo
+--        ./index_write_demo <out.db>
+--
+-- Writes ONE table plus TWO single-column secondary indexes into a `.sqlite`
+-- file via `writeTableWithIndexes`, exercising every index-key shape the write
+-- path must get right for `PRAGMA integrity_check` to say `ok`:
+--
+--   CREATE TABLE people(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)
+--     1  bob    30
+--     2  alice  25
+--     3  carol  NULL     -- a NULL in the indexed `age` column
+--     4  bob    40       -- a DUPLICATE `name` key ("bob")
+--     5  dave   25       -- a DUPLICATE `age` key (25)
+--
+--   CREATE INDEX idx_name ON people (name)   -- TEXT-keyed  (BINARY collation)
+--   CREATE INDEX idx_age  ON people (age)    -- INTEGER-keyed, with a NULL key
+--
+-- Each index is its own 0x0A index-leaf B-tree whose records are
+-- `[key, rowid]`, sorted in SQLite record order (NULL < numbers < text; ties on
+-- the key broken by rowid).
+
+-- Demos are intentionally self-contained; row/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.writer.{
+  TableSchema,
+  Column,
+  ColType,
+  TInteger,
+  TText,
+  writeTableWithIndexes,
+}
+import lib.recordfmt.{Cell, CNull, CInt, CText}
+
+peopleSchema : TableSchema
+peopleSchema = TableSchema {
+  schemaTableName = "people",
+  columns = [
+    Column { colName = "id", colType = TInteger, isPrimaryKey = True },
+    Column { colName = "name", colType = TText, isPrimaryKey = False },
+    Column { colName = "age", colType = TInteger, isPrimaryKey = False },
+  ],
+}
+
+peopleRows : List (List Cell)
+peopleRows = [
+  [CInt 1, CText "bob", CInt 30],
+  [CInt 2, CText "alice", CInt 25],
+  [CInt 3, CText "carol", CNull],
+  [CInt 4, CText "bob", CInt 40],
+  [CInt 5, CText "dave", CInt 25],
+]
+
+indexes : List (String, String)
+indexes = [("idx_name", "name"), ("idx_age", "age")]
+
+main : <IO> Unit
+main = match args ()
+  [out] => run out
+  _ => println "usage: index_write_demo <out.db>"
+
+run : String -> <IO> Unit
+run out = match writeTableWithIndexes out peopleSchema peopleRows indexes
+  Err e => println "Error: \{e}"
+  Ok _ => println "wrote \{out} (people=5, indexes: idx_name, idx_age)"

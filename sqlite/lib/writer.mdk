@@ -29,10 +29,11 @@ import lib.dbwriter.{
   writeDatabase,
   buildDatabaseMulti,
   buildDatabaseMultiExplicit,
+  buildDatabaseMultiWithIndexes,
 }
 import lib.recordfmt.{Cell, CNull, CInt, CText, CBlob}
-import string.{join}
-import list.{findIndex, reverse}
+import string.{join, toUpper}
+import list.{findIndex, reverse, get}
 
 -- ---------------------------------------------------------------------------
 -- Column-type affinity
@@ -248,3 +249,99 @@ export writeTablesExplicit : String -> List (TableSchema, List (Int, List Cell))
 writeTablesExplicit path tables = do
   img <- buildTablesExplicit tables
   writeFileBytes path img
+
+-- ---------------------------------------------------------------------------
+-- Single-table write API WITH secondary indexes
+-- ---------------------------------------------------------------------------
+--
+-- Write ONE table plus one or more single-column secondary indexes into a
+-- `.sqlite` file.  Each index is `(indexName, columnName)`; this layer derives
+-- the `(keyCell, rowid)` entries from the schema + rows so the index rowids match
+-- the table writer's exactly (the IPK column value for an IPK table, else the
+-- 1..N auto-rowid), then hands them to `dbwriter.buildDatabaseMultiWithIndexes`.
+-- Reading is unchanged — the engine ignores the index and full-scans the table.
+--
+-- Rejections (clean `Err`, never a corrupt index):
+--   * an index on an unknown column;
+--   * an index on the INTEGER PRIMARY KEY column (that is the rowid alias — its
+--     index key encoding differs, so v1 does not emit it).
+
+-- | Build the byte image of a single table plus its secondary indexes.
+--   `indexes` is a list of `(indexName, columnName)`.
+export buildTableWithIndexes : TableSchema -> List (List Cell) -> List (String, String) -> Result String (Array Int)
+buildTableWithIndexes schema rows indexes = match schema
+  TableSchema { schemaTableName = name, columns } => do
+    let colCount = length columns
+    _ <- validateRows colCount rows
+    let sql = createTableSql schema
+    let ipk = schemaIpkIndex schema
+    idxSpecs <- collectIndexSpecs name columns ipk rows indexes []
+    buildDatabaseMultiWithIndexes [(name, sql, ipk, rows)] idxSpecs
+
+-- | Build a single-table-with-indexes database and `writeFileBytes` it.
+export writeTableWithIndexes : String -> TableSchema -> List (List Cell) -> List (String, String) -> <FileWrite> Result String Unit
+writeTableWithIndexes path schema rows indexes = do
+  img <- buildTableWithIndexes schema rows indexes
+  writeFileBytes path img
+
+-- Turn each `(indexName, columnName)` into the low-level dbwriter index spec.
+collectIndexSpecs : String -> List Column -> Option Int -> List (List Cell) -> List (String, String) -> List (String, String, String, List (Cell, Int)) -> Result String (List (String, String, String, List (Cell, Int)))
+collectIndexSpecs _ _ _ _ [] acc = Ok (reverse acc)
+collectIndexSpecs tbl cols ipk rows ((idxName, col)::rest) acc = do
+  spec <- oneIndexSpec tbl cols ipk rows idxName col
+  collectIndexSpecs tbl cols ipk rows rest (spec::acc)
+
+oneIndexSpec : String -> List Column -> Option Int -> List (List Cell) -> String -> String -> Result String (String, String, String, List (Cell, Int))
+oneIndexSpec tbl cols ipk rows idxName col = do
+  colIdx <- requireColumn tbl col (columnIndexOf cols col)
+  _ <- refuseIpkIndex tbl col colIdx ipk
+  entries <- indexEntries ipk colIdx 1 rows []
+  let sql = "CREATE INDEX \{idxName} ON \{tbl} (\{col})"
+  Ok (idxName, tbl, sql, entries)
+
+requireColumn : String -> String -> Option Int -> Result String Int
+requireColumn _ _ (Some i) = Ok i
+requireColumn tbl col None =
+  Err "cannot index unknown column '\{col}' on table '\{tbl}'"
+
+refuseIpkIndex : String -> String -> Int -> Option Int -> Result String Unit
+refuseIpkIndex tbl col colIdx (Some p) =
+  if colIdx == p then
+    Err "cannot index the INTEGER PRIMARY KEY column '\{col}' of '\{tbl}' — it is the rowid alias (v1 limitation)"
+  else
+    Ok ()
+refuseIpkIndex _ _ _ None = Ok ()
+
+-- The 0-based index of the column named `col` (case-insensitive, as SQL
+-- identifiers are).
+columnIndexOf : List Column -> String -> Option Int
+columnIndexOf cols col = colIdxGo cols (toUpper col) 0
+
+colIdxGo : List Column -> String -> Int -> Option Int
+colIdxGo [] _ _ = None
+colIdxGo ((Column { colName, ... })::rest) target i =
+  if toUpper colName == target then
+    Some i
+  else
+    colIdxGo rest target (i + 1)
+
+-- Extract `(keyCell, rowid)` for the indexed column from every row, threading
+-- the auto-rowid.  The rowid derivation MIRRORS the table writer's
+-- (`dbwriter.rowidFor`): the IPK column value for an IPK table, else 1..N.
+indexEntries : Option Int -> Int -> Int -> List (List Cell) -> List (Cell, Int) -> Result String (List (Cell, Int))
+indexEntries _ _ _ [] acc = Ok (reverse acc)
+indexEntries ipk colIdx auto (row::rest) acc = do
+  rid <- rowidOfRow ipk auto row
+  let key = keyOf colIdx row
+  indexEntries ipk colIdx (auto + 1) rest ((key, rid)::acc)
+
+rowidOfRow : Option Int -> Int -> List Cell -> Result String Int
+rowidOfRow None auto _ = Ok auto
+rowidOfRow (Some p) _ cells = match get p cells
+  Some (CInt v) => Ok v
+  _ => Err "INTEGER PRIMARY KEY column must be a non-NULL integer to build an index"
+
+keyOf : Int -> List Cell -> Cell
+keyOf colIdx row = match get colIdx row
+  Some c => c
+  None => CNull
