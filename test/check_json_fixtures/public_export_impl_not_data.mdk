@@ -1,0 +1,7 @@
+interface Foo a where
+  foo : a -> Int
+
+public export impl Foo Int where
+  foo x = x
+
+main = println "hi"

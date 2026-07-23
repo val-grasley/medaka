@@ -605,6 +605,17 @@ main = println (foo (match Light
   Dark => "d"))
 ```
 
+**`public` only applies to `data`.** `public export data` (`VisPublic`) exports the type
+**and** its constructors; plain `export data` (`VisAbstract`) exports the type only —
+its constructors stay private, so callers can pattern-match nothing and construct nothing
+directly. Every other exportable declaration — `interface`, `impl`, `type` (alias),
+`newtype`, `extern`, a plain binding/function, `import` (as `export import`) — takes only
+bare `export`; there is no public/abstract distinction for them, so writing `public` in
+front of one is a mistake, not an alternate spelling. `export interface Foo a where …`
+and `export impl Foo Int where …` are the valid forms (both used already, in
+`stdlib/core.mdk`, above); `public export interface Foo a where …` is rejected with
+`` `public` only applies to `data` declarations ``, caret on the `public` token.
+
 ⚠️ **`export import <mod>.{name}` does NOT re-export a name that `<mod>` itself
 only has via its own `export import core.{name}`** (re-exporting something
 that originates in the implicit prelude module `core`) — it type-checks with
