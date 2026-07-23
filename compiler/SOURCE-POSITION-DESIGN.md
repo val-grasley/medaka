@@ -15,6 +15,15 @@ parse-entry unification / I6 #860 — all channel-first, on `main`). Increment *
 #254) remains **optional feature work** on the channel, not started. The user-facing goal (real name-column
 spans for decls + children) is **met** by 1–3.
 
+**Extension (2026-07-24) — pattern-binder spans (#913): see §9.** A *different node class* than
+this doc's decls/children: `PVar`/`PAs` binders carry no `Loc`, so references/rename mis-resolve
+param and local binders (two S0 source-corruptions in the #254 rename, PR #934). §9 records Val's
+ratified decision to **put the `Loc` in the AST (`PVar String Loc` / `PAs String Loc Pat`) — a
+scoped deviation from F2 channel-first**, because F2 provably cannot reach *nested* binders. This
+does **not** reopen the §4 increment-4 decline: that declined the channel→AST relocation for
+decl/child names *because the channel already delivers those*; for pattern binders the channel
+delivers nothing (§9.2).
+
 The §6 forks are resolved as below — this is the scope the implementation increments build to.
 Sequencing (which increment lands when, and `typecheck.mdk` ordering vs the concurrent
 typecheck refactor) is deliberately deferred; see §4/§5, decided per-increment.
@@ -607,3 +616,152 @@ column. #331 needs a **name-token finder**, not a new parallel column array. Bui
   header both note their own "Status:" lines never flipped to SHIPPED despite the fixes landing —
   consistent with the memory note that status banners rot. Trust the in-source "Bite N"/"Chunk N"
   AS-BUILT sections over the headers.
+
+---
+
+## 9. Extension: per-binder name spans for pattern binders (#913)
+
+**Status:** DESIGN, RATIFIED by Val 2026-07-24. Decision **AST-A** (below); the **F2
+channel-first deviation is approved, scoped to pattern binders only** (does not reopen §4
+increment-4 for decl/child names — §9.2 explains why the two node classes differ). Read-only
+analysis; every `file:line` was read from `main` source. #913 is `OPEN, S2` (assessed vs
+*references*); it escalates to **S0** under *rename* (PR #934 `#254 Stage 2`, held draft).
+
+### 9.1 Problem
+
+`PVar String` (`ast.mdk:99`) and `PAs String Pat` (`ast.mdk:106`) carry no source position, so
+the reference index (`refindex.mdk`) records every param/local binder's def `Loc` at the
+*enclosing decl's* name loc. Two source-corrupting rename bugs, both reproduced on the built
+binary + grep-proven:
+
+- **S0-1 (common case):** `f x = x + 1`; click `f` → `walkDeclBody (DFunDef _ _ pats body) loc`
+  records params at the fn-name `loc` (`refindex.mdk:674-675`), so `binderAt` resolves the
+  fn-name click to the first param → WorkspaceEdit renames the param use, breaks the call site.
+- **S0-2:** `let tmp = 99`; click a `tmp` use → local recorded at enclosing `curLoc`
+  (`refindex.mdk:300-304`) → def edit lands on the declaration name.
+
+F3's collision check runs *downstream* of `binderAt`, so it cannot catch either — the wrong key
+is chosen first. Fixing #913 fixes both features (references highlight + rename).
+
+### 9.2 Why F2 (channel-first) provably fails here — and why decls differed
+
+For decl names, F2 works because a decl name sits at a *fixed structural offset* in the decl's
+token span and keys **1:1** with the top-level decl list — post-hoc token scan recovers it, and
+invariant **I2** (spans can't desync from nodes) is preserved by that 1:1 keying. **Neither
+property holds for pattern binders:**
+
+1. **Post-hoc scan can't reach nested binders.** Function params are scannable (they sit between
+   the name token and `=`), but a `let`/lambda/`do`/guard binder (S0-2) sits at arbitrary depth
+   inside any expression; recovering its token position requires walking the full expression
+   grammar — re-implementing the parser in the finder. So a scan-based channel structurally
+   cannot cover the nested binders, and S0-2 *is* nested.
+2. **A capture-channel reintroduces the desync class I2 forbids.** The parser visits every binder
+   token (`parsePatAtom` `emit (PVar x)`, `parser.mdk:1593`; as-pattern, `:1442/1629`) and could
+   push `(name, Loc)` into a flat side list. But refindex holds nested `Pat` nodes, not channel
+   indices — attaching each captured `Loc` requires a positional zip of a flat list against a
+   nested traversal, correct *only if parser-emit order == refindex-walk order for every
+   construct* (including the raw `EGuards`/`ESection`/`EStringInterp`/`EDo` that
+   `parseWithPositionsOpt` does not desugar). Any divergence silently mis-attaches a `Loc` — a
+   silent S0 that passes every gate until a future walk-arm reorder. The channel buys nothing the
+   AST field doesn't, at the cost of a fragile whole-tree zip invariant.
+
+An **AST field cannot desync** (I2 for free): refindex's walk already holds the `Pat`, so it
+reads `binder.loc` directly — zero channel, zero zip. This is why the deviation is correct
+*here* and was rejected *there*: increment 4 declined the channel→AST move for decl/child names
+because the channel already delivers them (zero-value relocation); for pattern binders the
+channel delivers nothing.
+
+### 9.3 Decision — AST-A (arity change)
+
+```
+| PVar String Loc            -- was PVar String        (ast.mdk:99)
+| PAs  String Loc Pat        -- was PAs  String Pat     (ast.mdk:106)
+```
+
+The `Loc` is the binder's own name token, minted in the parser at the two construction sites
+(`:1593`, `:1442/1629`) via `getPos`+`locOfSpan` (reuse the `located` combinator, `:214-219`).
+Parser-synthesized binders with no token span get a sentinel `Loc "" 0 0 0 0` (references then
+record no usable def for a compiler-synthetic binder, as today).
+
+- **Behavior-neutral.** The `Loc` is inert data no backend reads → emitted IR byte-identical →
+  self-compile fixpoint re-validates with **no seed re-mint** (same profile as the `DUse`/`TyCon`
+  inline-`Loc` adds).
+- **Serializer-invisible.** The two `Pat` serializers drop/default the field (`sexp.mdk:65,72`
+  emit → `PVar x _`; `core_ir_sexp_parse.mdk:208,215` parse → `PVar (toStr n) (dummyLoc "")`), so
+  every desugar/mark/resolve/core-ir snapshot golden stays byte-identical.
+- **Blast radius (grep-measured):** ~163 real `PVar` code sites + ~50 `PAs` ≈ **~210 sites** across
+  ~20 files, dominated by both backends (Core IR reuses surface `Pat`, `core_ir.mdk:52`), then
+  lint/typecheck/desugar. **Every site is a loud, compiler-flagged break**, overwhelmingly the
+  mechanical `PVar x → PVar x _`.
+
+**Rejected alternatives** (recorded so they are not re-proposed):
+- **AST-B — `PLoc Loc Pat` wrapper stripped in desugar** (~40 sites; the main pipeline never sees
+  it). Rejected: its one failure mode is *silent* — a raw-AST `Pat` matcher that forgets to peel
+  `PLoc` swallows the binder via a wildcard arm with no compiler error (the RESOLVER-doc Fork-1
+  hazard §4 already rejected a `DLoc` wrapper for). AST-A's ~210 breaks are all loud; for a
+  "bulletproof foundation" loud beats small-but-silent. AST-B remains the sanctioned fallback if
+  the sweep proves too costly against the concurrent typecheck arc.
+- **Channel** — §9.2.
+
+### 9.4 Consumer delta — `refindex.mdk` (~11 sites, the actual fix)
+
+The walk already carries every `Pat`; it discards positions via `patBinderNames : Pat -> List
+String` (`refindex.mdk:186-200`). Replace with `patBinders : Pat -> List (String, Loc)`
+(`PVar x l => [(x,l)]`, `PAs x l p => (x,l) :: …`, record-pun uses the field-name `Loc`), drop
+the shared-`atLoc` param from `mkNamedFrame`/`mkOneLocal` (`:501-517`) so each binder records at
+its **own** `Loc`, and update the ~11 frame-construction call sites (`ELam`/`ELet`/`ELetGroup`/
+`walkArms`/`walkStmts`/`walkGuards`/`DFunDef`/`DProp`/method sites). `binderAt` (`:1030-1049`)
+then resolves both S0s: the param/local occurrence sits at its own token, so a fn-name/decl-name
+click no longer `locContains`-matches it. `BinderKey` keying is untouched — only the recorded
+`Loc` moves.
+
+### 9.5 Binder-site SET (a missed site re-opens the bug for that construct)
+
+Names are introduced only by `PVar` (`ast.mdk:99`), `PAs` (`:106`), and the punned record field
+`RecPatField String (Option Pat)` in its `None` arm (`:111`). Sites: **B1** fn params
+(`DFunDef`, S0-1) · **B2** lambda params (`ELam`) · **B3** `let` pattern (`ELet`, S0-2) · **B4**
+let-group binds · **B5** match arms (`Arm`) · **B6** `do` binds/lets · **B7** guard binds
+(`GBind`) · **B8** prop params (`PropParam String Ty`, `:371` — carries a bare name, needs its
+own `Loc`) · **B9** impl/iface-default method params. **B10** (variant ctors, record fields,
+iface/impl method names) is already solved by the shipped child-span channel (increment 2) and is
+out of scope. The record-pun name (`RecPatField … None`) needs the field-name token `Loc` — small
+sub-decision, reuse the increment-2 child-field finder or add a `Loc` to `RecPatField`.
+
+### 9.6 Touch points outside parser + refindex (highlight only)
+
+- **`resolve.mdk` — a bonus diagnostic upgrade.** `checkFunClause` (`:803-808`) currently
+  approximates the duplicate-param error location with `orElseLocL (firstExprLoc body) cur` (a
+  documented "no binder position" hack); per-binder `Loc`s let it blame the actual duplicate
+  binder token. Other resolve `PVar`/`PAs` sites take a mechanical `_`.
+- **`typecheck.mdk` — `_`-sites only, no logic** (~14 `PVar` + 3 `PAs`). ⚠️ **Serialize after the
+  concurrent #840 typecheck arc** — Inc 1 re-blesses `test/snapshots/compiler/typecheck.md`
+  (whole-file render), which conflicts with any concurrent typecheck.mdk PR (e.g. #938). Do the
+  Inc-1 sweep in a window when no typecheck.mdk PR is open, and never hand-merge that golden —
+  rebase and regenerate.
+- **desugar/exhaust/eval/backends/printer/lint** — all `_`-sites under AST-A.
+
+### 9.7 Increment sequence
+
+1. **Inc 1 — thread the field (substrate).** Arity-change `PVar`/`PAs`; parser mints binder
+   `Loc`s; both serializers drop/default; mechanically `_` every match site. refindex unchanged.
+   Zero behavior change → moves only source-text snapshot goldens (bless same-commit,
+   `diff_compiler_snapshot_frontend.sh --bless <path>`); fixpoint re-validates, no re-mint.
+   Decisive gates: `selfcompile_fixpoint` + `typecheck_compiler_source` + snapshots. **Blocks on a
+   typecheck.mdk-quiet window (§9.6).**
+2. **Inc 2 — refindex consumes binder Locs (the fix).** §9.4. Fixes both S0s; moves
+   `references_fixtures/correctness` (recapture). Add both S0 repros as positive assertions; land
+   them first as `test/must_fail_fixtures/913-*/` pins (flip green → close-signal when Inc 2
+   lands).
+3. **Inc 3 — resolve dup-param location upgrade** (§9.6). Small, independent; foldable into Inc 1's
+   `_`-sweep.
+4. **Inc 4 — #934 rename un-drafts, ships complete + safe.** Both S0 rename paths structurally
+   closed. #913 closes on Inc 2's fixtures; #934 un-drafts on Inc 4.
+
+### 9.8 Risks
+
+Determinism/desync (the decisive argument for AST-A — §9.2); the concurrent typecheck arc (§9.6);
+shared-corpus snapshot goldens (bless same-commit by naming paths); `references_scaling` op-count
+(binder-`Loc` swaps one `Loc` for another, adds no per-binder allocation — verify the N-vs-2N
+ratio holds); nested `PCon`/`PCons` and `PAs` binders (each inner `PVar`/`PAs` carries its own
+token `Loc`, so `patBinders` recursion handles them with no special case — `PAs`'s `Loc` is the
+*binder* token, not the whole as-pattern span).
