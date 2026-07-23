@@ -357,11 +357,12 @@ occToHighlight arr nlen off = match posOfOffset arr off
 -- function) COLLAPSE to a single outline symbol spanning them (#300 part 3), so a
 -- 2-clause `dirGo` is one entry, not three.  `range` is decl-level: (line-1,
 -- 0)..(end_line-1, 0).  `selectionRange` is the decl's real NAME-token span
--- (#331, `DeclPos`'s third field / `declPosNameLoc`) when the parser's
--- name-finder resolved one, else the same col-0 `range` (e.g. `DImpl` — no
--- single name, F4/increment 5).  Child symbols (variant ctors/fields/methods/
--- let-binds) still reuse the parent's `range` for both — their own name spans
--- are increment 2.  SymbolKind codes are the LSP spec integers (Struct=23,
+-- (#331, `DeclPos`'s third field / `declPosNameLoc`) — for `DImpl` this is
+-- its head TYPE's `TyCon` token, falling back to the `impl` keyword for a
+-- fully-parametric head (F4/increment 5) — or the same col-0 `range` on the
+-- rare miss.  Child symbols (variant ctors/fields/methods/let-binds) carry
+-- their OWN name spans (increment 2).  SymbolKind codes are the LSP spec
+-- integers (Struct=23,
 -- Method=6, Field=8, Enum=10, EnumMember=22, Interface=11, Class=5,
 -- Function=12, Variable=13, TypeParameter=26, Event=24).  Mirrors
 -- symbol_of_decl's kind mapping + child nesting.
@@ -396,9 +397,6 @@ jChildLoc name kind fallback loc =
     Some l => jRangeOfLoc l
     None => fallback
   jSymbol name kind r r []
-
-variantName : Variant -> String
-variantName (Variant n _) = n
 
 fieldName : Field -> String
 fieldName (Field n _) = n
@@ -438,11 +436,6 @@ zipKids fb kind [] (nm::nms) =
   jChildLoc nm kind fb None :: zipKids fb kind [] nms
 zipKids fb kind (l::ls) (nm::nms) =
   jChildLoc nm kind fb l :: zipKids fb kind ls nms
-
--- The named-field labels of a variant (empty for positional variants).
-variantFieldNames : Variant -> List String
-variantFieldNames (Variant _ (ConNamed fs _)) = map fieldName fs
-variantFieldNames (Variant _ (ConPos _)) = []
 
 ifaceMethodName : IfaceMethod -> String
 ifaceMethodName (IfaceMethod n _ _) = n
@@ -574,21 +567,29 @@ renderSymbol (SymRow name kind sl el _ kids nameLoc) =
   jSymbol name kind range selRange kids
 
 -- ── textDocument/definition ─────────────────────────────────────────────────
--- identifier-at-cursor → first decl that DEFINES that name → its DeclPos range
--- as a Location { uri, range }.  Mirror decl_defines / find_definition_loc.
+-- identifier-at-cursor → first decl that DEFINES that name → THAT NAME's own
+-- span as a Location { uri, range }.  #331 increment 5 (Part B): a query name
+-- can be a decl's OWN name (the type/function/interface/… name itself) or one
+-- of its CHILDREN (variant ctor / record field / interface|impl method /
+-- let-bind) — these want DIFFERENT spans (`declPosNameLoc` vs the matching
+-- entry of `declPosChildLocs`), so go-to-definition on a child now lands on
+-- the child, not the parent decl.  Own-name is checked FIRST: a
+-- single-constructor `data Wrapper = Wrapper Int` (ctor name == type name, a
+-- common idiom) still resolves to the TYPE name, matching prior behavior.
+-- Mirror decl_defines / find_definition_loc.
 
-declDefines : Decl -> String -> Bool
-declDefines d name = match innerDecl d
+-- Does `d` define `name` as its OWN name (as opposed to a CHILD's — see
+-- `declChildNames`)? `DImpl` has no own name (only methods, all children), so
+-- it is always False here.
+declOwnNameMatches : Decl -> String -> Bool
+declOwnNameMatches d name = match innerDecl d
   DTypeSig _ n _ => n == name
   DExtern _ n _ => n == name
   DFunDef _ n _ _ => n == name
   DLetGroup _ binds => anyName (map letBindName binds) name
-  DData _ n _ vs _ => n == name
-    || anyName (map variantName vs) name
-    || anyName (flatMap variantFieldNames vs) name
-  DInterface { name = n, methods = ms, ... } => n == name
-    || anyName (map ifaceMethodName ms) name
-  DImpl { methods = ms, ... } => anyName (map implMethodName ms) name
+  DData _ n _ _ _ => n == name
+  DInterface { name = n, ... } => n == name
+  DImpl { ... } => False
   DTypeAlias _ n _ _ => n == name
   DNewtype _ n _ c _ _ => n == name || c == name
   DUse _ _ _ => False
@@ -598,9 +599,49 @@ declDefines d name = match innerDecl d
   DEffect _ n _ => n == name
   DAttrib _ _ => False
 
+-- `d`'s CHILD names, in the SAME order `declPosChildLocs`/`symbolPartsOfDecl`
+-- emit them. ⚠️ THE ORDERING INVARIANT: index `k` here must be index `k` in
+-- `declPosChildLocs` — a mismatch attaches a `Loc` to the WRONG child, a
+-- silent wrong answer (same invariant `declChildSpansOf`, parser.mdk, names).
+-- `[]` for decl kinds with no children.
+declChildNames : Decl -> List String
+declChildNames d = match innerDecl d
+  DData _ _ _ vs _ => dataChildNames vs
+  DInterface { methods = ms, ... } => map ifaceMethodName ms
+  DImpl { methods = ms, ... } => map implMethodName ms
+  DLetGroup _ binds => map letBindName binds
+  _ => []
+
+-- Mirrors `variantKids`'s traversal exactly: a nameOmitted record variant
+-- (`data X = { … }`) expands to one entry per field; any other variant
+-- contributes its single ctor name.
+dataChildNames : List Variant -> List String
+dataChildNames [] = []
+dataChildNames ((Variant _ (ConNamed fs True))::vs) = map fieldName fs
+  ++ dataChildNames vs
+dataChildNames ((Variant vn _)::vs) = vn :: dataChildNames vs
+
 anyName : List String -> String -> Bool
 anyName [] _ = False
 anyName (x::xs) name = x == name || anyName xs name
+
+-- 0-based index of the first occurrence of `name` in `xs`, or `None`.
+indexOfName : String -> List String -> Option Int
+indexOfName name xs = indexOfNameGo name xs 0
+
+indexOfNameGo : String -> List String -> Int -> Option Int
+indexOfNameGo _ [] _ = None
+indexOfNameGo name (x::xs) i =
+  if x == name then
+    Some i
+  else
+    indexOfNameGo name xs (i + 1)
+
+-- The `Option Loc` at 0-based index `i` of `ls`, or `None` if out of range.
+locAtIndex : Int -> List (Option Loc) -> Option Loc
+locAtIndex _ [] = None
+locAtIndex 0 (l::_) = l
+locAtIndex i (_::ls) = locAtIndex (i - 1) ls
 
 -- The DeclPos of the first decl defining `name`, or None.
 definitionRange : String -> String -> Option Json
@@ -608,16 +649,25 @@ definitionRange src name = match parseWithPositionsOpt src
   None => None
   Some (decls, positions) => defZip decls (positionsDecls positions) name
 
--- #331: prefer the decl's real NAME-token span (`declPosNameLoc`) for the
--- go-to-definition range; fall back to the old (line, 0)..(end_line, 0) whole-
--- decl range when there is none (e.g. `DImpl` — no single name, F4).
+-- #331: the go-to-definition RANGE for `name` in the decl (`d`, `p`) that
+-- defines it — own-name span first, else the matching child's span
+-- (increment 5, Part B) — falling back to the old (line, 0)..(end_line, 0)
+-- whole-decl range only when the parser's name-finder didn't resolve a span
+-- for that particular name.
 defZip : List Decl -> List DeclPos -> String -> Option Json
-defZip (d::ds) (p::ps) name
-  | declDefines d name = Some (match declPosNameLoc p
-    Some l => jRangeOfLoc l
-    None => jRange (declPosLine p - 1) 0 (declPosEndLine p - 1) 0)
-  | otherwise = defZip ds ps name
+defZip (d::ds) (p::ps) name = match defZipDeclMatch d p name
+  Some j => Some j
+  None => defZip ds ps name
 defZip _ _ _ = None
+
+defZipDeclMatch : Decl -> DeclPos -> String -> Option Json
+defZipDeclMatch d p name
+  | declOwnNameMatches d name = Some (defZipLocOr (declPosNameLoc p) p)
+  | otherwise = map (k => defZipLocOr (locAtIndex k (declPosChildLocs p)) p) (indexOfName name (declChildNames d))
+
+defZipLocOr : Option Loc -> DeclPos -> Json
+defZipLocOr (Some l) _ = jRangeOfLoc l
+defZipLocOr None p = jRange (declPosLine p - 1) 0 (declPosEndLine p - 1) 0
 
 -- ── typecheck-env build (hover / completion / inlayHint) ────────────────────
 -- Mirror lib/lsp_server.ml's handlers, which run `Typecheck.check_program prog`

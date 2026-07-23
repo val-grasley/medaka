@@ -1,0 +1,9 @@
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+{"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/child_definition.mdk", "line": 26, "col": 2}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/child_definition.mdk", "line": 27, "col": 2}}}
+{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/child_definition.mdk", "line": 31, "col": 14}}}
+{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/child_definition.mdk", "line": 33, "col": 17}}}
+{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/child_definition.mdk", "line": 29, "col": 16}}}
+{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "medaka_definition", "arguments": {"file": "test/mcp_fixtures/child_definition.mdk", "line": 29, "col": 23}}}
+{"jsonrpc": "2.0", "id": 8, "method": "shutdown", "params": {}}

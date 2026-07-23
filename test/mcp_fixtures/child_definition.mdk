@@ -1,0 +1,34 @@
+-- #331 increment 5 Part B guard: go-to-definition on the 2nd/3rd CHILD of a
+-- multi-child decl must resolve to THAT CHILD's own name-token span, not the
+-- parent decl's whole-decl range. Same MIXED-shape fixture as child_spans.mdk
+-- (increment 2's outline guard) reused here for the go-to-definition path,
+-- plus USE sites below so definitionRange is driven from a real reference,
+-- not the definition token itself. Columns are 0-based; hand-verified in
+-- child_definition.golden (see test/diff_compiler_mcp.sh).
+interface Shape a where
+  area : a -> Float
+  perim : a -> Float
+  describe a = "a shape"
+
+data Color =
+  | Red
+  | Green
+  | Blue
+
+data Point = { px : Int, py : Int, pz : Int }
+
+impl Shape Color where
+  area c = 1.0
+  perim c = 2.0
+  describe c = "color"
+
+colorToInt c = match c
+  Red => 0
+  Green => 1
+  Blue => 2
+
+sumFields p = p.py + p.pz
+
+callPerim s = perim s
+
+callDescribe s = describe s
