@@ -1,0 +1,31 @@
+-- #839 2b review (S0): the CLOSED~CLOSED launder the pre-unify #803 walk caught but
+-- an early post-unify LOG QUERY missed. The method's returned arrow is UNWRITTEN, i.e.
+-- declared PURE (closed <>); the impl returns a value with an ANNOTATED closed <Stdout>
+-- arrow for it. At unify that is closed(decl <>) ~ closed(body <Stdout>) — a SILENT
+-- no-op arm: no effectLeakCheck, no absorption record, and (a closed <> arrow carries
+-- no effect var) no #816 rigidity coverage either. A type ANNOTATION is the only way a
+-- body arrow stays CLOSED (inference and covariant re-open both keep body arrows open),
+-- so the trail never sees the atom. The launder query now reads the STABLE closed
+-- body-arrow atoms straight off the pre-unify snapshot and checks them directionally
+-- against the declared row (launderEscapeFromLog's closed-actual branch). `pureUse` is
+-- typed pure on every arrow yet would perform <Stdout> at run — check == run == build
+-- must all REJECT via a DIAGNOSTIC, never accept-then-leak.
+interface Speak a where
+  speak : a -> Unit -> Unit
+
+data Dog = Dog
+
+effectfulReturn : Unit -> <Stdout> Unit
+effectfulReturn u =
+  let _ = putStr "[LEAKED-STDOUT] "
+  ()
+
+impl Speak Dog where
+  speak d = (effectfulReturn : Unit -> <Stdout> Unit)
+
+pureUse : Speak a => a -> Unit -> Unit
+pureUse x u = speak x u
+
+main =
+  let _ = pureUse Dog ()
+  println "done"

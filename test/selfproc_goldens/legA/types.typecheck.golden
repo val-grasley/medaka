@@ -422,6 +422,7 @@ effectParamMsg : String -> String -> String
 effectUndeterminedMsg : String -> String -> List String -> String
 effrowLabels : EffRow -> List Atom
 effrowNorm : EffRow -> EffRow
+effrowWrittenAtoms : EffRow -> List Atom
 effvarId : Ref Effvar -> Int
 effvarIdOf : (String, Ref Effvar) -> Int
 effvarLevel : Ref Effvar -> Int
@@ -782,7 +783,8 @@ krowSlotOccs : Bool -> String -> List Ty -> List (String, List Atom)
 ktypeTvs : List String -> List Kind -> List Mono -> List (String, Mono)
 lamUnderLoc : Expr -> Option (Option Loc, List Pat, Expr)
 lastComponent : List String -> String
-launderEscapeFromLog : List EffRow -> List AbsorptionEvent -> List Atom
+launderEscapeFromLog : List EffRow -> List EffRow -> List AbsorptionEvent -> List Atom
+launderOpenActualArrow : EffRow -> List AbsorptionEvent -> List Atom
 letBindDictSites : LetBind -> List (Ref (List Route))
 letBindEVars : LetBind -> List String
 letBindName : LetBind -> String
