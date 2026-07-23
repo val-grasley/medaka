@@ -34,11 +34,18 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BO="$ROOT/test/build_oracles.sh"
+
+# NOTE: build_oracles.sh's path is inlined at BOTH call sites below rather than
+# held in a variable — test/check_no_banned_oracle_cmd.sh flags any line that
+# NAMES build_oracles.sh in a quoted span with no `--for`/`--list`/`--build-one`
+# on that same line (it can't see that a variable is only ever used with a safe
+# flag), and a bare `BO="$ROOT/test/build_oracles.sh"` assignment line is
+# exactly such a line. Keeping the flag on the same line as the path keeps the
+# guard's read honest instead of needing an exemption.
 
 # The broad, whole-family pattern this gate's fresh-worktree recipe (AGENTS.md)
 # names by name.
-broad="$(sh "$BO" --for --list 'diff_compiler_*' | sort -u)"
+broad="$(sh "$ROOT/test/build_oracles.sh" --for --list 'diff_compiler_*' | sort -u)"
 
 # The union of EVERY individual `diff_compiler_*.sh` gate's own derived set —
 # each one is the narrowest possible "same-family" pattern for that gate (an
@@ -51,7 +58,7 @@ for f in "$ROOT"/test/diff_compiler_*.sh; do
   [ -f "$f" ] || continue
   checked=$((checked + 1))
   name="$(basename "$f" .sh)"
-  for o in $(sh "$BO" --for --list "$name" 2>/dev/null); do
+  for o in $(sh "$ROOT/test/build_oracles.sh" --for --list "$name" 2>/dev/null); do
     case " $union " in *" $o "*) ;; *) union="$union $o" ;; esac
   done
 done
