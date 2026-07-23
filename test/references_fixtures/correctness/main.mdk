@@ -5,7 +5,8 @@
 --   * re-export chain     : `helper` (from reexport, origin defs) → defs' helper key
 --   * same name / 2 mods  : defs.shared and other.shared are DISTINCT keys
 --   * namespace clash     : `Color` (type) vs `Red` (ctor) are DISTINCT keys
-import defs.{g, Color, Red, helper as hh}
+--   * interface method    : `sizeOf` CALL resolves to defs' method key (not extKey)
+import defs.{g, Color, Red, sizeOf, helper as hh}
 import defs as D
 import other
 import reexport.{helper}
@@ -28,3 +29,8 @@ usesAlias = D.helper 7
 
 export mkColor : Color
 mkColor = Red
+
+-- cross-module method call — `sizeOf` imported from defs; must resolve to defs'
+-- method key, the SAME key defs.usesMethodHere's call resolves to.
+export usesMethodThere : Int
+usesMethodThere = sizeOf Red

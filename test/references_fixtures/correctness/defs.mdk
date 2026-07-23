@@ -12,3 +12,16 @@ shared = 1
 
 export usesGHere : Int
 usesGHere = g + helper g
+
+-- An interface method: pre-marker `sizeOf` is a plain lower-case EVar at every
+-- call site, keyed under the `method` namespace.  A call MUST resolve to the same
+-- key the method DEF gets, or references/rename on a method finds nothing.
+export interface Sizeable a where
+  sizeOf : a -> Int
+
+export impl Sizeable Color where
+  sizeOf _ = 2
+
+-- own-module method call — resolves via the module's own method defs.
+export usesMethodHere : Int
+usesMethodHere = sizeOf Red

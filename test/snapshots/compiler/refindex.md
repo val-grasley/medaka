@@ -1,5 +1,5 @@
 # META
-source_lines=1075
+source_lines=1096
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/refindex.mdk — cross-file reference index (#254 Stage 0).
@@ -32,11 +32,17 @@ stages=DESUGAR,MARK
 --   * val/ty/ctor clash     — the namespace field separates them.
 --
 -- ── linearity (the HARD requirement) ────────────────────────────────────────
--- Build is O(total tokens across the project): every membership test / lookup is
--- an O(1) amortized `HashMap` op (NEVER a `List` used as a set/map), and every
--- append is an O(1) `Ref`-list push (NEVER `xs ++ [x]`).  A `defOf`/`usesOf`
--- query is O(1) + O(#uses); `binderAt` is O(size of the clicked file), never
--- O(project).  The op counter (`riOps`) is graded N-vs-2N by
+-- Build is O(N tokens × D), where D = the MAX LEXICAL NESTING DEPTH — i.e. linear
+-- in project size under bounded nesting.  Every hash membership/lookup/insert is
+-- O(1) amortized (NEVER a `List` used as a set/map) and every append is an O(1)
+-- `Ref`-list push (NEVER `xs ++ [x]`).  The one NON-hash step is the innermost-
+-- first scope-frame walk (`lookupScope`/`assocFind`): resolving a local occurrence
+-- costs O(D), the lexical nesting depth of its site — bounded by nesting, NOT by
+-- project size, exactly the bound `resolve.mdk`'s own `lookupBindId` lives with.
+-- That walk IS `bump`-counted, so a regression that let a frame grow to O(project)
+-- (e.g. one flat frame accumulating every binder) shows up in the ratio.  A
+-- `defOf`/`usesOf` query is O(1)+O(#uses); `binderAt` is O(size of the clicked
+-- file), never O(project).  `riOps` is graded N-vs-2N by
 -- test/diff_compiler_references_scaling.sh (the alloc gate is BLIND to a
 -- non-allocating scan-quadratic, so op-count is the discriminator).
 
@@ -197,18 +203,23 @@ recFieldBinderNames : RecPatField -> List String
 recFieldBinderNames (RecPatField name None) = [name]
 recFieldBinderNames (RecPatField _ (Some p)) = patBinderNames p
 
--- innermost-first scope lookup (shadowing: first frame wins).
-lookupScope : String -> List (List (String, String)) -> Option String
-lookupScope _ [] = None
-lookupScope n (frame::rest) = match assocFind n frame
-  Some k => Some k
-  None => lookupScope n rest
+-- innermost-first scope lookup (shadowing: first frame wins).  Every frame hop
+-- and every element comparison is `bump`ed, so the frame-stack walk (an O(nesting
+-- depth) cost, NOT O(project)) IS counted in `riOps` — a deep sequential-`let`
+-- chain that pushed one frame per binder shows up in the scaling ratio.
+lookupScope : Ctx -> String -> List (List (String, String)) -> Option String
+lookupScope _ _ [] = None
+lookupScope ctx n (frame::rest) =
+  let _ = bump ctx
+  match assocFind ctx n frame
+    Some k => Some k
+    None => lookupScope ctx n rest
 
-assocFind : String -> List (String, String) -> Option String
-assocFind _ [] = None
-assocFind n ((k, v)::rest)
-  | k == n = Some v
-  | otherwise = assocFind n rest
+assocFind : Ctx -> String -> List (String, String) -> Option String
+assocFind _ _ [] = None
+assocFind ctx n ((k, v)::rest) =
+  let _ = bump ctx
+  if k == n then Some v else assocFind ctx n rest
 
 -- ── record: def site, use site, occurrence ──────────────────────────────────
 recordDef : Ctx -> String -> String -> Loc -> Unit
@@ -236,12 +247,22 @@ pushOcc ctx uri loc key = match hmGetC ctx ctx.occ uri
   None => hmSetC ctx ctx.occ uri (Ref [(loc, key)])
 
 -- ── occurrence resolution (the shadow-correct core) ──────────────────────────
+-- A lower-case occurrence is a local, a plain value, OR an interface-METHOD call
+-- (pre-marker, `map`/`==`/`compare`/a user `interface` method are all plain
+-- `EVar`s).  Method DEFS are keyed under `nsMethod` and threaded through
+-- imports/re-exports under `nsMethod`, so a method call MUST consult `nsMethod`
+-- or its use-key never matches its def-key (Finding 1).  Order — local, then own/
+-- imported value, then method — mirrors resolve.mdk's "a standalone shadows the
+-- method" (definer-shadow) rule, and keeps the separate `nsMethod` key so F4
+-- (group-a-method's-impls) stays expressible.
 resolveVal : W -> List (List (String, String)) -> String -> String
-resolveVal (W ctx _ _ useEnv _) scope name = match lookupScope name scope
+resolveVal (W ctx _ _ useEnv _) scope name = match lookupScope ctx name scope
   Some k => k
   None => match hmGetC ctx useEnv (nsVal ++ sep ++ name)
     Some k => k
-    None => extKey nsVal name
+    None => match hmGetC ctx useEnv (nsMethod ++ sep ++ name)
+      Some k => k
+      None => extKey nsVal name
 
 resolveCtor : W -> String -> String
 resolveCtor (W ctx _ _ useEnv _) name = match hmGetC ctx useEnv (nsCtor ++ sep ++ name)
@@ -1132,12 +1153,12 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "recFieldBinderNames" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "recFieldBinderNames" ((PCon "RecPatField" (PVar "name") (PCon "None"))) (EListLit (EVar "name")))
 (DFunDef false "recFieldBinderNames" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBinderNames") (EVar "p")))
-(DTypeSig false "lookupScope" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (TyApp (TyCon "Option") (TyCon "String")))))
-(DFunDef false "lookupScope" (PWild (PList)) (EVar "None"))
-(DFunDef false "lookupScope" ((PVar "n") (PCons (PVar "frame") (PVar "rest"))) (EMatch (EApp (EApp (EVar "assocFind") (EVar "n")) (EVar "frame")) (arm (PCon "Some" (PVar "k")) () (EApp (EVar "Some") (EVar "k"))) (arm (PCon "None") () (EApp (EApp (EVar "lookupScope") (EVar "n")) (EVar "rest")))))
-(DTypeSig false "assocFind" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "Option") (TyCon "String")))))
-(DFunDef false "assocFind" (PWild (PList)) (EVar "None"))
-(DFunDef false "assocFind" ((PVar "n") (PCons (PTuple (PVar "k") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EVar "assocFind") (EVar "n")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "lookupScope" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (TyApp (TyCon "Option") (TyCon "String"))))))
+(DFunDef false "lookupScope" (PWild PWild (PList)) (EVar "None"))
+(DFunDef false "lookupScope" ((PVar "ctx") (PVar "n") (PCons (PVar "frame") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "bump") (EVar "ctx"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "assocFind") (EVar "ctx")) (EVar "n")) (EVar "frame")) (arm (PCon "Some" (PVar "k")) () (EApp (EVar "Some") (EVar "k"))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "lookupScope") (EVar "ctx")) (EVar "n")) (EVar "rest")))))))
+(DTypeSig false "assocFind" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "Option") (TyCon "String"))))))
+(DFunDef false "assocFind" (PWild PWild (PList)) (EVar "None"))
+(DFunDef false "assocFind" ((PVar "ctx") (PVar "n") (PCons (PTuple (PVar "k") (PVar "v")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "bump") (EVar "ctx"))) (DoExpr (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EApp (EVar "Some") (EVar "v")) (EApp (EApp (EApp (EVar "assocFind") (EVar "ctx")) (EVar "n")) (EVar "rest"))))))
 (DTypeSig false "recordDef" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "Unit"))))))
 (DFunDef false "recordDef" ((PVar "ctx") (PVar "key") (PVar "uri") (PVar "loc")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "defs")) (EVar "key")) (ETuple (EVar "uri") (EVar "loc")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "pushOcc") (EVar "ctx")) (EVar "uri")) (EVar "loc")) (EVar "key")))))
 (DTypeSig false "recordRef" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "Unit"))))))
@@ -1147,7 +1168,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "pushOcc" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyFun (TyCon "String") (TyCon "Unit"))))))
 (DFunDef false "pushOcc" ((PVar "ctx") (PVar "uri") (PVar "loc") (PVar "key")) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "occ")) (EVar "uri")) (arm (PCon "Some" (PVar "r")) () (EBlock (DoLet false false PWild (EApp (EVar "bump") (EVar "ctx"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "r")) (EBinOp "::" (ETuple (EVar "loc") (EVar "key")) (EFieldAccess (EVar "r") "value")))))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "occ")) (EVar "uri")) (EApp (EVar "Ref") (EListLit (ETuple (EVar "loc") (EVar "key"))))))))
 (DTypeSig false "resolveVal" (TyFun (TyCon "W") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (TyFun (TyCon "String") (TyCon "String")))))
-(DFunDef false "resolveVal" ((PCon "W" (PVar "ctx") PWild PWild (PVar "useEnv") PWild) (PVar "scope") (PVar "name")) (EMatch (EApp (EApp (EVar "lookupScope") (EVar "name")) (EVar "scope")) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsVal") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EApp (EApp (EVar "extKey") (EVar "nsVal")) (EVar "name")))))))
+(DFunDef false "resolveVal" ((PCon "W" (PVar "ctx") PWild PWild (PVar "useEnv") PWild) (PVar "scope") (PVar "name")) (EMatch (EApp (EApp (EApp (EVar "lookupScope") (EVar "ctx")) (EVar "name")) (EVar "scope")) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsVal") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsMethod") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EApp (EApp (EVar "extKey") (EVar "nsVal")) (EVar "name")))))))))
 (DTypeSig false "resolveCtor" (TyFun (TyCon "W") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "resolveCtor" ((PCon "W" (PVar "ctx") PWild PWild (PVar "useEnv") PWild) (PVar "name")) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsCtor") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EApp (EApp (EVar "extKey") (EVar "nsCtor")) (EVar "name")))))
 (DTypeSig false "resolveTy" (TyFun (TyCon "W") (TyFun (TyCon "String") (TyCon "String"))))
@@ -1555,12 +1576,12 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "recFieldBinderNames" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "recFieldBinderNames" ((PCon "RecPatField" (PVar "name") (PCon "None"))) (EListLit (EVar "name")))
 (DFunDef false "recFieldBinderNames" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBinderNames") (EVar "p")))
-(DTypeSig false "lookupScope" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (TyApp (TyCon "Option") (TyCon "String")))))
-(DFunDef false "lookupScope" (PWild (PList)) (EVar "None"))
-(DFunDef false "lookupScope" ((PVar "n") (PCons (PVar "frame") (PVar "rest"))) (EMatch (EApp (EApp (EVar "assocFind") (EVar "n")) (EVar "frame")) (arm (PCon "Some" (PVar "k")) () (EApp (EVar "Some") (EVar "k"))) (arm (PCon "None") () (EApp (EApp (EVar "lookupScope") (EVar "n")) (EVar "rest")))))
-(DTypeSig false "assocFind" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "Option") (TyCon "String")))))
-(DFunDef false "assocFind" (PWild (PList)) (EVar "None"))
-(DFunDef false "assocFind" ((PVar "n") (PCons (PTuple (PVar "k") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EVar "assocFind") (EVar "n")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "lookupScope" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (TyApp (TyCon "Option") (TyCon "String"))))))
+(DFunDef false "lookupScope" (PWild PWild (PList)) (EVar "None"))
+(DFunDef false "lookupScope" ((PVar "ctx") (PVar "n") (PCons (PVar "frame") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "bump") (EVar "ctx"))) (DoExpr (EMatch (EApp (EApp (EApp (EVar "assocFind") (EVar "ctx")) (EVar "n")) (EVar "frame")) (arm (PCon "Some" (PVar "k")) () (EApp (EVar "Some") (EVar "k"))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "lookupScope") (EVar "ctx")) (EVar "n")) (EVar "rest")))))))
+(DTypeSig false "assocFind" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "Option") (TyCon "String"))))))
+(DFunDef false "assocFind" (PWild PWild (PList)) (EVar "None"))
+(DFunDef false "assocFind" ((PVar "ctx") (PVar "n") (PCons (PTuple (PVar "k") (PVar "v")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EVar "bump") (EVar "ctx"))) (DoExpr (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EApp (EVar "Some") (EVar "v")) (EApp (EApp (EApp (EVar "assocFind") (EVar "ctx")) (EVar "n")) (EVar "rest"))))))
 (DTypeSig false "recordDef" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "Unit"))))))
 (DFunDef false "recordDef" ((PVar "ctx") (PVar "key") (PVar "uri") (PVar "loc")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "defs")) (EVar "key")) (ETuple (EVar "uri") (EVar "loc")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "pushOcc") (EVar "ctx")) (EVar "uri")) (EVar "loc")) (EVar "key")))))
 (DTypeSig false "recordRef" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "Unit"))))))
@@ -1570,7 +1591,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "pushOcc" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyFun (TyCon "String") (TyCon "Unit"))))))
 (DFunDef false "pushOcc" ((PVar "ctx") (PVar "uri") (PVar "loc") (PVar "key")) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "occ")) (EVar "uri")) (arm (PCon "Some" (PVar "r")) () (EBlock (DoLet false false PWild (EApp (EVar "bump") (EVar "ctx"))) (DoExpr (EApp (EApp (EVar "setRef") (EVar "r")) (EBinOp "::" (ETuple (EVar "loc") (EVar "key")) (EFieldAccess (EVar "r") "value")))))) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "occ")) (EVar "uri")) (EApp (EVar "Ref") (EListLit (ETuple (EVar "loc") (EVar "key"))))))))
 (DTypeSig false "resolveVal" (TyFun (TyCon "W") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (TyFun (TyCon "String") (TyCon "String")))))
-(DFunDef false "resolveVal" ((PCon "W" (PVar "ctx") PWild PWild (PVar "useEnv") PWild) (PVar "scope") (PVar "name")) (EMatch (EApp (EApp (EVar "lookupScope") (EVar "name")) (EVar "scope")) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsVal") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EApp (EApp (EVar "extKey") (EVar "nsVal")) (EVar "name")))))))
+(DFunDef false "resolveVal" ((PCon "W" (PVar "ctx") PWild PWild (PVar "useEnv") PWild) (PVar "scope") (PVar "name")) (EMatch (EApp (EApp (EApp (EVar "lookupScope") (EVar "ctx")) (EVar "name")) (EVar "scope")) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsVal") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsMethod") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EApp (EApp (EVar "extKey") (EVar "nsVal")) (EVar "name")))))))))
 (DTypeSig false "resolveCtor" (TyFun (TyCon "W") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "resolveCtor" ((PCon "W" (PVar "ctx") PWild PWild (PVar "useEnv") PWild) (PVar "name")) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EVar "useEnv")) (EBinOp "++" (EBinOp "++" (EVar "nsCtor") (EVar "sep")) (EVar "name"))) (arm (PCon "Some" (PVar "k")) () (EVar "k")) (arm (PCon "None") () (EApp (EApp (EVar "extKey") (EVar "nsCtor")) (EVar "name")))))
 (DTypeSig false "resolveTy" (TyFun (TyCon "W") (TyFun (TyCon "String") (TyCon "String"))))
