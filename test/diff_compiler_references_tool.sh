@@ -20,11 +20,16 @@
 #
 # WHAT THE cross_file.jsonl FIXTURE PROVES (query/{defs,main,other,reexport}.mdk)
 # ---------------------------------------------------------------------------
-# All three queries click inside query/main.mdk — the loader walks DOWN from
-# the clicked file's own imports, so main.mdk (which imports defs/reexport/
-# other) is the query entry that pulls every fixture file into ONE project
-# graph; clicking inside a leaf module like defs.mdk would only load that
-# leaf (loadProgramFilesLocatedCached follows import edges, not reverse-deps).
+# All three queries click inside query/main.mdk. NOTE (#254 Stage 1.1):
+# `medaka_references` now builds a TRUE WHOLE-PROJECT index (recursive
+# `listDir` enumeration under `findProjectRoot`, `buildRefIndexProject` in
+# compiler/tools/refindex.mdk) rather than walking only the clicked file's
+# own import closure — so every fixture `.mdk` under this directory is
+# indexed regardless of which file the click lands in. `main.mdk` is kept as
+# the click target for Q1-Q3 below only because it is where the interesting
+# uses (alias/re-export/shadowing) live, not because clicking elsewhere would
+# miss anything; `leaf_def_to_importer.jsonl` and `two_hop_reexport.jsonl`
+# below deliberately click OTHER files precisely to prove that.
 #
 #   Q1 (id 2): click on `helper` in main.mdk's `usesDirect = helper 3 + shared`
 #     (line 15 0-based, col 13) — includeDeclaration defaults true. Proves
@@ -32,16 +37,18 @@
 #     line 18), and RE-EXPORT CHAIN (`rHelper`, imported from `reexport.mdk`,
 #     whose own `export import defs.{helper}` re-exports defs' true origin —
 #     line 21) all collapse onto the SAME BinderKey as the def in defs.mdk.
-#     Expect 5 locations: defs.mdk def (6:0-6 1-based) + defs.mdk use
-#     (12:25-31) + main.mdk uses at 16:13-19 (the click site) and 22:15-22
-#     (rHelper — a plain EVar, so its own precise ELoc span). The 5th, for
-#     `D.helper` (main.mdk line 19), is a hand-verified SURPRISE: refindex's
-#     alias-qualified-field-access walk (`walkFieldAccess`'s alias branch,
-#     compiler/tools/refindex.mdk) records the reference at whatever `curLoc`
-#     was last set by an ENCLOSING atom's `ELoc` — neither `EApp` nor
-#     `EFieldAccess` refresh it — so for a body that's `D.helper 4` with no
-#     other located atom ahead of it, that's still the WHOLE DECL's own name
-#     Loc from `walkDeclBody`'s initial `loc`, i.e. `usesAlias` itself
+#     Expect 6 locations: defs.mdk def (6:0-6 1-based) + defs.mdk use
+#     (12:25-31) + via2.mdk's two-hop-reexport use (11:13-21 — see
+#     two_hop_reexport.jsonl below; it lands in THIS result too because the
+#     index is whole-project) + main.mdk uses at 16:13-19 (the click site)
+#     and 22:15-22 (rHelper — a plain EVar, so its own precise ELoc span).
+#     The 6th, for `D.helper` (main.mdk line 19), is a hand-verified SURPRISE:
+#     refindex's alias-qualified-field-access walk (`walkFieldAccess`'s alias
+#     branch, compiler/tools/refindex.mdk) records the reference at whatever
+#     `curLoc` was last set by an ENCLOSING atom's `ELoc` — neither `EApp`
+#     nor `EFieldAccess` refresh it — so for a body that's `D.helper 4` with
+#     no other located atom ahead of it, that's still the WHOLE DECL's own
+#     name Loc from `walkDeclBody`'s initial `loc`, i.e. `usesAlias` itself
 #     (19:0-9, NOT a span touching "D.helper" at all). The BinderKey is still
 #     exactly right (this use groups under the SAME key as every other
 #     `helper` hit below) — only the reported RANGE is imprecise for this one
@@ -68,19 +75,58 @@
 #     own use (16:24-30, the click site) — other.mdk's `shared` and topG's
 #     LOCAL `shared` (Q2) are BOTH absent.
 #
+# WHAT leaf_def_to_importer.jsonl PROVES (#254 Stage 1.1's decisive fixture)
+# ---------------------------------------------------------------------------
+# Clicks defs.mdk's `shared` DEFINITION (line 9 1-based / 8 0-based, col 2) —
+# a LEAF module with no imports of its own, so the OLD entry-rooted scope
+# (Stage 1) would only ever have seen defs.mdk itself from here. Expect
+# exactly 3 locations: def (9:0-6) + defs.mdk's own use (12:16-22) + main.mdk's
+# `usesDirect` use (16:24-30) — the IMPORTER's use, only reachable because the
+# index now covers the whole project, not one entry's closure. `shared` (no
+# parameters) was chosen over `helper` deliberately: `helper x = x + 1` has a
+# param `x` whose local-binder def Loc COLLIDES with `helper`'s own name Loc
+# (both come from `walkDeclBody`'s single `loc` argument — a pre-existing
+# Stage-0 imprecision, not this stage's bug), so clicking `helper`'s def
+# resolves to `x`'s key instead. `shared` has no params, so no collision.
+#
+# WHAT two_hop_reexport.jsonl PROVES (PR #912 review: transitivity, not just
+# one hop) -- query/{reexport2,via2}.mdk
+# ---------------------------------------------------------------------------
+# cross_file.jsonl's re-export case is ONE hop: reexport.mdk directly
+# re-exports defs.helper. This fixture adds a SECOND hop: reexport2.mdk
+# re-exports `helper` from reexport.mdk (which itself re-exports defs.mdk),
+# and via2.mdk imports `helper as rHelper2` from reexport2.mdk — so resolving
+# `rHelper2` correctly requires the whole-project topo-sort
+# (`buildRefIndexProject`'s dependency-first ordering pass,
+# compiler/tools/refindex.mdk) to have indexed reexport.mdk BEFORE
+# reexport2.mdk, which in turn must be indexed BEFORE via2.mdk — i.e. it
+# proves the ordering is TRANSITIVE across a chain, not just correct for a
+# single dependency edge (the shape a less careful "does this file's ONE
+# direct import already have an origin" fix could still get wrong for a
+# longer chain even after the one-hop regression this stage's first cut hit
+# was patched — see the commit message for that bug). Click `rHelper2` in
+# via2.mdk (line 11 1-based / 10 0-based, col 13 — `usesTwoHop = rHelper2 9`),
+# includeDeclaration defaults true. Expect 6 locations, EXACTLY the same set
+# Q1 above resolves to (defs def + defs use + via2's own use, the click site,
+# + main.mdk's 3 uses) — proving `rHelper2` merges under the IDENTICAL
+# BinderKey as every direct/aliased/one-hop-reexported use of `helper`.
+#
 # All (line, col) pairs above were hand-derived from the fixture source with
-# a Python regex scan (word-boundary `\b(helper|shared|rHelper)\b`), not
-# guessed — re-derive with the same scan if the fixtures ever change:
+# a Python regex scan (word-boundary
+# `\b(helper|shared|rHelper|rHelper2|usesTwoHop)\b`), not guessed —
+# re-derive with the same scan if the fixtures ever change:
 #   python3 -c "$(cat <<'PY'
 # import re
-# for fn in ('defs.mdk','main.mdk','other.mdk'):
+# for fn in ('defs.mdk','main.mdk','other.mdk','via2.mdk','reexport2.mdk'):
 #     for i,l in enumerate(open(fn),1):
-#         for m in re.finditer(r'\b(helper|shared|rHelper)\b', l.rstrip()):
+#         for m in re.finditer(r'\b(helper|shared|rHelper|rHelper2|usesTwoHop)\b', l.rstrip()):
 #             print(fn, i, m.start(), m.end(), m.group())
 # PY
 # )"
 #
-# To regenerate the golden: CAPTURE=1 sh test/diff_compiler_references_tool.sh
+# To regenerate a golden: CAPTURE=1 sh test/diff_compiler_references_tool.sh
+# (regenerates ALL fixtures' goldens in this dir's FIXDIR loop — diff the
+# result before committing, same as any other CAPTURE=1 gate.)
 #
 # Usage: sh test/diff_compiler_references_tool.sh
 set -u

@@ -1,0 +1,9 @@
+-- module `reexport2` — re-exports `helper` from `reexport`, which itself
+-- re-exports `defs.helper` (a TWO-HOP re-export chain: defs -> reexport ->
+-- reexport2). Added for PR #912 review: cross_file.jsonl's `rHelper` query
+-- only exercises ONE hop (defs -> reexport); this file plus via2.mdk proves
+-- the whole-project topo-sort orders a chain of MORE than one hop correctly
+-- (reexport2 must be indexed after reexport, which must be indexed after
+-- defs — a naive "single dependency" ordering could get this wrong even
+-- when the one-hop case passes).
+export import reexport.{helper}

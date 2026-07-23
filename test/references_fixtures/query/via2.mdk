@@ -1,0 +1,11 @@
+-- module `via2` — a TWO-HOP re-export CONSUMER (PR #912 review): imports
+-- `helper` via `reexport2`, which re-exports `reexport`, which re-exports
+-- `defs.helper`. A `medaka_references` query on this use must merge under
+-- the SAME BinderKey as defs.helper's own def and every other use in
+-- cross_file.jsonl's project (defs.mdk, main.mdk) — proving the topo-sort
+-- ordered the whole chain (defs -> reexport -> reexport2 -> via2), not
+-- just the one-hop case.
+import reexport2.{helper as rHelper2}
+
+export usesTwoHop : Int
+usesTwoHop = rHelper2 9
