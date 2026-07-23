@@ -11995,10 +11995,11 @@ checkBodyImpl seed mode prog0 =
     Flat _ =>
       -- #838 I4: impl obligations now go through the unified checkCallObligations
       -- (projected via implOblToU), same universe/order as before the checker swap.
-      -- `True` = defer non-ground (retired checkOneImplObligation semantics); the call
-      -- channel below passes `False` (RULE 2/3).
-      let _ = checkCallObligations True fullUniverse (map implOblToU perRun.value.pendingImplObligations.value)
-      let _ = checkCallObligations False fullUniverse perRun.value.obls.items.value
+      -- Impl channel = (deferNonGround=True, dedup=False) — retired checkImplObligationsU
+      -- semantics: defer non-ground, and check EVERY obligation (no seen skip; S0 #863).
+      -- Call channel = (deferNonGround=False, dedup=True): RULE 2/3 + the seen dedup.
+      let _ = checkCallObligations True False fullUniverse (map implOblToU perRun.value.pendingImplObligations.value)
+      let _ = checkCallObligations False True fullUniverse perRun.value.obls.items.value
       let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
       ()
     Module _ _ _ =>
@@ -12015,11 +12016,11 @@ checkBodyImpl seed mode prog0 =
       let _ = if not driverState.value.implInferEnabled.value then
                 -- #838 I4: unified checker, same `obUniv`, same `not implInferEnabled`
                 -- gate and same order relative to setNumlitFloats as the retired checker.
-                -- `True` = impl channel (defer non-ground); call channel below passes `False`.
-                let _ = checkCallObligationsU True obUniv [] (map implOblToU perRun.value.pendingImplObligations.value)
+                -- Impl channel = (deferNonGround=True, dedup=False); call channel = (False, True).
+                let _ = checkCallObligationsU True False obUniv [] (map implOblToU perRun.value.pendingImplObligations.value)
                 setNumlitFloats ()
               else ()
-      let _ = checkCallObligationsU False obUniv [] perRun.value.obls.items.value
+      let _ = checkCallObligationsU False True obUniv [] perRun.value.obls.items.value
       ()
   let _ = setRef perRun.value.localSchemesOut (mapLocalSchemes perRun.value.localBindRefs.value)
   let _ = setRef perRun.value.seedSchemesOut seed
@@ -12641,9 +12642,27 @@ implOblToU (iface, typarams, mty, occ, loc) = UObligation {
 -- deferrableVarIds instead is UNSOUND: it is shared with the call channel's RULE 2, and
 -- the RETPOS-registered ambiguous var must stay OUT of it or the genuine ambiguity would
 -- defer too.  So the disposition is per-channel, byte-identical to each retired checker.
-checkCallObligations : Bool -> List Decl -> List UObligation -> Unit
-checkCallObligations deferNonGround prog obligations =
-  checkCallObligationsU deferNonGround (buildImplUniverse prog) [] obligations
+-- #838 I4 (S0 fix, PR #863 review): [dedup] is the SECOND per-channel fact.  The CALL
+-- channel dedups by (iface, every-arg-head-tycon) [seen] because the SAME call obligation
+-- is recorded by more than one path (EVar + EDictAt).  The retired checkImplObligationsU
+-- had NO seen — it checked EVERY element.  Sharing the CALL channel's seen with the impl
+-- window SILENTLY DROPS a failing obligation whose key collides with a PASSING sibling:
+-- a tuple's head tycon is `__tuple2__` regardless of element types, so `Debug (Color,3)`
+-- and `Debug (1,2)` share key `Debug,__tuple2__`; LIFO checks the passing one first, adds
+-- the key to seen, and SKIPS the failing one — its checkNestedReqs (the `No impl Debug
+-- Color` reject) never runs → check-green, run-CRASH (any parametric conditional instance:
+-- tuple/List/Option).  So the IMPL channel passes dedup=False (check every obligation,
+-- like the retired checker); the CALL channel keeps dedup=True.  This drops only the
+-- check-level SKIP of a DIFFERENT-verdict same-key obligation; the EMISSION-level collapse
+-- of two IDENTICAL rejects is unchanged (checkOneCallObligation's pushTypeErrorOnceAt).
+checkCallObligations : Bool -> Bool -> List Decl -> List UObligation -> Unit
+checkCallObligations deferNonGround dedup prog obligations =
+  checkCallObligationsU
+    deferNonGround
+    dedup
+    (buildImplUniverse prog)
+    []
+    obligations
 
 -- [seen] dedups by (iface, EVERY argument's concrete-head-tycon): the SAME
 -- unsatisfiable obligation can be recorded by more than one path (a use marked both
@@ -12652,17 +12671,20 @@ checkCallObligations deferNonGround prog obligations =
 -- head-of-arg-0-only key conflated `Ix Int Bool` with `Ix Int Char` and reported
 -- only the first (#607).
 -- ORDER of errors follows the OBLIGATION list (unchanged), never the impl universe.
-checkCallObligationsU : Bool -> ImplUniverse -> List String -> List UObligation -> Unit
-checkCallObligationsU _ _ _ [] = ()
-checkCallObligationsU deferNonGround univ seen (o::rest) =
+checkCallObligationsU : Bool -> Bool -> ImplUniverse -> List String -> List UObligation -> Unit
+checkCallObligationsU _ _ _ _ [] = ()
+checkCallObligationsU deferNonGround dedup univ seen (o::rest) =
   let iface = o.pred.iface
   let occs = o.pred.args
   let loc = o.loc
   let key = joinWith "," (iface :: map (o2 => fromOption "" (headTyconMono o2)) occs)
-  if contains key seen then checkCallObligationsU deferNonGround univ seen rest
+  -- dedup=False (IMPL channel): never SKIP — check every obligation like the retired
+  -- checkImplObligationsU (S0 #863: a same-key different-verdict obligation must not be
+  -- dropped).  dedup=True (CALL channel): skip a repeat of an already-checked key.
+  if dedup && contains key seen then checkCallObligationsU deferNonGround dedup univ seen rest
   else
     let _ = checkOneCallObligation deferNonGround univ iface occs loc
-    checkCallObligationsU deferNonGround univ (key::seen) rest
+    checkCallObligationsU deferNonGround dedup univ (key::seen) rest
 
 -- [occs] is the predicate's whole argument vector.  At arity 1 the match test stays
 -- implMatchesReceiverU (byte-identical to the pre-#607 behaviour: for a 1-param

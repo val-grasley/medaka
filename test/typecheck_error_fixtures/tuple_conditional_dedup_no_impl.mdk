@@ -1,0 +1,15 @@
+-- #838 I4 / PR #863 review S0 pin: routing impl obligations through the unified
+-- checkCallObligationsU must NOT inherit its check-level `seen` dedup (the retired
+-- checkImplObligationsU had none).  A tuple's head tycon is `__tuple2__` regardless of
+-- element types, so `Debug (Color, 3)` and `Debug (1, 2)` share the dedup key
+-- `Debug,__tuple2__`; with the check-level skip the passing `(1, 2)` (checked first, LIFO)
+-- suppressed the failing `(Red, 3)`, whose `requires Debug Color` never surfaced —
+-- check-GREEN then run-CRASH (`intToString: not an Int`).  The impl channel now passes
+-- dedup=False, so every obligation is checked and this REJECTS at check.  If this fixture
+-- ever type-checks clean, the S0 is back.
+data Color = Red
+
+main =
+  let a = debug (Red, 3)
+  let b = debug (1, 2)
+  println a
