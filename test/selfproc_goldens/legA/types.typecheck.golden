@@ -78,7 +78,6 @@ armEVars : Arm -> List String
 armIsUnguarded : List Guard -> Bool
 armSites : Arm -> List (Ref Route)
 armUnreachable : Option String -> List (List Pat) -> Map String Unit -> Bool -> Pat -> Bool
-arrowLaunderEscape : List EffRow -> List EffRow -> List Atom
 arrowsWithLastEffect : List Mono -> EffRow -> Mono -> Mono
 assignName : Ref (List (Int, String)) -> Ref Int -> Int -> String
 astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
@@ -88,6 +87,7 @@ atomLabel : Atom -> String
 atomOfLabel : String -> Atom
 atomOfWritten : (String, Option String) -> Atom
 atomParam : Atom -> Param
+atomsAbsorbedInto : Int -> List AbsorptionEvent -> List Atom
 atomsDiff : List Atom -> List Atom -> List Atom
 atomsEscape : List Atom -> List Atom -> List Atom
 atomsNorm : List Atom -> List Atom
@@ -146,7 +146,6 @@ checkCallObligations : Bool -> Bool -> List Decl -> List UObligation -> Unit
 checkCallObligationsU : Bool -> Bool -> ImplUniverse -> List String -> List UObligation -> Unit
 checkClausesNonFunctionLocated : List String -> String -> List FunClause -> Unit
 checkCoherence : List Decl -> Unit
-checkDefaultEffectLaunder : String -> Mono -> Mono -> Option Loc -> Unit
 checkDefaultMethodRigidity : String -> List String -> String -> Ty -> List (String, Mono) -> List (Int, Mono) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, List Mono, Option Loc) -> Option Loc -> Unit
 checkEffVarAtoms : String -> List (String, List Atom) -> List (String, Ref Effvar) -> Option Loc -> Unit
 checkEffectAtoms : List (String, Option String) -> Unit
@@ -160,7 +159,6 @@ checkIfaceMethodEffs : String -> List IfaceMethod -> Unit
 checkImplCompleteness : List Decl -> List Decl -> Unit
 checkImplCompletenessMap : Map String (List String) -> List Decl -> Unit
 checkImplEffVarRigidity : String -> Ty -> List (String, Ref Effvar) -> Bool -> Option Loc -> Unit
-checkImplEffectLaunder : String -> String -> Mono -> Mono -> Option Loc -> Unit
 checkImplMethodRigidity : String -> String -> Ty -> List Mono -> List (String, Mono) -> List (String, Ref Effvar) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, List Mono, Option Loc) -> Bool -> Option Loc -> Unit
 checkInterfaceCycles : List Decl -> Unit
 checkLetBind : String -> List FunClause -> Unit
@@ -424,6 +422,7 @@ effectParamMsg : String -> String -> String
 effectUndeterminedMsg : String -> String -> List String -> String
 effrowLabels : EffRow -> List Atom
 effrowNorm : EffRow -> EffRow
+effrowWrittenAtoms : EffRow -> List Atom
 effvarId : Ref Effvar -> Int
 effvarIdOf : (String, Ref Effvar) -> Int
 effvarLevel : Ref Effvar -> Int
@@ -662,7 +661,7 @@ inferClauses : TcEnv -> List (List Pat, Expr) -> Mono
 inferDefaultBodies : TcEnv -> List Decl -> Unit
 inferDefaultBodiesIfEnabled : TcEnv -> List Decl -> Unit
 inferDefaultMethod : TcEnv -> String -> List String -> IfaceMethod -> Unit
-inferDefaultMethodBody : String -> String -> Mono -> Option Loc -> TcEnv -> Mono -> List Pat -> Expr -> Mono
+inferDefaultMethodBody : String -> String -> Option Loc -> TcEnv -> Mono -> List Pat -> Expr -> Mono
 inferDefaultMethods : TcEnv -> String -> List String -> List IfaceMethod -> Unit
 inferDefinerShadowApp : TcEnv -> String -> Ref Route -> Ref (List Route) -> Expr -> Expr -> Mono
 inferDefinerShadowVarApp : TcEnv -> String -> Expr -> Expr -> Mono
@@ -784,6 +783,8 @@ krowSlotOccs : Bool -> String -> List Ty -> List (String, List Atom)
 ktypeTvs : List String -> List Kind -> List Mono -> List (String, Mono)
 lamUnderLoc : Expr -> Option (Option Loc, List Pat, Expr)
 lastComponent : List String -> String
+launderEscapeFromLog : List EffRow -> List EffRow -> List AbsorptionEvent -> List Atom
+launderOpenActualArrow : EffRow -> List AbsorptionEvent -> List Atom
 letBindDictSites : LetBind -> List (Ref (List Route))
 letBindEVars : LetBind -> List String
 letBindName : LetBind -> String
@@ -796,6 +797,7 @@ letRecNonFunctionMsg : String -> String
 letters : String
 litType : Lit -> Mono
 liveNumVarGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> Option Mono
+liveTailId : Ref Effvar -> Int
 loadDataUniverse : Unit -> Unit
 locEq : Loc -> Loc -> Bool
 lookupAssocI : Int -> List (Int, a) -> Option a
