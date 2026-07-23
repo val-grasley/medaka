@@ -12360,6 +12360,24 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
     addedObls
     addedCallObls
     defLoc
+  -- #873 (S0, silent wrongness): mirror inferImplMethod's #518 body-local Num
+  -- grounding onto the GENERIC-DEFAULT path.  A cross-module impl inherits the
+  -- untagged generic default (fillImplDefaults specializes SAME-MODULE only), so
+  -- an ambiguous Num literal consumed body-locally in a default body — its element
+  -- var surfacing NOWHERE in the method's declared type ([expected2]) — reached the
+  -- route resolver UNGROUNDED here, exactly the #518 hole reopened: `t _ = s [1, 2]`
+  -- left `[1,2] : List _a`, matching only the GENERAL `impl S (List a)` and never the
+  -- specific `impl S (List Int)`.  So `t Foo` dispatched to a DIFFERENT impl than the
+  -- same-module (impl-path) placement, a wrong value keyed purely on module placement,
+  -- `check` green either way.  [addedObls] = this default body's obligation window (the
+  -- SAME [implObls] channel inferImplMethod grounds over after #841/#876) and [expected2]
+  -- = the declared method type as a Mono, aliased by the body's unify above — the exact
+  -- pair inferImplMethod passes.  defaultBodyLocalNum grounds ONLY vars absent from
+  -- [expected2], so a legitimately polymorphic default (a Num var reflected in the
+  -- signature, dict-supplied by the caller) stays polymorphic — no over-grounding.  Runs
+  -- AFTER checkDefaultMethodRigidity so a body-local Num default can never mask a pin,
+  -- matching the impl path's ordering.
+  let _ = defaultBodyLocalNum addedObls expected2
   -- #837: schemeObligationsRef restore RETIRED (see snapshot site above).
   let _ = setRef perRun.value.inRigidityBodyRef False
   -- register AFTER body inference, so each constraint var's id in [snd inst] is
