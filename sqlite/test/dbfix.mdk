@@ -1,0 +1,62 @@
+-- Shared in-memory database fixture for the sqlite in-language test suite.
+-- Pure (no IO): the DB image is built and parsed as a plain value, so it can be
+-- used from `test "…" = <Expectation>` declarations.
+--
+-- The `specs` table list is structurally identical to the demo probes' own
+-- specs by design (a table list is a table list); not worth a shared module.
+-- lint-disable-file rule-duplicate-body
+import lib.dbwriter.{buildDatabaseMulti}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CNull, CInt, CText}
+import lib.rowtype.{tCells}
+import lib.sqlstmt.{queryString, queryStringDistinct}
+
+usersSql : String
+usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER, city TEXT)"
+
+ordersSql : String
+ordersSql =
+  "CREATE TABLE orders(oid INTEGER PRIMARY KEY, uid INTEGER, amount INTEGER)"
+
+usersRows : List (List Cell)
+usersRows = [
+  [CInt 1, CText "Alice", CInt 30, CText "pdx"],
+  [CInt 2, CText "Bob", CNull, CNull],
+  [CInt 3, CText "Carol", CInt 25, CText "pdx"],
+  [CInt 4, CText "Dave", CInt 30, CText "sea"],
+  [CInt 5, CText "Eve", CNull, CText "sea"],
+]
+
+ordersRows : List (List Cell)
+ordersRows = [
+  [CInt 10, CInt 1, CInt 100],
+  [CInt 11, CInt 1, CInt 250],
+  [CInt 12, CInt 3, CNull],
+  [CInt 13, CInt 4, CInt 50],
+  [CInt 14, CInt 99, CInt 999],
+]
+
+specs : List (String, String, Option Int, List (List Cell))
+specs = [
+  ("users", usersSql, Some 0, usersRows),
+  ("orders", ordersSql, Some 0, ordersRows),
+]
+
+-- | The shared fixture database, built purely from `specs`.
+export db : Result String Db
+db = do
+  bytes <- buildDatabaseMulti specs
+  fromBytes bytes
+
+-- | Run a SELECT against the fixture, decoding every row to raw `Cell`s.
+--   Threads any build/parse error into the `Result` so a test sees it as a FAIL.
+export q : String -> Result String (List (List Cell))
+q sql = do
+  d <- db
+  queryString d sql tCells
+
+-- | Like `q`, but honours `SELECT DISTINCT` (dedup on decoded rows).
+export qd : String -> Result String (List (List Cell))
+qd sql = do
+  d <- db
+  queryStringDistinct d sql tCells

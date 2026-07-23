@@ -1,0 +1,119 @@
+-- | Round-trip PROPERTIES and engine INVARIANTS for the sqlite library — the
+--   highest-value dogfood, since a generator exercises the codec/parser far
+--   past any hand-written table.
+--
+--   * varint  encode ∘ decode = identity            (lib.varint)
+--   * record  encode ∘ decode = identity            (lib.recordenc / lib.recordfmt)
+--   * parse ∘ render ∘ parse is stable              (lib.sqlstmt)
+--   * SELECT DISTINCT is idempotent (no dup rows)   (fixture)
+--   * ORDER BY yields a sorted permutation          (fixture)
+--
+-- Run with: `medaka test sqlite/test/roundtrip_test.mdk` from the sqlite project root.
+
+import test.{expectTrue, expectEqual, expectAll, pass, fail}
+import test.dbfix.{q, qd}
+import array.{arrayFromList}
+import byteparser.{runByteParser}
+import lib.varint.{sqVarint, sqVarintBytes}
+import lib.recordenc.{encodeRecord}
+import lib.recordfmt.{Cell, CInt, CText, CNull, parseRecord}
+import lib.sqlstmt.{parseSelect, renderSelect}
+
+-- ── varint: sqVarintBytes ∘ sqVarint = identity (over the ≤ 8-byte range) ───
+-- Mask to 56 non-negative bits (0 .. 2^56-1): guaranteed ≥ 0 and below the
+-- 9-byte threshold, which is exactly the domain sqVarintBytes/sqVarint cover.
+prop "varint encode then decode round-trips" (n : Int) =
+  let v = bitAnd n 72057594037927935
+  eq (runByteParser sqVarint (arrayFromList (sqVarintBytes v))) (Ok v)
+
+-- ── record: encodeRecord ∘ parseRecord = identity ──────────────────────────
+recordRoundTrip : List Cell -> Result String (List Cell)
+recordRoundTrip cells = do
+  bs <- encodeRecord cells
+  runByteParser parseRecord bs
+
+prop "record round-trips a row of ints" (xs : List Int) =
+  let cells = map CInt xs
+  eq (recordRoundTrip cells) (Ok cells)
+
+prop "record round-trips text + NULL + int cells" (s : String) =
+  let cells = [CText s, CNull, CInt 7]
+  eq (recordRoundTrip cells) (Ok cells)
+
+-- ── parse ∘ render ∘ parse stability ───────────────────────────────────────
+parseStable : String -> Bool
+parseStable sql = match parseSelect sql
+  Err _ => False
+  Ok s1 => eq (parseSelect (renderSelect s1)) (Ok s1)
+
+-- Generative: fold a fresh (non-negative) literal into a representative query.
+prop "parse-render-parse is stable over a generated predicate" (n : Int) =
+  let m = if n < 0 then 0 - n else n
+  parseStable "SELECT a, b + 1 FROM t WHERE a = \{m} ORDER BY a DESC LIMIT 5"
+
+-- A fixed spread covering the shapes the parser round-trips today (no aliases —
+-- table/column aliasing is out of scope on this base).
+stableQueries : List String
+stableQueries = [
+  "SELECT a, b FROM t ORDER BY a",
+  "SELECT count(*) FROM t",
+  "SELECT DISTINCT c FROM t ORDER BY c",
+  "SELECT name FROM users WHERE name LIKE 'a%' ORDER BY id",
+  "SELECT name FROM users WHERE age IN (1, 2, 3) ORDER BY id",
+  "SELECT name FROM users WHERE age NOT BETWEEN 1 AND 5",
+  "SELECT x, CASE WHEN a > 1 THEN 'y' ELSE 'n' END FROM t",
+  "SELECT a || b FROM t",
+  "SELECT upper(name), length(city) FROM t",
+  "SELECT coalesce(a, b, 0) FROM t",
+  "SELECT users.name FROM users LEFT JOIN orders ON users.id = orders.uid",
+  "SELECT c, count(*) FROM t GROUP BY c HAVING count(*) > 1 ORDER BY c",
+  "SELECT a FROM t WHERE NOT a = 1 AND b IS NOT NULL",
+]
+
+test "parse-render-parse is stable across the representative query set" = expectAll (map (sql => if parseStable sql then pass else fail sql) stableQueries)
+
+-- ── SELECT DISTINCT idempotence: the result carries no duplicate rows ───────
+hasNoDups : List (List Cell) -> Bool
+hasNoDups [] = True
+hasNoDups (x::rest) = if elem x rest then False else hasNoDups rest
+
+distinctIsUnique : String -> Expectation
+distinctIsUnique sql = match qd sql
+  Err e => fail e
+  Ok rows => expectTrue (hasNoDups rows)
+
+test "SELECT DISTINCT produces no duplicate rows" = expectAll
+  [
+    distinctIsUnique "SELECT DISTINCT age FROM users",
+    distinctIsUnique "SELECT DISTINCT city FROM users",
+    distinctIsUnique "SELECT DISTINCT age, city FROM users",
+  ]
+
+-- ── ORDER BY yields a sorted permutation of the source rows ────────────────
+cellInt : Cell -> Int
+cellInt (CInt n) = n
+cellInt _ = 0
+
+firstInt : List Cell -> Int
+firstInt (c::_) = cellInt c
+firstInt [] = 0
+
+nonDecreasing : List Int -> Bool
+nonDecreasing [] = True
+nonDecreasing [_] = True
+nonDecreasing (a::b::rest) = if a <= b then nonDecreasing (b::rest) else False
+
+len : List a -> Int
+len [] = 0
+len (_::rest) = 1 + len rest
+
+-- Ordered ascending ⇒ the projected ints are non-decreasing, and ORDER BY is a
+-- permutation (it neither drops nor invents rows), so the count is preserved.
+test "ORDER BY ASC is a sorted, count-preserving permutation" = match q "SELECT age FROM users WHERE age IS NOT NULL ORDER BY age ASC"
+  Err e => fail e
+  Ok ordered => match q "SELECT age FROM users WHERE age IS NOT NULL"
+    Err e => fail e
+    Ok unordered => expectAll [
+      expectTrue (nonDecreasing (map firstInt ordered)),
+      expectEqual (len ordered) (len unordered),
+    ]

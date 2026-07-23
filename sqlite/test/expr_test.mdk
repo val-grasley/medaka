@@ -1,0 +1,133 @@
+-- | In-language tests for the SQL EXPRESSION evaluator (lib.select /
+--   lib.sqlexec), driven through the shared in-memory fixture (`test.dbfix`).
+--
+-- Every expected value here was harvested from the freshly-built binary and is
+-- cross-checked against the real sqlite3 CLI by `sqlite/test/sql_oracle.sh`.
+-- Run with: `medaka test sqlite/test/expr_test.mdk` from the sqlite project root.
+
+import test.{expectEqual, expectAll}
+import test.dbfix.{q}
+import lib.recordfmt.{Cell, CNull, CInt, CText}
+
+-- ── LIKE / NOT LIKE ────────────────────────────────────────────────────────
+test "LIKE suffix '%e'" = expectEqual
+  (q "SELECT name FROM users WHERE name LIKE '%e' ORDER BY id")
+  (Ok [[CText "Alice"], [CText "Dave"], [CText "Eve"]])
+
+test "NOT LIKE suffix '%e'" = expectEqual
+  (q "SELECT name FROM users WHERE name NOT LIKE '%e' ORDER BY id")
+  (Ok [[CText "Bob"], [CText "Carol"]])
+
+test "LIKE underscore+prefix '_a%'" = expectEqual
+  (q "SELECT name FROM users WHERE name LIKE '_a%' ORDER BY id")
+  (Ok [[CText "Carol"], [CText "Dave"]])
+
+-- ── IN / NOT IN (ints and strings; NULL-in-list is UNKNOWN, not FALSE) ──────
+test "IN int list" = expectEqual
+  (q "SELECT name FROM users WHERE age IN (25, 30) ORDER BY id")
+  (Ok [[CText "Alice"], [CText "Carol"], [CText "Dave"]])
+
+test "NOT IN int list (NULL rows excluded)" =
+  expectEqual
+    (q "SELECT name FROM users WHERE age NOT IN (25, 30) ORDER BY id")
+    (Ok [])
+
+test "IN string list" = expectEqual
+  (q "SELECT name FROM users WHERE city IN ('pdx', 'sea') ORDER BY id")
+  (Ok [[CText "Alice"], [CText "Carol"], [CText "Dave"], [CText "Eve"]])
+
+-- The NULL-in-list trap: `age IN (25, NULL)` is TRUE for 25, else UNKNOWN;
+-- `NOT IN (25, NULL)` is UNKNOWN for every row ⇒ no rows.
+test "IN with NULL in the list is 3-valued" = expectAll
+  [
+    expectEqual (q "SELECT name FROM users WHERE age IN (25, NULL) ORDER BY id") (Ok [[CText "Carol"]]),
+    expectEqual (q "SELECT name FROM users WHERE age NOT IN (25, NULL) ORDER BY id") (Ok []),
+  ]
+
+-- ── BETWEEN / NOT BETWEEN (inclusive; a NULL operand ⇒ UNKNOWN on both) ─────
+-- Bob and Eve have NULL age, so they appear in NEITHER result — the 3-valued case.
+test "BETWEEN and NOT BETWEEN partition only the non-NULL rows" = expectAll
+  [
+    expectEqual (q "SELECT name FROM users WHERE age BETWEEN 25 AND 29 ORDER BY id") (Ok [[CText "Carol"]]),
+    expectEqual (q "SELECT name FROM users WHERE age NOT BETWEEN 25 AND 29 ORDER BY id") (Ok [[CText "Alice"], [CText "Dave"]]),
+  ]
+
+-- ── CASE (searched and simple forms) ───────────────────────────────────────
+test "CASE searched with NULL guard" = expectEqual
+  (q
+    "SELECT name, CASE WHEN age > 28 THEN 'old' WHEN age IS NULL THEN 'unknown' ELSE 'young' END FROM users ORDER BY id")
+  (Ok
+    [
+      [CText "Alice", CText "old"],
+      [CText "Bob", CText "unknown"],
+      [CText "Carol", CText "young"],
+      [CText "Dave", CText "old"],
+      [CText "Eve", CText "unknown"],
+    ])
+
+-- Simple `CASE age WHEN …`: a NULL scrutinee matches NO branch ⇒ ELSE.
+test "CASE simple: NULL scrutinee falls to ELSE" = expectEqual
+  (q
+    "SELECT age, CASE age WHEN 30 THEN 'thirty' WHEN 25 THEN 'twentyfive' ELSE 'other' END FROM users ORDER BY id")
+  (Ok
+    [
+      [CInt 30, CText "thirty"],
+      [CNull, CText "other"],
+      [CInt 25, CText "twentyfive"],
+      [CInt 30, CText "thirty"],
+      [CNull, CText "other"],
+    ])
+
+-- ── `||` concatenation (NULL propagates) ───────────────────────────────────
+test "|| concat, NULL city propagates to NULL" = expectEqual
+  (q "SELECT name || '-' || city FROM users ORDER BY id")
+  (Ok
+    [
+      [CText "Alice-pdx"],
+      [CNull],
+      [CText "Carol-pdx"],
+      [CText "Dave-sea"],
+      [CText "Eve-sea"],
+    ])
+
+test "|| with a NULL operand is NULL" =
+  expectEqual (q "SELECT name || NULL FROM users WHERE id = 1") (Ok [[CNull]])
+
+-- ── Scalar string functions ────────────────────────────────────────────────
+test "upper / lower" = expectEqual
+  (q "SELECT upper(name), lower(name) FROM users WHERE id = 1")
+  (Ok [[CText "ALICE", CText "alice"]])
+
+test "length" = expectEqual
+  (q "SELECT length(name) FROM users ORDER BY id")
+  (Ok [[CInt 5], [CInt 3], [CInt 5], [CInt 4], [CInt 3]])
+
+test "substr 2-arg and 3-arg" = expectAll
+  [
+    expectEqual (q "SELECT substr(name, 2) FROM users WHERE id = 1") (Ok [[CText "lice"]]),
+    expectEqual (q "SELECT substr(name, 2, 2) FROM users WHERE id = 1") (Ok [[CText "li"]]),
+    expectEqual (q "SELECT substr('hello', 2, 3) FROM users WHERE id = 1") (Ok [[CText "ell"]]),
+    expectEqual (q "SELECT substr('hello', -2) FROM users WHERE id = 1") (Ok [[CText "lo"]]),
+  ]
+
+test "trim / ltrim / rtrim" = expectAll
+  [
+    expectEqual (q "SELECT trim('  ' || name || '  ') FROM users WHERE id = 1") (Ok [[CText "Alice"]]),
+    expectEqual (q "SELECT ltrim('  ' || name) FROM users WHERE id = 1") (Ok [[CText "Alice"]]),
+    expectEqual (q "SELECT rtrim(name || '  ') FROM users WHERE id = 1") (Ok [[CText "Alice"]]),
+  ]
+
+test "replace is case-sensitive" = expectEqual
+  (q "SELECT replace(name, 'a', 'X') FROM users WHERE id = 1")
+  (Ok [[CText "Alice"]])
+
+-- ── coalesce / ifnull ──────────────────────────────────────────────────────
+test "coalesce picks the first non-NULL" = expectAll
+  [
+    expectEqual (q "SELECT coalesce(city, 'none') FROM users ORDER BY id") (Ok [[CText "pdx"], [CText "none"], [CText "pdx"], [CText "sea"], [CText "sea"]]),
+    expectEqual (q "SELECT coalesce(NULL, NULL, 'x') FROM users WHERE id = 1") (Ok [[CText "x"]]),
+  ]
+
+test "ifnull substitutes for a NULL" = expectEqual
+  (q "SELECT ifnull(age, -1) FROM users ORDER BY id")
+  (Ok [[CInt 30], [CInt (-1)], [CInt 25], [CInt 30], [CInt (-1)]])

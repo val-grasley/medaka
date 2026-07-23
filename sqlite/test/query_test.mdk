@@ -1,0 +1,107 @@
+-- | In-language tests for AGGREGATES, GROUP BY/HAVING, result shaping
+--   (ORDER BY / LIMIT / OFFSET / DISTINCT) and JOINs, driven through the shared
+--   in-memory fixture (`test.dbfix`).
+--
+-- Every expected value was harvested from the freshly-built binary and is
+-- cross-checked against the real sqlite3 CLI by `sqlite/test/sql_oracle.sh`,
+-- `sqlite/test/aggregate_oracle.sh`, and the join/distinct oracles.
+-- Run with: `medaka test sqlite/test/query_test.mdk` from the sqlite project root.
+
+import test.{expectEqual, expectAll}
+import test.dbfix.{q, qd}
+import lib.recordfmt.{Cell, CNull, CInt, CText, CFloat}
+
+-- ── Aggregates with NULL-skipping ──────────────────────────────────────────
+test "count(*) counts every row" =
+  expectEqual (q "SELECT count(*) FROM users") (Ok [[CInt 5]])
+
+test "count(col) / sum / min / max skip NULLs" = expectEqual
+  (q "SELECT count(age), sum(age), min(age), max(age) FROM users")
+  (Ok [[CInt 3, CInt 85, CInt 25, CInt 30]])
+
+test "count(*) with a NULL-selecting filter" = expectEqual
+  (q "SELECT count(*) FROM users WHERE age IS NULL")
+  (Ok [[CInt 2]])
+
+-- avg over the pdx group (ages 30, 25) = 27.5 — exactly representable, so a
+-- literal float pin is safe here (an over-a-whole-table avg would be 85/3).
+test "avg over a group is a float mean of the non-NULL values" = expectEqual
+  (q "SELECT avg(age) FROM users WHERE city = 'pdx'")
+  (Ok [[CFloat 27.5]])
+
+-- ── GROUP BY (+ NULL group) and HAVING ─────────────────────────────────────
+test "GROUP BY city, including the NULL group" = expectEqual
+  (q "SELECT city, count(*) FROM users GROUP BY city ORDER BY city")
+  (Ok [[CNull, CInt 1], [CText "pdx", CInt 2], [CText "sea", CInt 2]])
+
+test "GROUP BY … HAVING count(*) > 1 drops the singleton NULL group" = expectEqual
+  (q
+    "SELECT city, count(*) FROM users GROUP BY city HAVING count(*) > 1 ORDER BY city")
+  (Ok [[CText "pdx", CInt 2], [CText "sea", CInt 2]])
+
+test "GROUP BY … HAVING sum(age) > 25" = expectEqual
+  (q
+    "SELECT city, sum(age) FROM users GROUP BY city HAVING sum(age) > 25 ORDER BY city")
+  (Ok [[CText "pdx", CInt 55], [CText "sea", CInt 30]])
+
+-- ── ORDER BY (NULL ordering: first in ASC, last in DESC) ───────────────────
+test "ORDER BY age ASC puts NULLs first" = expectEqual
+  (q "SELECT name, age FROM users ORDER BY age ASC, name ASC")
+  (Ok
+    [
+      [CText "Bob", CNull],
+      [CText "Eve", CNull],
+      [CText "Carol", CInt 25],
+      [CText "Alice", CInt 30],
+      [CText "Dave", CInt 30],
+    ])
+
+test "ORDER BY age DESC puts NULLs last" = expectEqual
+  (q "SELECT name, age FROM users ORDER BY age DESC, name ASC")
+  (Ok
+    [
+      [CText "Alice", CInt 30],
+      [CText "Dave", CInt 30],
+      [CText "Carol", CInt 25],
+      [CText "Bob", CNull],
+      [CText "Eve", CNull],
+    ])
+
+-- ── LIMIT / OFFSET ─────────────────────────────────────────────────────────
+test "LIMIT / OFFSET slice the ordered result" = expectAll
+  [
+    expectEqual (q "SELECT id, name FROM users ORDER BY id LIMIT 2") (Ok [[CInt 1, CText "Alice"], [CInt 2, CText "Bob"]]),
+    expectEqual (q "SELECT id, name FROM users ORDER BY id LIMIT 2 OFFSET 1") (Ok [[CInt 2, CText "Bob"], [CInt 3, CText "Carol"]]),
+  ]
+
+-- ── SELECT DISTINCT (dedup, including a NULL) ──────────────────────────────
+test "DISTINCT dedups values, keeping one NULL" = expectAll
+  [
+    expectEqual (qd "SELECT DISTINCT age FROM users ORDER BY age") (Ok [[CNull], [CInt 25], [CInt 30]]),
+    expectEqual (qd "SELECT DISTINCT city FROM users ORDER BY city") (Ok [[CNull], [CText "pdx"], [CText "sea"]]),
+  ]
+
+-- ── JOINs (combined-row column order = from-cols then join-cols) ────────────
+test "INNER JOIN keeps only matching rows" = expectEqual
+  (q
+    "SELECT users.name, orders.amount FROM users INNER JOIN orders ON users.id = orders.uid ORDER BY orders.oid")
+  (Ok
+    [
+      [CText "Alice", CInt 100],
+      [CText "Alice", CInt 250],
+      [CText "Carol", CNull],
+      [CText "Dave", CInt 50],
+    ])
+
+test "LEFT JOIN null-pads the unmatched left rows" = expectEqual
+  (q
+    "SELECT users.name, orders.amount FROM users LEFT JOIN orders ON users.id = orders.uid ORDER BY users.id, orders.oid")
+  (Ok
+    [
+      [CText "Alice", CInt 100],
+      [CText "Alice", CInt 250],
+      [CText "Bob", CNull],
+      [CText "Carol", CNull],
+      [CText "Dave", CInt 50],
+      [CText "Eve", CNull],
+    ])
