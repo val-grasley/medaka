@@ -113,6 +113,8 @@ import lib.sqlparse.{
   isReserved,
   hasAgg,
   renderSqlExpr,
+  setSubqueryParser,
+  setSubqueryRenderer,
 }
 import lib.schemadef.{
   CreateTable,
@@ -244,13 +246,31 @@ import string.{toInt, toUpper, fromChars, contains, join}
 --
 -- > parseSelect "SELECT a FROM t WHERE count(*) > 2"
 -- Err "aggregate functions are not allowed in WHERE — use HAVING at 34"
+--
+-- A non-correlated `IN (SELECT …)` subquery parses and round-trips; the whole
+-- predicate is parenthesized, and `NOT IN` renders as `NOT (… IN (…))`:
+--
+-- > map renderSelect (parseSelect "SELECT name FROM users WHERE id IN (SELECT uid FROM orders)")
+-- Ok "SELECT name FROM users WHERE (id IN (SELECT uid FROM orders))"
+--
+-- > map renderSelect (parseSelect "SELECT name FROM users WHERE id NOT IN (SELECT uid FROM orders WHERE amount > 100)")
+-- Ok "SELECT name FROM users WHERE (NOT (id IN (SELECT uid FROM orders WHERE (amount > 100))))"
+--
+-- The subquery may itself be a compound (`UNION` / `INTERSECT` / `EXCEPT`):
+--
+-- > map renderSelect (parseSelect "SELECT n FROM t WHERE a IN (SELECT x FROM u UNION SELECT y FROM v) ORDER BY n")
+-- Ok "SELECT n FROM t WHERE (a IN (SELECT x FROM u UNION SELECT y FROM v)) ORDER BY n ASC"
 export parseSelect : String -> Result String Select
 parseSelect s = runParser statement s
 
 -- Skip leading space, read the SELECT, tolerate `;`, then demand end of input.
+-- `setSubqueryParser` ties the sqlparse ⇄ sqlstmt knot: it installs THIS module's
+-- compound-query parser into lib.sqlparse's forward-reference hole so that a
+-- `WHERE col IN (SELECT …)` in the expression grammar can parse a subquery.
 statement : Parser Select
 statement = do
   _ <- spaces
+  _ <- setSubqueryParser compoundP
   sel <- selectStmt
   _ <- optional (symbol ";")
   _ <- endOfStatement
@@ -370,6 +390,7 @@ parseQuery s = runParser queryStatement s
 queryStatement : Parser Compound
 queryStatement = do
   _ <- spaces
+  _ <- setSubqueryParser compoundP
   q <- compoundP
   _ <- optional (symbol ";")
   _ <- endOfStatement
@@ -773,6 +794,9 @@ applyOpt f (Some x) sel = f x sel
 -- Ok "SELECT count(*) FROM t"
 export renderSelect : Select -> String
 renderSelect (Select { from = tbl, fromAlias = fa, joins = js, where_ = w, groupBy = gb, having = h, orderBy = ob, limit = lm, offset = off, distinct = dist, columns = cols, columnAliases = cas }) =
+  -- Tie the render back-edge: install THIS module's compound renderer into
+  -- lib.sqlparse's hole so `renderSqlExpr` can render an `EInSubquery`'s subquery.
+  let _ = setSubqueryRenderer renderCompound
   let kw = if dist then "SELECT DISTINCT" else "SELECT"
   "\{kw} \{renderCols cols cas} FROM \{tbl}\{renderAliasText fa}\{renderJoinList js}\{renderOpt " WHERE " w}\{renderGroup gb}\{renderOpt " HAVING " h}\{renderOrder ob}\{renderInt " LIMIT " lm}\{renderInt " OFFSET " off}"
 
@@ -786,7 +810,9 @@ renderSelect (Select { from = tbl, fromAlias = fa, joins = js, where_ = w, group
 -- > renderCompound (Compound (selectFromNamed "t" "a") [(OpUnion, selectFromNamed "u" "b")] [] None None)
 -- "SELECT a FROM t UNION SELECT b FROM u"
 export renderCompound : Compound -> String
-renderCompound (Compound first rest ob lm off) = "\{renderSelect first}\{renderSetArms rest}\{renderOrder ob}\{renderInt " LIMIT " lm}\{renderInt " OFFSET " off}"
+renderCompound (Compound first rest ob lm off) =
+  let _ = setSubqueryRenderer renderCompound
+  "\{renderSelect first}\{renderSetArms rest}\{renderOrder ob}\{renderInt " LIMIT " lm}\{renderInt " OFFSET " off}"
 
 renderSetArms : List (SetOp, Select) -> String
 renderSetArms arms = join "" (map renderSetArm arms)
@@ -1024,6 +1050,7 @@ parseStmt s = runParser statementAny s
 statementAny : Parser Stmt
 statementAny = do
   _ <- spaces
+  _ <- setSubqueryParser compoundP
   st <- stmtBody
   _ <- optional (symbol ";")
   _ <- endOfStatement
@@ -1119,11 +1146,16 @@ deleteBranch = do
 -- > map renderStmt (parseStmt "delete from t where a is null")
 -- Ok "DELETE FROM t WHERE (a IS NULL)"
 export renderStmt : Stmt -> String
-renderStmt (SSelect sel) = renderSelect sel
-renderStmt (SCreate ct) = renderCreate ct
-renderStmt (SInsert tbl cols rows) = "INSERT INTO \{tbl}\{renderInsertCols cols} VALUES \{join ", " (map renderValuesRow rows)}"
-renderStmt (SUpdate tbl asgs w) = "UPDATE \{tbl} SET \{join ", " (map renderAssign asgs)}\{renderOpt " WHERE " w}"
-renderStmt (SDelete tbl w) = "DELETE FROM \{tbl}\{renderOpt " WHERE " w}"
+renderStmt st =
+  let _ = setSubqueryRenderer renderCompound
+  renderStmtGo st
+
+renderStmtGo : Stmt -> String
+renderStmtGo (SSelect sel) = renderSelect sel
+renderStmtGo (SCreate ct) = renderCreate ct
+renderStmtGo (SInsert tbl cols rows) = "INSERT INTO \{tbl}\{renderInsertCols cols} VALUES \{join ", " (map renderValuesRow rows)}"
+renderStmtGo (SUpdate tbl asgs w) = "UPDATE \{tbl} SET \{join ", " (map renderAssign asgs)}\{renderOpt " WHERE " w}"
+renderStmtGo (SDelete tbl w) = "DELETE FROM \{tbl}\{renderOpt " WHERE " w}"
 
 renderInsertCols : Option (List String) -> String
 renderInsertCols None = ""

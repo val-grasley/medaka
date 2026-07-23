@@ -333,6 +333,36 @@ QUERIES=(
   "SELECT uid FROM orders GROUP BY uid HAVING count(*) > 1 UNION SELECT id FROM users WHERE id > 3 ORDER BY uid"
   # case-insensitive set-op keywords:
   "select id from users Union All select uid from orders Order By id"
+  # -- SUBQUERIES: WHERE col [NOT] IN (SELECT …) ------------------------------
+  # NON-CORRELATED only: the subquery is evaluated ONCE, must project exactly one
+  # column, and its membership goes through the SAME three-valued IN evaluator as
+  # a literal `IN (…)`, so SQLite's subtle NULL rules must match exactly.  Every
+  # query carries an ORDER BY (the oracle diffs stdout).  bob's age is NULL and
+  # orders.id=5 has a NULL amount — the NULL-poison probes below lean on both.
+  # plain IN / NOT IN over a subquery (orders.uid has no NULL, so NOT IN is normal):
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders) ORDER BY id"
+  "SELECT name FROM users WHERE id NOT IN (SELECT uid FROM orders) ORDER BY id"
+  # subquery result CONTAINS a NULL, outer value is sometimes NULL (three-valued):
+  # a positive match still wins (TRUE dominates), a NULL outer row goes UNKNOWN⇒dropped:
+  "SELECT name FROM users WHERE age IN (SELECT age FROM users) ORDER BY id"
+  # NOT IN over a subquery that contains a NULL ⇒ every row UNKNOWN ⇒ ALL dropped
+  # (the classic NULL-poison trap; collapsing UNKNOWN→FALSE would wrongly keep rows):
+  "SELECT name FROM users WHERE age NOT IN (SELECT age FROM users WHERE name = 'bob') ORDER BY id"
+  "SELECT id FROM orders WHERE amount NOT IN (SELECT amount FROM orders) ORDER BY id"
+  # NOT IN over a NULL-free subquery ⇒ ordinary negation (bob's NULL age still UNKNOWN):
+  "SELECT name FROM users WHERE age NOT IN (SELECT age FROM users WHERE name = 'cyd') ORDER BY id"
+  # EMPTY subquery result: `x IN (empty)` is FALSE for all, `x NOT IN (empty)` is
+  # TRUE for all — even for a NULL outer value (the empty set short-circuits before NULL):
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE amount > 10000) ORDER BY id"
+  "SELECT name FROM users WHERE id NOT IN (SELECT uid FROM orders WHERE amount > 10000) ORDER BY id"
+  "SELECT name FROM users WHERE age NOT IN (SELECT age FROM users WHERE age > 1000) ORDER BY id"
+  # the subquery carries its own WHERE / DISTINCT / UNION (a full compound):
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE qty >= 2) ORDER BY id"
+  "SELECT name FROM users WHERE id IN (SELECT DISTINCT uid FROM orders WHERE amount > 100) ORDER BY id"
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE amount > 200 UNION SELECT id FROM users WHERE city = 'nyc') ORDER BY id"
+  # the subquery predicate nested under AND / OR (not just the whole WHERE):
+  "SELECT name FROM users WHERE city = 'pdx' AND id IN (SELECT uid FROM orders) ORDER BY id"
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE amount > 200) OR city = 'nyc' ORDER BY id"
 )
 
 # ── 2. REJECTION CORPUS ───────────────────────────────────────────────────────
@@ -350,8 +380,16 @@ REJECTS=(
   # a set-op arm with no FROM (SELECT of a bare constant) — unsupported by the
   # whole engine (selectCore requires FROM), a clean Err not a wrong answer.
   "SELECT id FROM users UNION SELECT 1"
-  # sub-queries / CTEs (still unsupported)
-  "SELECT id FROM users WHERE id IN (SELECT uid FROM orders)"
+  # CTEs (still unsupported).  A non-correlated `IN (SELECT …)` subquery is now
+  # SUPPORTED and lives in the SUBQUERY section of the query corpus above; the two
+  # subquery shapes we still refuse are asserted here instead:
+  "WITH x AS (SELECT 1) SELECT * FROM x"
+  #  * a subquery projecting more than one column (SQLite's own message shape):
+  "SELECT id FROM users WHERE id IN (SELECT uid, amount FROM orders)"
+  #  * a CORRELATED subquery (referencing an outer-row column) — out of scope; the
+  #    inner scan resolves only its own tables, so the outer ref is a clean
+  #    unknown-column error, never a wrong answer:
+  "SELECT name FROM users WHERE id IN (SELECT uid FROM orders WHERE amount = users.age)"
   # unsupported expression syntax: the ESCAPE clause, GLOB/MATCH/REGEXP,
   # COLLATE, JSON arrows, an unknown scalar function, malformed CASE/IN
   "SELECT name FROM users WHERE name LIKE 'a%' ESCAPE '\\'"
