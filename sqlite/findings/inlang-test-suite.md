@@ -24,6 +24,7 @@ existing sqlite3 differential oracles already assert.
   `match … Err e => fail e` shim.
 - **Notes:** pure stdlib addition to `stdlib/test.mdk` (`expectOk`, maybe
   `expectErr`). Would remove boilerplate from essentially every DB-backed test.
+- **Tracked in #431.**
 
 ## F2 — no `Arbitrary` for domain types; every prop hand-builds values
 
@@ -42,6 +43,7 @@ existing sqlite3 differential oracles already assert.
   a library type today (checked `stdlib/test.mdk`); a prop can only draw the
   compiler's built-in generators. A user-definable `Arbitrary` would make
   codec/parser round-trips (the highest-value dogfood here) far stronger.
+- **Tracked in #425.**
 
 ## F3 — a function's *domain* can't be expressed to the generator
 
