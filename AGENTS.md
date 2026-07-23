@@ -276,7 +276,10 @@ loop can exceed the 10-minute foreground tool ceiling — killed at 600s with `e
 (SIGTERM). That is the CEILING, not your change hanging — do not go debug a phantom.** Same
 risk running `test/diff_compiler_perf_scaling.sh` directly (measured 654-748 s, ~11-12 min) —
 it's one of the slowest gates in the tree and just as foreground-unsafe as a single blocking
-call. **Remedy: run either one detached/backgrounded and poll for completion, not in a single
+call. **Same trap: `test/diff_compiler_engines.sh` (the 3-engine differential) is ~5-7 min — its
+own `ENGINE_JOBS` table reads `JOBS=3 ~5min`, and `MEDAKA_REQUIRE_WASM=1` (the CI wasm arm) pushes
+it to ~7 — so background it, or scope to a subset with `ONLY=<glob>` while iterating (#723).**
+**Remedy: run either one detached/backgrounded and poll for completion, not in a single
 foreground turn** (`run_in_background` in this harness, not a blocking call). Before
 committing to a run that long, reach for `PREFLIGHT_DRY=1` (fence above) — `test/preflight.sh`
 is the source of truth for it and its sibling `PREFLIGHT_CHANGED_FILE=<path-to-a-file-listing-
