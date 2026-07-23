@@ -595,6 +595,73 @@ gen_modules() {
   printf 'import m%s.{Widget(..), wval, T%s_0(..)}\nmain = println (wval T%s_0)\n' "$top" "$top" "$top" > "$dir/entry.mdk"
 }
 
+# gen_starimports — the STAR import fan-in (issue #881). N leaf modules, each
+# exporting one value, and ONE entry module importing ALL of them and referencing
+# every imported symbol (so no import is unused). This is the multi-module RESOLVE
+# analogue of `xref`: production's resolveModulesErrorsG threads `known` and resolves
+# each of the entry's N imports via findExports — a LINEAR scan of the N-long known
+# list — so the entry alone is O(N^2) in findExports COMPARISONS.
+#
+# ⚠️ MEASURED FINDING (issue #881): on this shape resolve is EFFECTIVELY LINEAR on every
+# arm this gate has. The findExports quadratic is real but (a) its per-step cost is a
+# cheap `modId ==` string compare, DWARFED by the ~0.6 MB/module linear buildEnvMM
+# allocation (net resolve alloc/time both read ~2.0x here), and (b) findExports is a
+# HAND-ROLLED recursive scan that calls NEITHER util.contains NOR util.lookupAssoc, so
+# the deterministic OP counter is STRUCTURALLY BLIND to it (per #884's design: an inline
+# scan stays TIME-arm-only). The op-count this shape DOES read (5*N — isPubExp's four
+# `contains` per resolved import) is linear. So this shape is a LINEAR regression guard
+# on the counted import-membership path, NOT a quadratic detector; it reads `ok`. See
+# the resolve-shapes block and the #881 note in KNOWN_SLOW_OPS.
+gen_starimports() {
+  n=$1; dir=$2
+  rm -rf "$dir"; mkdir -p "$dir"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    printf 'export v%s : Int\nv%s = %s\n' "$i" "$i" "$i" > "$dir/m$i.mdk"
+    i=$((i+1))
+  done
+  {
+    i=0
+    while [ "$i" -lt "$n" ]; do printf 'import m%s.{v%s}\n' "$i" "$i"; i=$((i+1)); done
+    # Reference EVERY imported name so none is unused (a 0-diagnostic fixture — the
+    # gen_modules trap: a resolve-broken fixture measures a different mechanism).
+    printf 'main = println ('
+    i=0
+    while [ "$i" -lt "$n" ]; do [ "$i" -gt 0 ] && printf ' + '; printf 'v%s' "$i"; i=$((i+1)); done
+    printf ')\n'
+  } > "$dir/entry.mdk"
+}
+
+# gen_reexports — the N-deep `export import` RE-EXPORT fan-out (issue #881). m0 exports
+# v0; each m_i does `export import m{i-1}.*` (re-exporting the whole accumulated set) AND
+# exports its own v_i; the entry imports the top module's `.*` and references the shallow
+# and deep ends. Unlike the star, THIS shape's resolve cost runs through buildExports /
+# isPubExp `contains` checks over an export list that GROWS with depth, once per
+# re-exported name per module — which the OP counter DOES see.
+#
+# ⚠️ MEASURED FINDING (issue #881): resolve here is SUPER-LINEAR — a real, currently
+# unfixed cost. Op-count is ~CUBIC (r ~7.9/doubling ≈ 2^3) because the `.*` re-export
+# re-checks the growing export set at each of a growing number of sites; net alloc and
+# resolve TIME are ~QUADRATIC (~4x). It is LEDGERED on op-count (KNOWN_SLOW_OPS,
+# self-draining) rather than shipped red. The fixture resolves 0-DIAGNOSTIC (proven with
+# `medaka check`): `export import m.*` re-exports, and the entry's `import m.*` binds.
+gen_reexports() {
+  n=$1; dir=$2
+  rm -rf "$dir"; mkdir -p "$dir"
+  printf 'export v0 : Int\nv0 = 0\n' > "$dir/m0.mdk"
+  i=1
+  while [ "$i" -lt "$n" ]; do
+    prev=$((i - 1))
+    {
+      printf 'export import m%s.*\n' "$prev"
+      printf 'export v%s : Int\nv%s = %s\n' "$i" "$i" "$i"
+    } > "$dir/m$i.mdk"
+    i=$((i+1))
+  done
+  top=$((n - 1))
+  printf 'import m%s.*\nmain = println (v0 + v%s)\n' "$top" "$top" > "$dir/entry.mdk"
+}
+
 # ── Measure ──────────────────────────────────────────────────────────────────
 # ⚠️ THE ALLOCATION RUNS DO NOT RUN wasm-emit (env -u MEDAKA_PERF_WASM), and that is
 # deliberate — it RESTORES this column to what it was calibrated on. #481 added the
@@ -1140,9 +1207,44 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 # compiler; a future source change that pushes r1 over 3.0 will (correctly) fail and force
 # a ledger decision then. Left un-ledgered on purpose: a ledger entry asserts a stage is
 # ALREADY over-threshold, and this one is not.
-KNOWN_SLOW_OPS="match:resolve xref:typecheck"
-KNOWN_OCEIL_match_resolve="4.3";     KNOWN_OFIXED_match_resolve="2.60"
-KNOWN_OCEIL_xref_typecheck="4.2";    KNOWN_OFIXED_xref_typecheck="2.60"
+#
+#   reexports:resolve — MULTI-MODULE RESOLVE (issue #881), the whole point of adding a
+#         `resolve` stage to profile_modules_main and the two multi-module shapes below.
+#         Production's resolveModulesErrorsG threads `known` and, on an N-deep
+#         `export import m.*` re-export chain, buildExports/isPubExp re-check an export
+#         set that GROWS with depth at a growing number of sites — so the counted
+#         (util.contains) op work is ~CUBIC. This was UNMEASURED until #881: the
+#         multi-module driver ran load->desugar->mark->typecheck and DISCARDED resolve
+#         entirely, so a whole production pass with a known-superlinear shape was off the
+#         CI map. It is ledgered (not shipped red) because it is a PRE-EXISTING cost out
+#         of #881's wiring scope — a candidate follow-up for the #880 epic. The fixture
+#         resolves 0-DIAGNOSTIC (proven with `medaka check`; see gen_reexports). MEASURED
+#         (this box, deterministic single run, N=50/100/200): 65025 -> 510050 -> 4040100,
+#         r1=7.84 r2=7.92 (stable ~7.9 to N=400 — a clean 2^3 cubic, not a step). Net
+#         alloc and resolve TIME are separately ~QUADRATIC (~4x) on this shape; op-count
+#         is the arm graded (deterministic, one run, no floor). Promotes out the moment a
+#         fix drops the op-ratio under OFIXED (linear). See the resolve-shapes block.
+#         (The STAR dual, `starimports`, reads LINEAR on every arm — its findExports
+#         quadratic is uncounted AND dwarfed by linear buildEnvMM alloc — so it is a
+#         regression guard, NOT ledgered; see gen_starimports.)
+KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve manydefs:typecheck"
+KNOWN_OCEIL_match_resolve="4.3";      KNOWN_OFIXED_match_resolve="2.60"
+KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
+# manydefs:typecheck — the SAME typecheck O(decls^2) op-quadratic class as xref:typecheck
+# (issue #907), on the DEEP-only `manydefs` shape. It is NOT introduced by #881; it is a
+# pre-existing #884 op-arm signal that #884's QUICK-only validation never graded (manydefs
+# is DEEP/nightly-only, single-file, via the unchanged profile_main). Surfaced by #881's
+# full-DEEP run at the real N=4000->16000 band (op 11.7M->39.4M->142.8M, r2=3.62). Ledgered
+# here so nightly DEEP is green and it self-drains: ceiling 4.3 clears r2=3.62 by ~19% (same
+# convention as xref:typecheck); op counts are deterministic so this absorbs only unrelated
+# source drift, not runner noise. OFIXED 2.60 — drops under it when #907's root cause is
+# fixed (which likely promotes xref:typecheck out at the same time).
+KNOWN_OCEIL_manydefs_typecheck="4.3"; KNOWN_OFIXED_manydefs_typecheck="2.60"
+# Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
+# entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
+# from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):
+# drop under it and the re-export resolve quadratic is fixed and this entry must be promoted.
+KNOWN_OCEIL_reexports_resolve="8.9";  KNOWN_OFIXED_reexports_resolve="2.60"
 
 is_known_ops() {
   for k in $KNOWN_SLOW_OPS; do [ "$k" = "$1" ] && return 0; done
@@ -1751,6 +1853,84 @@ case "$MBASE_ALLOC$ma1$ma2$ma3" in
       fi
     fi ;;
 esac
+
+# ── SHAPES: starimports / reexports — multi-module RESOLVE (issue #881) ────────
+#
+# THE HOLE #881 CLOSES: until now the multi-module driver (profile_modules_main) ran
+# load -> desugar -> mark -> typecheck and DISCARDED resolve — it did not even import
+# it. So resolveModulesErrorsG (frontend.resolve), a whole PRODUCTION pass with a
+# known-superlinear shape (it threads `known` and resolves each import via a linear
+# findExports scan; a star or a re-export fan-out is O(modules^2) in ONE module), was
+# entirely off the CI map. The single-file `xref` shape covers single-file resolve; the
+# `modules` shape above runs the multi-module driver but only grades typecheck. This
+# adds the resolve stage to that driver and two shapes that drive resolve specifically.
+#
+# GRADED ON OP-COUNT ONLY — deterministic, ONE run per size, no min-of-K / heap-pin /
+# floor (the #884 arm). This is a deliberate CI-cost choice (the `gates (types)` shard is
+# the critical path, and a multi-module run is heavier than a single-file one): op-count
+# already gives the signal on `reexports` (a clean ~2^3 cubic), so paying K timing runs
+# would buy nothing. `reexports:resolve` is LEDGERED (KNOWN_SLOW_OPS) as a pre-existing,
+# currently-unfixed superlinearity; `starimports:resolve` reads LINEAR (its findExports
+# quadratic is uncounted AND dwarfed by linear alloc — see gen_starimports) and is an
+# `ok` regression guard on the counted import-membership path.
+#
+# ⚠️ ADDITIVE: the resolve stage discards its `List ResError` and does NOT transform the
+# module list, so the `modules` block above (mark/typecheck) is byte-unchanged by it.
+#
+# Bands are SMALL (QUICK/per-PR): starimports needs op1 >= OP_FLOOR (its resolve op-count
+# is 5*N, so N=250 -> 1250 clears the 1000 floor with headroom); reexports is cubic and
+# clears the floor at N=50 already, so it stays there.
+STAR_N="${PERF_STAR_N:-250}"
+REEXP_N="${PERF_REEXP_N:-50}"
+
+for rshape in starimports reexports; do
+  case "$rshape" in
+    starimports) rbase="$STAR_N" ;;
+    reexports)   rbase="$REEXP_N" ;;
+  esac
+  rn1="$rbase"; rn2=$((rbase * 2)); rn3=$((rbase * 4))
+  rd1="$WORK/${rshape}_$rn1"; rd2="$WORK/${rshape}_$rn2"; rd3="$WORK/${rshape}_$rn3"
+  "gen_$rshape" "$rn1" "$rd1"
+  "gen_$rshape" "$rn2" "$rd2"
+  "gen_$rshape" "$rn3" "$rd3"
+
+  # ONE deterministic run per size — the op arm needs no min-of-K, heap-pin, or floor.
+  # profile_modules_main does not run wasm, so there is no MEDAKA_PERF_WASM to strip.
+  RR1="$WORK/${rshape}_rr1"; RR2="$WORK/${rshape}_rr2"; RR3="$WORK/${rshape}_rr3"
+  MEDAKA_PERF=1 "$PROFILE_MODULES" "$RUNTIME" "$CORE" "$rd1/entry.mdk" "$rd1" > "$RR1" 2>&1
+  MEDAKA_PERF=1 "$PROFILE_MODULES" "$RUNTIME" "$CORE" "$rd2/entry.mdk" "$rd2" > "$RR2" 2>&1
+  MEDAKA_PERF=1 "$PROFILE_MODULES" "$RUNTIME" "$CORE" "$rd3/entry.mdk" "$rd3" > "$RR3" 2>&1
+  ro1="$(awk -F'\t' '/^\[perf\] resolve/{print $5; exit}' "$RR1")"
+  ro2="$(awk -F'\t' '/^\[perf\] resolve/{print $5; exit}' "$RR2")"
+  ro3="$(awk -F'\t' '/^\[perf\] resolve/{print $5; exit}' "$RR3")"
+
+  op_bad=0; op_lines=""
+  # An UNMEASURABLE resolve shape is a harness problem, never a pass — mirror the alloc
+  # arm's TOOSMALL=fail. grade_op_stage SKIPs a reading under OP_FLOOR WITHOUT setting
+  # op_bad, so without this guard a non-ledgered shape (starimports) would fall through
+  # to pass++ below and report "ok" having graded NOTHING — the silent-green this suite
+  # forbids. The trigger is real: lowering a resolve shape's band below OP_FLOOR for
+  # CI-cost reasons. Fail loudly instead, for both shapes (a ledgered shape that drops
+  # under the floor is a "raise N or promote" signal, not a pass). (#881 review finding.)
+  rsmall="$(awk -v v="$ro1" -v f="$OP_FLOOR" 'BEGIN{print (v+0 < f+0) ? 1 : 0}')"
+  if [ "$rsmall" = "1" ]; then
+    fail=$((fail+1))
+    printf '%-12s %8s  resolve-ops %s -> %s -> %s  ** N TOO SMALL (op1 < OP_FLOOR %s) — raise this shape band **\n' \
+      "$rshape" "$rn1" "$ro1" "$ro2" "$ro3" "$OP_FLOOR"
+    continue
+  fi
+  grade_op_stage "$rshape" resolve "$ro1" "$ro2" "$ro3" "$rn1" "$rn2" "$rn3"
+  # grade_op_stage handles the KNOWN_SLOW_OPS ledger (known++/fail++) internally and sets
+  # op_bad for a NON-ledgered superlinear reading. Count pass/fail for the rest.
+  if [ "$op_bad" = "1" ]; then
+    fail=$((fail+1))
+  elif ! is_known_ops "${rshape}:resolve"; then
+    pass=$((pass+1))
+  fi
+  printf '%-12s %8s  resolve-ops %s -> %s -> %s  (band N=%s->%s->%s)\n' \
+    "$rshape" "$rn1" "$ro1" "$ro2" "$ro3" "$rn1" "$rn2" "$rn3"
+  printf '%s' "$op_lines"
+done
 
 printf -- '---------------------------------------------------------------------\n'
 printf '%d ok, %d known-superlinear (ledgered), %d regressed (threshold %sx per doubling)\n' "$pass" "$known" "$fail" "$THRESH"
