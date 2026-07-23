@@ -62,6 +62,7 @@ import backend.llvm_emit.{
   installCtorFieldTypes,
   installDeclSigTypes,
   installMainIsUnitHint,
+  installEmitSrcName,
   installMainIsFloatHint,
 }
 -- `backend.wasm_emit` is the SECOND backend, and it exports its own `emitProgram`,
@@ -100,7 +101,11 @@ run runtimePath corePath targetPath = match readFile runtimePath
     Err e => ePutStrLn e
     Ok csrc => match readFile targetPath
       Err e => ePutStrLn e
-      Ok tsrc => runStaged (perfEnabled ()) rsrc csrc tsrc
+      Ok tsrc =>
+        -- give the emitter the source name so its main-shape diagnostics can name
+        -- the file (the emit stage panics on a main-less program — issue #397).
+        let _ = installEmitSrcName targetPath
+        runStaged (perfEnabled ()) rsrc csrc tsrc
 
 -- Time each self-hosted pipeline stage; emit [perf] lines to stderr when on.
 -- Follows check.mdk's single-file path:

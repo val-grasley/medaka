@@ -47,7 +47,7 @@ export flattenApp : CExpr -> List CExpr -> (CExpr, List CExpr)
 flattenApp (CApp f a) acc = flattenApp f (a::acc)
 flattenApp hd acc = (hd, acc)
 
--- ── small list helpers (slice 3) ────────────────────────────────────────────
+-- ── small list helpers ────────────────────────────────────────────
 export lengthS : List a -> Int
 lengthS [] = 0
 lengthS (_::xs) = 1 + lengthS xs

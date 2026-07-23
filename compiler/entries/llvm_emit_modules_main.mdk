@@ -54,12 +54,21 @@ import backend.llvm_emit.{
   installMainIsFloatHint,
   installEmitHalf,
   installPreludeSyms,
+  installEmitSrcName,
 }
 import ir.dce.{dceFilter}
 import entries.entry_support.{driveModules, runEmitWith}
 
+-- The entry-module path is argv[2] (`<runtime> <core> <entry> [root ...]`); hand it
+-- to the emitter so a main-less program's diagnostic names the file (issue #397).
+srcNameFromArgs : List String -> String
+srcNameFromArgs (_::_::entry::_) = entry
+srcNameFromArgs _ = ""
+
 main : <IO> Unit
-main = driveModules (runEmitWith emitTail)
+main =
+  let _ = installEmitSrcName (srcNameFromArgs (args ()))
+  driveModules (runEmitWith emitTail)
 
 -- COMPOSITE-MAIN AUTO-PRINT: the shared mangle+elaborate+auto-print-wrap glue
 -- (design §10) lives once in entry_support.runEmitWith, parameterized by this

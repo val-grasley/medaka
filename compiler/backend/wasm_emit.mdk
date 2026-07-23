@@ -4,13 +4,13 @@
 -- complete WAT text module (assembled by `wasm-tools parse`, run under a WasmGC
 -- engine).  `emitProgram : CProgram -> String`.
 --
--- ── W2 SCOPE (slice 2 — immediates + arithmetic) ─────────────────────────────
+-- ── W2 SCOPE (immediates + arithmetic) ─────────────────────────────
 -- Scalar / arithmetic subset on raw i32: CLit Int/Bool/Unit, CVar (fn/global/
 -- local), CBinPrim int arith+cmp, CUnOp `-`/`!`, CIf, CLet/CSLet/CBlock via
 -- locals, top-level fns (incl recursion), value-bindings→globals, value-main
 -- auto-print.
 --
--- ── W3 SCOPE (slice 3 — ADTs + match) ────────────────────────────────────────
+-- ── W3 SCOPE (ADTs + match) ────────────────────────────────────────
 -- User `data` types + `match` (CDecision/CTree), incl the reserved Option/Result/
 -- Ordering ADTs.  W3 adds:
 --   * a §3.4 dynamic type section: per payload-ctor `struct` (discriminant field 0
@@ -22,7 +22,7 @@
 --     payload) feeding a `br_table` on the dense per-type ordinal, then field
 --     extraction via `ref.cast` + `struct.get`, leaf re-match for var bindings.
 --
--- ── W4 SCOPE (slice 4 — closures + call_ref + guaranteed TCO) ────────────────
+-- ── W4 SCOPE (closures + call_ref + guaranteed TCO) ────────────────
 -- Higher-order code + tail-call optimization (WASMGC-DESIGN §4).  W4 adds:
 --   * Closure ABI (§4.1): a CLam is lambda-lifted to a top-level $codety function;
 --     the closure is a `$clos` struct `{ code:(ref $codety); arity:i32; env:$argarr }`
@@ -50,7 +50,7 @@
 --     clause-or-pattern-param fn, a top-level fn referenced as a value} forces the
 --     uniform (ref eq) rep (`useClos`), since a closure captures heterogeneous values.
 --
--- ── W6 SCOPE (slice 6 — strings + the byte-level IO path) ────────────────────
+-- ── W6 SCOPE (strings + the byte-level IO path) ────────────────────
 -- The temporary W2 IO scaffold (JS-side decimal/bool/newline formatting via
 -- mdk_write_int/mdk_write_bool) is COLLAPSED: the module produces its own output
 -- bytes through real codegen + ONE byte-level host import `env.mdk_write_byte(i32)`
@@ -84,7 +84,7 @@
 --     `llvm/guard_refut_ctor` in test/engine_divergence.txt).
 --   * A CLetGroup — CLOSED, W9 (`emitLetGroupRef`, ~line 6736).
 --
--- ── W7 SCOPE (slice 7 — collections) ─────────────────────────────────────────
+-- ── W7 SCOPE (collections) ─────────────────────────────────────────
 -- List / Tuple / Array / Record / Ref, ranges, index/slice (§3.3 heap aggregates +
 -- §8.6 (ref eq) unitype).  KEY DESIGN: List/Tuple/Record reuse the W3 ctor machinery
 -- via SYNTHETIC ctors so construction + the discriminant br_table + field extraction
@@ -111,7 +111,7 @@
 -- The range/index/slice/record-update codegen uses depth-keyed typed scratch locals
 -- ($__rli<d>/$__raarr<d>/…), declared per function over depths 0..maxDepth.
 --
--- ── W8b SCOPE (slice W8b — Float + the last externs; MVP-completing) ──────────
+-- ── W8b SCOPE (Float + the last externs; MVP-completing) ──────────
 -- Float is now a boxed (struct $float (f64)) (ref eq).  CLOSED this slice:
 --   * Float LITERALS — `f64.const <floatToString-text>` + `struct.new $float` (the same
 --     rendering the LLVM oracle bakes into its const — shortest-round-trip since #57,
@@ -2512,7 +2512,7 @@ emitReservedCtorStruct ty ctor =
 -- THROUGH their `do`-closures), and the cycle fallback would then emit them in source
 -- order, leaving an eager forward ref null again — which is exactly why a naive
 -- free-vars sort (descending lambdas) did NOT fix `parse ""`.  This mirrors the LLVM
--- backend's `eagerVars`/`orderedValBinds` (slice E1b), the proven solution.
+-- backend's `eagerVars`/`orderedValBinds`, the proven solution.
 -- A genuine EAGER value cycle (mutual recursion through nullary globals with no
 -- intervening closure — none arise in practice) keeps source order via the back-edge
 -- guard, the pre-existing behaviour.
