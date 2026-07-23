@@ -1995,8 +1995,6 @@ data Provenance =
   | PCallSlot
   -- re-instantiation of a binding's deferred predicate (schemeObligationsRef)
   | PSchemeReinst
-  -- a forwarded enclosing-dict slot  (dict channel, not yet ported)
-  | PDictFwd
   -- a method-level `=>` constraint slot  (#818, not yet recorded — I3)
   | PMethodLevel
 
@@ -7227,8 +7225,11 @@ registerLocalScheme x sch oblN0 callN0 dictN0 =
   -- enclosing scheme instead of rejecting, so the gate is safe to flip open.
   let addedObls = takeFirst (perRun.value.pendingImplObligationsN.value - oblN0) perRun.value.pendingImplObligations.value
   let callOblsDelta = callOblsWindow callN0
-  let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-  registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) [(x, sch)]
+  -- #838 I5: the dict-slot's forwarded obligation is ALREADY in callOblsDelta as the
+  -- mirroring PCallSlot obligation recorded at inferDictAtFound (recordCallObligations,
+  -- beside pushDictApp), reaching schemeOblsForMember via forwardedVecObls; the old
+  -- `allDictObls` re-derivation was a redundant second source (deduped away). Retired.
+  registerSchemeObligations [] [] callOblsDelta addedObls [(x, sch)]
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> Mono
 inferLetSimple env pat e1 e2 =
@@ -7964,12 +7965,13 @@ processLetGroup env binds =
   -- quantified ids, and substMonos skips entries whose ids a different scheme's
   -- instantiation does not map.
   let callOblsDelta = callOblsWindow callN0
-  let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
   -- #827/#838 I2: register EVERYWHERE (gate flipped from `inRigidityBodyRef`).  The
   -- uniform deferral (checkUndeterminedObligation RULE 2) makes a generalizable
   -- where/let var defer into the enclosing scheme rather than trip an ambiguity
   -- reject, closing the orphaned-local-constraint S0 (#827).  See registerLocalScheme.
-  let _ = registerSchemeObligations [] [] callOblsDelta (addedObls ++ forwardedObls) (groupSchemesOf genv binds)
+  -- #838 I5: dict-slot forwarding rides callOblsDelta's PCallSlot obligations (see
+  -- registerLocalScheme); the redundant `allDictObls` re-derivation is retired.
+  let _ = registerSchemeObligations [] [] callOblsDelta addedObls (groupSchemesOf genv binds)
   genv
 
 -- the generalized (name, scheme) pairs of a just-closed local group
@@ -14396,11 +14398,6 @@ forwardedVecOblOne boundIds iface monos
     Some ids => [(iface, ids)]
     None => []
 
-allDictObls : List (Ref (List Route), List Mono, List String) -> List (String, List String, Ty, Mono, Option Loc)
-allDictObls [] = []
-allDictObls ((_, monos, ifaces)::rest) = flatMap (p => if fst p == "" then [] else [(fst p, ["a"], TyVar "a", snd p, currentLoc.value)]) (zipL ifaces monos)
-  ++ allDictObls rest
-
 -- FLAT-PATH SHADOW SCOPING (S1): a letrec group whose members are ALL prelude fns is a
 -- CORE group — no user standalone is a shadow inside it.  Empty group ⇒ not core (it
 -- cannot occur, and "user" is the conservative arm: it preserves the pre-fix behavior).
@@ -14493,17 +14490,18 @@ processSCC env sigs grouped members =
   let _ = registerAmbiguousConstraints addedObls (map snd placeholders)   -- RETPOS soundness
   let schemes = sccSchemes sigs grouped (isLetrecGroup members) placeholders
   -- #23 two-hop forward: also record constraints FORWARDED from a constrained
-  -- callee (living on the call/dict deltas, never in addedObls) into
-  -- schemeObligationsRef, so a caller of this group re-instantiates them and its
-  -- own group can ground the shared ambiguous var.
+  -- callee (living on the call delta, never in addedObls) into schemeObligationsRef,
+  -- so a caller of this group re-instantiates them and its own group can ground the
+  -- shared ambiguous var.
   -- The CALL delta is passed RAW (it already carries each predicate's joint `List
   -- Mono`); registerSchemeObligations maps it with forwardedVecObls so a multi-param
-  -- predicate survives whole.  Only the DICT delta still goes through the synthetic
-  -- 1-Mono addedObls shape — its entries are registerMember's per-TYVAR dict slots,
-  -- which are 1-ary by construction (see allDictObls).
+  -- predicate survives whole.  #838 I5: a constrained callee's DICT slot is forwarded
+  -- through THIS same call delta — inferDictAtFound records it as a 1-ary PCallSlot
+  -- obligation (recordCallObligations, beside pushDictApp), so the old `allDictObls`
+  -- re-derivation off the dict delta was a redundant duplicate (deduped away) and is
+  -- retired; addedObls now carries only the real pendingImplObligations delta.
   let callOblsDelta = callOblsWindow callN0
-  let forwardedObls = allDictObls (takeFirst (perRun.value.pendingDictAppsN.value - dictN0) perRun.value.pendingDictApps.value)
-  let _ = registerSchemeObligations perRun.value.schemeDefIdsRef.value sigTvMaps callOblsDelta (addedObls ++ forwardedObls) schemes
+  let _ = registerSchemeObligations perRun.value.schemeDefIdsRef.value sigTvMaps callOblsDelta addedObls schemes
   -- SIGNATURE CONSTRAINT SOUNDNESS: a signed member whose body induces an
   -- interface constraint on one of its own quantified vars that its declared `=>`
   -- context (superclass-closed) does NOT cover severs the constraint for callers
