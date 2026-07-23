@@ -10,7 +10,8 @@ variant. What follows is new.
 
 Headline: **F1 and F2 are `medaka run` / `medaka build` / `medaka test` disagreements** — the
 class this workstream exists to find. F3 is a data-fidelity bug in the stdlib. F5 is the
-mis-located-diagnostic class the brief asked to watch for.
+mis-located-diagnostic class the brief asked to watch for. ⚠️ **Since re-verified (2026-07-23):
+F2 and F5 are now FIXED** (see their entries below) — only F1 and F4 remain open.
 
 ---
 
@@ -59,7 +60,11 @@ exactly that prefix, so its prose is compiled as a Medaka expression.
 
 ---
 
-## F2 — `exit` type-checks, works in `medaka build`, and panics under `medaka run`
+## F2 — ✅ FIXED (re-verified 2026-07-23) — `exit` type-checks, works in `medaka build`, and panics under `medaka run`
+
+**Status: FIXED, duplicate of `COMPILER-BUGS.md` B6.** `run` of `exit 3` (after a preceding
+`println`) now prints and exits 3, matching `build` — `exit` is implemented in the interpreter.
+Left in place as the original repro.
 
 - **Category:** compiler-bug (`run` ≠ `build`)
 - **Severity:** workaround-required
@@ -164,10 +169,15 @@ identifier case; `findTable` / `columnIndex` in `lib.sqlite` compare exactly.
 - **Notes:** filed for the record, not fixed: it is engine scope (`findTable`/`columnIndex`), it
   would change the semantics of every existing query path, and doing it properly means ASCII-fold
   on lookup while preserving the stored name. A good standalone follow-up.
+- **Tracked in #417** (ASCII/Unicode case-fold).
 
 ---
 
-## F5 — a diagnostic in an IMPORTED module is printed with the ENTRY file's name
+## F5 — ✅ FIXED (issue #41, re-verified 2026-07-23) — a diagnostic in an IMPORTED module is printed with the ENTRY file's name
+
+**Status: FIXED.** The human-readable renderer now attributes the diagnostic to the correct file
+(the module that actually has the error), matching what `--json` always got right. Left in place
+as the original repro.
 
 - **Category:** error-message (mis-located)
 - **Severity:** workaround-required (it sent me to the wrong file)

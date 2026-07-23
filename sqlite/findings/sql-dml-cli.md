@@ -11,7 +11,10 @@ point-free recursive parser back-edge) are NOT re-filed.  Only new things are he
 
 ---
 
-## F1 — A positive scientific-notation Float literal does not lex; the error blames a phantom variable
+## F1 — ✅ FIXED (re-verified 2026-07-23) — A positive scientific-notation Float literal does not lex; the error blames a phantom variable
+
+**Status: FIXED.** `9.0e15` now lexes, checks, and runs, printing `9e+15`. The finding text below
+over-claimed / is since-fixed — left in place as the original repro.
 
 - **Category:** compiler-bug / error-message
 - **Severity:** workaround-required
@@ -43,7 +46,11 @@ point-free recursive parser back-edge) are NOT re-filed.  Only new things are he
 
 ---
 
-## F2 — ⚠️ `medaka fmt --write` CORRUPTS a source file containing a large Float literal
+## F2 — ✅ FIXED (issue #51, re-verified 2026-07-23) — `medaka fmt --write` CORRUPTS a source file containing a large Float literal
+
+**Status: FIXED, duplicate of `COMPILER-BUGS.md` B10.** `fmt --write` still emits scientific
+notation (`9e+15`) for a float literal ≥ 1e15, but the lexer now reads it back correctly, so the
+round-trip no longer breaks. Left in place as the original repro.
 
 - **Category:** tooling (formatter round-trip)
 - **Severity:** blocker (it destroys source, and the pre-commit hook runs `fmt`)
@@ -122,6 +129,7 @@ point-free recursive parser back-edge) are NOT re-filed.  Only new things are he
   through `compiler/driver/diagnostics.mdk`.  Related in spirit to the prior stage's
   "doctests silently disabled for months" finding: the `test` entry point does not
   surface front-end failures.
+- **Tracked in #892.**
 
 ---
 
@@ -162,6 +170,7 @@ point-free recursive parser back-edge) are NOT re-filed.  Only new things are he
   (`Thenable`), name the type that lacks it, and — when the do-block's other
   statements pin the monad — say which monad was expected.  Per
   `compiler/ERROR-QUALITY.md` this is a "names the rule / actionable fix" miss.
+- **Tracked in #894.**
 
 ---
 
@@ -227,6 +236,7 @@ point-free recursive parser back-edge) are NOT re-filed.  Only new things are he
   stdout.  Documented in `sqlite/main.mdk`'s header as a known divergence.
 - **Notes:** `stdlib/runtime.mdk` + `compiler/eval/eval.mdk` (a new extern — out of
   scope for a library agent).
+- **Tracked in #895.**
 
 ---
 
@@ -258,6 +268,7 @@ point-free recursive parser back-edge) are NOT re-filed.  Only new things are he
   dict-passed generic where a monomorphic list function would do.  It also is not a
   name you find by looking in `list.mdk`.
 - **Notes:** `stdlib/list.mdk`.
+- **Tracked in #896.**
 
 ---
 
