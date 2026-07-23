@@ -1,5 +1,5 @@
 # META
-source_lines=4636
+source_lines=4673
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -3364,9 +3364,10 @@ parseProgram = do
 -- decl is parsed with its start/end token index captured via `getPos`; lines
 -- come from the parallel line array; variant start lines are re-derived from the
 -- decl's token span (the data-body's depth-0 `=`/`|` separators).
--- Third field (#331, increment 1): the decl's NAME-token span, `None` when the
--- decl has no single name token (e.g. `DImpl`'s head — see F4/increment 5) or
--- when the name-finder can't locate one.  Additive — every existing consumer
+-- Third field (#331, increment 1): the decl's NAME-token span, `None` only
+-- when the name-finder can't locate one (`DUse` — see `declNameTokIdxAt`;
+-- `DImpl`'s head now always resolves, to its head `TyCon` or the `impl`
+-- keyword itself — F4/increment 5).  Additive — every existing consumer
 -- reads only `declPosLine`/`declPosEndLine` (never a positional match on
 -- `DeclPos`), so this is snapshot-invisible (`snapshot.mdk:renderDeclPos`
 -- reads accessors only) and requires no change anywhere but this file and the
@@ -3541,15 +3542,48 @@ isTStringTok _ = False
 tokIdxOrNone : Array Token -> Int -> Option Int
 tokIdxOrNone toks i = if i >= 0 && i < arrayLength toks then Some i else None
 
+-- The impl's HEAD-TYPE name-token index (F4, increment 5): the token-walk
+-- mirror of `typecheck.mdk`'s `implHeadLoc`/`tyFirstLoc` — the first `TyCon`
+-- appearing left-to-right across the impl's `tys` (`impl Iface Ty1 Ty2… where`)
+-- — but scanning TOKEN KINDS structurally instead of walking the `Ty` AST, so
+-- #331 stays channel-first (no AST field added; SOURCE-POSITION-DESIGN.md
+-- F2). A `TyCon` can only start at a `TUpper` token (`parseTyAtom`), so the
+-- first depth-0 `TUpper` IS the first `TyCon` in source order — no need to
+-- walk each `Ty`'s structure separately.  `i` is the index just past the
+-- impl's interface name, i.e. where `tyargs <- many parseTyAtom` starts
+-- (`implRest`).  Stops (returns `None`) at the depth-0 `requires`/`where`/
+-- layout-noise boundary that ends the tyargs region — a fully-parametric head
+-- (`impl Foo a where`) has no `TyCon` anywhere in it, so this correctly finds
+-- none; the caller then falls back to the `impl` keyword itself.
+implHeadTokIdx : Array Token -> Int -> Option Int
+implHeadTokIdx toks i = implHeadTokGo toks i 0
+
+implHeadTokGo : Array Token -> Int -> Int -> Option Int
+implHeadTokGo toks i depth
+  | i >= arrayLength toks = None
+  | otherwise = implHeadTokStep toks i depth (arrayGetUnsafe i toks)
+
+implHeadTokStep : Array Token -> Int -> Int -> Token -> Option Int
+implHeadTokStep toks i depth t
+  | isOpenDelim t = implHeadTokGo toks (i + 1) (depth + 1)
+  | isCloseDelim t = implHeadTokGo toks (i + 1) (depth - 1)
+  | depth == 0 && isTUpperTok t = Some i
+  | depth == 0 && (t == TWhere || t == TRequires || isNoiseTok t) = None
+  | otherwise = implHeadTokGo toks (i + 1) depth
+
+isTUpperTok : Token -> Bool
+isTUpperTok (TUpper _) = True
+isTUpperTok _ = False
+
 -- The decl's NAME-token index, given `i` already past any leading modifiers:
 -- for kinds with a head keyword (`data`/`extern`/`prop`/`test`/`bench`/
 -- `interface`/`type`/`newtype`/`let rec`), skip it (skipping any further
 -- noise) and land on the name; for kinds with no head keyword (`DTypeSig`/
--- `DFunDef`), `i` IS already the name. `None` for kinds with no single name
--- token — `DImpl`'s head (F4, deferred to increment 5 — see
--- SOURCE-POSITION-DESIGN.md §6) and `DUse` (never surfaces in the LSP
--- outline/definition paths, `symbolPartsOfDecl`/`declDefines`, so it needs no
--- span here).
+-- `DFunDef`), `i` IS already the name. `DImpl` points at its head TYPE's
+-- `TyCon` token (F4, increment 5 — `implHeadTokIdx`), falling back to the
+-- `impl` keyword itself (`i`) for a fully-parametric head with no `TyCon`.
+-- `None` only for `DUse` (never surfaces in the LSP outline/definition paths,
+-- `symbolPartsOfDecl`/`declOwnNameMatches`, so it needs no span here).
 declNameTokIdxAt : Array Token -> Decl -> Int -> Option Int
 declNameTokIdxAt toks (DAttrib _ inner) i =
   -- `@name ["arg"]` NEWLINE* — mirrors `parseAttrib`. A stacked attribute
@@ -3581,7 +3615,10 @@ declNameTokIdxAt toks (DNewtype _ _ _ _ _ _) i =
   tokIdxOrNone toks (skipLeadingModifiers toks (i + 1))
 declNameTokIdxAt toks (DLetGroup _ _) i =
   tokIdxOrNone toks (skipLeadingModifiers toks (i + 2))  -- `let` `rec`
-declNameTokIdxAt toks (DImpl { ... }) i = None  -- F4, increment 5
+declNameTokIdxAt toks (DImpl { ... }) i =
+  match implHeadTokIdx toks (i + 2)  -- past `impl` (i) and the iface name (i+1)
+    Some headIdx => Some headIdx
+    None => Some i  -- fully-parametric head: fall back to the `impl` keyword
 declNameTokIdxAt toks (DUse _ _ _) i = None
 
 -- Entry point: skip leading modifiers, then dispatch on decl kind.
@@ -5805,6 +5842,15 @@ parseResultWith src tokList offList =
 (DFunDef false "isTStringTok" (PWild) (EVar "False"))
 (DTypeSig false "tokIdxOrNone" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
 (DFunDef false "tokIdxOrNone" ((PVar "toks") (PVar "i")) (EIf (EBinOp "&&" (EBinOp ">=" (EVar "i") (ELit (LInt 0))) (EBinOp "<" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks")))) (EApp (EVar "Some") (EVar "i")) (EVar "None")))
+(DTypeSig false "implHeadTokIdx" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
+(DFunDef false "implHeadTokIdx" ((PVar "toks") (PVar "i")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EVar "i")) (ELit (LInt 0))))
+(DTypeSig false "implHeadTokGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "implHeadTokGo" ((PVar "toks") (PVar "i") (PVar "depth")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "implHeadTokStep") (EVar "toks")) (EVar "i")) (EVar "depth")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "implHeadTokStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Option") (TyCon "Int")))))))
+(DFunDef false "implHeadTokStep" ((PVar "toks") (PVar "i") (PVar "depth") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "isTUpperTok") (EVar "t"))) (EApp (EVar "Some") (EVar "i")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "t") (EVar "TWhere")) (EBinOp "==" (EVar "t") (EVar "TRequires"))) (EApp (EVar "isNoiseTok") (EVar "t")))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
+(DTypeSig false "isTUpperTok" (TyFun (TyCon "Token") (TyCon "Bool")))
+(DFunDef false "isTUpperTok" ((PCon "TUpper" PWild)) (EVar "True"))
+(DFunDef false "isTUpperTok" (PWild) (EVar "False"))
 (DTypeSig false "declNameTokIdxAt" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DAttrib" PWild (PVar "inner")) (PVar "i")) (EBlock (DoLet false false (PVar "i1") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (DoLet false false (PVar "i2") (EBinOp "+" (EVar "i1") (ELit (LInt 1)))) (DoLet false false (PVar "i3") (EIf (EBinOp "&&" (EBinOp "<" (EVar "i2") (EApp (EVar "arrayLength") (EVar "toks"))) (EApp (EVar "isTStringTok") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i2")) (EVar "toks")))) (EBinOp "+" (EVar "i2") (ELit (LInt 1))) (EVar "i2"))) (DoExpr (EApp (EApp (EApp (EVar "declNameTokIdx") (EVar "toks")) (EVar "inner")) (EVar "i3")))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DTypeSig" PWild PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EVar "i")))
@@ -5819,7 +5865,7 @@ parseResultWith src tokList offList =
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DTypeAlias" PWild PWild PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DNewtype" PWild PWild PWild PWild PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DLetGroup" PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 2))))))
-(DFunDef false "declNameTokIdxAt" ((PVar "toks") (PRec "DImpl" () true) (PVar "i")) (EVar "None"))
+(DFunDef false "declNameTokIdxAt" ((PVar "toks") (PRec "DImpl" () true) (PVar "i")) (EMatch (EApp (EApp (EVar "implHeadTokIdx") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 2)))) (arm (PCon "Some" (PVar "headIdx")) () (EApp (EVar "Some") (EVar "headIdx"))) (arm (PCon "None") () (EApp (EVar "Some") (EVar "i")))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DUse" PWild PWild PWild) (PVar "i")) (EVar "None"))
 (DTypeSig false "declNameTokIdx" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "declNameTokIdx" ((PVar "toks") (PVar "d") (PVar "i")) (EApp (EApp (EApp (EVar "declNameTokIdxAt") (EVar "toks")) (EVar "d")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EVar "i"))))
@@ -7260,6 +7306,15 @@ parseResultWith src tokList offList =
 (DFunDef false "isTStringTok" (PWild) (EVar "False"))
 (DTypeSig false "tokIdxOrNone" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
 (DFunDef false "tokIdxOrNone" ((PVar "toks") (PVar "i")) (EIf (EBinOp "&&" (EBinOp ">=" (EVar "i") (ELit (LInt 0))) (EBinOp "<" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks")))) (EApp (EVar "Some") (EVar "i")) (EVar "None")))
+(DTypeSig false "implHeadTokIdx" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int")))))
+(DFunDef false "implHeadTokIdx" ((PVar "toks") (PVar "i")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EVar "i")) (ELit (LInt 0))))
+(DTypeSig false "implHeadTokGo" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
+(DFunDef false "implHeadTokGo" ((PVar "toks") (PVar "i") (PVar "depth")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks"))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EApp (EVar "implHeadTokStep") (EVar "toks")) (EVar "i")) (EVar "depth")) (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i")) (EVar "toks"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "implHeadTokStep" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyFun (TyCon "Token") (TyApp (TyCon "Option") (TyCon "Int")))))))
+(DFunDef false "implHeadTokStep" ((PVar "toks") (PVar "i") (PVar "depth") (PVar "t")) (EIf (EApp (EVar "isOpenDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isCloseDelim") (EVar "t")) (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "isTUpperTok") (EVar "t"))) (EApp (EVar "Some") (EVar "i")) (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "||" (EBinOp "||" (EBinOp "==" (EVar "t") (EVar "TWhere")) (EBinOp "==" (EVar "t") (EVar "TRequires"))) (EApp (EVar "isNoiseTok") (EVar "t")))) (EVar "None") (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "implHeadTokGo") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
+(DTypeSig false "isTUpperTok" (TyFun (TyCon "Token") (TyCon "Bool")))
+(DFunDef false "isTUpperTok" ((PCon "TUpper" PWild)) (EVar "True"))
+(DFunDef false "isTUpperTok" (PWild) (EVar "False"))
 (DTypeSig false "declNameTokIdxAt" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DAttrib" PWild (PVar "inner")) (PVar "i")) (EBlock (DoLet false false (PVar "i1") (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (DoLet false false (PVar "i2") (EBinOp "+" (EVar "i1") (ELit (LInt 1)))) (DoLet false false (PVar "i3") (EIf (EBinOp "&&" (EBinOp "<" (EVar "i2") (EApp (EVar "arrayLength") (EVar "toks"))) (EApp (EVar "isTStringTok") (EApp (EApp (EVar "arrayGetUnsafe") (EVar "i2")) (EVar "toks")))) (EBinOp "+" (EVar "i2") (ELit (LInt 1))) (EVar "i2"))) (DoExpr (EApp (EApp (EApp (EVar "declNameTokIdx") (EVar "toks")) (EVar "inner")) (EVar "i3")))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DTypeSig" PWild PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EVar "i")))
@@ -7274,7 +7329,7 @@ parseResultWith src tokList offList =
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DTypeAlias" PWild PWild PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DNewtype" PWild PWild PWild PWild PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1))))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DLetGroup" PWild PWild) (PVar "i")) (EApp (EApp (EVar "tokIdxOrNone") (EVar "toks")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 2))))))
-(DFunDef false "declNameTokIdxAt" ((PVar "toks") (PRec "DImpl" () true) (PVar "i")) (EVar "None"))
+(DFunDef false "declNameTokIdxAt" ((PVar "toks") (PRec "DImpl" () true) (PVar "i")) (EMatch (EApp (EApp (EVar "implHeadTokIdx") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 2)))) (arm (PCon "Some" (PVar "headIdx")) () (EApp (EVar "Some") (EVar "headIdx"))) (arm (PCon "None") () (EApp (EVar "Some") (EVar "i")))))
 (DFunDef false "declNameTokIdxAt" ((PVar "toks") (PCon "DUse" PWild PWild PWild) (PVar "i")) (EVar "None"))
 (DTypeSig false "declNameTokIdx" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Decl") (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyCon "Int"))))))
 (DFunDef false "declNameTokIdx" ((PVar "toks") (PVar "d") (PVar "i")) (EApp (EApp (EApp (EVar "declNameTokIdxAt") (EVar "toks")) (EVar "d")) (EApp (EApp (EVar "skipLeadingModifiers") (EVar "toks")) (EVar "i"))))

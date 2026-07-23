@@ -187,6 +187,9 @@ ifaceWhereBody : Token -> Parser (List IfaceMethod)
 implBody : Parser (List ImplMethod)
 implBodyFor : Token -> Parser (List ImplMethod)
 implHead : Bool -> Token -> Parser Decl
+implHeadTokGo : Array Token -> Int -> Int -> Option Int
+implHeadTokIdx : Array Token -> Int -> Option Int
+implHeadTokStep : Array Token -> Int -> Int -> Token -> Option Int
 implMethod : Parser ImplMethod
 implMethods : Parser (List ImplMethod)
 implMethodsCons : Parser (List ImplMethod)
@@ -234,6 +237,7 @@ isNoiseTok : Token -> Bool
 isOpenDelim : Token -> Bool
 isPlainIdentTok : Token -> Bool
 isTStringTok : Token -> Bool
+isTUpperTok : Token -> Bool
 joinComma : List String -> String
 joinSemi : List String -> String
 kvElemToField : Expr -> FieldAssign
