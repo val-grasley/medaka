@@ -109,7 +109,12 @@ relUnderRoots (r::rs) path =
   else
     relUnderRoots rs path
 
-moduleIdOfPath : List String -> String -> String
+-- Exported for `refindex.mdk`'s whole-project index build (#254 Stage 1.1):
+-- given the project root as the sole "root", it derives the SAME module id a
+-- sibling file's `import <id>` would use to reach an enumerated file — so a
+-- file discovered by directory walk (not by following an import edge) still
+-- lands under the identical BinderKey namespace as the entry-rooted loader.
+export moduleIdOfPath : List String -> String -> String
 moduleIdOfPath roots path =
   slashToDot (stripSuffixStr ".mdk" (relUnderRoots roots path))
 

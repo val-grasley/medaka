@@ -1,0 +1,8 @@
+-- module `other` — its OWN `shared`, a DIFFERENT binder from defs.shared
+-- (same spelling, different module ⇒ different BinderKey). Proves a
+-- `medaka_references` query on defs' `shared` must NOT contaminate this one.
+export shared : Int
+shared = 5
+
+export useOtherShared : Int
+useOtherShared = shared + shared

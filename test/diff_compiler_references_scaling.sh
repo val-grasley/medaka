@@ -29,6 +29,15 @@
 # flat. This catches the "queries got O(project)" regression the OPS ratio alone
 # would miss.
 #
+# #254 Stage 1.1 ADDITION: `buildRefIndexProject` (true whole-project scope —
+# recursive `listDir` enumeration + a dependency-first topo-sort, see
+# refindex.mdk) is a NEW code path with its own linearity risk (the
+# enumeration, and the topo-sort's own hash-map bookkeeping). `run_project`
+# below measures it via `refindex_main --project` over the SAME synthetic
+# N/2N fixtures `gen` already produces (a flat directory is already a valid
+# project-root layout) — same OPS-ratio and flat-OCC(main.mdk) checks, so a
+# regression in EITHER build path fails this gate.
+#
 # Determinism note: OPS excludes the constant prelude-seeding cost (refindex
 # resets its counter after seeding core/runtime), so the ratio is a clean signal
 # of PROJECT-indexing growth, not diluted by a large fixed term.
@@ -95,10 +104,27 @@ gen() {
   } > "$d/main.mdk"
 }
 
-# run <dir> : print "OPS OCC" for the built index over <dir>/main.mdk.
+# run <dir> : print "OPS OCC" for the ENTRY-ROOTED index over <dir>/main.mdk.
 run() {
   d="$1"
   out="$("$SELF" "$RT" "$CORE" "$d/main.mdk" "$d" 2>/dev/null)"
+  ops="$(printf '%s\n' "$out" | awk '$1=="OPS"{print $2}')"
+  occ="$(printf '%s\n' "$out" | awk '$1=="OCC"{print $2}')"
+  printf '%s %s\n' "$ops" "$occ"
+}
+
+# run_project <dir> : print "OPS OCC" for the WHOLE-PROJECT index (#254 Stage
+# 1.1) over <dir> as the project root, `main.mdk` as the query file. `<dir>`
+# is already a valid project-root layout for this purpose — the SAME flat
+# directory `gen` emits (base.mdk + m<i>.mdk + main.mdk), no separate fixture
+# needed: whole-project enumeration under `<dir>` discovers exactly the files
+# the entry-rooted closure already reaches (main.mdk bare-imports every
+# m<i>), so this measures the NEW code path (recursive listDir enumeration +
+# the dependency-first topo-sort `buildRefIndexProject` needs — see
+# refindex.mdk) over the identical file set/sizes as `run` above.
+run_project() {
+  d="$1"
+  out="$("$SELF" --project "$RT" "$CORE" "$d" "$d/main.mdk" 2>/dev/null)"
   ops="$(printf '%s\n' "$out" | awk '$1=="OPS"{print $2}')"
   occ="$(printf '%s\n' "$out" | awk '$1=="OCC"{print $2}')"
   printf '%s %s\n' "$ops" "$occ"
@@ -114,44 +140,70 @@ read OPS_2N OCC_2N <<EOF
 $(run "$WORK/n2")
 EOF
 
+read OPS_N_P OCC_N_P <<EOF
+$(run_project "$WORK/n")
+EOF
+read OPS_2N_P OCC_2N_P <<EOF
+$(run_project "$WORK/n2")
+EOF
+
 echo "N=$N  M=$M"
-echo "  OPS: N=$OPS_N  2N=$OPS_2N"
-echo "  OCC(entry): N=$OCC_N  2N=$OCC_2N"
+echo "  [entry-rooted]   OPS: N=$OPS_N  2N=$OPS_2N   OCC(entry): N=$OCC_N  2N=$OCC_2N"
+echo "  [whole-project]  OPS: N=$OPS_N_P  2N=$OPS_2N_P   OCC(main): N=$OCC_N_P  2N=$OCC_2N_P"
 
 fail=0
 
-# sanity: the index actually did work
+# sanity: both builds actually did work
 case "$OPS_N" in
-  '' | 0) echo "FAIL: no OPS reported at N (refindex_main produced no output?)"; fail=1 ;;
+  '' | 0) echo "FAIL: no OPS reported at N, entry-rooted (refindex_main produced no output?)"; fail=1 ;;
 esac
 case "$OCC_N" in
-  '' | 0) echo "FAIL: entry has no indexed occurrences (OCC=$OCC_N) — flat-query test is vacuous"; fail=1 ;;
+  '' | 0) echo "FAIL: entry has no indexed occurrences (OCC=$OCC_N) — entry-rooted flat-query test is vacuous"; fail=1 ;;
+esac
+case "$OPS_N_P" in
+  '' | 0) echo "FAIL: no OPS reported at N, whole-project (refindex_main --project produced no output?)"; fail=1 ;;
+esac
+case "$OCC_N_P" in
+  '' | 0) echo "FAIL: main.mdk has no indexed occurrences under --project (OCC=$OCC_N_P) — whole-project flat-query test is vacuous"; fail=1 ;;
 esac
 
-# ── primary: OPS ratio must be ~linear (< 3.0). Quadratic would be ~4.0. ──────
-if [ "$fail" -eq 0 ]; then
-  verdict="$(awk -v a="$OPS_N" -v b="$OPS_2N" 'BEGIN{
+# ── primary: OPS ratio must be ~linear (< 3.0) for BOTH build paths. ─────────
+# Quadratic would be ~4.0.
+ratio_check() {
+  label="$1"; a="$2"; b="$3"
+  verdict="$(awk -v a="$a" -v b="$b" 'BEGIN{
     if (a+0==0) { print "err"; exit }
     r=b/a; printf "%.3f", r
   }')"
-  echo "  OPS ratio (2N/N) = $verdict  (linear~2.0, quadratic~4.0)"
-  bad="$(awk -v a="$OPS_N" -v b="$OPS_2N" 'BEGIN{ print (a+0>0 && b/a >= 3.0) ? 1 : 0 }')"
+  echo "  $label OPS ratio (2N/N) = $verdict  (linear~2.0, quadratic~4.0)"
+  bad="$(awk -v a="$a" -v b="$b" 'BEGIN{ print (a+0>0 && b/a >= 3.0) ? 1 : 0 }')"
   if [ "$bad" -eq 1 ]; then
-    echo "FAIL: OPS scaling is super-linear (ratio >= 3.0) — the index build went quadratic."
-    fail=1
+    echo "FAIL: $label OPS scaling is super-linear (ratio >= 3.0) — the index build went quadratic."
+    return 1
   fi
+  return 0
+}
+
+if [ "$fail" -eq 0 ]; then
+  ratio_check "[entry-rooted]" "$OPS_N" "$OPS_2N" || fail=1
+  ratio_check "[whole-project]" "$OPS_N_P" "$OPS_2N_P" || fail=1
 fi
 
-# ── secondary: FLAT query. OCC(entry) must be identical across the doubling. ──
+# ── secondary: FLAT query. OCC must be identical across the doubling, for ───
+# BOTH paths — a per-query re-walk of the whole project would grow OCC with N.
 if [ "$fail" -eq 0 ]; then
   if [ "$OCC_N" != "$OCC_2N" ]; then
-    echo "FAIL: OCC(entry) changed with project size ($OCC_N -> $OCC_2N) — a query re-walks the whole project instead of O(clicked-file)."
+    echo "FAIL: OCC(entry) changed with project size ($OCC_N -> $OCC_2N), entry-rooted — a query re-walks the whole project instead of O(clicked-file)."
+    fail=1
+  fi
+  if [ "$OCC_N_P" != "$OCC_2N_P" ]; then
+    echo "FAIL: OCC(main) changed with project size ($OCC_N_P -> $OCC_2N_P), whole-project — a query re-walks the whole project instead of O(clicked-file)."
     fail=1
   fi
 fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "PASS: references index build is linear and queries are flat."
+  echo "PASS: references index build is linear (entry-rooted AND whole-project) and queries are flat."
   exit 0
 fi
 exit 1
