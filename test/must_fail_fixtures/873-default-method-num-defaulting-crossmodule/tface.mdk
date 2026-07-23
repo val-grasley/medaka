@@ -1,0 +1,9 @@
+import sdisp.{S(..), s}
+
+-- t's default body consumes an ambiguous Num literal body-locally: the element
+-- var of [1,2] surfaces NOWHERE in `t : a -> Int`, so nothing outside the body
+-- can determine it.  Reached CROSS-MODULE (impl in main.mdk) => checked via
+-- inferDefaultMethod, which has no defaultBodyLocalNum, so the var stays unbound.
+export interface T a where
+  t : a -> Int
+  t _ = s [1, 2]
