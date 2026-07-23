@@ -1,0 +1,56 @@
+-- Deterministic per-stage OPERATION counter for the self-hosted pipeline.
+--
+-- WHY THIS EXISTS (issue #884, epic #880). The perf gate's ALLOCATION arm is
+-- deterministic and noise-free but BLIND to a pure O(n^2) SCAN — a List used as a
+-- set / map, linear-searched once per element, which is the single most common
+-- quadratic introduced into this compiler. The gate's TIME arm can see such a scan,
+-- but only above a 200ms floor with min-of-K and a pinned heap, and it physically
+-- cannot grade the small stages (mark / desugar / exhaust-guards never clear the
+-- floor on any shape). An OP-COUNTER is deterministic like allocation AND sees a
+-- pure scan, so it needs no floor / no min-of-K / no heap-pin and grades exactly the
+-- stages TIME cannot. This mirrors tools/refindex.mdk's `opCnt`.
+--
+-- ⚠️ LOAD-BEARING INVARIANT — THE COUNTER IS WRITE-ONLY (identical rule to
+-- timer.mdk's `allocBytes` and llvm_emit.mdk's `returnsSelfTableRef`): it is read
+-- ONLY by the profiler drivers (profile_main / profile_modules_main, via `opSnap`),
+-- NEVER by any compiler pass. `Ref`/`setRef` are typed PURE in stdlib/runtime.mdk
+-- (no effect row), so a global counter mutated inside `contains`/`lookupAssoc`
+-- (support/util.mdk) keeps their signatures unchanged and is a pure side channel. No
+-- pass reads it => the emitted IR for any given input is UNPERTURBED (the
+-- byte-identical-when-MEDAKA_PERF-off proof). Keep it that way: `opCounter` and
+-- `opCountOn` are module-PRIVATE so nothing outside this module can even read them.
+--
+-- GATING (Option C, issue #884): `opBump` increments only when `opCountOn` is True,
+-- which the driver flips ONCE at entry via `setOpCounting (perfEnabled ())`. Zero
+-- write when off — and no `getEnv` (which is <IO>) ever runs inside the hot scan.
+--
+-- ACYCLIC: this module imports only prelude primitives, so `util -> opcount` adds no
+-- cycle (nothing in util's dependency set imports util). NO reset (unlike refindex's
+-- `opCnt := 0`) — per-stage counts are read by snapshot-subtract, so the counter is a
+-- single cumulative monotone value.
+
+-- The cumulative operation counter.  Module-private: read only via `opSnap`.
+opCounter : Ref Int
+opCounter = Ref 0
+
+-- Whether `opBump` counts.  Default False (off).  Module-private: flipped only via
+-- `setOpCounting`.
+opCountOn : Ref Bool
+opCountOn = Ref False
+
+-- Turn counting on/off.  Called ONCE by a profiler driver at entry with the value of
+-- `perfEnabled ()`; never per element (getEnv is <IO> and must stay out of the scan).
+export setOpCounting : Bool -> Unit
+setOpCounting b = setRef opCountOn b
+
+-- Count one operation, but ONLY when counting is on (Option C gating).  Pure-typed:
+-- `setRef` carries no effect row, so callers keep their non-<IO> signatures.
+export opBump : Unit -> Unit
+opBump () = match opCountOn.value
+  True => setRef opCounter (opCounter.value + 1)
+  False => ()
+
+-- Read the cumulative counter.  Paired snapshots (before/after a stage) yield that
+-- stage's op delta, exactly as timer.mdk's `allocSnap` yields an alloc delta.
+export opSnap : Unit -> Int
+opSnap () = opCounter.value

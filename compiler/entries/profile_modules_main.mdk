@@ -26,11 +26,12 @@ import types.typecheck.{checkModules, markModules}
 import support.timer.{
   perfEnabled,
   now,
-  emitPhaseA,
+  emitPhaseAO,
   emitTotalA,
   allocSnap,
   totalDecls,
 }
+import support.opcount.{setOpCounting, opSnap}
 import support.util.{listLen}
 import support.path.{dirOf}
 
@@ -58,41 +59,49 @@ run runtimeP coreP entry roots = match readFile runtimeP
 -- Stages: parse, load, desugar, mark, typecheck.  No eval (measurement only).
 runStaged : Bool -> String -> String -> String -> List String -> <IO> Unit
 runStaged on rsrc csrc entry roots =
+  -- Deterministic OP-COUNT side channel on iff perf output is on (issue #884). ONE
+  -- call at entry; see profile_main.mdk for the invariant.
+  let _ = setOpCounting on
   let tTotal = now ()
   let aTotal = allocSnap ()
   let tP0 = now ()
   let aP0 = allocSnap ()
+  let oP0 = opSnap ()
   let rDecls = desugar (parse rsrc)
   let cDecls = desugar (parse csrc)
   let tP1 = now ()
-  let _ = emitPhaseA on "parse" (tP1 - tP0) (allocSnap () - aP0) "runtime+core"
+  let _ = emitPhaseAO on "parse" (tP1 - tP0) (allocSnap () - aP0) "runtime+core" (opSnap () - oP0)
   let tL0 = now ()
   let aL0 = allocSnap ()
+  let oL0 = opSnap ()
   match loadProgram entry roots
     Err e => ePutStrLn e
     Ok rawMods =>
       let tL1 = now ()
       let nMods = listLen rawMods
-      let _ = emitPhaseA on "load" (tL1 - tL0) (allocSnap () - aL0) (intToString nMods ++ " modules")
+      let _ = emitPhaseAO on "load" (tL1 - tL0) (allocSnap () - aL0) (intToString nMods ++ " modules") (opSnap () - oL0)
       let tD0 = now ()
       let aD0 = allocSnap ()
+      let oD0 = opSnap ()
       let mods = map desugarPair rawMods
       let nDecls = totalDecls mods
       let declsOp = intToString nDecls ++ " decls"
       let tD1 = now ()
-      let _ = emitPhaseA on "desugar" (tD1 - tD0) (allocSnap () - aD0) declsOp
+      let _ = emitPhaseAO on "desugar" (tD1 - tD0) (allocSnap () - aD0) declsOp (opSnap () - oD0)
       let tM0 = now ()
       let aM0 = allocSnap ()
+      let oM0 = opSnap ()
       let markedPair = markModules cDecls mods
       let core2 = fst markedPair
       let mods2 = snd markedPair
       let tM1 = now ()
-      let _ = emitPhaseA on "mark" (tM1 - tM0) (allocSnap () - aM0) declsOp
+      let _ = emitPhaseAO on "mark" (tM1 - tM0) (allocSnap () - aM0) declsOp (opSnap () - oM0)
       let tT0 = now ()
       let aT0 = allocSnap ()
+      let oT0 = opSnap ()
       let _ = checkModules rDecls core2 mods2
       let tT1 = now ()
-      let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
+      let _ = emitPhaseAO on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp (opSnap () - oT0)
       emitTotalA on (tT1 - tTotal) (allocSnap () - aTotal)
 -- parse: parse + desugar runtime.mdk and core.mdk
 

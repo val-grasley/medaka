@@ -1,5 +1,5 @@
 # META
-source_lines=98
+source_lines=116
 stages=DESUGAR,MARK
 # SOURCE
 -- Per-stage wall-clock timing helpers for the self-hosted pipeline.
@@ -100,6 +100,24 @@ emitTotalA False _ _ = ()
 emitTotalA True elapsed allocTotal =
   ePutStrLn
     "[perf] total\t\{floatToString elapsed}s\t\{floatToString (allocTotal / 1048576.0)}MB\t"
+
+-- Extended phase emit that ALSO appends the deterministic per-stage OP-COUNT delta
+-- (issue #884) as a trailing TAB-delimited 5th column. Format:
+--   [perf] <label>\t<elapsed>s\t<allocMB>MB\t<ops>\t<opDelta>
+--
+-- ⚠️ The op-delta MUST be its own tab-delimited field. The existing `<ops>` field is
+-- FREE-FORM and contains spaces ("N decls", "runtime+core"), so the perf gate's
+-- op-arm parses this with `awk -F'\t'` and reads field 5. A whitespace split would
+-- land inside `<ops>` and read garbage — see diff_compiler_perf_scaling.sh:stage_ops.
+--
+-- No existing consumer breaks: the gate's TIME/ALLOC arms and profile_compiler.sh
+-- read whitespace-split fields 2/3/4, none of which move when a 5th tab-field is
+-- appended. `opDelta` is a snapshot-subtract of opcount.opSnap across the stage.
+export emitPhaseAO : Bool -> String -> Float -> Float -> String -> Int -> <IO> Unit
+emitPhaseAO False _ _ _ _ _ = ()
+emitPhaseAO True label elapsed allocDelta ops opDelta =
+  ePutStrLn
+    "[perf] \{label}\t\{floatToString elapsed}s\t\{floatToString (allocDelta / 1048576.0)}MB\t\{ops}\t\{intToString opDelta}"
 # DESUGAR
 (DTypeSig true "perfEnabled" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Bool"))))
 (DFunDef false "perfEnabled" ((PLit LUnit)) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_PERF"))) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
@@ -127,6 +145,9 @@ emitTotalA True elapsed allocTotal =
 (DTypeSig true "emitTotalA" (TyFun (TyCon "Bool") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyEffect ("IO") None (TyCon "Unit"))))))
 (DFunDef false "emitTotalA" ((PCon "False") PWild PWild) (ELit LUnit))
 (DFunDef false "emitTotalA" ((PCon "True") (PVar "elapsed") (PVar "allocTotal")) (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "[perf] total\t")) (EApp (EVar "display") (EApp (EVar "floatToString") (EVar "elapsed")))) (ELit (LString "s\t"))) (EApp (EVar "display") (EApp (EVar "floatToString") (EBinOp "/" (EVar "allocTotal") (ELit (LFloat 1048576.0)))))) (ELit (LString "MB\t")))))
+(DTypeSig true "emitPhaseAO" (TyFun (TyCon "Bool") (TyFun (TyCon "String") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyEffect ("IO") None (TyCon "Unit")))))))))
+(DFunDef false "emitPhaseAO" ((PCon "False") PWild PWild PWild PWild PWild) (ELit LUnit))
+(DFunDef false "emitPhaseAO" ((PCon "True") (PVar "label") (PVar "elapsed") (PVar "allocDelta") (PVar "ops") (PVar "opDelta")) (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "[perf] ")) (EApp (EVar "display") (EVar "label"))) (ELit (LString "\t"))) (EApp (EVar "display") (EApp (EVar "floatToString") (EVar "elapsed")))) (ELit (LString "s\t"))) (EApp (EVar "display") (EApp (EVar "floatToString") (EBinOp "/" (EVar "allocDelta") (ELit (LFloat 1048576.0)))))) (ELit (LString "MB\t"))) (EApp (EVar "display") (EVar "ops"))) (ELit (LString "\t"))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "opDelta")))) (ELit (LString "")))))
 # MARK
 (DTypeSig true "perfEnabled" (TyFun (TyCon "Unit") (TyEffect ("IO") None (TyCon "Bool"))))
 (DFunDef false "perfEnabled" ((PLit LUnit)) (EMatch (EApp (EVar "getEnv") (ELit (LString "MEDAKA_PERF"))) (arm (PCon "Some" PWild) () (EVar "True")) (arm (PCon "None") () (EVar "False"))))
@@ -154,3 +175,6 @@ emitTotalA True elapsed allocTotal =
 (DTypeSig true "emitTotalA" (TyFun (TyCon "Bool") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyEffect ("IO") None (TyCon "Unit"))))))
 (DFunDef false "emitTotalA" ((PCon "False") PWild PWild) (ELit LUnit))
 (DFunDef false "emitTotalA" ((PCon "True") (PVar "elapsed") (PVar "allocTotal")) (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "[perf] total\t")) (EApp (EMethodRef "display") (EApp (EVar "floatToString") (EVar "elapsed")))) (ELit (LString "s\t"))) (EApp (EMethodRef "display") (EApp (EVar "floatToString") (EBinOp "/" (EVar "allocTotal") (ELit (LFloat 1048576.0)))))) (ELit (LString "MB\t")))))
+(DTypeSig true "emitPhaseAO" (TyFun (TyCon "Bool") (TyFun (TyCon "String") (TyFun (TyCon "Float") (TyFun (TyCon "Float") (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyEffect ("IO") None (TyCon "Unit")))))))))
+(DFunDef false "emitPhaseAO" ((PCon "False") PWild PWild PWild PWild PWild) (ELit LUnit))
+(DFunDef false "emitPhaseAO" ((PCon "True") (PVar "label") (PVar "elapsed") (PVar "allocDelta") (PVar "ops") (PVar "opDelta")) (EApp (EVar "ePutStrLn") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "[perf] ")) (EApp (EMethodRef "display") (EVar "label"))) (ELit (LString "\t"))) (EApp (EMethodRef "display") (EApp (EVar "floatToString") (EVar "elapsed")))) (ELit (LString "s\t"))) (EApp (EMethodRef "display") (EApp (EVar "floatToString") (EBinOp "/" (EVar "allocDelta") (ELit (LFloat 1048576.0)))))) (ELit (LString "MB\t"))) (EApp (EMethodRef "display") (EVar "ops"))) (ELit (LString "\t"))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "opDelta")))) (ELit (LString "")))))

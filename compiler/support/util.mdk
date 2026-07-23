@@ -7,12 +7,19 @@
 -- support/path.mdk (filesystem path string ops), support/ordmap.mdk (OrdMap).
 
 import support.ordmap.{OrdMap, omLookup, omInsert, omEmpty}
+import support.opcount.{opBump}
 import list.{reverse, zip}
 import string.{join}
 
+-- `opBump` counts one scan step for the perf gate's OP-COUNT arm (#884); it is a
+-- pure write-only side channel (see support/opcount.mdk) and is a NO-OP unless a
+-- profiler driver turned counting on, so it cannot change the emitted IR for any
+-- input and does not perturb the `||` short-circuit below.
 export contains : String -> List String -> Bool
 contains _ [] = False
-contains x (y::ys) = x == y || contains x ys
+contains x (y::ys) =
+  let _ = opBump ()
+  x == y || contains x ys
 
 export listLen : List a -> Int
 listLen [] = 0
@@ -33,8 +40,8 @@ allList p (x::xs) = p x && allList p xs
 export lookupAssoc : String -> List (String, b) -> Option b
 lookupAssoc _ [] = None
 lookupAssoc k ((k2, v)::rest)
-  | k == k2 = Some v
-  | otherwise = lookupAssoc k rest
+  | k == k2 = let _ = opBump () in Some v
+  | otherwise = let _ = opBump () in lookupAssoc k rest
 
 -- Join string pieces with a separator.  Delegates to stdlib `string.join`
 -- (`stringConcat (intersperse sep parts)` — the same O(total length) one-pass

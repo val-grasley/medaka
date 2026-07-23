@@ -1,5 +1,5 @@
 # META
-source_lines=454
+source_lines=461
 stages=DESUGAR,MARK
 # SOURCE
 -- Shared internal helpers for the self-hosted compiler stages.  compiler
@@ -11,12 +11,19 @@ stages=DESUGAR,MARK
 -- support/path.mdk (filesystem path string ops), support/ordmap.mdk (OrdMap).
 
 import support.ordmap.{OrdMap, omLookup, omInsert, omEmpty}
+import support.opcount.{opBump}
 import list.{reverse, zip}
 import string.{join}
 
+-- `opBump` counts one scan step for the perf gate's OP-COUNT arm (#884); it is a
+-- pure write-only side channel (see support/opcount.mdk) and is a NO-OP unless a
+-- profiler driver turned counting on, so it cannot change the emitted IR for any
+-- input and does not perturb the `||` short-circuit below.
 export contains : String -> List String -> Bool
 contains _ [] = False
-contains x (y::ys) = x == y || contains x ys
+contains x (y::ys) =
+  let _ = opBump ()
+  x == y || contains x ys
 
 export listLen : List a -> Int
 listLen [] = 0
@@ -37,8 +44,8 @@ allList p (x::xs) = p x && allList p xs
 export lookupAssoc : String -> List (String, b) -> Option b
 lookupAssoc _ [] = None
 lookupAssoc k ((k2, v)::rest)
-  | k == k2 = Some v
-  | otherwise = lookupAssoc k rest
+  | k == k2 = let _ = opBump () in Some v
+  | otherwise = let _ = opBump () in lookupAssoc k rest
 
 -- Join string pieces with a separator.  Delegates to stdlib `string.join`
 -- (`stringConcat (intersperse sep parts)` — the same O(total length) one-pass
@@ -458,11 +465,12 @@ export noneHeadTag : String
 noneHeadTag = "__none__"
 # DESUGAR
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omLookup" false) (mem "omInsert" false) (mem "omEmpty" false))))
+(DUse false (UseGroup ("support" "opcount") ((mem "opBump" false))))
 (DUse false (UseGroup ("list") ((mem "reverse" false) (mem "zip" false))))
 (DUse false (UseGroup ("string") ((mem "join" false))))
 (DTypeSig true "contains" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Bool"))))
 (DFunDef false "contains" (PWild (PList)) (EVar "False"))
-(DFunDef false "contains" ((PVar "x") (PCons (PVar "y") (PVar "ys"))) (EBinOp "||" (EBinOp "==" (EVar "x") (EVar "y")) (EApp (EApp (EVar "contains") (EVar "x")) (EVar "ys"))))
+(DFunDef false "contains" ((PVar "x") (PCons (PVar "y") (PVar "ys"))) (EBlock (DoLet false false PWild (EApp (EVar "opBump") (ELit LUnit))) (DoExpr (EBinOp "||" (EBinOp "==" (EVar "x") (EVar "y")) (EApp (EApp (EVar "contains") (EVar "x")) (EVar "ys"))))))
 (DTypeSig true "listLen" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Int")))
 (DFunDef false "listLen" ((PList)) (ELit (LInt 0)))
 (DFunDef false "listLen" ((PCons PWild (PVar "xs"))) (EBinOp "+" (ELit (LInt 1)) (EApp (EVar "listLen") (EVar "xs"))))
@@ -476,7 +484,7 @@ noneHeadTag = "__none__"
 (DFunDef false "allList" ((PVar "p") (PCons (PVar "x") (PVar "xs"))) (EBinOp "&&" (EApp (EVar "p") (EVar "x")) (EApp (EApp (EVar "allList") (EVar "p")) (EVar "xs"))))
 (DTypeSig true "lookupAssoc" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyVar "b"))) (TyApp (TyCon "Option") (TyVar "b")))))
 (DFunDef false "lookupAssoc" (PWild (PList)) (EVar "None"))
-(DFunDef false "lookupAssoc" ((PVar "k") (PCons (PTuple (PVar "k2") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "k2")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "lookupAssoc" ((PVar "k") (PCons (PTuple (PVar "k2") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "k2")) (ELet false PWild (EApp (EVar "opBump") (ELit LUnit)) (EApp (EVar "Some") (EVar "v"))) (EIf (EVar "otherwise") (ELet false PWild (EApp (EVar "opBump") (ELit LUnit)) (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "joinWith" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String"))))
 (DFunDef false "joinWith" ((PVar "sep") (PVar "xs")) (EApp (EApp (EVar "join") (EVar "sep")) (EVar "xs")))
 (DTypeSig true "joinNl" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))
@@ -616,11 +624,12 @@ noneHeadTag = "__none__"
 (DFunDef false "noneHeadTag" () (ELit (LString "__none__")))
 # MARK
 (DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omLookup" false) (mem "omInsert" false) (mem "omEmpty" false))))
+(DUse false (UseGroup ("support" "opcount") ((mem "opBump" false))))
 (DUse false (UseGroup ("list") ((mem "reverse" false) (mem "zip" false))))
 (DUse false (UseGroup ("string") ((mem "join" false))))
 (DTypeSig true "contains" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "Bool"))))
 (DFunDef false "contains" (PWild (PList)) (EVar "False"))
-(DFunDef false "contains" ((PVar "x") (PCons (PVar "y") (PVar "ys"))) (EBinOp "||" (EBinOp "==" (EVar "x") (EVar "y")) (EApp (EApp (EVar "contains") (EVar "x")) (EVar "ys"))))
+(DFunDef false "contains" ((PVar "x") (PCons (PVar "y") (PVar "ys"))) (EBlock (DoLet false false PWild (EApp (EVar "opBump") (ELit LUnit))) (DoExpr (EBinOp "||" (EBinOp "==" (EVar "x") (EVar "y")) (EApp (EApp (EVar "contains") (EVar "x")) (EVar "ys"))))))
 (DTypeSig true "listLen" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Int")))
 (DFunDef false "listLen" ((PList)) (ELit (LInt 0)))
 (DFunDef false "listLen" ((PCons PWild (PVar "xs"))) (EBinOp "+" (ELit (LInt 1)) (EApp (EVar "listLen") (EVar "xs"))))
@@ -634,7 +643,7 @@ noneHeadTag = "__none__"
 (DFunDef false "allList" ((PVar "p") (PCons (PVar "x") (PVar "xs"))) (EBinOp "&&" (EApp (EVar "p") (EVar "x")) (EApp (EApp (EVar "allList") (EVar "p")) (EVar "xs"))))
 (DTypeSig true "lookupAssoc" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyVar "b"))) (TyApp (TyCon "Option") (TyVar "b")))))
 (DFunDef false "lookupAssoc" (PWild (PList)) (EVar "None"))
-(DFunDef false "lookupAssoc" ((PVar "k") (PCons (PTuple (PVar "k2") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "k2")) (EApp (EVar "Some") (EVar "v")) (EIf (EVar "otherwise") (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "lookupAssoc" ((PVar "k") (PCons (PTuple (PVar "k2") (PVar "v")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "k") (EVar "k2")) (ELet false PWild (EApp (EVar "opBump") (ELit LUnit)) (EApp (EVar "Some") (EVar "v"))) (EIf (EVar "otherwise") (ELet false PWild (EApp (EVar "opBump") (ELit LUnit)) (EApp (EApp (EVar "lookupAssoc") (EVar "k")) (EVar "rest"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "joinWith" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String"))))
 (DFunDef false "joinWith" ((PVar "sep") (PVar "xs")) (EApp (EApp (EVar "join") (EVar "sep")) (EVar "xs")))
 (DTypeSig true "joinNl" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyCon "String")))

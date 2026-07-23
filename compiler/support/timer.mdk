@@ -96,3 +96,21 @@ emitTotalA False _ _ = ()
 emitTotalA True elapsed allocTotal =
   ePutStrLn
     "[perf] total\t\{floatToString elapsed}s\t\{floatToString (allocTotal / 1048576.0)}MB\t"
+
+-- Extended phase emit that ALSO appends the deterministic per-stage OP-COUNT delta
+-- (issue #884) as a trailing TAB-delimited 5th column. Format:
+--   [perf] <label>\t<elapsed>s\t<allocMB>MB\t<ops>\t<opDelta>
+--
+-- ⚠️ The op-delta MUST be its own tab-delimited field. The existing `<ops>` field is
+-- FREE-FORM and contains spaces ("N decls", "runtime+core"), so the perf gate's
+-- op-arm parses this with `awk -F'\t'` and reads field 5. A whitespace split would
+-- land inside `<ops>` and read garbage — see diff_compiler_perf_scaling.sh:stage_ops.
+--
+-- No existing consumer breaks: the gate's TIME/ALLOC arms and profile_compiler.sh
+-- read whitespace-split fields 2/3/4, none of which move when a 5th tab-field is
+-- appended. `opDelta` is a snapshot-subtract of opcount.opSnap across the stage.
+export emitPhaseAO : Bool -> String -> Float -> Float -> String -> Int -> <IO> Unit
+emitPhaseAO False _ _ _ _ _ = ()
+emitPhaseAO True label elapsed allocDelta ops opDelta =
+  ePutStrLn
+    "[perf] \{label}\t\{floatToString elapsed}s\t\{floatToString (allocDelta / 1048576.0)}MB\t\{ops}\t\{intToString opDelta}"
