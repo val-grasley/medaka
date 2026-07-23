@@ -35,6 +35,14 @@ grep the name, not the number.
    `methodOf msg` (`:1464`) — add an arm for your request's method string and call
    your handler.
 
+## Implementing `textDocument/references` (or `rename`)
+
+Neither is wired yet, but the substrate already exists: `compiler/tools/refindex.mdk`
+(driven standalone by `compiler/entries/refindex_main.mdk`) builds a whole-project
+binder-keyed def/use index — shadow-aware, alias/re-export-collapsing — which is the
+evident foundation for both requests. Read its header before building a references
+handler from scratch.
+
 ## Get analysis results
 
 - Open documents live in the `Docs` table (`data Docs`, `:118`), threaded through

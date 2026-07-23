@@ -50,6 +50,12 @@ CLI, which reads real files and reports full accumulated diagnostics:
 ./medaka run   scratch.mdk          # full pipeline incl. eval
 ```
 
+⚠️ **Make sure you're not debugging a stale binary.** Every `./medaka` invocation
+checks a build-time source fingerprint against the live `<root>/compiler/*.mdk`
+and WARNS on mismatch by default — `MEDAKA_STRICT=1` promotes that to a hard
+`exit 1`. Set it whenever you need certainty that the fix you just made (or the
+bug you're chasing) is actually in the binary you're running.
+
 The `code` prefix tells you which stage owns the failure before you read a line of
 source. Key off `code`, not the wording — it is the stable handle.
 
@@ -105,6 +111,22 @@ For internals the CLI doesn't print, use the entry probes in
 
 These probes read the target file path as their argument — check each entry's
 `main` for the exact invocation form.
+
+## Who actually uses this binder?
+
+`grep` matches text, not bindings — it can't tell a shadowed local from the
+top-level of the same name, or follow an `as`-alias/re-export back to its origin.
+`compiler/tools/refindex.mdk` (driven by `compiler/entries/refindex_main.mdk`)
+resolves def/use through the same binder keys the resolver uses, so it separates
+same-name-different-scope locals and collapses alias spellings to one binder:
+
+```sh
+medaka run compiler/entries/refindex_main.mdk --dump <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+```
+
+Reach for this over `grep` before renaming or removing a helper you suspect is
+dead — it names every real use site of that exact binder, not every line that
+happens to contain its spelling.
 
 ## The signature bug shape: loader-only dispatch failures
 
