@@ -122,14 +122,19 @@ cellInt : Cell -> Int
 cellInt (CInt n) = n
 cellInt _ = 0
 
--- | Find a user table by name in the schema.
+-- | Find a user table by name in the schema.  Table names fold ASCII case
+--   like real SQLite identifiers — the same `lowerChars` fold `columnIndex`
+--   below already uses for column names, so `SELECT name FROM USERS` and
+--   `SELECT name FROM users` resolve to the same table.  Only the lookup
+--   comparison folds; the entry's `ename` keeps its stored/original case,
+--   and the not-found error still echoes the name as the caller wrote it.
 export findTable : Db -> String -> Result String SchemaEntry
 findTable db name = flatMap (findTableGo name) (readSchema db)
 
 findTableGo : String -> List SchemaEntry -> Result String SchemaEntry
 findTableGo name [] = Err "table not found: \{name}"
 findTableGo name (e::rest) =
-  if e.etype == "table" && e.ename == name then
+  if e.etype == "table" && lowerChars (stringToChars e.ename) == lowerChars (stringToChars name) then
     Ok e
   else
     findTableGo name rest

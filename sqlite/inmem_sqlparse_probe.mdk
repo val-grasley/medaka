@@ -118,6 +118,12 @@ queries = [
   -- case-insensitive keywords, trailing semicolon
   "select name from users where age Is Not Null Order By age Desc, id Asc;",
   "SELECT COUNT(*) FROM orders;",
+  -- LIKE / BETWEEN / scalar upper() — the engine grew these after this
+  -- probe was first written; they used to live in the rejection corpus
+  -- below (see findings/table-casefold-and-probe-labeling.md)
+  "SELECT name FROM users WHERE name LIKE 'a%'",
+  "SELECT name FROM users WHERE age BETWEEN 20 AND 30",
+  "SELECT upper(name) FROM users",
 ]
 
 -- Unsupported SQL: each MUST come back as a clean `error: ...`.
@@ -125,9 +131,6 @@ rejects : List String
 rejects = [
   "SELECT a FROM t UNION SELECT b FROM u",
   "SELECT name AS n FROM users",
-  "SELECT name FROM users WHERE name LIKE 'a%'",
-  "SELECT name FROM users WHERE age BETWEEN 20 AND 30",
-  "SELECT upper(name) FROM users",
   "SELECT name FROM users WHERE flag = TRUE",
   "SELECT users.name FROM users RIGHT JOIN orders ON users.id = orders.uid",
   "SELECT name FROM users WHERE count(*) > 1",

@@ -1,0 +1,82 @@
+-- | In-memory probe for case-insensitive TABLE-name lookup (F4 residual).
+--
+-- `findTable`/`findTableGo` in `lib.sqlite` used to compare table names with
+-- `==` (case-SENSITIVE), while `columnIndex` right below it already folded
+-- ASCII case for column names — a real asymmetry (findings/sql-parser-select.md
+-- F4). SQLite folds identifier case for both tables and columns, so
+-- `SELECT name FROM USERS`, `FROM Users`, and `FROM users` must all resolve
+-- to the same table and return the same rows.
+--
+-- Builds one table in memory and runs the same query varying only the
+-- table-name casing in `FROM`, and separately (as a regression guard) varying
+-- only the column-name casing in the projection — both must produce
+-- byte-identical output.
+
+-- Probes are intentionally self-contained; row-type/helper bodies duplicate by design.
+-- lint-disable-file rule-duplicate-body
+
+import lib.dbwriter.{buildDatabaseMulti}
+import lib.sqlite.{Db, fromBytes}
+import lib.recordfmt.{Cell, CInt, CText}
+import lib.rowtype.{tCells}
+import lib.sqlstmt.{queryStringDistinct}
+import demo_support.{printRows, showCellRow}
+import string.{join}
+
+usersSql : String
+usersSql = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, age INTEGER)"
+
+usersRows : List (List Cell)
+usersRows = [[CInt 1, CText "ada", CInt 30], [CInt 2, CText "bob", CInt 24]]
+
+specs : List (String, String, Option Int, List (List Cell))
+specs = [("users", usersSql, Some 0, usersRows)]
+
+-- Run one query, render its rows (or error) as a single `|`-joined,
+-- newline-joined string so callers can compare two runs for equality.
+render : Db -> String -> String
+render db sql = match queryStringDistinct db sql tCells
+  Err e => "error: \{e}"
+  Ok rows => join "\n" (map showCellRow rows)
+
+-- Every one of these must render IDENTICALLY to the first (the `users`
+-- lower-case baseline): only the casing of the table name in `FROM` varies.
+tableCasingQueries : List String
+tableCasingQueries = [
+  "SELECT name FROM users ORDER BY id",
+  "SELECT name FROM USERS ORDER BY id",
+  "SELECT name FROM Users ORDER BY id",
+  "SELECT name FROM uSeRs ORDER BY id",
+]
+
+-- Regression guard: column-name casing was already case-insensitive; keep it
+-- that way alongside the table-name fix.
+columnCasingQueries : List String
+columnCasingQueries = [
+  "SELECT name FROM users ORDER BY id",
+  "SELECT NAME FROM users ORDER BY id",
+  "SELECT NaMe FROM users ORDER BY id",
+]
+
+checkAllSame : Db -> String -> List String -> <IO> Unit
+checkAllSame db label sqls =
+  let rendered = map (render db) sqls
+  match rendered
+    [] => println "\{label}: PASS (empty)"
+    first::rest => if all (== first) rest then
+      let _ = println "\{label}: PASS"
+      println first
+    else
+      let _ = println "\{label}: FAIL — renderings diverge:"
+      printRows (r => r) rendered
+
+main : <IO> Unit
+main =
+  let _ = println "-- CREATE users (in-memory) --"
+  match buildDatabaseMulti specs
+    Err e => println "build error: \{e}"
+    Ok bytes => match fromBytes bytes
+      Err e => println "fromBytes error: \{e}"
+      Ok db =>
+        let _ = checkAllSame db "table-name casing" tableCasingQueries
+        checkAllSame db "column-name casing" columnCasingQueries
