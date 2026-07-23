@@ -31,7 +31,7 @@
 -- resolve.  Neither path calls the flat elaborateDict/evalProgram anymore.
 
 import frontend.ast.{Decl, DData, DInterface, Expr}
-import frontend.parser.{parse, parseLocated}
+import frontend.parser.{parse, parseLocated, parseResult}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram, entrySearchRoots}
 import driver.build_cmd.{readPreludeFile}
@@ -70,6 +70,7 @@ import driver.diagnostics.{
   analyzeLocated,
   readDiagSrc,
   ppDiagCliSrc,
+  parseErrDiag,
   Diag,
   diagIsError,
 }
@@ -99,13 +100,26 @@ runTest runtimeP coreP target roots = match readPreludeFile runtimeP
       Err e =>
         let _ = ePutStrLn e
         False
-      Ok tsrc =>
-        let userDecls = desugar (parse tsrc)
-        match doctestGate target roots rsrc csrc tsrc userDecls
-          Some errText =>
-            let _ = ePutStrLn (typecheckGateFail target errText)
-            False
-          None => driveAll (desugar (parse rsrc)) (desugar (parse csrc)) target tsrc roots
+      -- A FILE-LEVEL parse error in the target must surface as the SAME located
+      -- `file:L:C:` diagnostic `medaka check` prints — not the unlocated
+      -- `panic "parse error"` the bare `desugar (parse tsrc)` below would raise
+      -- (issue #892).  Route through the non-panicking `parseResult` first (the
+      -- exact gate `check` uses) and, on failure, render the structured
+      -- `ParseError` through the shared `parseErrDiag`/`ppDiagCliSrc` machinery,
+      -- returning False so the caller exits nonzero — accumulate-and-report, not
+      -- panic.  (Issue #55 fixed parse errors in an individual doctest EXAMPLE;
+      -- this covers a parse error in the module SOURCE itself.)
+      Ok tsrc => match parseResult tsrc
+        Err e =>
+          let _ = ePutStrLn (ppDiagCliSrc tsrc target (parseErrDiag target e))
+          False
+        Ok _ =>
+          let userDecls = desugar (parse tsrc)
+          match doctestGate target roots rsrc csrc tsrc userDecls
+            Some errText =>
+              let _ = ePutStrLn (typecheckGateFail target errText)
+              False
+            None => driveAll (desugar (parse rsrc)) (desugar (parse csrc)) target tsrc roots
 
 -- ── doctest typecheck gate (issue #260) ──────────────────────────────────────
 -- `medaka test` used to GREEN-LIGHT a module whose DOCTESTS `medaka check`
