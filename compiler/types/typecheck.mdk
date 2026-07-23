@@ -4115,22 +4115,11 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
   Some s =>
     let inst = instantiateTracked s
     let _ = recordMethodDicts name methodRef (snd inst)
-    -- A LAMBDA/PATTERN-BOUND shadow of a method name resolves to a MONOMORPHIC
-    -- local scheme (`Forall [] []`) — the scope-blind marker still rewrote the
-    -- occurrence to EMethodAt, but it denotes the local, and recording a method
-    -- obligation for it invents a predicate on whatever the local's var unifies
-    -- with (a prelude default `filter p t = …` under a user `interface P` whose
-    -- method is named `p` recorded a phantom `P elem` obligation — which the
-    -- #816 W3 survivor check then rejected as an undeclared constraint on the
-    -- method's element var).  Every genuine interface method quantifies at
-    -- least its interface parameter, so a mono scheme is never a real method
-    -- occurrence.  (Top-LEVEL shadows are already suppressed inside
-    -- recordImplObligation via definerShadowNamesRef/standaloneValuesRef; this
-    -- is the local-binding sibling.)
-    let _ = if lookupLocalFlag env name || isMonoScheme s then
-      fst inst
-    else
-      recordImplObligation name (fst inst)
+    -- #816/#818 shadow guard — shared with inferVarPlainId (the check path); see
+    -- recordMethodObligationGuarded for the full rationale.  The tracked
+    -- instantiation `fst inst` is already computed (its recordMethodDicts side-effect
+    -- fired above), so pass it in rather than re-instantiate.
+    let _ = recordMethodObligationGuarded env name s (fst inst)
     let _ = recordRLocalSite env name tagRef (fst inst)
     let ret = match argDispatchOf name
       Some idx =>
@@ -5523,15 +5512,9 @@ inferVarPlainId : TcEnv -> String -> Int -> Mono
 inferVarPlainId env x id = match lookupVar env x
   Some s =>
     let mono = instantiateVarTrackedId x id s
-    -- a lambda/pattern-bound local shadowing a method name resolves to a
-    -- MONOMORPHIC scheme; recording a method obligation for it invents a
-    -- predicate on whatever the local unifies with (see inferMethodAt's
-    -- identical guard for the marked path — the prelude `filter p t = …`
-    -- default under a user interface with a method named `p`)
-    if lookupLocalFlag env x || isMonoScheme s then
-      mono
-    else
-      recordImplObligation x mono
+    -- #816/#818 shadow guard — shared with inferMethodAt (the emit path); see
+    -- recordMethodObligationGuarded.  [mono] is the already-tracked instantiation.
+    recordMethodObligationGuarded env x s mono
   None => unboundVarFresh x
 
 -- #11 soundness (native obligation hole, plain check path): a constrained binding used
@@ -5672,6 +5655,34 @@ recordImplObligation x mono
       -- emit path (inferMethodAt) — the two recordImplObligation callers — cover it.
       let _ = recordMethodLevelObls typarams mty mono
       mono
+
+-- #816/#818 (#840 step 1): the shared shadow guard around method-occurrence
+-- obligation recording.  A LAMBDA/PATTERN-BOUND local shadowing a method name
+-- resolves to a MONOMORPHIC local scheme (`Forall [] []`); the scope-blind marker
+-- still rewrote the occurrence to EMethodAt (emit path) — or it reaches
+-- inferVarPlainId as a bare EVar (check path) — but it denotes the local, and
+-- recording a method obligation for it invents a predicate on whatever the local's
+-- var unifies with (a prelude default `filter p t = …` under a user `interface P`
+-- whose method is named `p` recorded a phantom `P elem` obligation — which the #816
+-- W3 survivor check then rejected as an undeclared constraint on the method's
+-- element var).  Every genuine interface method quantifies at least its interface
+-- parameter, so a mono scheme is never a real method occurrence.  (Top-LEVEL shadows
+-- are already suppressed INSIDE recordImplObligation via
+-- definerShadowNamesRef/standaloneValuesRef; this is the local-binding sibling.)
+-- BOTH occurrence recorders — inferMethodAt (emit) and inferVarPlainId (check), the
+-- only two recordImplObligation callers — share this guard so the #816 predicate
+-- lands ONCE.  Takes the caller's ALREADY-INSTANTIATED [mono]; it must NOT
+-- re-instantiate, because each caller's own instantiation carries tracked
+-- side-effects (recordMethodDicts, recordSchemeCallObligations) that must fire
+-- exactly once, at the call site.  [s] is that caller's own lookupVar scheme, tested
+-- for monomorphism.  Returns [mono] unchanged in every case (recordImplObligation
+-- always returns its argument), so the check path's return value is byte-identical.
+recordMethodObligationGuarded : TcEnv -> String -> Scheme -> Mono -> Mono
+recordMethodObligationGuarded env name s mono =
+  if lookupLocalFlag env name || isMonoScheme s then
+    mono
+  else
+    recordImplObligation name mono
 
 -- #818 (#838 I3): record one PMethodLevel obligation per method-level `=>` constraint
 -- slot of a method occurrence.  [mty] is the method's DECLARED type (with its `=>`);
