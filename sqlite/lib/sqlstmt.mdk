@@ -20,13 +20,16 @@
 -- ```
 -- stmt    := select | insert | update | delete | create
 --
--- select  := SELECT [DISTINCT] selList
---            FROM tableRef
---            join*
---            [WHERE expr]
---            [GROUP BY expr (',' expr)*]
---            [HAVING expr]
---            [ORDER BY orderKey (',' orderKey)*]
+-- query   := selectCore (setOp selectCore)*             -- `parseQuery` → Compound
+--            [ORDER BY orderKey (',' orderKey)*]         --   binds to the WHOLE
+--            [LIMIT int] [OFFSET int]                    --   compound, once
+-- setOp   := UNION [ALL] | INTERSECT | EXCEPT           -- same precedence, LEFT-assoc
+-- selectCore := SELECT [DISTINCT] selList               -- one arm; NO order/limit
+--            FROM tableRef join* [WHERE expr]
+--            [GROUP BY expr (',' expr)*] [HAVING expr]
+--
+-- select  := selectCore                                 -- `parseSelect` → Select
+--            [ORDER BY orderKey (',' orderKey)*]         --   a bare single SELECT
 --            [LIMIT int] [OFFSET int]
 -- selList  := '*' | selItem (',' selItem)*
 -- selItem  := expr [alias]                        -- optional output-column alias
@@ -56,8 +59,11 @@
 -- end of input, so anything it cannot represent is an `Err`, never a dropped
 -- clause.  Concretely rejected, each with a message:
 --
---   * set operations — `UNION` / `INTERSECT` / `EXCEPT`
---   * sub-queries, CTEs (`WITH`)
+--   * set operations — `UNION` / `INTERSECT` / `EXCEPT` (rejected by
+--     `parseSelect` / `parseStmt`, which return a single `Select`; use
+--     `parseQuery` → `Compound` + `runCompound` for the compound form)
+--   * sub-queries, CTEs (`WITH`), and a set-op arm with no FROM (`... UNION
+--     SELECT 1`) — `selectCore` requires a FROM clause
 --   * `RIGHT` / `FULL` / `CROSS` / `NATURAL` joins, `USING (...)`
 --   * non-aggregate/non-scalar function calls, quoted `"identifiers"`  (inherited
 --     from `lib.sqlparse`)
@@ -121,6 +127,14 @@ import lib.select.{
   JoinKind,
   JInner,
   JLeft,
+  SetOp,
+  OpUnion,
+  OpUnionAll,
+  OpIntersect,
+  OpExcept,
+  Compound,
+  setOpSql,
+  runCompound,
   selectFromAs,
   innerJoinAs,
   leftJoinAs,
@@ -236,8 +250,24 @@ unsupportedTail = do
 -- The statement
 -- ---------------------------------------------------------------------------
 
+-- A full single SELECT: a `selectCore` (SELECT … HAVING) plus its trailing
+-- ORDER BY / LIMIT / OFFSET.  This is the backward-compatible entry the
+-- statement parser and `parseSelect` use — its behaviour is byte-identical to
+-- the pre-compound single-SELECT parser.  A trailing set operator (`UNION`, …)
+-- is NOT consumed here, so `parseSelect "… UNION …"` still stops and
+-- `endOfStatement` reports the unsupported tail, exactly as before.
 selectStmt : Parser Select
 selectStmt = do
+  core <- selectCore
+  (ob, lm, off) <- orderLimitOffset
+  pure (applyTail core ob lm off)
+
+-- `SELECT [DISTINCT] selList FROM tableRef join* [WHERE] [GROUP BY] [HAVING]` —
+-- one arm of a compound.  Deliberately EXCLUDES ORDER BY / LIMIT / OFFSET: in a
+-- compound those bind to the whole query and appear only after the last arm
+-- (SQLite's rule).
+selectCore : Parser Select
+selectCore = do
   _ <- keyword "SELECT"
   dist <- optional (keyword "DISTINCT")
   cols <- selectList
@@ -247,10 +277,128 @@ selectStmt = do
   w <- afterKeyword "WHERE" (predicate "WHERE")
   gb <- groupByClause
   h <- afterKeyword "HAVING" sqlExpr
+  pure (assemble tbl tblAlias js (isSome dist) cols w gb h)
+
+-- The compound-level trailing clauses (also a single SELECT's own tail):
+-- `[ORDER BY …] [LIMIT n] [OFFSET n]`, each optional, in this order.
+orderLimitOffset : Parser (List (SqlExpr, Bool), Option Int, Option Int)
+orderLimitOffset = do
   ob <- orderByClause
   lm <- afterKeyword "LIMIT" intLit
   off <- afterKeyword "OFFSET" intLit
-  pure (assemble tbl tblAlias js (isSome dist) cols w gb h ob lm off)
+  pure (ob, lm, off)
+
+-- Attach ORDER BY keys, LIMIT, and OFFSET to a `selectCore` — used both for a
+-- plain single SELECT and to fold a single-arm compound's trailing clauses back
+-- onto its one `Select`.
+applyTail : Select -> List (SqlExpr, Bool) -> Option Int -> Option Int -> Select
+applyTail sel ob lm off = sel
+  |> addOrderKeys ob
+  |> applyOpt withLimit lm
+  |> applyOpt withOffset off
+
+-- ---------------------------------------------------------------------------
+-- Compound queries: `selectCore ( (UNION [ALL] | INTERSECT | EXCEPT) selectCore )*`
+-- with a single trailing ORDER BY / LIMIT / OFFSET binding to the whole result.
+-- ---------------------------------------------------------------------------
+
+-- | Parse a compound (set-operation) query.  A bare single SELECT parses to a
+--   `Compound` with no arms; each `UNION [ALL]` / `INTERSECT` / `EXCEPT`
+--   appends a left-associative arm; a trailing ORDER BY / LIMIT / OFFSET binds
+--   to the whole compound.  A trailing `;` is tolerated; anything left over is
+--   an error.
+--
+-- A single SELECT (no set op) round-trips exactly like `parseSelect`:
+--
+-- > map renderCompound (parseQuery "SELECT * FROM users")
+-- Ok "SELECT * FROM users"
+--
+-- > map renderCompound (parseQuery "SELECT a FROM t UNION SELECT b FROM u")
+-- Ok "SELECT a FROM t UNION SELECT b FROM u"
+--
+-- > map renderCompound (parseQuery "SELECT a FROM t UNION ALL SELECT b FROM u")
+-- Ok "SELECT a FROM t UNION ALL SELECT b FROM u"
+--
+-- > map renderCompound (parseQuery "SELECT a FROM t INTERSECT SELECT b FROM u")
+-- Ok "SELECT a FROM t INTERSECT SELECT b FROM u"
+--
+-- > map renderCompound (parseQuery "SELECT a FROM t EXCEPT SELECT b FROM u")
+-- Ok "SELECT a FROM t EXCEPT SELECT b FROM u"
+--
+-- A trailing ORDER BY / LIMIT binds to the WHOLE compound and renders once, at
+-- the end (canonicalized with an explicit ASC, as `renderSelect` does):
+--
+-- > map renderCompound (parseQuery "SELECT a FROM t UNION SELECT b FROM u ORDER BY a LIMIT 5")
+-- Ok "SELECT a FROM t UNION SELECT b FROM u ORDER BY a ASC LIMIT 5"
+--
+-- Multi-arm chains associate left, all set operators at the same precedence:
+--
+-- > map renderCompound (parseQuery "SELECT a FROM t UNION SELECT b FROM u EXCEPT SELECT c FROM v ORDER BY a")
+-- Ok "SELECT a FROM t UNION SELECT b FROM u EXCEPT SELECT c FROM v ORDER BY a ASC"
+--
+-- Per-arm WHERE / GROUP BY / HAVING stay on their arm; DISTINCT round-trips:
+--
+-- > map renderCompound (parseQuery "SELECT DISTINCT a FROM t WHERE a > 1 UNION SELECT b FROM u")
+-- Ok "SELECT DISTINCT a FROM t WHERE (a > 1) UNION SELECT b FROM u"
+export parseQuery : String -> Result String Compound
+parseQuery s = runParser queryStatement s
+
+queryStatement : Parser Compound
+queryStatement = do
+  _ <- spaces
+  q <- compoundP
+  _ <- optional (symbol ";")
+  _ <- endOfStatement
+  pure q
+
+compoundP : Parser Compound
+compoundP = do
+  first <- selectCore
+  arms <- setOpArms
+  (ob, lm, off) <- orderLimitOffset
+  pure (Compound first arms ob lm off)
+
+-- A committed loop of `setOp selectCore` arms — "speculative HEAD, then
+-- MANDATORY tail", like every other clause loop in this module: once a set
+-- operator matched, the `selectCore` under it is non-optional, so a broken arm
+-- is a real error rather than a silent backtrack.
+setOpArms : Parser (List (SetOp, Select))
+setOpArms = do
+  m <- optional setOpHead
+  setOpArmsStep m
+
+setOpArmsStep : Option SetOp -> Parser (List (SetOp, Select))
+setOpArmsStep None = pure []
+setOpArmsStep (Some op) = do
+  sel <- selectCore
+  rest <- setOpArms
+  pure ((op, sel)::rest)
+
+-- `UNION [ALL] | INTERSECT | EXCEPT`.  `keyword` is `attempt`-wrapped (fails
+-- without consuming), so `choice` and the enclosing `optional` decline cleanly
+-- when the next token is ORDER BY / end-of-input instead.
+setOpHead : Parser SetOp
+setOpHead = choice [unionHead, intersectHead, exceptHead]
+
+unionHead : Parser SetOp
+unionHead = do
+  _ <- keyword "UNION"
+  allKw <- optional (keyword "ALL")
+  pure (unionOp allKw)
+
+unionOp : Option Unit -> SetOp
+unionOp (Some _) = OpUnionAll
+unionOp None = OpUnion
+
+intersectHead : Parser SetOp
+intersectHead = do
+  _ <- keyword "INTERSECT"
+  pure OpIntersect
+
+exceptHead : Parser SetOp
+exceptHead = do
+  _ <- keyword "EXCEPT"
+  pure OpExcept
 
 -- `SELECT *` (⇒ the empty projection list) or a comma-separated list of projection
 -- items, each an expression with an OPTIONAL output alias (`expr [AS] name`).
@@ -515,17 +663,14 @@ intOf s = match toInt s
 -- single owner of the record's shape (a new field gets a default from
 -- `selectFrom` instead of a type error here), and it keeps this module clear of
 -- the cross-module record-field hazards the earlier stages logged.
-assemble : String -> Option String -> List (JoinKind, String, Option String, SqlExpr) -> Bool -> List (SqlExpr, Option String) -> Option SqlExpr -> List SqlExpr -> Option SqlExpr -> List (SqlExpr, Bool) -> Option Int -> Option Int -> Select
-assemble tbl tblAlias js dist cols w gb h ob lm off = selectFromAs tbl tblAlias
+assemble : String -> Option String -> List (JoinKind, String, Option String, SqlExpr) -> Bool -> List (SqlExpr, Option String) -> Option SqlExpr -> List SqlExpr -> Option SqlExpr -> Select
+assemble tbl tblAlias js dist cols w gb h = selectFromAs tbl tblAlias
   |> addJoins js
   |> withColumnsAliased cols
   |> applyDistinct dist
   |> applyOpt (e sel => withWhere (mkE e) sel) w
   |> withGroupExprs gb
   |> applyOpt (e sel => withHavingPred (mkE e) sel) h
-  |> addOrderKeys ob
-  |> applyOpt withLimit lm
-  |> applyOpt withOffset off
 
 addJoins : List (JoinKind, String, Option String, SqlExpr) -> Select -> Select
 addJoins js sel = fold (acc j => addJoin j acc) sel js
@@ -570,6 +715,30 @@ export renderSelect : Select -> String
 renderSelect (Select { from = tbl, fromAlias = fa, joins = js, where_ = w, groupBy = gb, having = h, orderBy = ob, limit = lm, offset = off, distinct = dist, columns = cols, columnAliases = cas }) =
   let kw = if dist then "SELECT DISTINCT" else "SELECT"
   "\{kw} \{renderCols cols cas} FROM \{tbl}\{renderAliasText fa}\{renderJoinList js}\{renderOpt " WHERE " w}\{renderGroup gb}\{renderOpt " HAVING " h}\{renderOrder ob}\{renderInt " LIMIT " lm}\{renderInt " OFFSET " off}"
+
+-- | Render a `Compound` back to SQL text with literals INLINED, the inverse of
+--   `parseQuery` (`parseQuery . renderCompound` is the identity — see the
+--   `parseQuery` doctests).  Each arm renders through `renderSelect` (its own
+--   ORDER BY / LIMIT / OFFSET are empty on an arm, so nothing extra prints); the
+--   set operators join them left-to-right; the compound-level ORDER BY / LIMIT /
+--   OFFSET render once, at the end.
+--
+-- > renderCompound (Compound (selectFromNamed "t" "a") [(OpUnion, selectFromNamed "u" "b")] [] None None)
+-- "SELECT a FROM t UNION SELECT b FROM u"
+export renderCompound : Compound -> String
+renderCompound (Compound first rest ob lm off) = "\{renderSelect first}\{renderSetArms rest}\{renderOrder ob}\{renderInt " LIMIT " lm}\{renderInt " OFFSET " off}"
+
+renderSetArms : List (SetOp, Select) -> String
+renderSetArms arms = join "" (map renderSetArm arms)
+
+renderSetArm : (SetOp, Select) -> String
+renderSetArm (op, sel) = " \{setOpSql op} \{renderSelect sel}"
+
+-- A one-column single-table SELECT, for the `renderCompound` doctest (keeps it
+-- from having to spell out the whole `Select` record).
+selectFromNamed : String -> String -> Select
+selectFromNamed tbl col =
+  withColumnsAliased [(ECol col, None)] (selectFromAs tbl None)
 
 -- Render the projection list, each item with its optional `AS <name>` output
 -- alias.  Empty ⇒ `*`.  `cas` is positionally parallel to `cols` and may be
@@ -671,8 +840,16 @@ renderInt kw (Some n) = "\{kw}\{n}"
 --   `sqlite/inmem_sqlparse_probe.mdk`.)
 export queryString : Db -> String -> RowType a -> Result String (List a)
 queryString db sql rt = do
-  sel <- parseSelect sql
-  runNonDistinct db sel rt
+  q <- parseQuery sql
+  runCompoundNonDistinct db q rt
+
+-- Single-arm ⇒ the historical single-SELECT path (DISTINCT rejected here, since
+-- plain `query` cannot dedup DECODED rows without `Eq a`).  Multi-arm ⇒ the
+-- compound executor, whose set-op dedup is on CELLS and needs no `Eq a`.
+runCompoundNonDistinct : Db -> Compound -> RowType a -> Result String (List a)
+runCompoundNonDistinct db (Compound first rest ob lm off) rt = match rest
+  [] => runNonDistinct db (applyTail first ob lm off) rt
+  _ => runCompound db (Compound first rest ob lm off) rt
 
 runNonDistinct : Db -> Select -> RowType a -> Result String (List a)
 runNonDistinct db sel rt =
@@ -690,8 +867,16 @@ runNonDistinct db sel rt =
 --   which dedups UNCONDITIONALLY and leaves honouring the flag to its caller.)
 export queryStringDistinct : Eq a => Db -> String -> RowType a -> Result String (List a)
 queryStringDistinct db sql rt = do
-  sel <- parseSelect sql
-  runSelect db sel rt
+  q <- parseQuery sql
+  runCompoundQ db q rt
+
+-- Single-arm ⇒ the historical single-SELECT path (`runSelect` honours DISTINCT
+-- by deduping the DECODED rows).  Multi-arm ⇒ the compound executor (arm-level
+-- DISTINCT and set-op dedup both run in cell-land).
+runCompoundQ : Eq a => Db -> Compound -> RowType a -> Result String (List a)
+runCompoundQ db (Compound first rest ob lm off) rt = match rest
+  [] => runSelect db (applyTail first ob lm off) rt
+  _ => runCompound db (Compound first rest ob lm off) rt
 
 -- | Run an already-parsed `Select`, honouring its `DISTINCT` flag (dedup on the
 --   DECODED rows, hence the `Eq a`).  This is what `lib.sqlexec` dispatches a

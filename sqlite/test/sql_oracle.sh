@@ -260,6 +260,46 @@ QUERIES=(
   "select name, age from users where age Is Not Null Order By age Desc, id Asc;"
   "SELECT COUNT(*) FROM orders;"
   "Select Distinct city From users Where city Is Not Null Order By city;"
+  # -- SET OPERATIONS: UNION [ALL] / INTERSECT / EXCEPT ------------------------
+  # Set-op row order is UNSPECIFIED without an ORDER BY, and the oracle diffs
+  # stdout, so EVERY query here carries an explicit ORDER BY (which binds to the
+  # WHOLE compound) to make both engines deterministic.  Row identity is
+  # full-row equality with NULLs equal — matching SQLite's set-op semantics.
+  # UNION dedups; UNION ALL keeps duplicates (uids repeat in orders):
+  "SELECT uid FROM orders UNION SELECT uid FROM orders ORDER BY uid"
+  "SELECT uid FROM orders UNION ALL SELECT uid FROM orders ORDER BY uid"
+  # bob's age is NULL — it survives UNION as a single deduped NULL row:
+  "SELECT age FROM users UNION SELECT age FROM users ORDER BY age"
+  "SELECT age FROM users UNION ALL SELECT age FROM users ORDER BY age"
+  # UNION across two tables:
+  "SELECT id FROM users UNION SELECT uid FROM orders ORDER BY id"
+  "SELECT id FROM users UNION ALL SELECT uid FROM orders ORDER BY id"
+  # INTERSECT — rows in BOTH, deduped (users 1..4 vs order uids 1,2,3):
+  "SELECT id FROM users INTERSECT SELECT uid FROM orders ORDER BY id"
+  "SELECT uid FROM orders INTERSECT SELECT id FROM users ORDER BY uid"
+  # NULL is present in both sides ⇒ NULL is in the INTERSECT (NULLs equal):
+  "SELECT age FROM users INTERSECT SELECT age FROM users ORDER BY age"
+  # EXCEPT — left rows absent from the right, deduped:
+  "SELECT id FROM users EXCEPT SELECT uid FROM orders ORDER BY id"
+  "SELECT uid FROM orders EXCEPT SELECT id FROM users ORDER BY uid"
+  "SELECT age FROM users EXCEPT SELECT age FROM users WHERE age > 25 ORDER BY age"
+  "SELECT city FROM users UNION SELECT city FROM users ORDER BY city"
+  # multi-arm chains — LEFT-associative, all set operators the same precedence:
+  "SELECT id FROM users UNION SELECT uid FROM orders INTERSECT SELECT id FROM users ORDER BY id"
+  "SELECT id FROM users UNION SELECT uid FROM orders EXCEPT SELECT id FROM users WHERE id = 2 ORDER BY id"
+  "SELECT uid FROM orders UNION ALL SELECT id FROM users UNION SELECT qty FROM orders ORDER BY uid"
+  # trailing LIMIT / OFFSET / ordinal ORDER BY on the WHOLE compound:
+  "SELECT id FROM users UNION SELECT uid FROM orders ORDER BY id LIMIT 2"
+  "SELECT id FROM users UNION SELECT uid FROM orders ORDER BY id DESC LIMIT 2 OFFSET 1"
+  "SELECT id FROM users UNION SELECT uid FROM orders ORDER BY 1 DESC"
+  # multi-column arms; per-arm WHERE / JOIN stays on its arm:
+  "SELECT name, age FROM users WHERE age IS NOT NULL UNION SELECT city, id FROM users ORDER BY name, age"
+  "SELECT id, city FROM users UNION SELECT uid, name FROM orders JOIN users ON orders.uid = users.id ORDER BY id, city"
+  # arm-level DISTINCT (honoured, deduped in cell-land) + a GROUP BY/HAVING arm:
+  "SELECT DISTINCT age FROM users UNION SELECT age FROM users ORDER BY age"
+  "SELECT uid FROM orders GROUP BY uid HAVING count(*) > 1 UNION SELECT id FROM users WHERE id > 3 ORDER BY uid"
+  # case-insensitive set-op keywords:
+  "select id from users Union All select uid from orders Order By id"
 )
 
 # ── 2. REJECTION CORPUS ───────────────────────────────────────────────────────
@@ -267,9 +307,17 @@ QUERIES=(
 # never a silently-dropped clause and never a panic.  sqlite3 executes most of
 # these fine; we refuse ON PURPOSE, which is the whole point of the section.
 REJECTS=(
-  # set operations / sub-queries / CTEs
-  "SELECT a FROM t UNION SELECT b FROM u"
-  "SELECT a FROM t INTERSECT SELECT b FROM u"
+  # set-op arm column-count mismatch — SQLite rejects at prepare time (even on
+  # empty tables); so do we, with the same message shape, for every operator.
+  "SELECT id, name FROM users UNION SELECT uid FROM orders"
+  "SELECT id FROM users UNION ALL SELECT uid, amount FROM orders"
+  "SELECT id FROM users INTERSECT SELECT uid, amount FROM orders"
+  "SELECT id, name FROM users EXCEPT SELECT uid FROM orders"
+  "SELECT id FROM users UNION SELECT uid FROM orders INTERSECT SELECT id, name FROM users"
+  # a set-op arm with no FROM (SELECT of a bare constant) — unsupported by the
+  # whole engine (selectCore requires FROM), a clean Err not a wrong answer.
+  "SELECT id FROM users UNION SELECT 1"
+  # sub-queries / CTEs (still unsupported)
   "SELECT id FROM users WHERE id IN (SELECT uid FROM orders)"
   # unsupported expression syntax: the ESCAPE clause, GLOB/MATCH/REGEXP,
   # COLLATE, JSON arrows, an unknown scalar function, malformed CASE/IN
