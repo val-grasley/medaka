@@ -122,6 +122,9 @@ emit : a -> Parser a
 encodeAxis : (String, String) -> String
 encodeProductParam : List (String, String) -> String
 encodeSetParam : List String -> String
+eqGuardIfMsg : String
+eqGuardShapeFrom : Array Token -> Int -> Int -> Bool
+eqGuardShapeP : Parser Bool
 expectGo : Token -> Token -> Parser Unit
 expectMinus : Parser Unit
 expectMinusGo : Token -> Parser Unit
@@ -230,6 +233,7 @@ isCtorChars : Array Char -> Bool
 isCtorName : String -> Bool
 isDataDecl : Decl -> Bool
 isForeignKwTok : Token -> Bool
+isGuardLineEndTok : Token -> Bool
 isIntMinLit : Int -> Bool
 isLayoutTok : Token -> Bool
 isLeadingModifierTok : Token -> Bool
@@ -292,6 +296,7 @@ many : Parser a -> Parser (List a)
 manyGo : Parser a -> Array Token -> Int -> List a -> PR (List a)
 manyStep : Parser a -> Array Token -> Int -> Int -> List a -> a -> PR (List a)
 mapPR : (a -> b) -> PR a -> PR b
+matchArmBarGuardMsg : String
 memberAliasFor : Int -> String -> Bool -> Token -> Parser UseMember
 memberAliasName : Parser String
 memberAliasNameFor : Token -> Parser String
@@ -370,6 +375,9 @@ parseField : Parser Field
 parseFunOrSig : Bool -> Parser Decl
 parseGuard : Parser Guard
 parseGuardArm : Parser GuardArm
+parseGuardArmBody : Parser GuardArm
+parseGuardArmFor : Token -> Parser GuardArm
+parseGuardArmIf : Bool -> Parser GuardArm
 parseGuardArms : Parser (List GuardArm)
 parseIf : Parser Expr
 parseImpl : Bool -> Parser Decl

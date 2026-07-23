@@ -1,5 +1,5 @@
 # META
-source_lines=4679
+source_lines=4743
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka parser — Stage 1 port of `lib/parser.mly`.  A monadic
@@ -1421,11 +1421,24 @@ armGuardOpt = do
   t <- peekP
   armGuardFor t
 
+-- A `|` where a match arm's guard/`=>` belongs is the Haskell/ML habit: equation
+-- (function-clause) guards use `|`, but MATCH-ARM guards use `if` (see `parseArm`
+-- above and SYNTAX.md "Match-arm guards").  `|` never validly follows a pattern
+-- in a match arm — Medaka has neither `|` guards nor or-patterns there — so this
+-- is unambiguous.  Commit with `fatalP` (at the `|`) so the targeted message
+-- reaches the user instead of being swallowed by `armsLoop`'s `orElse … (pure [])`
+-- and re-surfacing as the misleading "expected a dedent" caret on the PATTERN
+-- (#591).  The message names the guard fix (the likelier intent) but also the
+-- or-pattern one (`1 | 2 => …`), since both spell `pat | … => …`.
 armGuardFor : Token -> Parser (List Guard)
 armGuardFor TIf = do
   advance
   sepBy1 parseGuard (expectTok TComma)
+armGuardFor TPipe = fatalP matchArmBarGuardMsg
 armGuardFor _ = pure []
+
+matchArmBarGuardMsg : String
+matchArmBarGuardMsg = "a match-arm guard uses `if`, not `|` — write `pat if cond => body` (Medaka has no or-patterns)"
 
 -- ── Patterns ────────────────────────────────────────────────────────────
 -- A full pattern is a cons-pattern; the as-pattern `x@p` is a cons HEAD, so `@`
@@ -2794,13 +2807,64 @@ guardArmsCons = do
   rest <- guardArmsLoop
   pure (a::rest)
 
+-- The inverse of the match-arm case (#591): an equation (function-clause) guard
+-- uses `|`, but a user with the match-arm `if` habit writes `if cond = body`.
+-- Only commit (`fatalP` at the `if`) when the line has the guard SHAPE — a
+-- top-level `=` before any `then`/end-of-line — so a genuine, if malformed,
+-- `if … then …` body isn't mis-blamed as a guard; otherwise fall through to the
+-- ordinary `expectTok TPipe` failure.
 parseGuardArm : Parser GuardArm
 parseGuardArm = do
+  t <- peekP
+  parseGuardArmFor t
+
+parseGuardArmFor : Token -> Parser GuardArm
+parseGuardArmFor TIf = do
+  looksGuard <- eqGuardShapeP
+  parseGuardArmIf looksGuard
+parseGuardArmFor _ = parseGuardArmBody
+
+parseGuardArmIf : Bool -> Parser GuardArm
+parseGuardArmIf True = fatalP eqGuardIfMsg
+parseGuardArmIf False = parseGuardArmBody
+
+parseGuardArmBody : Parser GuardArm
+parseGuardArmBody = do
   expectTok TPipe
   guards <- sepBy1 parseGuard (expectTok TComma)
   expectTok TEqual
   body <- parseBody
   pure (GuardArm guards body)
+
+eqGuardIfMsg : String
+eqGuardIfMsg = "an equation guard uses `|`, not `if` — write `| cond = body`"
+
+-- true when, from token `i` at bracket depth 0, a top-level `=` appears before
+-- any `then` / end-of-line: the `if …` heads an equation guard (`if cond = body`),
+-- not an `if … then … else …` expression.  Bracket depth keeps a `then`/`=`
+-- inside a parenthesised condition from being counted (mirrors the depth-tracked
+-- line scanners below).
+eqGuardShapeFrom : Array Token -> Int -> Int -> Bool
+eqGuardShapeFrom toks i depth
+  | i >= arrayLength toks = False
+  | depth == 0 && isGuardLineEndTok (peekTok toks i) = False
+  | depth == 0 && peekTok toks i == TThen = False
+  | depth == 0 && peekTok toks i == TEqual = True
+  | isBracketOpenTok (peekTok toks i) =
+    eqGuardShapeFrom toks (i + 1) (depth + 1)
+  | isBracketCloseTok (peekTok toks i) =
+    eqGuardShapeFrom toks (i + 1) (depth - 1)
+  | otherwise = eqGuardShapeFrom toks (i + 1) depth
+
+isGuardLineEndTok : Token -> Bool
+isGuardLineEndTok TNewline = True
+isGuardLineEndTok TIndent = True
+isGuardLineEndTok TDedent = True
+isGuardLineEndTok TEof = True
+isGuardLineEndTok _ = False
+
+eqGuardShapeP : Parser Bool
+eqGuardShapeP = Parser (toks pos => POk (eqGuardShapeFrom toks pos 0) pos)
 
 -- A guard qualifier parses at the `expr_or` level (mirrors the reference
 -- `guard_qual`): NOT full `parseExpr`, so a trailing `=>` in a match-arm guard
@@ -5179,7 +5243,10 @@ parseResultWith src tokList offList =
 (DFunDef false "armGuardOpt" () (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "armGuardFor") (EVar "t")))))
 (DTypeSig false "armGuardFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "Guard")))))
 (DFunDef false "armGuardFor" ((PCon "TIf")) (EApp (EApp (EVar "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma"))))))
+(DFunDef false "armGuardFor" ((PCon "TPipe")) (EApp (EVar "fatalP") (EVar "matchArmBarGuardMsg")))
 (DFunDef false "armGuardFor" (PWild) (EApp (EVar "pure") (EListLit)))
+(DTypeSig false "matchArmBarGuardMsg" (TyCon "String"))
+(DFunDef false "matchArmBarGuardMsg" () (ELit (LString "a match-arm guard uses `if`, not `|` — write `pat if cond => body` (Medaka has no or-patterns)")))
 (DTypeSig false "parsePat" (TyApp (TyCon "Parser") (TyCon "Pat")))
 (DFunDef false "parsePat" () (EVar "parsePatCons"))
 (DTypeSig false "parseAsPat" (TyApp (TyCon "Parser") (TyCon "Pat")))
@@ -5624,7 +5691,27 @@ parseResultWith src tokList offList =
 (DTypeSig false "guardArmsCons" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "GuardArm"))))
 (DFunDef false "guardArmsCons" () (EApp (EApp (EVar "andThen") (EVar "parseGuardArm")) (ELam ((PVar "a")) (EApp (EApp (EVar "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "guardArmsLoop")) (ELam ((PVar "rest")) (EApp (EVar "pure") (EBinOp "::" (EVar "a") (EVar "rest"))))))))))
 (DTypeSig false "parseGuardArm" (TyApp (TyCon "Parser") (TyCon "GuardArm")))
-(DFunDef false "parseGuardArm" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "guards")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TEqual"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseBody")) (ELam ((PVar "body")) (EApp (EVar "pure") (EApp (EApp (EVar "GuardArm") (EVar "guards")) (EVar "body"))))))))))))
+(DFunDef false "parseGuardArm" () (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "parseGuardArmFor") (EVar "t")))))
+(DTypeSig false "parseGuardArmFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "GuardArm"))))
+(DFunDef false "parseGuardArmFor" ((PCon "TIf")) (EApp (EApp (EVar "andThen") (EVar "eqGuardShapeP")) (ELam ((PVar "looksGuard")) (EApp (EVar "parseGuardArmIf") (EVar "looksGuard")))))
+(DFunDef false "parseGuardArmFor" (PWild) (EVar "parseGuardArmBody"))
+(DTypeSig false "parseGuardArmIf" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "GuardArm"))))
+(DFunDef false "parseGuardArmIf" ((PCon "True")) (EApp (EVar "fatalP") (EVar "eqGuardIfMsg")))
+(DFunDef false "parseGuardArmIf" ((PCon "False")) (EVar "parseGuardArmBody"))
+(DTypeSig false "parseGuardArmBody" (TyApp (TyCon "Parser") (TyCon "GuardArm")))
+(DFunDef false "parseGuardArmBody" () (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "guards")) (EApp (EApp (EVar "andThen") (EApp (EVar "expectTok") (EVar "TEqual"))) (ELam (PWild) (EApp (EApp (EVar "andThen") (EVar "parseBody")) (ELam ((PVar "body")) (EApp (EVar "pure") (EApp (EApp (EVar "GuardArm") (EVar "guards")) (EVar "body"))))))))))))
+(DTypeSig false "eqGuardIfMsg" (TyCon "String"))
+(DFunDef false "eqGuardIfMsg" () (ELit (LString "an equation guard uses `|`, not `if` — write `| cond = body`")))
+(DTypeSig false "eqGuardShapeFrom" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
+(DFunDef false "eqGuardShapeFrom" ((PVar "toks") (PVar "i") (PVar "depth")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks"))) (EVar "False") (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "isGuardLineEndTok") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i")))) (EVar "False") (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i")) (EVar "TThen"))) (EVar "False") (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i")) (EVar "TEqual"))) (EVar "True") (EIf (EApp (EVar "isBracketOpenTok") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i"))) (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isBracketCloseTok") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i"))) (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))))
+(DTypeSig false "isGuardLineEndTok" (TyFun (TyCon "Token") (TyCon "Bool")))
+(DFunDef false "isGuardLineEndTok" ((PCon "TNewline")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" ((PCon "TIndent")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" ((PCon "TDedent")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" ((PCon "TEof")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" (PWild) (EVar "False"))
+(DTypeSig false "eqGuardShapeP" (TyApp (TyCon "Parser") (TyCon "Bool")))
+(DFunDef false "eqGuardShapeP" () (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "POk") (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EVar "pos")) (ELit (LInt 0)))) (EVar "pos")))))
 (DTypeSig false "parseGuard" (TyApp (TyCon "Parser") (TyCon "Guard")))
 (DFunDef false "parseGuard" () (EApp (EApp (EVar "andThen") (EVar "parseOr")) (ELam ((PVar "e")) (EApp (EApp (EVar "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "guardFor") (EVar "e")) (EVar "t")))))))
 (DTypeSig false "guardFor" (TyFun (TyCon "Expr") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Guard")))))
@@ -6643,7 +6730,10 @@ parseResultWith src tokList offList =
 (DFunDef false "armGuardOpt" () (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "armGuardFor") (EVar "t")))))
 (DTypeSig false "armGuardFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "Guard")))))
 (DFunDef false "armGuardFor" ((PCon "TIf")) (EApp (EApp (EMethodRef "andThen") (EVar "advance")) (ELam (PWild) (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma"))))))
+(DFunDef false "armGuardFor" ((PCon "TPipe")) (EApp (EVar "fatalP") (EVar "matchArmBarGuardMsg")))
 (DFunDef false "armGuardFor" (PWild) (EApp (EMethodRef "pure") (EListLit)))
+(DTypeSig false "matchArmBarGuardMsg" (TyCon "String"))
+(DFunDef false "matchArmBarGuardMsg" () (ELit (LString "a match-arm guard uses `if`, not `|` — write `pat if cond => body` (Medaka has no or-patterns)")))
 (DTypeSig false "parsePat" (TyApp (TyCon "Parser") (TyCon "Pat")))
 (DFunDef false "parsePat" () (EVar "parsePatCons"))
 (DTypeSig false "parseAsPat" (TyApp (TyCon "Parser") (TyCon "Pat")))
@@ -7088,7 +7178,27 @@ parseResultWith src tokList offList =
 (DTypeSig false "guardArmsCons" (TyApp (TyCon "Parser") (TyApp (TyCon "List") (TyCon "GuardArm"))))
 (DFunDef false "guardArmsCons" () (EApp (EApp (EMethodRef "andThen") (EVar "parseGuardArm")) (ELam ((PVar "a")) (EApp (EApp (EMethodRef "andThen") (EVar "skipNewlines")) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "guardArmsLoop")) (ELam ((PVar "rest")) (EApp (EMethodRef "pure") (EBinOp "::" (EVar "a") (EVar "rest"))))))))))
 (DTypeSig false "parseGuardArm" (TyApp (TyCon "Parser") (TyCon "GuardArm")))
-(DFunDef false "parseGuardArm" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "guards")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TEqual"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseBody")) (ELam ((PVar "body")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "GuardArm") (EVar "guards")) (EVar "body"))))))))))))
+(DFunDef false "parseGuardArm" () (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EVar "parseGuardArmFor") (EVar "t")))))
+(DTypeSig false "parseGuardArmFor" (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "GuardArm"))))
+(DFunDef false "parseGuardArmFor" ((PCon "TIf")) (EApp (EApp (EMethodRef "andThen") (EVar "eqGuardShapeP")) (ELam ((PVar "looksGuard")) (EApp (EVar "parseGuardArmIf") (EVar "looksGuard")))))
+(DFunDef false "parseGuardArmFor" (PWild) (EVar "parseGuardArmBody"))
+(DTypeSig false "parseGuardArmIf" (TyFun (TyCon "Bool") (TyApp (TyCon "Parser") (TyCon "GuardArm"))))
+(DFunDef false "parseGuardArmIf" ((PCon "True")) (EApp (EVar "fatalP") (EVar "eqGuardIfMsg")))
+(DFunDef false "parseGuardArmIf" ((PCon "False")) (EVar "parseGuardArmBody"))
+(DTypeSig false "parseGuardArmBody" (TyApp (TyCon "Parser") (TyCon "GuardArm")))
+(DFunDef false "parseGuardArmBody" () (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TPipe"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EApp (EApp (EVar "sepBy1") (EVar "parseGuard")) (EApp (EVar "expectTok") (EVar "TComma")))) (ELam ((PVar "guards")) (EApp (EApp (EMethodRef "andThen") (EApp (EVar "expectTok") (EVar "TEqual"))) (ELam (PWild) (EApp (EApp (EMethodRef "andThen") (EVar "parseBody")) (ELam ((PVar "body")) (EApp (EMethodRef "pure") (EApp (EApp (EVar "GuardArm") (EVar "guards")) (EVar "body"))))))))))))
+(DTypeSig false "eqGuardIfMsg" (TyCon "String"))
+(DFunDef false "eqGuardIfMsg" () (ELit (LString "an equation guard uses `|`, not `if` — write `| cond = body`")))
+(DTypeSig false "eqGuardShapeFrom" (TyFun (TyApp (TyCon "Array") (TyCon "Token")) (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyCon "Bool")))))
+(DFunDef false "eqGuardShapeFrom" ((PVar "toks") (PVar "i") (PVar "depth")) (EIf (EBinOp ">=" (EVar "i") (EApp (EVar "arrayLength") (EVar "toks"))) (EVar "False") (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EApp (EVar "isGuardLineEndTok") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i")))) (EVar "False") (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i")) (EVar "TThen"))) (EVar "False") (EIf (EBinOp "&&" (EBinOp "==" (EVar "depth") (ELit (LInt 0))) (EBinOp "==" (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i")) (EVar "TEqual"))) (EVar "True") (EIf (EApp (EVar "isBracketOpenTok") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i"))) (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "+" (EVar "depth") (ELit (LInt 1)))) (EIf (EApp (EVar "isBracketCloseTok") (EApp (EApp (EVar "peekTok") (EVar "toks")) (EVar "i"))) (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EBinOp "-" (EVar "depth") (ELit (LInt 1)))) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EBinOp "+" (EVar "i") (ELit (LInt 1)))) (EVar "depth")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))))
+(DTypeSig false "isGuardLineEndTok" (TyFun (TyCon "Token") (TyCon "Bool")))
+(DFunDef false "isGuardLineEndTok" ((PCon "TNewline")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" ((PCon "TIndent")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" ((PCon "TDedent")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" ((PCon "TEof")) (EVar "True"))
+(DFunDef false "isGuardLineEndTok" (PWild) (EVar "False"))
+(DTypeSig false "eqGuardShapeP" (TyApp (TyCon "Parser") (TyCon "Bool")))
+(DFunDef false "eqGuardShapeP" () (EApp (EVar "Parser") (ELam ((PVar "toks") (PVar "pos")) (EApp (EApp (EVar "POk") (EApp (EApp (EApp (EVar "eqGuardShapeFrom") (EVar "toks")) (EVar "pos")) (ELit (LInt 0)))) (EVar "pos")))))
 (DTypeSig false "parseGuard" (TyApp (TyCon "Parser") (TyCon "Guard")))
 (DFunDef false "parseGuard" () (EApp (EApp (EMethodRef "andThen") (EVar "parseOr")) (ELam ((PVar "e")) (EApp (EApp (EMethodRef "andThen") (EVar "peekP")) (ELam ((PVar "t")) (EApp (EApp (EVar "guardFor") (EVar "e")) (EVar "t")))))))
 (DTypeSig false "guardFor" (TyFun (TyCon "Expr") (TyFun (TyCon "Token") (TyApp (TyCon "Parser") (TyCon "Guard")))))

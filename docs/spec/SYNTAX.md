@@ -172,7 +172,11 @@ setX v p@(Pt { x, y }) = Pt { p | x = v }  -- `@` as-pattern param (binds whole 
 
 Implicitly self-recursive and mutually recursive at top level — no keyword.
 
-Guards (arm fires only if every comma-separated qualifier holds; else fall through):
+Guards (arm fires only if every comma-separated qualifier holds; else fall through).
+⚠️ An **equation** (function-clause) guard is introduced by a leading **`|`** — a
+**match-arm** guard uses **`if`** instead (see "Match-arm guards" below). The two
+spellings are NOT interchangeable: `|` in a match arm and `if` in an equation guard
+are both parse errors.
 
 ```medaka
 classify n
@@ -345,7 +349,9 @@ m10 p = match p
   Person { ... }             => 0          -- record rest only
 ```
 
-Match-arm guards (same qualifiers as equation guards):
+Match-arm guards — the SAME qualifiers as equation guards (`cond`, comma-`,`
+conjunction, `pat <- expr` binds), but introduced by **`if`**, not the equation
+guard's leading `|`:
 
 ```medaka
 f : Int -> Option Int

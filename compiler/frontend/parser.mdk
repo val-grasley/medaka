@@ -1417,11 +1417,24 @@ armGuardOpt = do
   t <- peekP
   armGuardFor t
 
+-- A `|` where a match arm's guard/`=>` belongs is the Haskell/ML habit: equation
+-- (function-clause) guards use `|`, but MATCH-ARM guards use `if` (see `parseArm`
+-- above and SYNTAX.md "Match-arm guards").  `|` never validly follows a pattern
+-- in a match arm — Medaka has neither `|` guards nor or-patterns there — so this
+-- is unambiguous.  Commit with `fatalP` (at the `|`) so the targeted message
+-- reaches the user instead of being swallowed by `armsLoop`'s `orElse … (pure [])`
+-- and re-surfacing as the misleading "expected a dedent" caret on the PATTERN
+-- (#591).  The message names the guard fix (the likelier intent) but also the
+-- or-pattern one (`1 | 2 => …`), since both spell `pat | … => …`.
 armGuardFor : Token -> Parser (List Guard)
 armGuardFor TIf = do
   advance
   sepBy1 parseGuard (expectTok TComma)
+armGuardFor TPipe = fatalP matchArmBarGuardMsg
 armGuardFor _ = pure []
+
+matchArmBarGuardMsg : String
+matchArmBarGuardMsg = "a match-arm guard uses `if`, not `|` — write `pat if cond => body` (Medaka has no or-patterns)"
 
 -- ── Patterns ────────────────────────────────────────────────────────────
 -- A full pattern is a cons-pattern; the as-pattern `x@p` is a cons HEAD, so `@`
@@ -2790,13 +2803,64 @@ guardArmsCons = do
   rest <- guardArmsLoop
   pure (a::rest)
 
+-- The inverse of the match-arm case (#591): an equation (function-clause) guard
+-- uses `|`, but a user with the match-arm `if` habit writes `if cond = body`.
+-- Only commit (`fatalP` at the `if`) when the line has the guard SHAPE — a
+-- top-level `=` before any `then`/end-of-line — so a genuine, if malformed,
+-- `if … then …` body isn't mis-blamed as a guard; otherwise fall through to the
+-- ordinary `expectTok TPipe` failure.
 parseGuardArm : Parser GuardArm
 parseGuardArm = do
+  t <- peekP
+  parseGuardArmFor t
+
+parseGuardArmFor : Token -> Parser GuardArm
+parseGuardArmFor TIf = do
+  looksGuard <- eqGuardShapeP
+  parseGuardArmIf looksGuard
+parseGuardArmFor _ = parseGuardArmBody
+
+parseGuardArmIf : Bool -> Parser GuardArm
+parseGuardArmIf True = fatalP eqGuardIfMsg
+parseGuardArmIf False = parseGuardArmBody
+
+parseGuardArmBody : Parser GuardArm
+parseGuardArmBody = do
   expectTok TPipe
   guards <- sepBy1 parseGuard (expectTok TComma)
   expectTok TEqual
   body <- parseBody
   pure (GuardArm guards body)
+
+eqGuardIfMsg : String
+eqGuardIfMsg = "an equation guard uses `|`, not `if` — write `| cond = body`"
+
+-- true when, from token `i` at bracket depth 0, a top-level `=` appears before
+-- any `then` / end-of-line: the `if …` heads an equation guard (`if cond = body`),
+-- not an `if … then … else …` expression.  Bracket depth keeps a `then`/`=`
+-- inside a parenthesised condition from being counted (mirrors the depth-tracked
+-- line scanners below).
+eqGuardShapeFrom : Array Token -> Int -> Int -> Bool
+eqGuardShapeFrom toks i depth
+  | i >= arrayLength toks = False
+  | depth == 0 && isGuardLineEndTok (peekTok toks i) = False
+  | depth == 0 && peekTok toks i == TThen = False
+  | depth == 0 && peekTok toks i == TEqual = True
+  | isBracketOpenTok (peekTok toks i) =
+    eqGuardShapeFrom toks (i + 1) (depth + 1)
+  | isBracketCloseTok (peekTok toks i) =
+    eqGuardShapeFrom toks (i + 1) (depth - 1)
+  | otherwise = eqGuardShapeFrom toks (i + 1) depth
+
+isGuardLineEndTok : Token -> Bool
+isGuardLineEndTok TNewline = True
+isGuardLineEndTok TIndent = True
+isGuardLineEndTok TDedent = True
+isGuardLineEndTok TEof = True
+isGuardLineEndTok _ = False
+
+eqGuardShapeP : Parser Bool
+eqGuardShapeP = Parser (toks pos => POk (eqGuardShapeFrom toks pos 0) pos)
 
 -- A guard qualifier parses at the `expr_or` level (mirrors the reference
 -- `guard_qual`): NOT full `parseExpr`, so a trailing `=>` in a match-arm guard

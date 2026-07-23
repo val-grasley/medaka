@@ -252,6 +252,8 @@ parseErrCode msg
   | startsWith "Medaka has no 'while'" msg = "P-FOR-WHILE"
   | startsWith "Medaka has no 'def'" msg = "P-DEF-KEYWORD"
   | startsWith "Medaka has no statement terminator" msg = "L-SEMICOLON"
+  | startsWith "a match-arm guard uses" msg = "P-GUARD-BAR-IN-MATCH"
+  | startsWith "an equation guard uses" msg = "P-GUARD-IF-IN-EQUATION"
   | isReservedKwMsg msg = "P-RESERVED-KEYWORD"
   | otherwise = "P-PARSE"
 
@@ -309,6 +311,17 @@ parseErrHelpFix msg (Loc f sl sc el ec)
   | startsWith "`public` only applies to `data` declarations" msg = (
     Some "`public` only makes a `data` export its constructors too; a function or value is exported with plain `export` — drop `public` here",
     Some (Fix (Loc f sl sc sl (sc + stringLength "public")) ""),
+  )
+  -- Guard-keyword confusion (#591): the parser anchors each diagnostic AT the
+  -- offending keyword (`|` / `if`), so `sc` is its first char — the fix is a
+  -- clean single-token swap to the other spelling.
+  | startsWith "a match-arm guard uses" msg = (
+    Some "match-arm guards use `if`; replace `|` with `if` (or move this clause to an equation with `|` guards)",
+    Some (Fix (Loc f sl sc sl (sc + 1)) "if"),
+  )
+  | startsWith "an equation guard uses" msg = (
+    Some "equation guards use `|`; replace `if` with `|` (match-arm guards, by contrast, use `if`)",
+    Some (Fix (Loc f sl sc sl (sc + 2)) "|"),
   )
   | otherwise = (None, None)
 

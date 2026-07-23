@@ -208,6 +208,8 @@ kebab-case; never renumber (append only).
 | `P-BRACE-BLOCK` | C-style `{ … }` brace block on `if` (suggest `then`/`else` + indentation) |
 | `P-FOR-WHILE` | foreign `for`/`while` loop (suggest recursion or list functions) |
 | `P-DEF-KEYWORD` | foreign `def`/`function` header (suggest `f x = …`) |
+| `P-GUARD-BAR-IN-MATCH` | `\|` used for a MATCH-ARM guard, which uses `if` (#591; caret on the `\|`, machine-applicable `fix`: replace `\|` with `if`) |
+| `P-GUARD-IF-IN-EQUATION` | `if` used for an EQUATION (function-clause) guard, which uses `\|` (#591; caret on the `if`, machine-applicable `fix`: replace `if` with `\|`) |
 | `P-RESERVED-KEYWORD` | a reserved keyword (`as`, `test`, `type`, …) used where a variable/pattern name is expected (machine-applicable `fix`: append `_`) |
 
 ### Resolve (one per `ResError` constructor)
