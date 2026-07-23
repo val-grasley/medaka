@@ -922,10 +922,11 @@ unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
   -- to DECLARATION time (T-EFFECT-ARG-UNCOVERED, checkArgEffVars, whose own
   -- comment cites this arm).  Do NOT tighten to an error: a benign
   -- self-unify `e ~ e` (l1 == l2, prefixes genuinely equal) also lands here.
-  -- The #839 event trail (increment 2a) should RECORD this discard
-  -- (atom = atomsDiff l1 l2 ++ atomsDiff l2 l1, cell = v1) so contortion #2's
-  -- information is recoverable at impl-check time.
-  | effvarId v1 == effvarId v2 = ()
+  -- The #839 event trail (increment 2a) RECORDS this discard against v1 (the
+  -- symmetric difference of l1,l2 — recorded identically regardless of arg order,
+  -- risk 4).  The benign self-unify `e ~ e` (l1 == l2) has an EMPTY diff ⇒ zero
+  -- pushes, so the hot same-cell path stays allocation-free and behaviour-neutral.
+  | effvarId v1 == effvarId v2 = recordAbsorptions (atomsDiff l1 l2 ++ atomsDiff l2 l1) v1
   -- BOTH-OPEN arm (v1 /= v2): two distinct open tails.  Merges each side's
   -- missing atoms (atomsDiff l2 l1, atomsDiff l1 l2) into a shared fresh tail v3
   -- and links both old tails to it — after this, effrowLabels on either cell
@@ -941,8 +942,14 @@ unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
   -- atom, which is precisely why #839's event trail (increments 2a-2c) is needed.
   | otherwise =
     let v3 = freshEffvarAt (minI (effvarLevel v1) (effvarLevel v2))
-    let _ = setRef v1 (ELink (EffRow (atomsDiff l2 l1) (Some v3)))
-    setRef v2 (ELink (EffRow (atomsDiff l1 l2) (Some v3)))
+    let d21 = atomsDiff l2 l1
+    let d12 = atomsDiff l1 l2
+    let _ = setRef v1 (ELink (EffRow d21 (Some v3)))
+    let _ = setRef v2 (ELink (EffRow d12 (Some v3)))
+    -- #839 2a: both diffs vanish into the shared fresh tail v3; record them
+    -- against v3 (the surviving tail).  The setRef links above are UNCHANGED —
+    -- d21/d12 are the same values inlined before, so unification is byte-identical.
+    recordAbsorptions (d21 ++ d12) v3
 -- CLOSED-SIDE arms (open ~ closed, closed ~ open): already GUARDED — each runs
 -- effectLeakCheck (atomsEscape …), §5's binding-boundary escape check
 -- (:339-351) at the open-meets-closed seam.  No leniency to audit; out of #839
@@ -2047,12 +2054,44 @@ data UObligation =
       loc : Option Loc,
     }
 
+-- #839 increment 2a: the absorption event trail (write-only in 2a — no consumer
+-- yet; the post-unify launder/rigidity QUERIES land in 2b/2c).  When unifyRowN's
+-- SAME-TAIL arm DISCARDS a prefix mismatch, or its BOTH-OPEN arm ABSORBS each
+-- side's atoms into a shared fresh tail (see that fn's per-arm audit), it appends
+-- one event per atom so a post-unify query can recover what a post-hoc cell
+-- inspection cannot (effrowLabels resolves THROUGH the merged tail).  CRUX: store
+-- the absorbing tail CELL, not its `effvarId` — the id goes to -1 the instant the
+-- cell ELinks (effvarId's ELink arm), so an id snapshotted here is stale by query
+-- time.  The 2b/2c consumer normalizes the cell live via effrowNorm / the
+-- effVarTailIds idiom.  Mirrors the `obls`/Windowed channel (per-body-windowed by
+-- the existing wMark/wWindow brackets — NOT a flat log; #838-I2 over-defer trap).
+data AbsorptionEvent = AbsorptionEvent {
+    atom : Atom,  -- the concrete atom absorbed (both-open) / discarded (same-tail)
+    cell : Ref Effvar,  -- the ABSORBING tail: v3 (both-open) / v1 (same-tail).  Resolve LIVE at query time.
+    loc : Option Loc,  -- currentLoc at the unify, for the diagnostic seam (None-safe)
+  }
+
 -- The single recorder for the (now-ported) call channel: every producer becomes a
 -- thin caller stamping its own provenance.
 recordObl : Predicate -> Int -> Provenance -> Option Loc -> Unit
 recordObl p originId prov loc = wPush
   perRun.value.obls
   UObligation { pred = p, originId = originId, prov = prov, loc = loc }
+
+-- #839 increment 2a: append one AbsorptionEvent per absorbed/discarded atom onto
+-- the (write-only in 2a) trail, keyed on the surviving/absorbing tail [cell].
+-- Recursive + []-short-circuits so the hot self-unify path (empty prefixes ⇒
+-- empty diff) pushes NOTHING and allocates nothing.  Records the cell Ref, not
+-- effvarId (see AbsorptionEvent), and snapshots the ambient currentLoc.
+recordAbsorptions : List Atom -> Ref Effvar -> Unit
+recordAbsorptions [] _ = ()
+recordAbsorptions (a::rest) cell =
+  let _ = wPush perRun.value.absorptions AbsorptionEvent {
+    atom = a,
+    cell = cell,
+    loc = currentLoc.value,
+  }
+  recordAbsorptions rest cell
 
 -- #838 I1: project a ported UObligation back to the pre-#838 tuple shape
 -- `(iface, argument vector, loc)`, for the many downstream consumers
@@ -2814,6 +2853,7 @@ data PerRun = PerRun {
     currentImportOriginsRef : Ref (List (String, String)),
     dictApps : Windowed (Ref (List Route), List Mono, List String),  -- #841: pendingDictApps/N, ported onto Windowed
     obls : Windowed UObligation,  -- #838 I1: the call channel (pendingCallObligations/N), ported onto Windowed
+    absorptions : Windowed AbsorptionEvent,  -- #839 2a: row-unifier atom-discard trail (write-only in 2a); windowed per body by the existing obls brackets
     schemeObligationsRef : Ref (List ((String, Int), List (String, List Int))),  -- #837: keyed by (binding-name, binding-id) — the id from resolve's
     schemeDefIdsRef : Ref (List (String, Int)),  -- stampBindingIds, so a where-helper `g`'s obligations can no longer leak
     methodConstraintsRef : Ref (List (String, List Int)),  -- onto an unrelated top-level `g` (retires the three snapshot/restore windows).
@@ -2835,7 +2875,7 @@ data PerRun = PerRun {
     currentLevel : Ref Int,
   }
 
--- Construct all 59 field-Refs fresh (each reproduces its former top-level ref's initial).
+-- Construct all 61 field-Refs fresh (each reproduces its former top-level ref's initial).
 freshPerRun : Unit -> PerRun
 freshPerRun _ = PerRun {
   tyvarCounter = Ref 0,
@@ -2879,6 +2919,7 @@ freshPerRun _ = PerRun {
   currentImportOriginsRef = Ref [],
   dictApps = wNew (),
   obls = wNew (),
+  absorptions = wNew (),  -- #839 2a: resets per module for free via this whole-record re-mint
   schemeObligationsRef = Ref [],
   schemeDefIdsRef = Ref [],
   methodConstraintsRef = Ref [],

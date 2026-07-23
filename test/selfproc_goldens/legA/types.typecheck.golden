@@ -1033,6 +1033,7 @@ recFieldMono : List (String, Mono) -> Field -> (String, Mono)
 recPatFieldVarsTc : RecPatField -> List String
 recRoute : String -> Mono -> Int -> Route
 recRoutes : String -> Mono -> List Int -> List Route
+recordAbsorptions : List Atom -> Ref Effvar -> Unit
 recordArgSiteFn : String -> Int -> Mono -> Unit
 recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> Unit
 recordArithSite : String -> Ref Route -> Mono -> Unit
