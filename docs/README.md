@@ -108,6 +108,7 @@ What's in the standard library, what's planned, module-by-module status.
 | [`MESSAGE-AUDIT.md`](../compiler/MESSAGE-AUDIT.md) | MESSAGE-AUDIT.md | PARTIAL |
 | [`MULTICLAUSE-EXHAUST-DESIGN.md`](../compiler/MULTICLAUSE-EXHAUST-DESIGN.md) | Multi-Clause Function Exhaustiveness — Design | IMPLEMENTED |
 | [`PARSE-ERROR-LOCATION-DESIGN.md`](../compiler/PARSE-ERROR-LOCATION-DESIGN.md) | PARSE-ERROR-LOCATION-DESIGN | PARTIAL/IMPLEMENTED |
+| [`PERF-CI-COVERAGE.md`](../compiler/PERF-CI-COVERAGE.md) | PERF-CI-COVERAGE.md — a comprehensive design for catching quadratics in CI | DESIGN |
 | [`PERF-NOTES.md`](../compiler/PERF-NOTES.md) | Self-host performance notes & log | SUPERSEDED BY `compiler/PERF-RESULTS.md` / `compiler/PERF-SCOPE.md` |
 | [`PERF-RESULTS.md`](../compiler/PERF-RESULTS.md) | PERF-RESULTS.md — native-backend performance log | PARTIAL |
 | [`PERF-RUNTIME.md`](../compiler/PERF-RUNTIME.md) | PERF-RUNTIME.md — general compiled-program performance | IMPLEMENTED |
