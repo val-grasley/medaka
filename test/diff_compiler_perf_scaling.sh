@@ -1905,6 +1905,20 @@ for rshape in starimports reexports; do
   ro3="$(awk -F'\t' '/^\[perf\] resolve/{print $5; exit}' "$RR3")"
 
   op_bad=0; op_lines=""
+  # An UNMEASURABLE resolve shape is a harness problem, never a pass — mirror the alloc
+  # arm's TOOSMALL=fail. grade_op_stage SKIPs a reading under OP_FLOOR WITHOUT setting
+  # op_bad, so without this guard a non-ledgered shape (starimports) would fall through
+  # to pass++ below and report "ok" having graded NOTHING — the silent-green this suite
+  # forbids. The trigger is real: lowering a resolve shape's band below OP_FLOOR for
+  # CI-cost reasons. Fail loudly instead, for both shapes (a ledgered shape that drops
+  # under the floor is a "raise N or promote" signal, not a pass). (#881 review finding.)
+  rsmall="$(awk -v v="$ro1" -v f="$OP_FLOOR" 'BEGIN{print (v+0 < f+0) ? 1 : 0}')"
+  if [ "$rsmall" = "1" ]; then
+    fail=$((fail+1))
+    printf '%-12s %8s  resolve-ops %s -> %s -> %s  ** N TOO SMALL (op1 < OP_FLOOR %s) — raise this shape band **\n' \
+      "$rshape" "$rn1" "$ro1" "$ro2" "$ro3" "$OP_FLOOR"
+    continue
+  fi
   grade_op_stage "$rshape" resolve "$ro1" "$ro2" "$ro3" "$rn1" "$rn2" "$rn3"
   # grade_op_stage handles the KNOWN_SLOW_OPS ledger (known++/fail++) internally and sets
   # op_bad for a NON-ledgered superlinear reading. Count pass/fail for the rest.
