@@ -115,6 +115,7 @@ What's in the standard library, what's planned, module-by-module status.
 | [`PRE-FLIP-GAPS.md`](../compiler/PRE-FLIP-GAPS.md) | PRE-FLIP-GAPS.md — outstanding native-compiler items to close before the canonicalization milestone flip | IMPLEMENTED |
 | [`PRELUDE-OBJ-DESIGN.md`](../compiler/PRELUDE-OBJ-DESIGN.md) | PRELUDE-OBJ-DESIGN.md — precompiling the prelude to a shared object | SHIPPED |
 | [`README.md`](../compiler/README.md) | compiler — the Medaka-in-Medaka compiler | IMPLEMENTED / SUPERSEDED-FRAMING |
+| [`REFERENCES-RENAME-DESIGN.md`](../compiler/REFERENCES-RENAME-DESIGN.md) | Cross-file `references` + `rename` (#254) — Design / Scoping | DESIGN |
 | [`REROOT-PLAN.md`](../compiler/REROOT-PLAN.md) | REROOT-PLAN — taking the gate suite OFF the OCaml oracle | IMPLEMENTED |
 | [`RESOLVER-DIAG-LOCATION-DESIGN.md`](../compiler/RESOLVER-DIAG-LOCATION-DESIGN.md) | Real source locations for the 3 `{0,0}`-range resolver diagnostics (F3) | IMPLEMENTED |
 | [`RUNTIME-DESIGN.md`](../compiler/RUNTIME-DESIGN.md) | Runtime & extern strategy for the native (Stage 2.4) backend | IMPLEMENTED, with 2 items still deferred |
