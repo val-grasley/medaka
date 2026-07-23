@@ -1,0 +1,23 @@
+-- #873 (S0, CLOSED by PR #891): a body-local ambiguous Num literal in an
+-- interface-default method was grounded to Int ONLY when the impl providing
+-- that default lives in the SAME module as the interface (the specialized
+-- impl path, checked via inferImplMethod, whose defaultBodyLocalNum grounds
+-- the var). `impl T Foo` lives HERE, in a DIFFERENT module from interface T
+-- (tface.mdk), so desugar's fillImplDefaults does NOT specialize the default
+-- into this impl — it is checked via the generic-default path
+-- (inferDefaultMethod), which pre-#891 had no such grounding. That left the
+-- element var of `s [1, 2]` (in T's default body) unbound, so `s` saw a
+-- receiver of `List _a` and picked the GENERAL `impl S (List a)` (999)
+-- instead of the specific `impl S (List Int)` (1) — a silent wrong VALUE with
+-- `check` green either way, keyed purely on module placement.
+--
+-- Must print 1. A regression to 999 means the generic-default path has again
+-- lost the body-local Num grounding.
+import tface.{T(..), t}
+
+data Foo = Foo
+
+impl T Foo where
+  
+
+main = println (t Foo)

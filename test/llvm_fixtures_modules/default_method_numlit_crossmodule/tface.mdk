@@ -1,0 +1,9 @@
+import sdisp.{S(..), s}
+
+-- `t`'s default body consumes an ambiguous Num literal body-locally: the
+-- element var of `[1, 2]` surfaces NOWHERE in `t`'s declared type (`a -> Int`).
+-- Whether it gets grounded to Int depends on which path checks this default
+-- body — see entry.mdk.
+export interface T a where
+  t : a -> Int
+  t _ = s [1, 2]
