@@ -1,0 +1,14 @@
+-- module `defs` — the definition site for the correctness cases.
+export g : Int
+g = 10
+
+export helper : Int -> Int
+helper x = x + 1
+
+public export data Color = Red | Green
+
+export shared : Int
+shared = 1
+
+export usesGHere : Int
+usesGHere = g + helper g

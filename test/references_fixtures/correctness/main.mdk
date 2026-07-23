@@ -1,0 +1,30 @@
+-- entry `main` — exercises every BinderKey correctness case at once.
+--   * shadowing         : the LOCAL `g` in `topG` ≠ the imported top-level `g`
+--   * member alias       : `helper as hh`  →  defs' helper key
+--   * module alias `as`  : `D.helper`       →  defs' helper key
+--   * re-export chain     : `helper` (from reexport, origin defs) → defs' helper key
+--   * same name / 2 mods  : defs.shared and other.shared are DISTINCT keys
+--   * namespace clash     : `Color` (type) vs `Red` (ctor) are DISTINCT keys
+import defs.{g, Color, Red, helper as hh}
+import defs as D
+import other
+import reexport.{helper}
+
+-- `g` here binds a LOCAL; the two `g` uses in the body resolve to it, NOT to the
+-- imported defs.g (which `usesTopG` below still reaches).
+export topG : Int -> Int
+topG x =
+  let g = x + 1
+  g + hh g
+
+export usesTopG : Int
+usesTopG = g
+
+export usesReexport : Int
+usesReexport = helper 5
+
+export usesAlias : Int
+usesAlias = D.helper 7
+
+export mkColor : Color
+mkColor = Red
