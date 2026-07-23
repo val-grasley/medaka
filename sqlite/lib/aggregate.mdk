@@ -123,48 +123,37 @@ aggExpr (AggMax c) = EAgg FnMax (Some (ECol c))
 
 -- | An aggregate query: source table, optional WHERE, GROUP BY columns (empty =
 --   whole-table single group), the aggregate select-list, optional HAVING.
---
---   FIELDS ARE `aq`-PREFIXED TO DODGE A COMPILER BUG — do not "tidy" them back.
---   This module now has BOTH `AggQuery` and `lib.select`'s `Select` in scope, and
---   the two records shared four field names (`from`, `where_`, `groupBy`,
---   `having`).  A record field name that belongs to two record types in one
---   module's scope MISCOMPILES: `medaka check` passes and `medaka run` gives the
---   right answer, but the natively BUILT binary dies with `E-NONEXHAUSTIVE-MATCH`
---   as soon as the field is read or updated — a construct/update/pattern binds
---   the OTHER record's slot.  See findings/query-engine-unify.md F2 for the
---   minimal repro.  Prefixing every field here removes the overlap.
---   Every exported FUNCTION keeps its name, type and behaviour; only these
---   internal field labels moved, and nothing outside this module ever read them.
-public export data AggQuery = AggQuery {
-    aqFrom : String,
-    aqWhere : Option SqlExpr,  -- WORKAROUND(B2): these fields are `aq`-prefixed ONLY to dodge the cross-module
-    aqGroupCols : List String,  -- record-update slot collision with `Select`'s from/where_/groupBy/having.
-    aqAggs : List Agg,  -- Rename back to the natural names when B2 closes.
-    aqHaving : Option SqlExpr,
-  }
+public export data AggQuery =
+  | AggQuery {
+      from : String,
+      where_ : Option SqlExpr,
+      groupBy : List String,
+      aggs : List Agg,
+      having : Option SqlExpr,
+    }
 
 -- | A bare aggregate query over a table with an aggregate select-list, no
 --   WHERE / GROUP BY / HAVING.
 export aggFrom : String -> List Agg -> AggQuery
 aggFrom tbl aggs = AggQuery {
-  aqFrom = tbl,
-  aqWhere = None,
-  aqGroupCols = [],
-  aqAggs = aggs,
-  aqHaving = None,
+  from = tbl,
+  where_ = None,
+  groupBy = [],
+  aggs = aggs,
+  having = None,
 }
 
 -- | Attach a pre-aggregation WHERE (typed `Expr Bool`, same as `withWhere`).
 export withAggWhere : Expr Bool -> AggQuery -> AggQuery
-withAggWhere e q = { q | aqWhere = Some (unExpr e) }
+withAggWhere e q = { q | where_ = Some (unExpr e) }
 
 -- | Group by one or more columns (left-to-right key order).
 export withGroupBy : List String -> AggQuery -> AggQuery
-withGroupBy cols q = { q | aqGroupCols = cols }
+withGroupBy cols q = { q | groupBy = cols }
 
 -- | Attach a HAVING predicate over the aggregate-output row.
 export withHaving : Expr Bool -> AggQuery -> AggQuery
-withHaving e q = { q | aqHaving = Some (unExpr e) }
+withHaving e q = { q | having = Some (unExpr e) }
 
 -- ---------------------------------------------------------------------------
 -- HAVING aggregate references (the legacy phantom pun — preserved)
@@ -206,7 +195,7 @@ eMax c = mkE (ECol (aggName (AggMax c)))
 --   The projection list is set to `groupBy keys ++ aggregates`, which reproduces
 --   the pinned output-row layout the old executor guaranteed.
 export toSelect : AggQuery -> Select
-toSelect (AggQuery { aqFrom = tbl, aqWhere = w, aqGroupCols = gcols, aqAggs = aggs, aqHaving = h }) =
+toSelect (AggQuery { from = tbl, where_ = w, groupBy = gcols, aggs = aggs, having = h }) =
   let keyExprs = map ECol gcols
   let base = withColumns (keyExprs ++ map aggExpr aggs) (withGroupExprs keyExprs (selectFrom tbl))
   applyHaving aggs h (applyWhere w base)

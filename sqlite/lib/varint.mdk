@@ -64,7 +64,7 @@ sqVarintStep input pos acc byteNum b
 sqVarintLoop : Array Int -> Int -> Int -> Int -> BResult Int
 sqVarintLoop input pos acc byteNum
   | pos >= arrayLength input = BErr "unexpected end of input (varint)" pos
-  | otherwise = sqVarintStep input pos acc byteNum input.[pos]
+  | otherwise = sqVarintStep input pos acc byteNum input[pos]
 
 -- ---------------------------------------------------------------------------
 -- ENCODE — sqVarintBytes : Int -> List Int  (the on-wire byte sequence)
