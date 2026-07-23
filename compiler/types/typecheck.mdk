@@ -898,19 +898,63 @@ performLink ct et =
 unifyRow : EffRow -> EffRow -> Unit
 unifyRow r1 r2 = unifyRowN (effrowNorm r1) (effrowNorm r2)
 
+-- #839 STRICTNESS AUDIT.  The four arms below are classified against
+-- EFFECTS-SEMANTICS §5 (docs/spec/EFFECTS-SEMANTICS.md:335-371) and §6
+-- (:406-451).  Each open-tailed arm can ABSORB or DISCARD a concrete effect
+-- atom; whether that loss is load-bearing subtyping-via-reopen or accidental
+-- leniency decides whether a downstream soundness check must RACE this unifier
+-- (run pre-unify) or may inspect its result.  This records that relevance AT
+-- the arm rather than only ~12k lines away in checkImplEffectLaunder's comment.
+-- Per-arm verdicts inline.  The eventual fix (#839 increments 2a-2c) is an
+-- absorption event trail so a post-unify QUERY can substitute for the pre-unify
+-- races; a post-unify cell inspection alone CANNOT recover an absorbed atom
+-- (see the both-open note), which is the whole reason the trail is needed.
+-- (Intra-file refs below name SYMBOLS, not line numbers — the latter rot; the
+-- §N (:lines) spec cites point into EFFECTS-SEMANTICS.md, verified current.)
 unifyRowN : EffRow -> EffRow -> Unit
 unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
+  -- SAME-TAIL arm (v1 == v2): the SAME physical effvar on both sides carrying
+  -- possibly DIFFERENT concrete prefixes (`<e>` ~ `<Stdout | e>`).  Returns ()
+  -- and DISCARDS the prefix mismatch (symmetric diff of l1,l2) — no link, no
+  -- error, no note; the atom evaporates.  ACCIDENTAL leniency, NOT load-bearing:
+  -- §6 (:448-451) names exactly this arm as the seam where "no post-hoc
+  -- inspection can recover the loss", which is why the covering rule is pushed
+  -- to DECLARATION time (T-EFFECT-ARG-UNCOVERED, checkArgEffVars, whose own
+  -- comment cites this arm).  Do NOT tighten to an error: a benign
+  -- self-unify `e ~ e` (l1 == l2, prefixes genuinely equal) also lands here.
+  -- The #839 event trail (increment 2a) should RECORD this discard
+  -- (atom = atomsDiff l1 l2 ++ atomsDiff l2 l1, cell = v1) so contortion #2's
+  -- information is recoverable at impl-check time.
   | effvarId v1 == effvarId v2 = ()
+  -- BOTH-OPEN arm (v1 /= v2): two distinct open tails.  Merges each side's
+  -- missing atoms (atomsDiff l2 l1, atomsDiff l1 l2) into a shared fresh tail v3
+  -- and links both old tails to it — after this, effrowLabels on either cell
+  -- resolves THROUGH v3 and no longer distinguishes intrinsic vs argument-borne
+  -- atoms; the atoms are ABSORBED into the shared tail.  LOAD-BEARING: this is
+  -- the standard subtyping-via-row-polymorphism encoding §5 (:361) relies on and
+  -- the effect-parametricity of map/andThen/fold/traverse §6 (:388-396) — an
+  -- open row "can absorb further atoms".  KEEP.  Note it deliberately runs NO
+  -- effectLeakCheck (contrast the two closed-side arms just below, which DO): an
+  -- open tail has not committed to a bound, so nothing can escape PAST it yet.
+  -- That asymmetry is why #803's intrinsic-atom bound (checkImplEffectLaunder)
+  -- must run PRE-unify — a post-unify inspection CANNOT recover the absorbed
+  -- atom, which is precisely why #839's event trail (increments 2a-2c) is needed.
   | otherwise =
     let v3 = freshEffvarAt (minI (effvarLevel v1) (effvarLevel v2))
     let _ = setRef v1 (ELink (EffRow (atomsDiff l2 l1) (Some v3)))
     setRef v2 (ELink (EffRow (atomsDiff l1 l2) (Some v3)))
+-- CLOSED-SIDE arms (open ~ closed, closed ~ open): already GUARDED — each runs
+-- effectLeakCheck (atomsEscape …), §5's binding-boundary escape check
+-- (:339-351) at the open-meets-closed seam.  No leniency to audit; out of #839
+-- scope.  (Absorbing into a CLOSED tail is the guarded direction.)
 unifyRowN (EffRow l1 (Some v1)) (EffRow l2 None) =
   let _ = effectLeakCheck (atomsEscape l1 l2) l2
   setRef v1 (ELink (EffRow (atomsDiff l2 l1) None))
 unifyRowN (EffRow l1 None) (EffRow l2 (Some v2)) =
   let _ = effectLeakCheck (atomsEscape l2 l1) l1
   setRef v2 (ELink (EffRow (atomsDiff l1 l2) None))
+-- CLOSED ~ CLOSED arm: structural no-op — two fully-committed rows; any real
+-- mismatch is caught by the caller's atom comparison, not here.  Out of scope.
 unifyRowN (EffRow _ None) (EffRow _ None) = ()
 
 -- SOUNDNESS (Phase 146): an open row (an inference-synthesized arrow, i.e. a
