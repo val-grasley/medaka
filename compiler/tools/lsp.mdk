@@ -81,6 +81,7 @@ import types.typecheck.{
 }
 import tools.fmt.{formatSource}
 import tools.refindex.{RefIndex, buildRefIndexProject, binderAt, usesOf, defOf}
+import list.{sortBy}
 import frontend.ast.{
   Decl,
   DTypeSig,
@@ -1701,13 +1702,33 @@ referencesResult runtimeSrc coreSrc uri src params docs = match (positionLine pa
 -- site is NEVER also a use — `recordDef` never pushes into `refs`, so there
 -- is no duplicate to dedupe). `defOf` is `None` for an external/prelude key
 -- (F1: intra-project scope), which correctly drops the declaration line.
+--
+-- DETERMINISM: sorted by (path, start line, start char) BEFORE rendering —
+-- neither `usesOf`'s underlying `Ref`-list nor the whole-project build order
+-- (`buildRefIndexProject`, refindex.mdk) is guaranteed stable across
+-- runs/machines (the build order itself now sorts too, but this output-level
+-- sort is the robust fix: it makes the RESULT order-stable no matter how the
+-- index was built). #912 bounced the merge queue on exactly this — one
+-- runner's golden didn't match another's. The def site is sorted IN with the
+-- uses, not pinned to the front — nothing in the spec/F6 requires it first.
 referenceLocations : RefIndex -> String -> Bool -> List Json
 referenceLocations idx key includeDecl =
-  let useJsons = map locationJson (usesOf idx key)
-  if includeDecl then match defOf idx key
-    Some entry => locationJson entry :: useJsons
-    None => useJsons
-  else useJsons
+  let uses = usesOf idx key
+  let all = if includeDecl then match defOf idx key
+    Some entry => entry::uses
+    None => uses
+  else uses
+  map locationJson (sortBy compareUseLoc all)
+
+-- (path, then start line, then start char) — see `referenceLocations`.
+compareUseLoc : (String, Loc) -> (String, Loc) -> Ordering
+compareUseLoc (p1, Loc _ sl1 sc1 _ _) (p2, Loc _ sl2 sc2 _ _) = match compare p1 p2
+  Lt => Lt
+  Gt => Gt
+  Eq => match compare sl1 sl2
+    Lt => Lt
+    Gt => Gt
+    Eq => compare sc1 sc2
 
 locationJson : (String, Loc) -> Json
 locationJson (path, loc) =

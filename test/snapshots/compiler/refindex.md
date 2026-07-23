@@ -1,5 +1,5 @@
 # META
-source_lines=1287
+source_lines=1296
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/refindex.mdk — cross-file reference index (#254 Stage 0).
@@ -88,6 +88,7 @@ import driver.loader.{
 }
 import support.util.{zipL, startsWith, endsWith}
 import support.path.{joinPath}
+import list.{sort}
 import support.char.{isUpper}
 import array.{get as arrayGet}
 import hash_map.{
@@ -1063,11 +1064,19 @@ noOverride _ = None
 -- a file (or unreadable — either way, no further recursion). Best-effort
 -- (F2): an unlistable directory just contributes nothing, never aborts the
 -- walk. O(#dirs + #files); an O(1) `Ref`-list push per file, never `++`.
+--
+-- DETERMINISM: `listDir` order is a filesystem/OS detail, not a language
+-- guarantee — it differs across runners (this cost a merge-queue bounce,
+-- #912: a golden captured on one machine's enumeration order mismatched a
+-- different CI runner's). Sorted here (`list.sort`, O(N log N) — negligible
+-- next to the O(N) build it feeds) so BOTH the topo-sort's tie-break among
+-- independent modules AND every downstream `RefIndex` built from this list
+-- are reproducible byte-for-byte regardless of the host's directory order.
 enumerateMdkFiles : String -> <IO> List String
 enumerateMdkFiles root =
   let acc = Ref []
   let _ = enumerateDir acc root
-  reverseList acc.value
+  sort acc.value
 
 enumerateDir : Ref (List String) -> String -> <IO> Unit
 enumerateDir acc dir = match listDir dir
@@ -1295,6 +1304,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DUse false (UseGroup ("driver" "loader") ((mem "loadProgramFilesLocatedCached" false) (mem "moduleIdOfPath" false) (mem "importModId" false))))
 (DUse false (UseGroup ("support" "util") ((mem "zipL" false) (mem "startsWith" false) (mem "endsWith" false))))
 (DUse false (UseGroup ("support" "path") ((mem "joinPath" false))))
+(DUse false (UseGroup ("list") ((mem "sort" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
 (DUse false (UseGroup ("array") ((mem "get" false "arrayGet"))))
 (DUse false (UseGroup ("hash_map") ((mem "HashMap" false) (mem "new" false "hmNew") (mem "get" false "hmGet") (mem "set" false "hmSet") (mem "keys" false "hmKeys"))))
@@ -1677,7 +1687,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "noOverride" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "noOverride" (PWild) (EVar "None"))
 (DTypeSig false "enumerateMdkFiles" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "enumerateMdkFiles" ((PVar "root")) (EBlock (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "root"))) (DoExpr (EApp (EVar "reverseList") (EFieldAccess (EVar "acc") "value")))))
+(DFunDef false "enumerateMdkFiles" ((PVar "root")) (EBlock (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "root"))) (DoExpr (EApp (EVar "sort") (EFieldAccess (EVar "acc") "value")))))
 (DTypeSig false "enumerateDir" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "enumerateDir" ((PVar "acc") (PVar "dir")) (EMatch (EApp (EVar "listDir") (EVar "dir")) (arm (PCon "Err" PWild) () (ELit LUnit)) (arm (PCon "Ok" (PVar "entries")) () (EApp (EApp (EApp (EVar "enumerateEntries") (EVar "acc")) (EVar "dir")) (EApp (EVar "dropDotEntries") (EVar "entries"))))))
 (DTypeSig false "enumerateEntries" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))))
@@ -1755,6 +1765,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DUse false (UseGroup ("driver" "loader") ((mem "loadProgramFilesLocatedCached" false) (mem "moduleIdOfPath" false) (mem "importModId" false))))
 (DUse false (UseGroup ("support" "util") ((mem "zipL" false) (mem "startsWith" false) (mem "endsWith" false))))
 (DUse false (UseGroup ("support" "path") ((mem "joinPath" false))))
+(DUse false (UseGroup ("list") ((mem "sort" false))))
 (DUse false (UseGroup ("support" "char") ((mem "isUpper" false))))
 (DUse false (UseGroup ("array") ((mem "get" false "arrayGet"))))
 (DUse false (UseGroup ("hash_map") ((mem "HashMap" false) (mem "new" false "hmNew") (mem "get" false "hmGet") (mem "set" false "hmSet") (mem "keys" false "hmKeys"))))
@@ -2137,7 +2148,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "noOverride" (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))))
 (DFunDef false "noOverride" (PWild) (EVar "None"))
 (DTypeSig false "enumerateMdkFiles" (TyFun (TyCon "String") (TyEffect ("IO") None (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "enumerateMdkFiles" ((PVar "root")) (EBlock (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "root"))) (DoExpr (EApp (EVar "reverseList") (EFieldAccess (EVar "acc") "value")))))
+(DFunDef false "enumerateMdkFiles" ((PVar "root")) (EBlock (DoLet false false (PVar "acc") (EApp (EVar "Ref") (EListLit))) (DoLet false false PWild (EApp (EApp (EVar "enumerateDir") (EVar "acc")) (EVar "root"))) (DoExpr (EApp (EVar "sort") (EFieldAccess (EVar "acc") "value")))))
 (DTypeSig false "enumerateDir" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyEffect ("IO") None (TyCon "Unit")))))
 (DFunDef false "enumerateDir" ((PVar "acc") (PVar "dir")) (EMatch (EApp (EVar "listDir") (EVar "dir")) (arm (PCon "Err" PWild) () (ELit LUnit)) (arm (PCon "Ok" (PVar "entries")) () (EApp (EApp (EApp (EVar "enumerateEntries") (EVar "acc")) (EVar "dir")) (EApp (EVar "dropDotEntries") (EVar "entries"))))))
 (DTypeSig false "enumerateEntries" (TyFun (TyApp (TyCon "Ref") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyEffect ("IO") None (TyCon "Unit"))))))
