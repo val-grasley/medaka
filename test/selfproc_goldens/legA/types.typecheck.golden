@@ -169,6 +169,7 @@ checkLetRecDecls : List Decl -> Unit
 checkMatchExhaustive : Mono -> List Arm -> Unit
 checkMatchRedundant : Mono -> List Arm -> Unit
 checkMatchToLines : List Decl -> List Decl -> String
+checkMethodRigidityCore : String -> String -> Ty -> List Mono -> List (String, Mono) -> List String -> List (String, List String, Ty, Mono, Option Loc) -> List (String, List Mono, Option Loc) -> Option (List (String, Ref Effvar), Bool) -> Option Loc -> Unit
 checkMissingFields : String -> List (String, Mono) -> List FieldAssign -> Unit
 checkModuleFull : List (String, Scheme) -> List Decl -> List Decl -> List (String, Scheme)
 checkModuleFullDiags : String -> List (String, Scheme) -> List Decl -> List Decl -> List Decl -> (List (String, Scheme), List TcDiag, List TcDiag)
