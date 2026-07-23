@@ -1,0 +1,12 @@
+-- module `defs` — shared definitions for the medaka_references query gate
+-- (#254 Stage 1). Read this file's `helper`/`shared` bindings' EXACT columns
+-- before touching diff_compiler_references_tool.sh's golden — the gate's
+-- comment block hand-derives them.
+export helper : Int -> Int
+helper x = x + 1
+
+export shared : Int
+shared = 1
+
+export useSharedHere : Int
+useSharedHere = shared + helper 1

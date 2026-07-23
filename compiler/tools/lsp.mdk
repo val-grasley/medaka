@@ -80,6 +80,7 @@ import types.typecheck.{
   currentSeedSchemes,
 }
 import tools.fmt.{formatSource}
+import tools.refindex.{RefIndex, buildRefIndex, binderAt, usesOf, defOf}
 import frontend.ast.{
   Decl,
   DTypeSig,
@@ -119,10 +120,13 @@ import frontend.ast.{
 
 public export data Docs = Docs (List (String, String))
 
-emptyDocs : Docs
+-- Exported alongside `Docs`/`uriOfPath` so `medaka_references` (mcp.mdk) can
+-- build a single-buffer table and reuse `referencesResult` verbatim — the
+-- SAME code path the LSP handler runs, per #254's "one code path" design.
+export emptyDocs : Docs
 emptyDocs = Docs []
 
-docsPut : String -> String -> Docs -> Docs
+export docsPut : String -> String -> Docs -> Docs
 docsPut uri src (Docs xs) = Docs ((uri, src) :: docsRemove uri xs)
 
 docsRemove : String -> List (String, String) -> List (String, String)
@@ -1407,6 +1411,7 @@ initializeResult = jObject
         ("documentSymbolProvider", JBool True),
         ("definitionProvider", JBool True),
         ("documentHighlightProvider", JBool True),
+        ("referencesProvider", JBool True),
         ("hoverProvider", JBool True),
         ("completionProvider", jObject []),
         ("inlayHintProvider", JBool True),
@@ -1466,7 +1471,7 @@ pathOfUri uri =
   else
     uri
 
-uriOfPath : String -> String
+export uriOfPath : String -> String
 uriOfPath path =
   if stringLength path >= 7 && stringSlice 0 7 path == "file://" then
     path
@@ -1634,6 +1639,80 @@ definitionResult uri src params = match (positionLine params, positionChar param
       Some range => jArray [jObject [("uri", JString uri), ("range", range)]]
   _ => JNull
 
+-- textDocument/references → Location[] (cross-file, #254 Stage 1). Shares the
+-- MVP substrate with the `medaka_references` MCP tool (mcp.mdk calls this
+-- SAME function): build (or load-and-build) the whole-project reference index
+-- rooted at this buffer's project, resolve the click to a `BinderKey` via
+-- `binderAt`, then emit every recorded use — plus the def site when
+-- `includeDeclaration` (default true, F6) — as `{uri, range}` pairs across
+-- files. A position off any identifier, or one that resolves to nothing
+-- indexed (unparseable sibling, external/prelude symbol with zero project
+-- uses, …), returns `[]` — NEVER a crash, NEVER a wrong hit (F2 best-effort).
+-- `identifierAt` gates the (potentially whole-project) index build the same
+-- way `hoverFor`/`typeAtPoint` gate their env build: resolve the cheap,
+-- pure check first, only pay for the project load on an actual identifier.
+handleReferences : String -> String -> Json -> Json -> Docs -> <IO> Unit
+handleReferences runtimeSrc coreSrc idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => referencesResult runtimeSrc coreSrc uri src params docs
+  writeMessage (responseMsg idJson result)
+
+-- Exported for `medaka_references` (#254) — cross-file, intra-project (F1):
+-- `binderAt`/`usesOf`/`defOf` resolve through import origin + re-export
+-- chains + lexical scope (never spelling), so shadowing, `import m as A`,
+-- selective/`as`-renamed imports, and same-name-in-two-modules are each
+-- resolved correctly by construction (compiler/REFERENCES-RENAME-DESIGN.md
+-- §5). `uri` is the Docs-table key for the CLICKED buffer (so unsaved edits
+-- there win, exactly like `projectEntryEnv`); every OTHER project file is
+-- read through the same `docs`-then-disk override the loader already uses
+-- elsewhere, so an unsaved sibling buffer's edits are seen too. Each result
+-- entry's own `uri` is a `file://` URI built from the index's recorded
+-- (loader-)path via `uriOfPath`, independent of the query's own `uri` shape.
+export referencesResult : String -> String -> String -> String -> Json -> Docs -> <IO> Json
+referencesResult runtimeSrc coreSrc uri src params docs = match (positionLine params, positionChar params)
+  (Some line, Some col) => match identifierAt src line col
+    None => jArray []
+    Some _ =>
+      let rootFile = pathOfUri uri
+      let projectDir = findProjectRoot (dirOfPath rootFile)
+      let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
+      let read = path => docsGet (uriOfPath path) docs
+      let idx = buildRefIndex read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
+      -- `binderAt` wants a 1-based line (the `Loc` convention); LSP positions
+      -- are 0-based, hence `line + 1`. `col` is 0-based in both conventions.
+      match binderAt idx rootFile (line + 1) col
+        None => jArray []
+        Some key => jArray (referenceLocations idx key (includeDeclarationOf params))
+  _ => jArray []
+
+-- Every recorded use of `key`, plus its def site when `includeDecl` (the def
+-- site is NEVER also a use — `recordDef` never pushes into `refs`, so there
+-- is no duplicate to dedupe). `defOf` is `None` for an external/prelude key
+-- (F1: intra-project scope), which correctly drops the declaration line.
+referenceLocations : RefIndex -> String -> Bool -> List Json
+referenceLocations idx key includeDecl =
+  let useJsons = map locationJson (usesOf idx key)
+  if includeDecl then match defOf idx key
+    Some entry => locationJson entry :: useJsons
+    None => useJsons
+  else useJsons
+
+locationJson : (String, Loc) -> Json
+locationJson (path, loc) =
+  jObject [("uri", JString (uriOfPath path)), ("range", jRangeOfLoc loc)]
+
+-- `params.context.includeDeclaration` (LSP `ReferenceContext`). Missing
+-- `context`/field, or a non-bool value, defaults to `True` (F6, locked).
+includeDeclarationOf : Json -> Bool
+includeDeclarationOf params = match lookup "context" params
+  None => True
+  Some ctx => match lookup "includeDeclaration" ctx
+    Some (JBool b) => b
+    _ => True
+
 -- textDocument/documentHighlight → DocumentHighlight[].
 handleHighlight : Json -> Json -> Docs -> <IO> Unit
 handleHighlight idJson params docs =
@@ -1724,30 +1803,34 @@ dispatch runtimeSrc coreSrc msg docs = match methodOf msg
                   let _ = handleHighlight (requestId msg) (fieldOr "params" msg) docs
                   Step docs True
                 else
-                  if meth == "textDocument/hover" then
-                    let _ = handleHover runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
+                  if meth == "textDocument/references" then
+                    let _ = handleReferences runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
                     Step docs True
                   else
-                    if meth == "textDocument/completion" then
-                      let _ = handleCompletion runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
+                    if meth == "textDocument/hover" then
+                      let _ = handleHover runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
                       Step docs True
                     else
-                      if meth == "textDocument/inlayHint" then
-                        let _ = handleInlayHint runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
+                      if meth == "textDocument/completion" then
+                        let _ = handleCompletion runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
                         Step docs True
                       else
-                        if meth == "textDocument/semanticTokens/full" then
-                          let _ = handleSemanticTokens (requestId msg) (fieldOr "params" msg) docs
+                        if meth == "textDocument/inlayHint" then
+                          let _ = handleInlayHint runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
                           Step docs True
                         else
-                          if meth == "shutdown" then
-                            let _ = writeMessage (responseMsg (requestId msg) JNull)
+                          if meth == "textDocument/semanticTokens/full" then
+                            let _ = handleSemanticTokens (requestId msg) (fieldOr "params" msg) docs
                             Step docs True
                           else
-                            if meth == "exit" then
-                              let _ = logLine "exit (clean shutdown)"
-                              Step docs False
-                            else Step docs True  -- unrecognized method — ignore
+                            if meth == "shutdown" then
+                              let _ = writeMessage (responseMsg (requestId msg) JNull)
+                              Step docs True
+                            else
+                              if meth == "exit" then
+                                let _ = logLine "exit (clean shutdown)"
+                                Step docs False
+                              else Step docs True  -- unrecognized method — ignore
 -- a response/unknown — ignore, keep going
 
 -- stop the loop

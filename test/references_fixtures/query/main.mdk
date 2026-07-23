@@ -1,0 +1,25 @@
+-- module `main` — the query gate's entry: cross-file uses, shadowing, alias
+-- import, and re-export-chain resolution, all queried from HERE (#254
+-- Stage 1, medaka_references). See diff_compiler_references_tool.sh for the
+-- exact (line, col) queries this fixture is hand-tuned for.
+import defs.{helper, shared}
+import defs as D
+import reexport.{helper as rHelper}
+import other as O
+
+export topG : Int -> Int
+topG x =
+  let shared = x + 1
+  shared + shared
+
+export usesDirect : Int
+usesDirect = helper 3 + shared
+
+export usesAlias : Int
+usesAlias = D.helper 4
+
+export usesReexport : Int
+usesReexport = rHelper 5
+
+export usesOther : Int
+usesOther = O.useOtherShared

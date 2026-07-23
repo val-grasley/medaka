@@ -1,0 +1,4 @@
+-- module `reexport` — re-exports `helper` from `defs` (re-export chain
+-- case). A use of `helper` reached THROUGH this module (main.mdk's
+-- `rHelper`) must resolve to the SAME BinderKey as defs.helper.
+export import defs.{helper}
