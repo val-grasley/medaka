@@ -1049,6 +1049,7 @@ recordLocalBind : String -> Mono -> Unit
 recordMethodDicts : String -> Ref (List Route) -> List (Int, Mono) -> Unit
 recordMethodLevelObls : List String -> Ty -> Mono -> Unit
 recordMethodLevelSlotObls : List (String, String) -> List (String, Mono) -> Unit
+recordMethodObligationGuarded : TcEnv -> String -> Scheme -> Mono -> Mono
 recordNumlitLoc : Mono -> Unit
 recordObl : Predicate -> Int -> Provenance -> Option Loc -> Unit
 recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> Unit
