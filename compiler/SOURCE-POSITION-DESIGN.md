@@ -373,7 +373,7 @@ were zero-re-mint). Decisive gate: `diff_compiler_lsp_b3.sh` + `selfcompile_fixp
 
 **Model tier:** **Sonnet** — mechanical, well-scoped, mirrors existing `locOfSpan`/`DUse`-loc
 patterns; the only judgment is the per-decl-kind name-token table (enumerable from
-`symbolPartsOfDecl`/`declDefines`).
+`symbolPartsOfDecl`/`declOwnNameMatches`/`declChildNames` — the latter two split out of `declDefines` in increment 5).
 
 ---
 
