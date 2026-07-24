@@ -749,6 +749,7 @@ instantiate : Scheme -> Mono
 instantiateRecord : RecordInfo -> (Mono, List (String, Mono))
 instantiateSigTracked : Ty -> (Mono, List (String, Mono))
 instantiateTracked : Scheme -> (Mono, List (Int, Mono))
+instantiateTrackedEff : Scheme -> List (Ref Effvar) -> (Mono, List (Int, Mono))
 instantiateVarTrackedId : String -> Int -> Scheme -> Mono
 intercalateComma : List String -> String
 ioAliasLabels : List String
