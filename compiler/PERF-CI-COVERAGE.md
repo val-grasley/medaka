@@ -106,7 +106,7 @@ That is genuinely strong. The holes are specific.
    compiler lowers an N-arm match (op-count converges to 4.0/doubling; allocation blind).
    Ledgered self-draining as `ceval:bigmatch`, filed as #960.
 
-7. **The LSP request handlers have zero perf coverage.** (#887) `compiler/tools/lsp.mdk` — the
+7. **The LSP request handlers have zero perf coverage.** (#962) `compiler/tools/lsp.mdk` — the
    GC-bound edit loop, the latency users feel most. (The refindex gate covers the *index builder*,
    not the handlers.)
 
@@ -172,7 +172,7 @@ deterministic) + OP-COUNT (secondary, self-draining ledger) — NOT wall-time (m
 super-linear-by-construction on deep recursion, would be a permanent false-red; see the gate
 header). Surfaced + ledgered the `core_ir_lower.dedupHeads` O(arms²) lowering quadratic (#960).
 
-**P4 — An LSP latency gate (nightly).** (#887) Reuse the refindex op-count model: assert that
+**P4 — An LSP latency gate (nightly).** (#962) Reuse the refindex op-count model: assert that
 hover/completion/definition on a growing file stays **flat** (O(edited-region), not O(project)) —
 the same flat-query invariant `references_scaling` already uses.
 
@@ -257,4 +257,4 @@ property, in the same spirit as `test/diff_compiler_ci_shard_coverage.sh` and th
 4. **P2 (DCE/elaborate/mangle timers, #882)** — cheap, closes three unmeasured passes.
 5. **M2 (IR-size, #885)** — guards the clang-bound bottleneck the time gate can't see.
 6. **§8 pass-coverage census (#886)** — makes the whole thing self-draining.
-7. **Nightly:** P3/P4 (eval, LSP, #887), M3, remaining shapes.
+7. **Nightly:** P3/P4 (eval #887, LSP #962), M3, remaining shapes.

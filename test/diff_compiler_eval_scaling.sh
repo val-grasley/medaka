@@ -209,6 +209,35 @@ grade() {
   aN="$(sf "$oN" "$stage" 2)";  a2N="$(sf "$o2N" "$stage" 2)";  a4N="$(sf "$o4N" "$stage" 2)"
   pN="$(sf "$oN" "$stage" 3)";  p2N="$(sf "$o2N" "$stage" 3)";  p4N="$(sf "$o4N" "$stage" 3)"
 
+  # ── VALIDATE EACH PER-N MEASUREMENT — a missing figure is a LOUD FAIL, never a silent 0. ─
+  # sf() returns "" if a `[perf] eval|ceval` line was ABSENT for a size (profiler crash /
+  # OOM / a loaded-runner timeout — and note compiler/ir/core_ir_eval.mdk has NO
+  # recursion-depth guard, unlike eval.mdk's 25000-frame limit, so a future N-bump or a
+  # slow runner could crash `ceval` mid-run). Without this guard the empty string flows
+  # into `"" - base` = 0 -> r1/r2 = 0 -> bad=0 -> the gate PASSES silently, and the
+  # alloc_graded/op_graded counters do NOT save it (they are bumped only AFTER a valid
+  # ratio is computed, below). Mirror of diff_compiler_perf_scaling.sh's per-N guard: a
+  # concatenation is empty OR carries any non-[0-9.] char ⇒ some size did not measure.
+  # Grade nothing for this stage — a partial ratio is worse than none.
+  # ⚠️ CHECK EACH VALUE INDIVIDUALLY, NOT A CONCATENATION. An empty trailing/middle
+  # figure VANISHES in "$aN$a2N$a4N" ("21.5"+"41.4"+"" = "21.541.4", still all-numeric),
+  # so a concatenation guard sails right past exactly the missing-4N case this catches
+  # (verified: it did, and the alloc arm then computed r2=-0.129 without failing). Loop.
+  for _v in "$aN" "$a2N" "$a4N"; do
+    case "$_v" in
+      ''|*[!0-9.]*)
+        echo "  FAIL: $shape:$stage produced a missing/garbled ALLOCATION measurement at some N (aN='$aN' a2N='$a2N' a4N='$a4N') — a [perf] line was absent (profiler crash / OOM / timeout). Refusing to grade a partial ratio."
+        fail=1; return ;;
+    esac
+  done
+  for _v in "$pN" "$p2N" "$p4N"; do
+    case "$_v" in
+      ''|*[!0-9.]*)
+        echo "  FAIL: $shape:$stage produced a missing/garbled OP-COUNT measurement at some N (pN='$pN' p2N='$p2N' p4N='$p4N') — a [perf] line was absent (profiler crash / OOM / timeout). Refusing to grade a partial ratio."
+        fail=1; return ;;
+    esac
+  done
+
   # ── ALLOCATION arm (primary) — baseline-subtracted net, sustained-both-doublings. ─
   read na n2 n4 r1 r2 <<EOF
 $(awk -v a="$aN" -v b="$a2N" -v c="$a4N" -v base="$bA" 'BEGIN{
