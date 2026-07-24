@@ -40,6 +40,7 @@ import frontend.resolve.{
   resolveModule,
   ModuleExports,
 }
+import support.ordmap.{OrdMap, omEmpty, omInsert}
 import frontend.exhaust.{checkGuardExhaustivenessWith}
 import types.typecheck.{
   checkProgramDiags,
@@ -698,7 +699,7 @@ analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
       appendStale staleRef [(entry, [mkDiag SevError "R-MODULE-LOAD" e None])]
     Ok mods =>
       let seeded = seedAll (map midPath mods) []
-      let afterRes = resolvePass runtimeP coreP [] mods seeded
+      let afterRes = resolvePass runtimeP coreP omEmpty mods seeded
       let afterTc = typecheckPass runtimeP coreP [] mods afterRes
       appendStale staleRef afterTc
 -- A load error (cycle / unknown module / unreadable file) is attributed to the
@@ -755,13 +756,22 @@ foldStale ((path, d)::rest) buckets =
 -- Mirror analyze_project's resolve loop: resolveModule per module in dependency
 -- order, accumulating ModuleExports, bucketing each module's errors by its file.
 -- Resolve errors have no per-error loc in the compiler pipeline → None.
-resolvePass : List Decl -> List Decl -> List ModuleExports -> List (String, String, List Decl) -> List (String, List Diag) -> List (String, List Diag)
+-- #926: `known` is now a Map keyed by module id (mirrors resolve.mdk's driver),
+-- so each module's imports resolve via an O(log n) `findExports` lookup instead of a
+-- linear scan of a growing `List ModuleExports`.  Threaded byte-identically:
+-- `omInsert exp.modId exp known` replaces the `exp :: known` prepend.
+resolvePass : List Decl -> List Decl -> OrdMap ModuleExports -> List (String, String, List Decl) -> List (String, List Diag) -> List (String, List Diag)
 resolvePass _ _ _ [] buckets = buckets
 resolvePass rt core known ((mid, path, prog)::rest) buckets =
   let desugared = desugar prog
   let (exp, errs) = resolveModule rt core known mid desugared
   let diags = map diagOfResError errs
-  resolvePass rt core (exp::known) rest (pushDiags path diags buckets)
+  resolvePass
+    rt
+    core
+    (omInsert exp.modId exp known)
+    rest
+    (pushDiags path diags buckets)
 
 -- ── typecheck pass (per module, ISOLATED) ───────────────────────────────────
 -- Run the shared multi-module typecheck (`checkModulesDiags`): core + runtime are

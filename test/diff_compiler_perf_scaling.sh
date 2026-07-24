@@ -727,16 +727,14 @@ gen_modules() {
 # each of the entry's N imports via findExports — a LINEAR scan of the N-long known
 # list — so the entry alone is O(N^2) in findExports COMPARISONS.
 #
-# ⚠️ MEASURED FINDING (issue #881): on this shape resolve is EFFECTIVELY LINEAR on every
-# arm this gate has. The findExports quadratic is real but (a) its per-step cost is a
-# cheap `modId ==` string compare, DWARFED by the ~0.6 MB/module linear buildEnvMM
-# allocation (net resolve alloc/time both read ~2.0x here), and (b) findExports is a
-# HAND-ROLLED recursive scan that calls NEITHER util.contains NOR util.lookupAssoc, so
-# the deterministic OP counter is STRUCTURALLY BLIND to it (per #884's design: an inline
-# scan stays TIME-arm-only). The op-count this shape DOES read (5*N — isPubExp's four
-# `contains` per resolved import) is linear. So this shape is a LINEAR regression guard
-# on the counted import-membership path, NOT a quadratic detector; it reads `ok`. See
-# the resolve-shapes block and the #881 note in KNOWN_SLOW_OPS.
+# ⚠️ MEASURED FINDING: on this shape resolve is EFFECTIVELY LINEAR on every arm. The
+# findExports scan WAS O(N^2) (#926) but is now a Map lookup (O(N log N)); it never
+# reached the OP counter anyway (a hand-rolled scan, now `omLookup` — both uncounted),
+# and its alloc is dwarfed by the ~linear buildEnvMM term. The op-count this shape DOES
+# read is ~3*N — `isPubExp`'s `contains` per resolved `import m.{v}` member (it was 5*N
+# before #925 turned realImport/importValueNames' membership into OrdMap sets). Linear, so
+# this shape is a LINEAR regression guard on the counted import-membership path, NOT a
+# quadratic detector; it reads `ok`. STAR_N=400 keeps op1 = 3*400 = 1200 over OP_FLOOR.
 gen_starimports() {
   n=$1; dir=$2
   rm -rf "$dir"; mkdir -p "$dir"
@@ -760,16 +758,15 @@ gen_starimports() {
 # gen_reexports — the N-deep `export import` RE-EXPORT fan-out (issue #881). m0 exports
 # v0; each m_i does `export import m{i-1}.*` (re-exporting the whole accumulated set) AND
 # exports its own v_i; the entry imports the top module's `.*` and references the shallow
-# and deep ends. Unlike the star, THIS shape's resolve cost runs through buildExports /
-# isPubExp `contains` checks over an export list that GROWS with depth, once per
-# re-exported name per module — which the OP counter DOES see.
+# and deep ends. This CUMULATIVE fan-out makes the exports total sum(i)=O(N^2) name
+# entries — resolve must allocate O(N^2) no matter the algorithm (the intrinsic floor).
 #
-# ⚠️ MEASURED FINDING (issue #881): resolve here is SUPER-LINEAR — a real, currently
-# unfixed cost. Op-count is ~CUBIC (r ~7.9/doubling ≈ 2^3) because the `.*` re-export
-# re-checks the growing export set at each of a growing number of sites; net alloc and
-# resolve TIME are ~QUADRATIC (~4x). It is LEDGERED on op-count (KNOWN_SLOW_OPS,
-# self-draining) rather than shipped red. The fixture resolves 0-DIAGNOSTIC (proven with
-# `medaka check`): `export import m.*` re-exports, and the entry's `import m.*` binds.
+# ⚠️ WAS a clean 2^3 OP cubic (r2=7.92): `contains` re-checked the growing export set at
+# three sites per module. #925/#926 FIXED it (OrdMap-set membership + Map findExports/
+# provenance); the counted op is now a deterministic 0. So this shape is GRADED ON ALLOC
+# now (quadratic-aware ceiling), NOT op — see the resolve-shapes block and the reexports
+# note by KNOWN_ACEIL_reexports_resolve. Resolves 0-DIAGNOSTIC (proven with `medaka
+# check`): `export import m.*` re-exports, and the entry's `import m.*` binds.
 gen_reexports() {
   n=$1; dir=$2
   rm -rf "$dir"; mkdir -p "$dir"
@@ -1323,25 +1320,21 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 # a ledger decision then. Left un-ledgered on purpose: a ledger entry asserts a stage is
 # ALREADY over-threshold, and this one is not.
 #
-#   reexports:resolve — MULTI-MODULE RESOLVE (issue #881), the whole point of adding a
-#         `resolve` stage to profile_modules_main and the two multi-module shapes below.
-#         Production's resolveModulesErrorsG threads `known` and, on an N-deep
-#         `export import m.*` re-export chain, buildExports/isPubExp re-check an export
-#         set that GROWS with depth at a growing number of sites — so the counted
-#         (util.contains) op work is ~CUBIC. This was UNMEASURED until #881: the
-#         multi-module driver ran load->desugar->mark->typecheck and DISCARDED resolve
-#         entirely, so a whole production pass with a known-superlinear shape was off the
-#         CI map. It is ledgered (not shipped red) because it is a PRE-EXISTING cost out
-#         of #881's wiring scope — a candidate follow-up for the #880 epic. The fixture
-#         resolves 0-DIAGNOSTIC (proven with `medaka check`; see gen_reexports). MEASURED
-#         (this box, deterministic single run, N=50/100/200): 65025 -> 510050 -> 4040100,
-#         r1=7.84 r2=7.92 (stable ~7.9 to N=400 — a clean 2^3 cubic, not a step). Net
-#         alloc and resolve TIME are separately ~QUADRATIC (~4x) on this shape; op-count
-#         is the arm graded (deterministic, one run, no floor). Promotes out the moment a
-#         fix drops the op-ratio under OFIXED (linear). See the resolve-shapes block.
-#         (The STAR dual, `starimports`, reads LINEAR on every arm — its findExports
-#         quadratic is uncounted AND dwarfed by linear buildEnvMM alloc — so it is a
-#         regression guard, NOT ledgered; see gen_starimports.)
+#   reexports:resolve — FIXED (#925/#926). It WAS a clean 2^3 op cubic: on an N-deep
+#         `export import m.*` chain, resolve re-checked an export set that GROWS with depth
+#         via `util.contains` at three sites (realImport/importValueNames/localsExportedFrom)
+#         — MEASURED 65025 -> 510050 -> 4040100, r1=7.84 r2=7.92 (N=50/100/200). #925 made
+#         those three membership tests OrdMap-set lookups (uncounted `omHasKey`), #926 made
+#         `findExports` a Map (O(log n), was the O(N^2) star scan) and the ambiguity
+#         `addProvenance` a Map (was an O(names^2)/module assoc rebuild → cubic ALLOC). The
+#         COUNTED op is now a deterministic 0, so this row LEFT KNOWN_SLOW_OPS. Its guard
+#         MOVED to ALLOCATION (KNOWN_ACEIL_reexports_resolve) because the residual cost is an
+#         INTRINSIC O(N^2): gen_reexports is cumulative, sum(i)=O(N^2) exported bindings, so
+#         alloc can never be linear — it is graded with a quadratic-aware ceiling that a
+#         cubic regression breaks, and the op arm rides along as a near-free "op-held-at-0"
+#         regression assertion. See the resolve-shapes block. (The STAR dual, `starimports`,
+#         stays op-graded — its imports route through the counted isPubExp path; see
+#         gen_starimports.)
 #
 #   xref:elaborate — FIXED (#907). The elaborate stage runs elaborateDict, which re-checks
 #         the program via checkProgramSeeded -> checkBodyImpl -> stampBindingIds — so it hit
@@ -1381,7 +1374,6 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 # One entry per line so draining a single row is a conflict-free one-line deletion
 # (see #880 follow-up; the var is word-split by `for k in $VAR`, newlines are IFS).
 KNOWN_SLOW_OPS="
-reexports:resolve
 manyifaces:typecheck
 "
 # manyifaces:typecheck — an O(interfaces^2) interface-registration quadratic in the typecheck
@@ -1396,11 +1388,27 @@ manyifaces:typecheck
 # clears the observed r2=3.60 by ~19% (the file's headroom convention); OFIXED 2.60 — drops
 # under it when the typecheck-side interface-method scan is indexed.
 KNOWN_OCEIL_manyifaces_typecheck="4.3"; KNOWN_OFIXED_manyifaces_typecheck="2.60"
-# Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
-# entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
-# from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):
-# drop under it and the re-export resolve quadratic is fixed and this entry must be promoted.
-KNOWN_OCEIL_reexports_resolve="8.9";  KNOWN_OFIXED_reexports_resolve="2.60"
+# reexports:resolve was HERE (op ceiling 8.9) — the cubic (r2=7.92) counted `util.contains`
+# scans over a re-export export list that grows with depth. #925/#926 FIXED it: the three
+# scans are OrdMap-set membership now (uncounted) and `findExports`/provenance are Maps, so
+# the shape's COUNTED op is deterministically 0 — op-invisible, cannot be graded (would trip
+# the rshape TOOSMALL guard). Its guard MOVED to ALLOCATION (KNOWN_ACEIL below), because the
+# shape's residual cost is an INTRINSIC O(N^2): gen_reexports is CUMULATIVE (m_i does
+# `export import m{i-1}.*` PLUS its own v_i), so the exports across N modules total sum(i) =
+# O(N^2) name entries — resolve MUST allocate O(N^2) regardless of algorithm. So alloc can
+# never read "linear"; it is graded with a QUADRATIC-AWARE ceiling that a super-quadratic
+# (cubic) regression breaks. The op arm still runs as a cheap regression ASSERTION (a
+# reintroduced counted-scan cubic would lift op off 0 — see the rshape loop).
+#
+# ── alloc self-draining ledger (the alloc analogue of KNOWN_OCEIL/OFIXED) ──
+# ACEIL 4.0: the resolve-STAGE alloc ratio at the FIXED band N=100->200->400 is a
+# deterministic r2=3.10 (intrinsic-quadratic, converging to 4.0 from below as N grows; at
+# this fixed finite band it is 3.10, ~29% under 4.0). A cubic-ALLOC regression reads r2=4.41
+# at this same band (MEASURED by reverting the provenance-map fix), 10% over — caught. AFIXED
+# 2.30: if the export representation is ever made sub-quadratic (e.g. shared/lazy exports) the
+# ratio drops under 2.30 and this row PROMOTES (retire the quadratic allowance). Deterministic
+# (GC bytes), so this absorbs only compiler-source drift, not runner noise.
+KNOWN_ACEIL_reexports_resolve="4.0"; KNOWN_AFIXED_reexports_resolve="2.30"
 
 is_known_ops() {
   for k in $KNOWN_SLOW_OPS; do [ "$k" = "$1" ] && return 0; done
@@ -2053,23 +2061,36 @@ esac
 # `modules` shape above runs the multi-module driver but only grades typecheck. This
 # adds the resolve stage to that driver and two shapes that drive resolve specifically.
 #
-# GRADED ON OP-COUNT ONLY — deterministic, ONE run per size, no min-of-K / heap-pin /
-# floor (the #884 arm). This is a deliberate CI-cost choice (the `gates (types)` shard is
-# the critical path, and a multi-module run is heavier than a single-file one): op-count
-# already gives the signal on `reexports` (a clean ~2^3 cubic), so paying K timing runs
-# would buy nothing. `reexports:resolve` is LEDGERED (KNOWN_SLOW_OPS) as a pre-existing,
-# currently-unfixed superlinearity; `starimports:resolve` reads LINEAR (its findExports
-# quadratic is uncounted AND dwarfed by linear alloc — see gen_starimports) and is an
-# `ok` regression guard on the counted import-membership path.
+# TWO shapes, graded on DIFFERENT metrics — and the split is the whole #925/#926 story:
+#
+#   starimports  — GRADED ON OP-COUNT (deterministic, one run per size, no floor/min-of-K).
+#         Its resolve op-count is ~3*N (`isPubExp`'s contains per `import m.{v}` member;
+#         it was 5*N before #925 converted realImport/importValueNames' membership to
+#         OrdMap sets). Linear regression guard on the counted import-membership path; its
+#         real findExports cost is now O(N log N) after #926's Map (was O(N^2), uncounted).
+#         STAR_N=400 so op1 = 3*400 = 1200 clears the OP_FLOOR (1000) with headroom.
+#
+#   reexports    — GRADED ON ALLOCATION, plus a cheap OP-REGRESSION ASSERTION. WHY NOT OP:
+#         #925/#926 drained this shape's counted op to a deterministic 0 (the three cubic
+#         `contains` scans became uncounted OrdMap-set membership; findExports/provenance
+#         are Maps). Op-invisible => cannot be RATIO-graded (would trip the TOOSMALL guard).
+#         The shape's RESIDUAL cost is an INTRINSIC O(N^2): gen_reexports is CUMULATIVE
+#         (each m_i re-exports the whole accumulated set via `export import m{i-1}.*`), so
+#         the exports total sum(i)=O(N^2) name entries — resolve MUST allocate O(N^2). Alloc
+#         therefore can never be "linear"; it is graded with a QUADRATIC-AWARE ceiling
+#         (KNOWN_ACEIL_reexports_resolve=4.0) that a super-quadratic (cubic-alloc) regression
+#         breaks. Graded on the RESOLVE-STAGE alloc column ($3), not total, so the linear
+#         load/desugar/mark/typecheck terms don't dilute the signal. The op arm still runs as
+#         a near-free ASSERTION: a reintroduced counted-scan cubic (the exact #925 mechanism)
+#         would lift resolve op OFF 0 and past the floor — caught, even though op can't be
+#         ratio-graded. (Profiler-break safety: a dead profiler emits op=0 for BOTH shapes,
+#         and starimports' op1<FLOOR trips its own TOOSMALL=fail — so reexports op=0 can only
+#         mean "fixed", never "profiler broke".)
 #
 # ⚠️ ADDITIVE: the resolve stage discards its `List ResError` and does NOT transform the
 # module list, so the `modules` block above (mark/typecheck) is byte-unchanged by it.
-#
-# Bands are SMALL (QUICK/per-PR): starimports needs op1 >= OP_FLOOR (its resolve op-count
-# is 5*N, so N=250 -> 1250 clears the 1000 floor with headroom); reexports is cubic and
-# clears the floor at N=50 already, so it stays there.
-STAR_N="${PERF_STAR_N:-250}"
-REEXP_N="${PERF_REEXP_N:-50}"
+STAR_N="${PERF_STAR_N:-400}"
+REEXP_N="${PERF_REEXP_N:-100}"
 
 for rshape in starimports reexports; do
   case "$rshape" in
@@ -2082,8 +2103,8 @@ for rshape in starimports reexports; do
   "gen_$rshape" "$rn2" "$rd2"
   "gen_$rshape" "$rn3" "$rd3"
 
-  # ONE deterministic run per size — the op arm needs no min-of-K, heap-pin, or floor.
-  # profile_modules_main does not run wasm, so there is no MEDAKA_PERF_WASM to strip.
+  # ONE deterministic run per size — no min-of-K, heap-pin, or floor (both arms are
+  # deterministic: GC bytes and op counts). profile_modules_main does not run wasm.
   RR1="$WORK/${rshape}_rr1"; RR2="$WORK/${rshape}_rr2"; RR3="$WORK/${rshape}_rr3"
   MEDAKA_PERF=1 "$PROFILE_MODULES" "$RUNTIME" "$CORE" "$rd1/entry.mdk" "$rd1" > "$RR1" 2>&1
   MEDAKA_PERF=1 "$PROFILE_MODULES" "$RUNTIME" "$CORE" "$rd2/entry.mdk" "$rd2" > "$RR2" 2>&1
@@ -2092,32 +2113,74 @@ for rshape in starimports reexports; do
   ro2="$(awk -F'\t' '/^\[perf\] resolve/{print $5; exit}' "$RR2")"
   ro3="$(awk -F'\t' '/^\[perf\] resolve/{print $5; exit}' "$RR3")"
 
-  op_bad=0; op_lines=""
-  # An UNMEASURABLE resolve shape is a harness problem, never a pass — mirror the alloc
-  # arm's TOOSMALL=fail. grade_op_stage SKIPs a reading under OP_FLOOR WITHOUT setting
-  # op_bad, so without this guard a non-ledgered shape (starimports) would fall through
-  # to pass++ below and report "ok" having graded NOTHING — the silent-green this suite
-  # forbids. The trigger is real: lowering a resolve shape's band below OP_FLOOR for
-  # CI-cost reasons. Fail loudly instead, for both shapes (a ledgered shape that drops
-  # under the floor is a "raise N or promote" signal, not a pass). (#881 review finding.)
-  rsmall="$(awk -v v="$ro1" -v f="$OP_FLOOR" 'BEGIN{print (v+0 < f+0) ? 1 : 0}')"
-  if [ "$rsmall" = "1" ]; then
+  if [ "$rshape" = "starimports" ]; then
+    op_bad=0; op_lines=""
+    # An UNMEASURABLE op shape is a harness problem, never a pass. grade_op_stage SKIPs a
+    # reading under OP_FLOOR WITHOUT setting op_bad, so without this guard starimports would
+    # fall through to pass++ having graded NOTHING — the silent-green this suite forbids.
+    rsmall="$(awk -v v="$ro1" -v f="$OP_FLOOR" 'BEGIN{print (v+0 < f+0) ? 1 : 0}')"
+    if [ "$rsmall" = "1" ]; then
+      fail=$((fail+1))
+      printf '%-12s %8s  resolve-ops %s -> %s -> %s  ** N TOO SMALL (op1 < OP_FLOOR %s) — raise STAR_N **\n' \
+        "$rshape" "$rn1" "$ro1" "$ro2" "$ro3" "$OP_FLOOR"
+      continue
+    fi
+    grade_op_stage "$rshape" resolve "$ro1" "$ro2" "$ro3" "$rn1" "$rn2" "$rn3"
+    if [ "$op_bad" = "1" ]; then
+      fail=$((fail+1))
+    else
+      pass=$((pass+1))
+    fi
+    printf '%-12s %8s  resolve-ops %s -> %s -> %s  (band N=%s->%s->%s)\n' \
+      "$rshape" "$rn1" "$ro1" "$ro2" "$ro3" "$rn1" "$rn2" "$rn3"
+    printf '%s' "$op_lines"
+    continue
+  fi
+
+  # ── reexports: OP-REGRESSION ASSERTION + ALLOCATION grade ──────────────────
+  # (1) Op assertion: the #925 counted cubic drained to 0. A reintroduced counted-scan
+  # cubic lifts op1 far past the floor (it was 65025 at N=50). Empty op = harness bug.
+  if [ -z "$ro1" ] || [ -z "$ro2" ] || [ -z "$ro3" ]; then
     fail=$((fail+1))
-    printf '%-12s %8s  resolve-ops %s -> %s -> %s  ** N TOO SMALL (op1 < OP_FLOOR %s) — raise this shape band **\n' \
+    printf '%-12s %8s  ** NO OP MEASUREMENT from the profiler (harness bug — missing op column) **\n' "$rshape" "$rn1"
+    continue
+  fi
+  opback="$(awk -v v="$ro1" -v f="$OP_FLOOR" 'BEGIN{print (v+0 >= f+0) ? 1 : 0}')"
+  if [ "$opback" = "1" ]; then
+    fail=$((fail+1))
+    printf '%-12s %8s  ** COUNTED-SCAN CUBIC IS BACK (#925) ** resolve op %s -> %s -> %s (>= OP_FLOOR %s; the fixed state is ~0) **\n' \
       "$rshape" "$rn1" "$ro1" "$ro2" "$ro3" "$OP_FLOOR"
     continue
   fi
-  grade_op_stage "$rshape" resolve "$ro1" "$ro2" "$ro3" "$rn1" "$rn2" "$rn3"
-  # grade_op_stage handles the KNOWN_SLOW_OPS ledger (known++/fail++) internally and sets
-  # op_bad for a NON-ledgered superlinear reading. Count pass/fail for the rest.
-  if [ "$op_bad" = "1" ]; then
+
+  # (2) Allocation grade on the RESOLVE STAGE ($3, MB). Deterministic; no floor (alloc is
+  # tens-to-hundreds of MB here). Ratios vs the KNOWN_ACEIL/AFIXED alloc ledger.
+  ra1="$(awk -F'\t' '/^\[perf\] resolve/{gsub(/MB/,"",$3); print $3; exit}' "$RR1")"
+  ra2="$(awk -F'\t' '/^\[perf\] resolve/{gsub(/MB/,"",$3); print $3; exit}' "$RR2")"
+  ra3="$(awk -F'\t' '/^\[perf\] resolve/{gsub(/MB/,"",$3); print $3; exit}' "$RR3")"
+  if [ -z "$ra1" ] || [ -z "$ra2" ] || [ -z "$ra3" ]; then
     fail=$((fail+1))
-  elif ! is_known_ops "${rshape}:resolve"; then
-    pass=$((pass+1))
+    printf '%-12s %8s  ** NO RESOLVE-ALLOC MEASUREMENT (harness bug — missing $3 MB column) **\n' "$rshape" "$rn1"
+    continue
   fi
-  printf '%-12s %8s  resolve-ops %s -> %s -> %s  (band N=%s->%s->%s)\n' \
-    "$rshape" "$rn1" "$ro1" "$ro2" "$ro3" "$rn1" "$rn2" "$rn3"
-  printf '%s' "$op_lines"
+  ar1="$(awk -v a="$ra1" -v b="$ra2" 'BEGIN{printf "%.2f", b/a}')"
+  ar2="$(awk -v a="$ra2" -v b="$ra3" 'BEGIN{printf "%.2f", b/a}')"
+  aceil="$KNOWN_ACEIL_reexports_resolve"; afixed="$KNOWN_AFIXED_reexports_resolve"
+  aworse="$(awk -v r="$ar2" -v c="$aceil" 'BEGIN{print (r > c) ? 1 : 0}')"
+  abetter="$(awk -v r="$ar2" -v f="$afixed" 'BEGIN{print (r < f) ? 1 : 0}')"
+  if [ "$aworse" = "1" ]; then
+    fail=$((fail+1))
+    printf '%-12s %8s  ** SUPERLINEAR (ALLOC), re-export resolve regressed ** resolve-alloc %sMB -> %sMB -> %sMB  r1=%s r2=%s (ceiling %s, band N=%s->%s->%s)\n' \
+      "$rshape" "$rn1" "$ra1" "$ra2" "$ra3" "$ar1" "$ar2" "$aceil" "$rn1" "$rn2" "$rn3"
+  elif [ "$abetter" = "1" ]; then
+    fail=$((fail+1))
+    printf '%-12s %8s  ** PROMOTE: re-export resolve alloc now sub-quadratic ** r2=%s (< AFIXED %s) — retire the quadratic allowance (KNOWN_ACEIL_reexports_resolve)\n' \
+      "$rshape" "$rn1" "$ar2" "$afixed"
+  else
+    known=$((known+1))
+    printf '%-12s %8s  known-quadratic (ALLOC, intrinsic O(N^2) output) resolve-alloc %sMB -> %sMB -> %sMB  r1=%s r2=%s (ceiling %s, band N=%s->%s->%s) — op held at %s (fixed)\n' \
+      "$rshape" "$rn1" "$ra1" "$ra2" "$ra3" "$ar1" "$ar2" "$aceil" "$rn1" "$rn2" "$rn3" "$ro1"
+  fi
 done
 
 printf -- '---------------------------------------------------------------------\n'

@@ -1,5 +1,5 @@
 # META
-source_lines=2829
+source_lines=2867
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
@@ -60,6 +60,7 @@ import support.ordmap.{
   omFromNames,
   omFromPairs,
   omKeys,
+  omSize,
 }
 import support.util.{
   contains,
@@ -1775,10 +1776,6 @@ public export data ModuleExports = ModuleExports {
 -- iface → method names
 
 -- ── small generic helpers ──────────────────────────────────────────────────
-isNonEmpty : List a -> Bool
-isNonEmpty [] = False
-isNonEmpty _ = True
-
 -- keep the elements of `names` that are members of `domain`
 filterContains : List String -> List String -> List String
 filterContains _ [] = []
@@ -1794,11 +1791,15 @@ filterInSet domain (n::rest)
   | omHasKey n domain = n :: filterInSet domain rest
   | otherwise = filterInSet domain rest
 
-findExports : String -> List ModuleExports -> Option ModuleExports
-findExports _ [] = None
-findExports mid (e::rest)
-  | e.modId == mid = Some e
-  | otherwise = findExports mid rest
+-- #926: `known` is now a Map keyed by module id (was a `List ModuleExports`
+-- scanned linearly, O(N) per import → O(N^2) on a star import that resolves N
+-- imports against an N-long list).  `omLookup` is O(log N).  Byte-identical: module
+-- ids are unique across a module list, so the single keyed entry is exactly what the
+-- old first-match scan returned; and even under a (spurious) duplicate id the driver's
+-- `omInsert exp.modId exp known` is last-write-wins, matching the old `exp :: known`
+-- prepend + front-to-back scan (both return the most-recently-added module).
+findExports : String -> OrdMap ModuleExports -> Option ModuleExports
+findExports mid known = omLookup mid known
 
 -- exported under any value/type/ctor/interface category (lib's imported_names is_pub)
 isPubExp : ModuleExports -> String -> Bool
@@ -1936,44 +1937,56 @@ mergeAdds a b = ImportAdds {
   iaErrors = a.iaErrors ++ b.iaErrors,
 }
 
-collectImports : List ModuleExports -> List Decl -> ImportAdds
+collectImports : OrdMap ModuleExports -> List Decl -> ImportAdds
 collectImports known prog = foldImports known (usePathLocsOf prog)
 
 -- ── use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md) ───────────────────────
 -- The VALUE names a single non-core import contributes, attributed to its
 -- DIRECTLY-imported module id (not the original definer → re-export safe).
-importValueNames : List ModuleExports -> UsePath -> List String
+importValueNames : OrdMap ModuleExports -> UsePath -> List String
 importValueNames known path =
   if useModId path == "core" then []
   else match findExports (useModId path) known
     None => []
     Some exp =>
       let (names, _) = importedNamesMM path exp
-      filterContains exp.expValues names
+      -- #925: `exp.expValues` GROWS with re-export depth, so the old
+      -- `filterContains` (O(len) per name) is O(depth^2) per module → cubic over the
+      -- re-export chain.  An OrdMap membership set makes it O(len log len) and — the
+      -- point for the op-count arm — routes the per-name test through `omHasKey`
+      -- instead of the counted `contains`, byte-identically (same kept names, order).
+      filterInSet (omFromNames exp.expValues omEmpty) names
 
--- Register one (name, mid) into a name→[mid] assoc, deduping mids.
-addProvenance : List (String, List String) -> String -> String -> List (String, List String)
-addProvenance [] n mid = [(n, [mid])]
-addProvenance ((k, mids)::rest) n mid
-  | k == n =
+-- Register one (name, mid) into a name→[mid] MAP, deduping mids (mids kept in
+-- append order).  #925/#926: this was a `List (String, List String)` assoc rescanned
+-- per name (`addProvenance rest` rebuilds the spine to find the key) → O(names^2) per
+-- module → CUBIC ALLOC over an `export import m.*` re-export chain (each module's
+-- provenance grows with depth).  An OrdMap keyed by name makes each insert O(log n).
+-- Byte-identical: `omLookup`/`omInsert` preserve exactly the (name → append-ordered,
+-- deduped mids) association the old assoc built; only the map's key ORDER differs from
+-- insertion order, and provenance is consumed ONLY by `lookupAssoc` (isAmbiguous /
+-- ambigMods and their ctor peers), which is order-independent.
+addProvenance : OrdMap (List String) -> String -> String -> OrdMap (List String)
+addProvenance prov n mid = match omLookup n prov
+  None => omInsert n [mid] prov
+  Some mids =>
     if contains mid mids then
-      (k, mids)::rest
+      prov
     else
-      (k, mids ++ [mid])::rest
-  | otherwise = (k, mids) :: addProvenance rest n mid
+      omInsert n (mids ++ [mid]) prov
 
 -- Fold the value names of one import (all tagged with the same mid) into prov.
-addImportProvenance : List (String, List String) -> String -> List String -> List (String, List String)
+addImportProvenance : OrdMap (List String) -> String -> List String -> OrdMap (List String)
 addImportProvenance prov _ [] = prov
 addImportProvenance prov mid (n::rest) =
   addImportProvenance (addProvenance prov n mid) mid rest
 
 -- Provenance over every non-core import in the program, in decl order
 -- (mirrors lib/resolve.ml's left-to-right List.iter so mod-id order matches).
-valueProvenance : List ModuleExports -> List UsePath -> List (String, List String)
-valueProvenance known paths = foldProvenance known [] paths
+valueProvenance : OrdMap ModuleExports -> List UsePath -> OrdMap (List String)
+valueProvenance known paths = foldProvenance known omEmpty paths
 
-foldProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+foldProvenance : OrdMap ModuleExports -> OrdMap (List String) -> List UsePath -> OrdMap (List String)
 foldProvenance _ prov [] = prov
 foldProvenance known prov (p::rest) =
   let mid = useModId p
@@ -1983,13 +1996,25 @@ foldProvenance known prov (p::rest) =
     addImportProvenance prov mid (importValueNames known p)
   foldProvenance known prov2 rest
 
+-- Materialize the name→mids provenance map into the (name, mids) assoc that
+-- `keepAmbiguous` filters and `env.ambiguous`/`env.ctorAmbiguous` store.  Key order is
+-- sorted (`omKeys`) rather than first-occurrence, which is byte-equivalent downstream
+-- because every consumer looks names up by key (`lookupAssoc`), never iterates in order.
+provToPairs : OrdMap (List String) -> List (String, List String)
+provToPairs prov = map (k => (k, provMidsOf k prov)) (omKeys prov)
+
+provMidsOf : String -> OrdMap (List String) -> List String
+provMidsOf k prov = match omLookup k prov
+  Some mids => mids
+  None => []
+
 -- Keep only names with ≥2 distinct provenances AND no same-module top-level
 -- value shadow (a real local def wins).
-ambiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+ambiguousSet : OrdMap ModuleExports -> List Decl -> List (String, List String)
 ambiguousSet known prog =
   let prov = valueProvenance known (usePathsOf prog)
   let sameMod = userValueNames prog
-  keepAmbiguous sameMod prov
+  keepAmbiguous sameMod (provToPairs prov)
 
 keepAmbiguous : List String -> List (String, List String) -> List (String, List String)
 keepAmbiguous _ [] = []
@@ -2009,19 +2034,20 @@ keepAmbiguous sameMod ((n, mids)::rest)
 
 -- the CONSTRUCTOR names one non-core import contributes, attributed to its
 -- directly-imported module id (re-export safe, like importValueNames).
-importCtorNames : List ModuleExports -> UsePath -> List String
+importCtorNames : OrdMap ModuleExports -> UsePath -> List String
 importCtorNames known path =
   if useModId path == "core" then []
   else match findExports (useModId path) known
     None => []
     Some exp =>
       let (names, _) = importedNamesMM path exp
-      filterContains exp.expCtors names
+      -- #925: same growing-export-list cubic as importValueNames, via expCtors.
+      filterInSet (omFromNames exp.expCtors omEmpty) names
 
-ctorProvenance : List ModuleExports -> List UsePath -> List (String, List String)
-ctorProvenance known paths = foldCtorProvenance known [] paths
+ctorProvenance : OrdMap ModuleExports -> List UsePath -> OrdMap (List String)
+ctorProvenance known paths = foldCtorProvenance known omEmpty paths
 
-foldCtorProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+foldCtorProvenance : OrdMap ModuleExports -> OrdMap (List String) -> List UsePath -> OrdMap (List String)
 foldCtorProvenance _ prov [] = prov
 foldCtorProvenance known prov (p::rest) =
   let mid = useModId p
@@ -2033,18 +2059,18 @@ foldCtorProvenance known prov (p::rest) =
 
 -- Keep only ctor names bound by ≥2 distinct modules AND not defined by a
 -- same-module top-level `data`/`newtype` (a real local ctor wins).
-ctorAmbiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+ctorAmbiguousSet : OrdMap ModuleExports -> List Decl -> List (String, List String)
 ctorAmbiguousSet known prog =
   let prov = ctorProvenance known (usePathsOf prog)
   let sameMod = ctorNames prog
-  keepAmbiguous sameMod prov
+  keepAmbiguous sameMod (provToPairs prov)
 
-foldImports : List ModuleExports -> List (UsePath, Loc) -> ImportAdds
+foldImports : OrdMap ModuleExports -> List (UsePath, Loc) -> ImportAdds
 foldImports _ [] = emptyAdds
 foldImports known ((p, loc)::rest) =
   mergeAdds (oneImport known p loc) (foldImports known rest)
 
-oneImport : List ModuleExports -> UsePath -> Loc -> ImportAdds
+oneImport : OrdMap ModuleExports -> UsePath -> Loc -> ImportAdds
 oneImport known path loc =
   let mid = useModId path
   -- `core` binds NOTHING here: it is the implicit prelude, so every one of its names
@@ -2061,9 +2087,12 @@ oneImport known path loc =
 
 -- module not in `known`: in multi-module mode (known non-empty) this is an
 -- UnknownModule; the first module (known empty) keeps the single-file stub.
-stubOrUnknown : List ModuleExports -> UsePath -> String -> Loc -> ImportAdds
+stubOrUnknown : OrdMap ModuleExports -> UsePath -> String -> Loc -> ImportAdds
 stubOrUnknown known path mid loc =
-  if isNonEmpty known then ImportAdds {
+  -- #926: `known` is a Map now; "any prior module known" is `omSize known > 0`
+  -- (was `isNonEmpty` on the list).  Same predicate: the first module resolves with
+  -- an empty index (single-file stub); every later one has a non-empty index.
+  if omSize known > 0 then ImportAdds {
     iaImported = [],
     iaValues = [],
     iaTypes = [],
@@ -2089,7 +2118,11 @@ realImport exp path loc =
   let (names, errs) = importedNamesMM path exp
   ImportAdds {
     iaImported = names,
-    iaValues = filterContains exp.expValues names,
+    -- #925: a wildcard `export import m.*` re-export makes both `names` and
+    -- `exp.expValues` grow with depth, so this filter is O(depth^2) per module →
+    -- cubic over the chain.  Index the (growing) value set once; `filterInSet`'s
+    -- `omHasKey` is uncounted and byte-identical to the `contains` filter.
+    iaValues = filterInSet (omFromNames exp.expValues omEmpty) names,
     iaTypes = filterContains exp.expTypes names,
     iaCtors = filterContains exp.expCtors names,
     iaIfaces = filterContains exp.expInterfaces names,
@@ -2127,11 +2160,11 @@ ownedFieldOwners exp ((f, o)::rest)
 -- iface-method memberships for imported interfaces (so an `impl` of an imported
 -- interface validates against its real method set — Phase 130).  Only for
 -- interfaces actually in scope (baseIfaces = prelude + user + imported-by-name).
-importedIfaceMethods : List ModuleExports -> List Decl -> List String -> List (String, List String)
+importedIfaceMethods : OrdMap ModuleExports -> List Decl -> List String -> List (String, List String)
 importedIfaceMethods known prog baseIfaces =
   flatMap (oneImportIfaceMethods known baseIfaces) (usePathsOf prog)
 
-oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (String, List String)
+oneImportIfaceMethods : OrdMap ModuleExports -> List String -> UsePath -> List (String, List String)
 oneImportIfaceMethods known baseIfaces path =
   let mid = useModId path
   if mid == "core" then []
@@ -2147,10 +2180,10 @@ filterIfaceMethods baseIfaces ((iface, ms)::rest)
   | otherwise = filterIfaceMethods baseIfaces rest
 
 -- Install exported effect labels from all imported modules (Phase 146).
-importedEffects : List ModuleExports -> List Decl -> List String
+importedEffects : OrdMap ModuleExports -> List Decl -> List String
 importedEffects known prog = flatMap (oneImportEffects known) (usePathsOf prog)
 
-oneImportEffects : List ModuleExports -> UsePath -> List String
+oneImportEffects : OrdMap ModuleExports -> UsePath -> List String
 oneImportEffects known path =
   let mid = useModId path
   if mid == "core" then []
@@ -2159,7 +2192,7 @@ oneImportEffects known path =
     Some exp => exp.expEffects
 
 -- ── buildEnv (multi-module): like buildEnv but validating imports ──────────
-buildEnvMM : List Decl -> List Decl -> List ModuleExports -> List Decl -> List String -> (Env, List ResError)
+buildEnvMM : List Decl -> List Decl -> OrdMap ModuleExports -> List Decl -> List String -> (Env, List ResError)
 buildEnvMM runtimeDecls preludeDecls known prog internalGuard =
   let seed = not (programIsCore prog)
   let pTypes = whenL seed (dataRecordNames preludeDecls)
@@ -2194,11 +2227,11 @@ buildEnvMM runtimeDecls preludeDecls known prog internalGuard =
 -- regardless of import form (bare `UseName`, selective `UseGroup`, wildcard) —
 -- used only to answer "is this unbound name exported by a module I already
 -- import?" (audit #5), not to bind any names into scope.
-importedModuleValueSets : List ModuleExports -> List Decl -> List (String, List String)
+importedModuleValueSets : OrdMap ModuleExports -> List Decl -> List (String, List String)
 importedModuleValueSets known prog =
   flatMap (oneImportedModuleValues known) (usePathsOf prog)
 
-oneImportedModuleValues : List ModuleExports -> UsePath -> List (String, List String)
+oneImportedModuleValues : OrdMap ModuleExports -> UsePath -> List (String, List String)
 oneImportedModuleValues known path =
   let mid = useModId path
   if mid == "core" then []
@@ -2246,7 +2279,7 @@ typeCtorsAllOf ((DAttrib _ d)::rest) = typeCtorsAllOf (d::rest)
 typeCtorsAllOf (_::rest) = typeCtorsAllOf rest
 
 -- ── build_exports ──────────────────────────────────────────────────────────
-buildExports : ModuleExports -> List ModuleExports -> String -> List Decl -> Env -> ModuleExports
+buildExports : ModuleExports -> OrdMap ModuleExports -> String -> List Decl -> Env -> ModuleExports
 buildExports coreExp known modId prog env = ModuleExports {
   modId = modId,
   expValues = expValuesDirect prog ++ publicIfaceMethodVals prog env ++ reExpValues coreExp known prog,
@@ -2329,7 +2362,7 @@ expEffectsDirect [] = []
 expEffectsDirect ((DEffect True n _)::rest) = n :: expEffectsDirect rest
 expEffectsDirect (_::rest) = expEffectsDirect rest
 
-reExpEffects : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpEffects : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpEffects coreExp known prog =
   flatMap (overPubUse coreExp known reExpEffectsFrom) (pubUsePaths prog)
 
@@ -2372,9 +2405,14 @@ selfBinding n = (n, n)
 -- the relevant kind).  This is the aliased form of the old `filterContains`.
 localsExportedFrom : List String -> List (String, String) -> List String
 localsExportedFrom origins bindings =
-  map snd (filterList (b => contains (fst b) origins) bindings)
+  -- #925: `origins` is the source module's export list, which GROWS with re-export
+  -- depth; the old per-binding `contains` was O(len) each → O(depth^2) per module,
+  -- cubic over an `export import m.*` chain.  Build the membership set once and test
+  -- with `omHasKey` (uncounted, O(log len)) — same kept locals, same order.
+  let dom = omFromNames origins omEmpty
+  map snd (filterList (b => omHasKey (fst b) dom) bindings)
 
-reExpValues : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpValues : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpValues coreExp known prog =
   flatMap (overPubUse coreExp known reExpValuesFrom) (pubUsePaths prog)
 
@@ -2391,7 +2429,7 @@ ifaceValsOf src n =
   else
     []
 
-reExpTypes : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpTypes : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpTypes coreExp known prog =
   flatMap (overPubUse coreExp known reExpTypesFrom) (pubUsePaths prog)
 
@@ -2399,7 +2437,7 @@ reExpTypesFrom : UsePath -> ModuleExports -> List String
 reExpTypesFrom path src =
   localsExportedFrom src.expTypes (reexportBindings path src)
 
-reExpCtors : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpCtors : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpCtors coreExp known prog =
   flatMap (overPubUse coreExp known reExpCtorsFrom) (pubUsePaths prog)
 
@@ -2407,7 +2445,7 @@ reExpCtorsFrom : UsePath -> ModuleExports -> List String
 reExpCtorsFrom path src =
   localsExportedFrom src.expCtors (reexportBindings path src)
 
-reExpInterfaces : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpInterfaces : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpInterfaces coreExp known prog =
   flatMap (overPubUse coreExp known reExpInterfacesFrom) (pubUsePaths prog)
 
@@ -2422,7 +2460,7 @@ reExpInterfacesFrom : UsePath -> ModuleExports -> List String
 reExpInterfacesFrom path src =
   filterContains src.expInterfaces (reexportOrigins path src)
 
-reExpIfaceMethods : ModuleExports -> List ModuleExports -> List Decl -> List (String, List String)
+reExpIfaceMethods : ModuleExports -> OrdMap ModuleExports -> List Decl -> List (String, List String)
 reExpIfaceMethods coreExp known prog =
   flatMap (overPubUse coreExp known reExpIfaceMethodsFrom) (pubUsePaths prog)
 
@@ -2437,7 +2475,7 @@ ifaceMethodPairs _ [] = []
 ifaceMethodPairs src (i::rest) =
   (i, ifaceMethodsOf i src.expIfaceMethods) :: ifaceMethodPairs src rest
 
-reExpFieldOwners : ModuleExports -> List ModuleExports -> List Decl -> List (String, String)
+reExpFieldOwners : ModuleExports -> OrdMap ModuleExports -> List Decl -> List (String, String)
 reExpFieldOwners coreExp known prog =
   flatMap (overPubUse coreExp known reExpFieldOwnersFrom) (pubUsePaths prog)
 
@@ -2462,7 +2500,7 @@ ownersForTypes types ((f, o)::rest)
 -- so `stdlib/list.mdk`'s `export import core.{Filterable, filter, filterMap}`
 -- re-exported NOTHING and `import list.{filter}` failed with "Module 'list' has no
 -- exported name 'filter'", while `medaka check stdlib/list.mdk` stayed clean.
-overPubUse : ModuleExports -> List ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
+overPubUse : ModuleExports -> OrdMap ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
 overPubUse coreExp known f path =
   let mid = useModId path
   if mid == "core" then f path coreExp
@@ -2471,13 +2509,13 @@ overPubUse coreExp known f path =
     Some src => f path src
 
 -- ── resolve_module + multi-module driver ───────────────────────────────────
-export resolveModule : List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
+export resolveModule : List Decl -> List Decl -> OrdMap ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModule runtimeDecls preludeDecls known modId prog =
   resolveModuleG [] runtimeDecls preludeDecls known modId prog
 
 -- Like resolveModule but with an explicit internal-extern guard list for this
 -- module (empty ⇒ trusted: a stdlib module, or `--allow-internal`).
-export resolveModuleG : List String -> List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
+export resolveModuleG : List String -> List Decl -> List Decl -> OrdMap ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModuleG internalGuard runtimeDecls preludeDecls known modId prog =
   let (env, importErrs) = buildEnvMM runtimeDecls preludeDecls known prog internalGuard
   let errs = dedupResErrors (buildErrors preludeDecls prog ++ importErrs ++ flatMap (checkDecl env) prog)
@@ -2486,7 +2524,7 @@ resolveModuleG internalGuard runtimeDecls preludeDecls known modId prog =
 
 -- thread resolveModule over modules in dependency-first order, accumulating
 -- exports; collect the union of every module's errors (the harness sorts).
-resolveModulesErrors : List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesErrors : List Decl -> List Decl -> OrdMap ModuleExports -> List (String, List Decl) -> List ResError
 resolveModulesErrors rt pre known mods =
   resolveModulesErrorsG True [] rt pre known mods
 
@@ -2494,7 +2532,7 @@ resolveModulesErrors rt pre known mods =
 -- `allowInternal` is set OR its modId is in `trustedMods` (the stdlib-owned
 -- modules, per the loader's owning-root).  Untrusted modules get the
 -- internalExterns guard list.
-resolveModulesErrorsG : Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesErrorsG : Bool -> List String -> List Decl -> List Decl -> OrdMap ModuleExports -> List (String, List Decl) -> List ResError
 resolveModulesErrorsG _ _ _ _ _ [] = []
 resolveModulesErrorsG allowInternal trustedMods rt pre known ((mid, prog)::rest) =
   let guard = if allowInternal || contains mid trustedMods then
@@ -2503,7 +2541,7 @@ resolveModulesErrorsG allowInternal trustedMods rt pre known ((mid, prog)::rest)
     internalExterns
   let (exp, errs) = resolveModuleG guard rt pre known mid prog
   errs
-    ++ resolveModulesErrorsG allowInternal trustedMods rt pre (exp::known) rest
+    ++ resolveModulesErrorsG allowInternal trustedMods rt pre (omInsert exp.modId exp known) rest
 
 -- one S-expression per diagnostic (the harness sorts); matches
 -- `diagdump --resolve-modules` over the same ordered module list.
@@ -2511,12 +2549,12 @@ export resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl
 resolveModulesToLines runtimeDecls preludeDecls mods =
   joinNl (map
     resErrorSexp
-    (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+    (resolveModulesErrors runtimeDecls preludeDecls omEmpty mods))
 
 -- Guarded variant of resolveModulesToLines (S-expr output) for the `medaka check`
 -- exit-code predicate: `allowInternal` / `trustedMods` decide per-module trust.
 export resolveModulesToLinesG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToLinesG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map resErrorSexp (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
+resolveModulesToLinesG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map resErrorSexp (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods))
 
 -- HUMANE multi-module resolve diagnostics for the `medaka check` CLI (vs the
 -- S-expression `resolveModulesToLines`, which the differential resolve-modules
@@ -2529,12 +2567,12 @@ export resolveModulesToHumane : List Decl -> List Decl -> List (String, List Dec
 resolveModulesToHumane runtimeDecls preludeDecls mods =
   joinNl (map
     ppResErrorLocated
-    (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+    (resolveModulesErrors runtimeDecls preludeDecls omEmpty mods))
 
 -- Guarded variant of resolveModulesToHumane for the run/build/check CLI:
 -- `allowInternal` / `trustedMods` decide per-module internal-extern trust.
 export resolveModulesToHumaneG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map ppResErrorLocated (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
+resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map ppResErrorLocated (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods))
 
 -- Like resolveModulesToHumaneG but with an explicit fallback FILE for a loc
 -- whose own `file` is empty (F3 Chunk B: `DUse`'s captured Loc is always ""
@@ -2547,7 +2585,7 @@ resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods
 -- import still degrades gracefully to the entry file rather than the old
 -- `<unknown location>`.
 export resolveModulesToHumaneGF : String -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map (ppResErrorLocatedF fallbackFile) (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
+resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map (ppResErrorLocatedF fallbackFile) (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods))
 
 -- Like resolveModulesToHumaneGF but attributing each module's located resolve
 -- errors to that module's OWN file, looked up in `modPaths` (a modId → real file
@@ -2560,9 +2598,9 @@ resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls pre
 -- module's path.  A modId absent from `modPaths` degrades to "" (`<unknown
 -- location>`), never to another module's file.
 export resolveModulesToHumaneByPath : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToHumaneByPath modPaths allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (resolveModulesErrorsByPathGo modPaths allowInternal trustedMods runtimeDecls preludeDecls [] mods)
+resolveModulesToHumaneByPath modPaths allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (resolveModulesErrorsByPathGo modPaths allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods)
 
-resolveModulesErrorsByPathGo : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List String
+resolveModulesErrorsByPathGo : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> OrdMap ModuleExports -> List (String, List Decl) -> List String
 resolveModulesErrorsByPathGo _ _ _ _ _ _ [] = []
 resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre known ((mid, prog)::rest) =
   let guard = if allowInternal || contains mid trustedMods then
@@ -2574,7 +2612,7 @@ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre known ((m
     Some p => p
     None => ""
   map (ppResErrorLocatedF file) errs
-    ++ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre (exp::known) rest
+    ++ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre (omInsert exp.modId exp known) rest
 
 -- A single located humane line for a resolve error.
 export ppResErrorLocated : ResError -> String
@@ -2833,7 +2871,7 @@ stampBindingIds decls =
   (map (stampDecl (omFromPairs top omEmpty)) decls, top)
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
-(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omFromPairs" false) (mem "omKeys" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omFromPairs" false) (mem "omKeys" false) (mem "omSize" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false) (mem "dedup" false))))
 (DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnboundVariableIsModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig true "resErrorDidYouMean" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "String")))))
@@ -3482,18 +3520,14 @@ stampBindingIds decls =
 (DFunDef false "singleFileImportErrors" ((PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EBinOp "==" (EVar "mid") (ELit (LString "")))) (EApp (EVar "singleFileImportErrors") (EVar "rest")) (EBinOp "::" (EApp (EApp (EVar "UnknownModule") (EVar "mid")) (EVar "None")) (EApp (EVar "singleFileImportErrors") (EVar "rest")))))))
 (DFunDef false "singleFileImportErrors" ((PCons PWild (PVar "rest"))) (EApp (EVar "singleFileImportErrors") (EVar "rest")))
 (DData Public "ModuleExports" () ((variant "ModuleExports" (ConNamed (field "modId" (TyCon "String")) (field "expValues" (TyApp (TyCon "List") (TyCon "String"))) (field "expTypes" (TyApp (TyCon "List") (TyCon "String"))) (field "expCtors" (TyApp (TyCon "List") (TyCon "String"))) (field "expTypeCtors" (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))) (field "expFieldOwners" (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (field "expInterfaces" (TyApp (TyCon "List") (TyCon "String"))) (field "expIfaceMethods" (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))) (field "expEffects" (TyApp (TyCon "List") (TyCon "String")))))) ())
-(DTypeSig false "isNonEmpty" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))
-(DFunDef false "isNonEmpty" ((PList)) (EVar "False"))
-(DFunDef false "isNonEmpty" (PWild) (EVar "True"))
 (DTypeSig false "filterContains" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "filterContains" (PWild (PList)) (EListLit))
 (DFunDef false "filterContains" ((PVar "domain") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "domain")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "filterContains") (EVar "domain")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterContains") (EVar "domain")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "filterInSet" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "filterInSet" (PWild (PList)) (EListLit))
 (DFunDef false "filterInSet" ((PVar "domain") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "domain")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "filterInSet") (EVar "domain")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterInSet") (EVar "domain")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "findExports" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyApp (TyCon "Option") (TyCon "ModuleExports")))))
-(DFunDef false "findExports" (PWild (PList)) (EVar "None"))
-(DFunDef false "findExports" ((PVar "mid") (PCons (PVar "e") (PVar "rest"))) (EIf (EBinOp "==" (EFieldAccess (EVar "e") "modId") (EVar "mid")) (EApp (EVar "Some") (EVar "e")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "findExports" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyApp (TyCon "Option") (TyCon "ModuleExports")))))
+(DFunDef false "findExports" ((PVar "mid") (PVar "known")) (EApp (EApp (EVar "omLookup") (EVar "mid")) (EVar "known")))
 (DTypeSig false "isPubExp" (TyFun (TyCon "ModuleExports") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "isPubExp" ((PVar "exp") (PVar "n")) (EBinOp "||" (EBinOp "||" (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expValues")) (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expTypes"))) (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expCtors"))) (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expInterfaces"))))
 (DTypeSig false "typeCtorsOf" (TyFun (TyCon "String") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "String"))))))
@@ -3534,44 +3568,47 @@ stampBindingIds decls =
 (DFunDef false "emptyAdds" () (ERecordCreate "ImportAdds" ((fa "iaImported" (EListLit)) (fa "iaValues" (EListLit)) (fa "iaTypes" (EListLit)) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit)))))
 (DTypeSig false "mergeAdds" (TyFun (TyCon "ImportAdds") (TyFun (TyCon "ImportAdds") (TyCon "ImportAdds"))))
 (DFunDef false "mergeAdds" ((PVar "a") (PVar "b")) (ERecordCreate "ImportAdds" ((fa "iaImported" (EBinOp "++" (EFieldAccess (EVar "a") "iaImported") (EFieldAccess (EVar "b") "iaImported"))) (fa "iaValues" (EBinOp "++" (EFieldAccess (EVar "a") "iaValues") (EFieldAccess (EVar "b") "iaValues"))) (fa "iaTypes" (EBinOp "++" (EFieldAccess (EVar "a") "iaTypes") (EFieldAccess (EVar "b") "iaTypes"))) (fa "iaCtors" (EBinOp "++" (EFieldAccess (EVar "a") "iaCtors") (EFieldAccess (EVar "b") "iaCtors"))) (fa "iaIfaces" (EBinOp "++" (EFieldAccess (EVar "a") "iaIfaces") (EFieldAccess (EVar "b") "iaIfaces"))) (fa "iaFieldOwners" (EBinOp "++" (EFieldAccess (EVar "a") "iaFieldOwners") (EFieldAccess (EVar "b") "iaFieldOwners"))) (fa "iaErrors" (EBinOp "++" (EFieldAccess (EVar "a") "iaErrors") (EFieldAccess (EVar "b") "iaErrors"))))))
-(DTypeSig false "collectImports" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ImportAdds"))))
+(DTypeSig false "collectImports" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ImportAdds"))))
 (DFunDef false "collectImports" ((PVar "known") (PVar "prog")) (EApp (EApp (EVar "foldImports") (EVar "known")) (EApp (EVar "usePathLocsOf") (EVar "prog"))))
-(DTypeSig false "importValueNames" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "importValueNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expValues")) (EVar "names"))))))))
-(DTypeSig false "addProvenance" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "addProvenance" ((PList) (PVar "n") (PVar "mid")) (EListLit (ETuple (EVar "n") (EListLit (EVar "mid")))))
-(DFunDef false "addProvenance" ((PCons (PTuple (PVar "k") (PVar "mids")) (PVar "rest")) (PVar "n") (PVar "mid")) (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EIf (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "mids")) (EBinOp "::" (ETuple (EVar "k") (EVar "mids")) (EVar "rest")) (EBinOp "::" (ETuple (EVar "k") (EBinOp "++" (EVar "mids") (EListLit (EVar "mid")))) (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "k") (EVar "mids")) (EApp (EApp (EApp (EVar "addProvenance") (EVar "rest")) (EVar "n")) (EVar "mid"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "addImportProvenance" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "importValueNames" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "importValueNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterInSet") (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "exp") "expValues")) (EVar "omEmpty"))) (EVar "names"))))))))
+(DTypeSig false "addProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "addProvenance" ((PVar "prov") (PVar "n") (PVar "mid")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "prov")) (arm (PCon "None") () (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (EListLit (EVar "mid"))) (EVar "prov"))) (arm (PCon "Some" (PVar "mids")) () (EIf (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "mids")) (EVar "prov") (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (EBinOp "++" (EVar "mids") (EListLit (EVar "mid")))) (EVar "prov"))))))
+(DTypeSig false "addImportProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "addImportProvenance" ((PVar "prov") PWild (PList)) (EVar "prov"))
 (DFunDef false "addImportProvenance" ((PVar "prov") (PVar "mid") (PCons (PVar "n") (PVar "rest"))) (EApp (EApp (EApp (EVar "addImportProvenance") (EApp (EApp (EApp (EVar "addProvenance") (EVar "prov")) (EVar "n")) (EVar "mid"))) (EVar "mid")) (EVar "rest")))
-(DTypeSig false "valueProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "valueProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldProvenance") (EVar "known")) (EListLit)) (EVar "paths")))
-(DTypeSig false "foldProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "valueProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "valueProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldProvenance") (EVar "known")) (EVar "omEmpty")) (EVar "paths")))
+(DTypeSig false "foldProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "foldProvenance" (PWild (PVar "prov") (PList)) (EVar "prov"))
 (DFunDef false "foldProvenance" ((PVar "known") (PVar "prov") (PCons (PVar "p") (PVar "rest"))) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "p"))) (DoLet false false (PVar "prov2") (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EVar "prov") (EApp (EApp (EApp (EVar "addImportProvenance") (EVar "prov")) (EVar "mid")) (EApp (EApp (EVar "importValueNames") (EVar "known")) (EVar "p"))))) (DoExpr (EApp (EApp (EApp (EVar "foldProvenance") (EVar "known")) (EVar "prov2")) (EVar "rest")))))
-(DTypeSig false "ambiguousSet" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "ambiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "valueProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "userValueNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "prov")))))
+(DTypeSig false "provToPairs" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "provToPairs" ((PVar "prov")) (EApp (EApp (EVar "map") (ELam ((PVar "k")) (ETuple (EVar "k") (EApp (EApp (EVar "provMidsOf") (EVar "k")) (EVar "prov"))))) (EApp (EVar "omKeys") (EVar "prov"))))
+(DTypeSig false "provMidsOf" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "provMidsOf" ((PVar "k") (PVar "prov")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "k")) (EVar "prov")) (arm (PCon "Some" (PVar "mids")) () (EVar "mids")) (arm (PCon "None") () (EListLit))))
+(DTypeSig false "ambiguousSet" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "ambiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "valueProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "userValueNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EApp (EVar "provToPairs") (EVar "prov"))))))
 (DTypeSig false "keepAmbiguous" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "keepAmbiguous" (PWild (PList)) (EListLit))
 (DFunDef false "keepAmbiguous" ((PVar "sameMod") (PCons (PTuple (PVar "n") (PVar "mids")) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "listLen") (EVar "mids")) (ELit (LInt 2))) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "sameMod")))) (EBinOp "::" (ETuple (EVar "n") (EVar "mids")) (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "importCtorNames" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "importCtorNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expCtors")) (EVar "names"))))))))
-(DTypeSig false "ctorProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "ctorProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldCtorProvenance") (EVar "known")) (EListLit)) (EVar "paths")))
-(DTypeSig false "foldCtorProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "importCtorNames" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "importCtorNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterInSet") (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "exp") "expCtors")) (EVar "omEmpty"))) (EVar "names"))))))))
+(DTypeSig false "ctorProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "ctorProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldCtorProvenance") (EVar "known")) (EVar "omEmpty")) (EVar "paths")))
+(DTypeSig false "foldCtorProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "foldCtorProvenance" (PWild (PVar "prov") (PList)) (EVar "prov"))
 (DFunDef false "foldCtorProvenance" ((PVar "known") (PVar "prov") (PCons (PVar "p") (PVar "rest"))) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "p"))) (DoLet false false (PVar "prov2") (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EVar "prov") (EApp (EApp (EApp (EVar "addImportProvenance") (EVar "prov")) (EVar "mid")) (EApp (EApp (EVar "importCtorNames") (EVar "known")) (EVar "p"))))) (DoExpr (EApp (EApp (EApp (EVar "foldCtorProvenance") (EVar "known")) (EVar "prov2")) (EVar "rest")))))
-(DTypeSig false "ctorAmbiguousSet" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "ctorAmbiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "ctorProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "ctorNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "prov")))))
-(DTypeSig false "foldImports" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "UsePath") (TyCon "Loc"))) (TyCon "ImportAdds"))))
+(DTypeSig false "ctorAmbiguousSet" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "ctorAmbiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "ctorProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "ctorNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EApp (EVar "provToPairs") (EVar "prov"))))))
+(DTypeSig false "foldImports" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "UsePath") (TyCon "Loc"))) (TyCon "ImportAdds"))))
 (DFunDef false "foldImports" (PWild (PList)) (EVar "emptyAdds"))
 (DFunDef false "foldImports" ((PVar "known") (PCons (PTuple (PVar "p") (PVar "loc")) (PVar "rest"))) (EApp (EApp (EVar "mergeAdds") (EApp (EApp (EApp (EVar "oneImport") (EVar "known")) (EVar "p")) (EVar "loc"))) (EApp (EApp (EVar "foldImports") (EVar "known")) (EVar "rest"))))
-(DTypeSig false "oneImport" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "Loc") (TyCon "ImportAdds")))))
+(DTypeSig false "oneImport" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "Loc") (TyCon "ImportAdds")))))
 (DFunDef false "oneImport" ((PVar "known") (PVar "path") (PVar "loc")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EVar "emptyAdds") (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "stubOrUnknown") (EVar "known")) (EVar "path")) (EVar "mid")) (EVar "loc"))) (arm (PCon "Some" (PVar "exp")) () (EApp (EApp (EApp (EVar "realImport") (EVar "exp")) (EVar "path")) (EVar "loc"))))))))
-(DTypeSig false "stubOrUnknown" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "ImportAdds"))))))
-(DFunDef false "stubOrUnknown" ((PVar "known") (PVar "path") (PVar "mid") (PVar "loc")) (EIf (EApp (EVar "isNonEmpty") (EVar "known")) (ERecordCreate "ImportAdds" ((fa "iaImported" (EListLit)) (fa "iaValues" (EListLit)) (fa "iaTypes" (EListLit)) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit (EApp (EApp (EVar "UnknownModule") (EVar "mid")) (EApp (EVar "Some") (EVar "loc"))))))) (EBlock (DoLet false false (PVar "names") (EApp (EVar "useStubNames") (EVar "path"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EVar "names")) (fa "iaTypes" (EVar "names")) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit))))))))
+(DTypeSig false "stubOrUnknown" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "ImportAdds"))))))
+(DFunDef false "stubOrUnknown" ((PVar "known") (PVar "path") (PVar "mid") (PVar "loc")) (EIf (EBinOp ">" (EApp (EVar "omSize") (EVar "known")) (ELit (LInt 0))) (ERecordCreate "ImportAdds" ((fa "iaImported" (EListLit)) (fa "iaValues" (EListLit)) (fa "iaTypes" (EListLit)) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit (EApp (EApp (EVar "UnknownModule") (EVar "mid")) (EApp (EVar "Some") (EVar "loc"))))))) (EBlock (DoLet false false (PVar "names") (EApp (EVar "useStubNames") (EVar "path"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EVar "names")) (fa "iaTypes" (EVar "names")) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit))))))))
 (DTypeSig false "realImport" (TyFun (TyCon "ModuleExports") (TyFun (TyCon "UsePath") (TyFun (TyCon "Loc") (TyCon "ImportAdds")))))
-(DFunDef false "realImport" ((PVar "exp") (PVar "path") (PVar "loc")) (EBlock (DoLet false false (PTuple (PVar "names") (PVar "errs")) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expValues")) (EVar "names"))) (fa "iaTypes" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expTypes")) (EVar "names"))) (fa "iaCtors" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expCtors")) (EVar "names"))) (fa "iaIfaces" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expInterfaces")) (EVar "names"))) (fa "iaFieldOwners" (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EFieldAccess (EVar "exp") "expFieldOwners"))) (fa "iaErrors" (EApp (EApp (EVar "map") (EApp (EVar "withResErrorLoc") (EVar "loc"))) (EVar "errs"))))))))
+(DFunDef false "realImport" ((PVar "exp") (PVar "path") (PVar "loc")) (EBlock (DoLet false false (PTuple (PVar "names") (PVar "errs")) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EApp (EApp (EVar "filterInSet") (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "exp") "expValues")) (EVar "omEmpty"))) (EVar "names"))) (fa "iaTypes" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expTypes")) (EVar "names"))) (fa "iaCtors" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expCtors")) (EVar "names"))) (fa "iaIfaces" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expInterfaces")) (EVar "names"))) (fa "iaFieldOwners" (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EFieldAccess (EVar "exp") "expFieldOwners"))) (fa "iaErrors" (EApp (EApp (EVar "map") (EApp (EVar "withResErrorLoc") (EVar "loc"))) (EVar "errs"))))))))
 (DTypeSig false "withResErrorLoc" (TyFun (TyCon "Loc") (TyFun (TyCon "ResError") (TyCon "ResError"))))
 (DFunDef false "withResErrorLoc" ((PVar "loc") (PCon "PrivateNameAccess" (PVar "n") (PVar "m") (PCon "None"))) (EApp (EApp (EApp (EVar "PrivateNameAccess") (EVar "n")) (EVar "m")) (EApp (EVar "Some") (EVar "loc"))))
 (DFunDef false "withResErrorLoc" (PWild (PCon "PrivateNameAccess" (PVar "n") (PVar "m") (PCon "Some" (PVar "l")))) (EApp (EApp (EApp (EVar "PrivateNameAccess") (EVar "n")) (EVar "m")) (EApp (EVar "Some") (EVar "l"))))
@@ -3581,22 +3618,22 @@ stampBindingIds decls =
 (DTypeSig false "ownedFieldOwners" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "ownedFieldOwners" (PWild (PList)) (EListLit))
 (DFunDef false "ownedFieldOwners" ((PVar "exp") (PCons (PTuple (PVar "f") (PVar "o")) (PVar "rest"))) (EIf (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "o")) (EFieldAccess (EVar "exp") "expTypes")) (EApp (EApp (EVar "contains") (EVar "o")) (EFieldAccess (EVar "exp") "expCtors"))) (EBinOp "::" (ETuple (EVar "f") (EVar "o")) (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "importedIfaceMethods" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "importedIfaceMethods" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "importedIfaceMethods" ((PVar "known") (PVar "prog") (PVar "baseIfaces")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EVar "oneImportIfaceMethods") (EVar "known")) (EVar "baseIfaces"))) (EApp (EVar "usePathsOf") (EVar "prog"))))
-(DTypeSig false "oneImportIfaceMethods" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "oneImportIfaceMethods" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "oneImportIfaceMethods" ((PVar "known") (PVar "baseIfaces") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EApp (EApp (EVar "filterIfaceMethods") (EVar "baseIfaces")) (EFieldAccess (EVar "exp") "expIfaceMethods"))))))))
 (DTypeSig false "filterIfaceMethods" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "filterIfaceMethods" (PWild (PList)) (EListLit))
 (DFunDef false "filterIfaceMethods" ((PVar "baseIfaces") (PCons (PTuple (PVar "iface") (PVar "ms")) (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "iface")) (EVar "baseIfaces")) (EBinOp "::" (ETuple (EVar "iface") (EVar "ms")) (EApp (EApp (EVar "filterIfaceMethods") (EVar "baseIfaces")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterIfaceMethods") (EVar "baseIfaces")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "importedEffects" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String")))))
+(DTypeSig false "importedEffects" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "importedEffects" ((PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EVar "oneImportEffects") (EVar "known"))) (EApp (EVar "usePathsOf") (EVar "prog"))))
-(DTypeSig false "oneImportEffects" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
+(DTypeSig false "oneImportEffects" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "oneImportEffects" ((PVar "known") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EFieldAccess (EVar "exp") "expEffects")))))))
-(DTypeSig false "buildEnvMM" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyTuple (TyCon "Env") (TyApp (TyCon "List") (TyCon "ResError")))))))))
+(DTypeSig false "buildEnvMM" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyTuple (TyCon "Env") (TyApp (TyCon "List") (TyCon "ResError")))))))))
 (DFunDef false "buildEnvMM" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "known") (PVar "prog") (PVar "internalGuard")) (EBlock (DoLet false false (PVar "seed") (EApp (EVar "not") (EApp (EVar "programIsCore") (EVar "prog")))) (DoLet false false (PVar "pTypes") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "dataRecordNames") (EVar "preludeDecls")))) (DoLet false false (PVar "pCtors") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "ctorNames") (EVar "preludeDecls")))) (DoLet false false (PVar "pIfaces") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "interfaceList") (EVar "preludeDecls")))) (DoLet false false (PVar "pValues") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "preludeValueNames") (EVar "preludeDecls")))) (DoLet false false (PVar "pFieldOwners") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "fieldOwnersOf") (EVar "preludeDecls")))) (DoLet false false (PVar "uIfaces") (EApp (EVar "interfaceList") (EVar "prog"))) (DoLet false false (PVar "adds") (EApp (EApp (EVar "collectImports") (EVar "known")) (EVar "prog"))) (DoLet false false (PVar "baseIfaces") (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "map") (EVar "fst")) (EVar "pIfaces")) (EApp (EApp (EVar "map") (EVar "fst")) (EVar "uIfaces"))) (EFieldAccess (EVar "adds") "iaIfaces"))) (DoLet false false (PVar "impIfaceMethods") (EApp (EApp (EApp (EVar "importedIfaceMethods") (EVar "known")) (EVar "prog")) (EVar "baseIfaces"))) (DoLet false false (PVar "impEffects") (EApp (EApp (EVar "importedEffects") (EVar "known")) (EVar "prog"))) (DoLet false false (PVar "impModValues") (EApp (EApp (EVar "importedModuleValueSets") (EVar "known")) (EVar "prog"))) (DoLet false false (PVar "env") (ERecordCreate "Env" ((fa "values" (EApp (EApp (EVar "omFromNames") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EApp (EVar "externNames") (EVar "runtimeDecls")) (EVar "pValues")) (EApp (EVar "userValueNames") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaValues"))) (EVar "omEmpty"))) (fa "types" (EApp (EApp (EVar "omFromNames") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "primitiveTypes") (EVar "pTypes")) (EApp (EVar "dataRecordNames") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaTypes"))) (EVar "omEmpty"))) (fa "ctors" (EApp (EApp (EVar "omFromNames") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "primitiveConstructors") (EVar "pCtors")) (EApp (EVar "ctorNames") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaCtors"))) (EVar "omEmpty"))) (fa "fields" (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "map") (EVar "fst")) (EVar "pFieldOwners")) (EApp (EApp (EVar "map") (EVar "fst")) (EApp (EVar "fieldOwnersOf") (EVar "prog")))) (EApp (EApp (EVar "map") (EVar "fst")) (EFieldAccess (EVar "adds") "iaFieldOwners")))) (fa "fieldOwners" (EBinOp "++" (EBinOp "++" (EVar "pFieldOwners") (EApp (EVar "fieldOwnersOf") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaFieldOwners"))) (fa "interfaces" (EVar "baseIfaces")) (fa "ifaceMethods" (EBinOp "++" (EBinOp "++" (EVar "pIfaces") (EVar "uIfaces")) (EVar "impIfaceMethods"))) (fa "effects" (EBinOp "++" (EApp (EVar "effectNames") (EVar "prog")) (EVar "impEffects"))) (fa "imported" (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "adds") "iaImported")) (EVar "omEmpty"))) (fa "importedModuleValues" (EVar "impModValues")) (fa "ambiguous" (EApp (EApp (EVar "ambiguousSet") (EVar "known")) (EVar "prog"))) (fa "ctorAmbiguous" (EApp (EApp (EVar "ctorAmbiguousSet") (EVar "known")) (EVar "prog"))) (fa "internalGuard" (EApp (EApp (EVar "omFromNames") (EVar "internalGuard")) (EVar "omEmpty")))))) (DoExpr (ETuple (EVar "env") (EFieldAccess (EVar "adds") "iaErrors")))))
-(DTypeSig false "importedModuleValueSets" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DTypeSig false "importedModuleValueSets" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "importedModuleValueSets" ((PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EVar "oneImportedModuleValues") (EVar "known"))) (EApp (EVar "usePathsOf") (EVar "prog"))))
-(DTypeSig false "oneImportedModuleValues" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DTypeSig false "oneImportedModuleValues" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "oneImportedModuleValues" ((PVar "known") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EListLit (ETuple (EVar "mid") (EFieldAccess (EVar "exp") "expValues")))))))))
 (DTypeSig false "coreExports" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ModuleExports")))
 (DFunDef false "coreExports" ((PVar "preludeDecls")) (ERecordCreate "ModuleExports" ((fa "modId" (ELit (LString "core"))) (fa "expValues" (EApp (EVar "preludeValueNames") (EVar "preludeDecls"))) (fa "expTypes" (EApp (EVar "dataRecordNames") (EVar "preludeDecls"))) (fa "expCtors" (EApp (EVar "ctorNames") (EVar "preludeDecls"))) (fa "expTypeCtors" (EApp (EVar "typeCtorsAllOf") (EVar "preludeDecls"))) (fa "expFieldOwners" (EApp (EVar "fieldOwnersOf") (EVar "preludeDecls"))) (fa "expInterfaces" (EApp (EApp (EVar "map") (EVar "fst")) (EApp (EVar "interfaceList") (EVar "preludeDecls")))) (fa "expIfaceMethods" (EApp (EVar "interfaceList") (EVar "preludeDecls"))) (fa "expEffects" (EApp (EVar "effectNames") (EVar "preludeDecls"))))))
@@ -3606,7 +3643,7 @@ stampBindingIds decls =
 (DFunDef false "typeCtorsAllOf" ((PCons (PCon "DData" PWild (PVar "n") PWild (PVar "vs") PWild) (PVar "rest"))) (EBinOp "::" (ETuple (EVar "n") (EApp (EApp (EVar "map") (EVar "variantName")) (EVar "vs"))) (EApp (EVar "typeCtorsAllOf") (EVar "rest"))))
 (DFunDef false "typeCtorsAllOf" ((PCons (PCon "DAttrib" PWild (PVar "d")) (PVar "rest"))) (EApp (EVar "typeCtorsAllOf") (EBinOp "::" (EVar "d") (EVar "rest"))))
 (DFunDef false "typeCtorsAllOf" ((PCons PWild (PVar "rest"))) (EApp (EVar "typeCtorsAllOf") (EVar "rest")))
-(DTypeSig false "buildExports" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "Env") (TyCon "ModuleExports")))))))
+(DTypeSig false "buildExports" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "Env") (TyCon "ModuleExports")))))))
 (DFunDef false "buildExports" ((PVar "coreExp") (PVar "known") (PVar "modId") (PVar "prog") (PVar "env")) (ERecordCreate "ModuleExports" ((fa "modId" (EVar "modId")) (fa "expValues" (EBinOp "++" (EBinOp "++" (EApp (EVar "expValuesDirect") (EVar "prog")) (EApp (EApp (EVar "publicIfaceMethodVals") (EVar "prog")) (EVar "env"))) (EApp (EApp (EApp (EVar "reExpValues") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expTypes" (EBinOp "++" (EApp (EVar "expTypesDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpTypes") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expCtors" (EBinOp "++" (EApp (EVar "expCtorsDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpCtors") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expTypeCtors" (EApp (EVar "expTypeCtorsDirect") (EVar "prog"))) (fa "expFieldOwners" (EBinOp "++" (EApp (EVar "expFieldOwnersDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpFieldOwners") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expInterfaces" (EBinOp "++" (EApp (EVar "expInterfacesDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpInterfaces") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expIfaceMethods" (EBinOp "++" (EApp (EVar "expIfaceMethodsDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpIfaceMethods") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expEffects" (EBinOp "++" (EApp (EVar "expEffectsDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpEffects") (EVar "coreExp")) (EVar "known")) (EVar "prog")))))))
 (DTypeSig false "expValuesDirect" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "expValuesDirect" ((PList)) (EListLit))
@@ -3655,7 +3692,7 @@ stampBindingIds decls =
 (DFunDef false "expEffectsDirect" ((PList)) (EListLit))
 (DFunDef false "expEffectsDirect" ((PCons (PCon "DEffect" (PCon "True") (PVar "n") PWild) (PVar "rest"))) (EBinOp "::" (EVar "n") (EApp (EVar "expEffectsDirect") (EVar "rest"))))
 (DFunDef false "expEffectsDirect" ((PCons PWild (PVar "rest"))) (EApp (EVar "expEffectsDirect") (EVar "rest")))
-(DTypeSig false "reExpEffects" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpEffects" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpEffects" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpEffectsFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpEffectsFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpEffectsFrom" ((PCon "UseWild" PWild) (PVar "src")) (EFieldAccess (EVar "src") "expEffects"))
@@ -3670,67 +3707,67 @@ stampBindingIds decls =
 (DTypeSig false "selfBinding" (TyFun (TyCon "String") (TyTuple (TyCon "String") (TyCon "String"))))
 (DFunDef false "selfBinding" ((PVar "n")) (ETuple (EVar "n") (EVar "n")))
 (DTypeSig false "localsExportedFrom" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "localsExportedFrom" ((PVar "origins") (PVar "bindings")) (EApp (EApp (EVar "map") (EVar "snd")) (EApp (EApp (EVar "filterList") (ELam ((PVar "b")) (EApp (EApp (EVar "contains") (EApp (EVar "fst") (EVar "b"))) (EVar "origins")))) (EVar "bindings"))))
-(DTypeSig false "reExpValues" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "localsExportedFrom" ((PVar "origins") (PVar "bindings")) (EBlock (DoLet false false (PVar "dom") (EApp (EApp (EVar "omFromNames") (EVar "origins")) (EVar "omEmpty"))) (DoExpr (EApp (EApp (EVar "map") (EVar "snd")) (EApp (EApp (EVar "filterList") (ELam ((PVar "b")) (EApp (EApp (EVar "omHasKey") (EApp (EVar "fst") (EVar "b"))) (EVar "dom")))) (EVar "bindings"))))))
+(DTypeSig false "reExpValues" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpValues" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpValuesFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpValuesFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpValuesFrom" ((PVar "path") (PVar "src")) (EBlock (DoLet false false (PVar "bindings") (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))) (DoExpr (EBinOp "++" (EApp (EApp (EVar "localsExportedFrom") (EFieldAccess (EVar "src") "expValues")) (EVar "bindings")) (EApp (EApp (EVar "flatMap") (EApp (EVar "ifaceValsOf") (EVar "src"))) (EApp (EApp (EVar "map") (EVar "fst")) (EVar "bindings")))))))
 (DTypeSig false "ifaceValsOf" (TyFun (TyCon "ModuleExports") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "ifaceValsOf" ((PVar "src") (PVar "n")) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "src") "expInterfaces")) (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expValues")) (EApp (EApp (EVar "ifaceMethodsOf") (EVar "n")) (EFieldAccess (EVar "src") "expIfaceMethods"))) (EListLit)))
-(DTypeSig false "reExpTypes" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpTypes" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpTypes" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpTypesFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpTypesFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpTypesFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "localsExportedFrom") (EFieldAccess (EVar "src") "expTypes")) (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))))
-(DTypeSig false "reExpCtors" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpCtors" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpCtors" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpCtorsFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpCtorsFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpCtorsFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "localsExportedFrom") (EFieldAccess (EVar "src") "expCtors")) (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))))
-(DTypeSig false "reExpInterfaces" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpInterfaces" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpInterfaces" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpInterfacesFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reexportOrigins" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reexportOrigins" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "map") (EVar "fst")) (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))))
 (DTypeSig false "reExpInterfacesFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpInterfacesFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expInterfaces")) (EApp (EApp (EVar "reexportOrigins") (EVar "path")) (EVar "src"))))
-(DTypeSig false "reExpIfaceMethods" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "reExpIfaceMethods" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "reExpIfaceMethods" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpIfaceMethodsFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpIfaceMethodsFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "reExpIfaceMethodsFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "ifaceMethodPairs") (EVar "src")) (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expInterfaces")) (EApp (EApp (EVar "reexportOrigins") (EVar "path")) (EVar "src")))))
 (DTypeSig false "ifaceMethodPairs" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "ifaceMethodPairs" (PWild (PList)) (EListLit))
 (DFunDef false "ifaceMethodPairs" ((PVar "src") (PCons (PVar "i") (PVar "rest"))) (EBinOp "::" (ETuple (EVar "i") (EApp (EApp (EVar "ifaceMethodsOf") (EVar "i")) (EFieldAccess (EVar "src") "expIfaceMethods"))) (EApp (EApp (EVar "ifaceMethodPairs") (EVar "src")) (EVar "rest"))))
-(DTypeSig false "reExpFieldOwners" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))))
+(DTypeSig false "reExpFieldOwners" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))))
 (DFunDef false "reExpFieldOwners" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EVar "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpFieldOwnersFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpFieldOwnersFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "reExpFieldOwnersFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "ownersForTypes") (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expTypes")) (EApp (EApp (EVar "reexportOrigins") (EVar "path")) (EVar "src")))) (EFieldAccess (EVar "src") "expFieldOwners")))
 (DTypeSig false "ownersForTypes" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "ownersForTypes" (PWild (PList)) (EListLit))
 (DFunDef false "ownersForTypes" ((PVar "types") (PCons (PTuple (PVar "f") (PVar "o")) (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "o")) (EVar "types")) (EBinOp "::" (ETuple (EVar "f") (EVar "o")) (EApp (EApp (EVar "ownersForTypes") (EVar "types")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "ownersForTypes") (EVar "types")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "overPubUse" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyVar "b")))) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyVar "b")))))))
+(DTypeSig false "overPubUse" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyVar "b")))) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyVar "b")))))))
 (DFunDef false "overPubUse" ((PVar "coreExp") (PVar "known") (PVar "f") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EApp (EApp (EVar "f") (EVar "path")) (EVar "coreExp")) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "src")) () (EApp (EApp (EVar "f") (EVar "path")) (EVar "src"))))))))
-(DTypeSig true "resolveModule" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError")))))))))
+(DTypeSig true "resolveModule" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError")))))))))
 (DFunDef false "resolveModule" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "known") (PVar "modId") (PVar "prog")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EListLit)) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "known")) (EVar "modId")) (EVar "prog")))
-(DTypeSig true "resolveModuleG" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError"))))))))))
+(DTypeSig true "resolveModuleG" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError"))))))))))
 (DFunDef false "resolveModuleG" ((PVar "internalGuard") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "known") (PVar "modId") (PVar "prog")) (EBlock (DoLet false false (PTuple (PVar "env") (PVar "importErrs")) (EApp (EApp (EApp (EApp (EApp (EVar "buildEnvMM") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "known")) (EVar "prog")) (EVar "internalGuard"))) (DoLet false false (PVar "errs") (EApp (EVar "dedupResErrors") (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "buildErrors") (EVar "preludeDecls")) (EVar "prog")) (EVar "importErrs")) (EApp (EApp (EVar "flatMap") (EApp (EVar "checkDecl") (EVar "env"))) (EVar "prog"))))) (DoLet false false (PVar "exp") (EApp (EApp (EApp (EApp (EApp (EVar "buildExports") (EApp (EVar "coreExports") (EVar "preludeDecls"))) (EVar "known")) (EVar "modId")) (EVar "prog")) (EVar "env"))) (DoExpr (ETuple (EVar "exp") (EVar "errs")))))
-(DTypeSig false "resolveModulesErrors" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))
+(DTypeSig false "resolveModulesErrors" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "resolveModulesErrors" ((PVar "rt") (PVar "pre") (PVar "known") (PVar "mods")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "True")) (EListLit)) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mods")))
-(DTypeSig false "resolveModulesErrorsG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))))
+(DTypeSig false "resolveModulesErrorsG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))))
 (DFunDef false "resolveModulesErrorsG" (PWild PWild PWild PWild PWild (PList)) (EListLit))
-(DFunDef false "resolveModulesErrorsG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EVar "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoExpr (EBinOp "++" (EVar "errs") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EBinOp "::" (EVar "exp") (EVar "known"))) (EVar "rest"))))))
+(DFunDef false "resolveModulesErrorsG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EVar "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoExpr (EBinOp "++" (EVar "errs") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EApp (EApp (EApp (EVar "omInsert") (EFieldAccess (EVar "exp") "modId")) (EVar "exp")) (EVar "known"))) (EVar "rest"))))))
 (DTypeSig true "resolveModulesToLines" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))
-(DFunDef false "resolveModulesToLines" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToLines" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToLinesG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))))
-(DFunDef false "resolveModulesToLinesG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToLinesG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumane" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))
-(DFunDef false "resolveModulesToHumane" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToHumane" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))))
-(DFunDef false "resolveModulesToHumaneG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToHumaneG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneGF" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
-(DFunDef false "resolveModulesToHumaneGF" ((PVar "fallbackFile") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EApp (EVar "ppResErrorLocatedF") (EVar "fallbackFile"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToHumaneGF" ((PVar "fallbackFile") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EVar "map") (EApp (EVar "ppResErrorLocatedF") (EVar "fallbackFile"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneByPath" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
-(DFunDef false "resolveModulesToHumaneByPath" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods"))))
-(DTypeSig false "resolveModulesErrorsByPathGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "resolveModulesToHumaneByPath" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods"))))
+(DTypeSig false "resolveModulesErrorsByPathGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "resolveModulesErrorsByPathGo" (PWild PWild PWild PWild PWild PWild (PList)) (EListLit))
-(DFunDef false "resolveModulesErrorsByPathGo" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EVar "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoLet false false (PVar "file") (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mid")) (EVar "modPaths")) (arm (PCon "Some" (PVar "p")) () (EVar "p")) (arm (PCon "None") () (ELit (LString ""))))) (DoExpr (EBinOp "++" (EApp (EApp (EVar "map") (EApp (EVar "ppResErrorLocatedF") (EVar "file"))) (EVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EBinOp "::" (EVar "exp") (EVar "known"))) (EVar "rest"))))))
+(DFunDef false "resolveModulesErrorsByPathGo" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EVar "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoLet false false (PVar "file") (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mid")) (EVar "modPaths")) (arm (PCon "Some" (PVar "p")) () (EVar "p")) (arm (PCon "None") () (ELit (LString ""))))) (DoExpr (EBinOp "++" (EApp (EApp (EVar "map") (EApp (EVar "ppResErrorLocatedF") (EVar "file"))) (EVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EApp (EApp (EApp (EVar "omInsert") (EFieldAccess (EVar "exp") "modId")) (EVar "exp")) (EVar "known"))) (EVar "rest"))))))
 (DTypeSig true "ppResErrorLocated" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "ppResErrorLocated" ((PVar "e")) (EApp (EApp (EVar "ppResErrorLocatedF") (ELit (LString ""))) (EVar "e")))
 (DTypeSig true "ppResErrorLocatedF" (TyFun (TyCon "String") (TyFun (TyCon "ResError") (TyCon "String"))))
@@ -3849,7 +3886,7 @@ stampBindingIds decls =
 (DFunDef false "stampBindingIds" ((PVar "decls")) (EBlock (DoLet false false (PVar "top") (EApp (EApp (EVar "numberFrom") (ELit (LInt 1))) (EApp (EVar "dedup") (EApp (EVar "topBinderNames") (EVar "decls"))))) (DoExpr (ETuple (EApp (EApp (EVar "map") (EApp (EVar "stampDecl") (EApp (EApp (EVar "omFromPairs") (EVar "top")) (EVar "omEmpty")))) (EVar "decls")) (EVar "top")))))
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Loc" true) (mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Addr" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
-(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omFromPairs" false) (mem "omKeys" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false) (mem "omDelete" false) (mem "omLookup" false) (mem "omFromNames" false) (mem "omFromPairs" false) (mem "omKeys" false) (mem "omSize" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "editDistance" false) (mem "minI" false) (mem "maxI" false) (mem "listLen" false) (mem "escStr" false) (mem "joinNl" false) (mem "joinWith" false) (mem "lookupAssoc" false) (mem "reverseL" false) (mem "initList" false) (mem "joinDot" false) (mem "filterList" false) (mem "anyList" false) (mem "dedup" false))))
 (DData Public "ResError" () ((variant "UnboundVariable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnboundVariableExported" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnboundVariableIsModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownConstructor" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownType" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "String")))) (variant "UnknownEffect" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "FieldNotInRecord" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateDefinition" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownInterface" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "MethodNotInInterface" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ExternWithBody" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "PrivateNameAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NoExportedConstructors" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AbstractFieldAccess" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "UnknownModule" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "NonRecursiveValueLet" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateValueBinding" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateSignature" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "DuplicateBinder" (ConPos (TyCon "String") (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AsPatternMisplaced" (ConPos (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousOccurrence" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "AmbiguousConstructor" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "InternalExternAccess" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc")))) (variant "ReassignImmutable" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Loc"))))) ())
 (DTypeSig true "resErrorDidYouMean" (TyFun (TyCon "ResError") (TyApp (TyCon "Option") (TyTuple (TyCon "String") (TyCon "String")))))
@@ -4498,18 +4535,14 @@ stampBindingIds decls =
 (DFunDef false "singleFileImportErrors" ((PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "||" (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EBinOp "==" (EVar "mid") (ELit (LString "")))) (EApp (EVar "singleFileImportErrors") (EVar "rest")) (EBinOp "::" (EApp (EApp (EVar "UnknownModule") (EVar "mid")) (EVar "None")) (EApp (EVar "singleFileImportErrors") (EVar "rest")))))))
 (DFunDef false "singleFileImportErrors" ((PCons PWild (PVar "rest"))) (EApp (EVar "singleFileImportErrors") (EVar "rest")))
 (DData Public "ModuleExports" () ((variant "ModuleExports" (ConNamed (field "modId" (TyCon "String")) (field "expValues" (TyApp (TyCon "List") (TyCon "String"))) (field "expTypes" (TyApp (TyCon "List") (TyCon "String"))) (field "expCtors" (TyApp (TyCon "List") (TyCon "String"))) (field "expTypeCtors" (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))) (field "expFieldOwners" (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))) (field "expInterfaces" (TyApp (TyCon "List") (TyCon "String"))) (field "expIfaceMethods" (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))) (field "expEffects" (TyApp (TyCon "List") (TyCon "String")))))) ())
-(DTypeSig false "isNonEmpty" (TyFun (TyApp (TyCon "List") (TyVar "a")) (TyCon "Bool")))
-(DFunDef false "isNonEmpty" ((PList)) (EVar "False"))
-(DFunDef false "isNonEmpty" (PWild) (EVar "True"))
 (DTypeSig false "filterContains" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "filterContains" (PWild (PList)) (EListLit))
 (DFunDef false "filterContains" ((PVar "domain") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "domain")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "filterContains") (EVar "domain")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterContains") (EVar "domain")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "filterInSet" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "filterInSet" (PWild (PList)) (EListLit))
 (DFunDef false "filterInSet" ((PVar "domain") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "domain")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "filterInSet") (EVar "domain")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterInSet") (EVar "domain")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "findExports" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyApp (TyCon "Option") (TyCon "ModuleExports")))))
-(DFunDef false "findExports" (PWild (PList)) (EVar "None"))
-(DFunDef false "findExports" ((PVar "mid") (PCons (PVar "e") (PVar "rest"))) (EIf (EBinOp "==" (EFieldAccess (EVar "e") "modId") (EVar "mid")) (EApp (EVar "Some") (EVar "e")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DTypeSig false "findExports" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyApp (TyCon "Option") (TyCon "ModuleExports")))))
+(DFunDef false "findExports" ((PVar "mid") (PVar "known")) (EApp (EApp (EVar "omLookup") (EVar "mid")) (EVar "known")))
 (DTypeSig false "isPubExp" (TyFun (TyCon "ModuleExports") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "isPubExp" ((PVar "exp") (PVar "n")) (EBinOp "||" (EBinOp "||" (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expValues")) (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expTypes"))) (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expCtors"))) (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "exp") "expInterfaces"))))
 (DTypeSig false "typeCtorsOf" (TyFun (TyCon "String") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "String"))))))
@@ -4550,44 +4583,47 @@ stampBindingIds decls =
 (DFunDef false "emptyAdds" () (ERecordCreate "ImportAdds" ((fa "iaImported" (EListLit)) (fa "iaValues" (EListLit)) (fa "iaTypes" (EListLit)) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit)))))
 (DTypeSig false "mergeAdds" (TyFun (TyCon "ImportAdds") (TyFun (TyCon "ImportAdds") (TyCon "ImportAdds"))))
 (DFunDef false "mergeAdds" ((PVar "a") (PVar "b")) (ERecordCreate "ImportAdds" ((fa "iaImported" (EBinOp "++" (EFieldAccess (EVar "a") "iaImported") (EFieldAccess (EVar "b") "iaImported"))) (fa "iaValues" (EBinOp "++" (EFieldAccess (EVar "a") "iaValues") (EFieldAccess (EVar "b") "iaValues"))) (fa "iaTypes" (EBinOp "++" (EFieldAccess (EVar "a") "iaTypes") (EFieldAccess (EVar "b") "iaTypes"))) (fa "iaCtors" (EBinOp "++" (EFieldAccess (EVar "a") "iaCtors") (EFieldAccess (EVar "b") "iaCtors"))) (fa "iaIfaces" (EBinOp "++" (EFieldAccess (EVar "a") "iaIfaces") (EFieldAccess (EVar "b") "iaIfaces"))) (fa "iaFieldOwners" (EBinOp "++" (EFieldAccess (EVar "a") "iaFieldOwners") (EFieldAccess (EVar "b") "iaFieldOwners"))) (fa "iaErrors" (EBinOp "++" (EFieldAccess (EVar "a") "iaErrors") (EFieldAccess (EVar "b") "iaErrors"))))))
-(DTypeSig false "collectImports" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ImportAdds"))))
+(DTypeSig false "collectImports" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ImportAdds"))))
 (DFunDef false "collectImports" ((PVar "known") (PVar "prog")) (EApp (EApp (EVar "foldImports") (EVar "known")) (EApp (EVar "usePathLocsOf") (EVar "prog"))))
-(DTypeSig false "importValueNames" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "importValueNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expValues")) (EVar "names"))))))))
-(DTypeSig false "addProvenance" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
-(DFunDef false "addProvenance" ((PList) (PVar "n") (PVar "mid")) (EListLit (ETuple (EVar "n") (EListLit (EVar "mid")))))
-(DFunDef false "addProvenance" ((PCons (PTuple (PVar "k") (PVar "mids")) (PVar "rest")) (PVar "n") (PVar "mid")) (EIf (EBinOp "==" (EVar "k") (EVar "n")) (EIf (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "mids")) (EBinOp "::" (ETuple (EVar "k") (EVar "mids")) (EVar "rest")) (EBinOp "::" (ETuple (EVar "k") (EBinOp "++" (EVar "mids") (EListLit (EVar "mid")))) (EVar "rest"))) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "k") (EVar "mids")) (EApp (EApp (EApp (EVar "addProvenance") (EVar "rest")) (EVar "n")) (EVar "mid"))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "addImportProvenance" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "importValueNames" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "importValueNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterInSet") (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "exp") "expValues")) (EVar "omEmpty"))) (EVar "names"))))))))
+(DTypeSig false "addProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "addProvenance" ((PVar "prov") (PVar "n") (PVar "mid")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "prov")) (arm (PCon "None") () (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (EListLit (EVar "mid"))) (EVar "prov"))) (arm (PCon "Some" (PVar "mids")) () (EIf (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "mids")) (EVar "prov") (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (EBinOp "++" (EVar "mids") (EListLit (EVar "mid")))) (EVar "prov"))))))
+(DTypeSig false "addImportProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "addImportProvenance" ((PVar "prov") PWild (PList)) (EVar "prov"))
 (DFunDef false "addImportProvenance" ((PVar "prov") (PVar "mid") (PCons (PVar "n") (PVar "rest"))) (EApp (EApp (EApp (EVar "addImportProvenance") (EApp (EApp (EApp (EVar "addProvenance") (EVar "prov")) (EVar "n")) (EVar "mid"))) (EVar "mid")) (EVar "rest")))
-(DTypeSig false "valueProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "valueProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldProvenance") (EVar "known")) (EListLit)) (EVar "paths")))
-(DTypeSig false "foldProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "valueProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "valueProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldProvenance") (EVar "known")) (EVar "omEmpty")) (EVar "paths")))
+(DTypeSig false "foldProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "foldProvenance" (PWild (PVar "prov") (PList)) (EVar "prov"))
 (DFunDef false "foldProvenance" ((PVar "known") (PVar "prov") (PCons (PVar "p") (PVar "rest"))) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "p"))) (DoLet false false (PVar "prov2") (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EVar "prov") (EApp (EApp (EApp (EVar "addImportProvenance") (EVar "prov")) (EVar "mid")) (EApp (EApp (EVar "importValueNames") (EVar "known")) (EVar "p"))))) (DoExpr (EApp (EApp (EApp (EVar "foldProvenance") (EVar "known")) (EVar "prov2")) (EVar "rest")))))
-(DTypeSig false "ambiguousSet" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "ambiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "valueProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "userValueNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "prov")))))
+(DTypeSig false "provToPairs" (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "provToPairs" ((PVar "prov")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "k")) (ETuple (EVar "k") (EApp (EApp (EVar "provMidsOf") (EVar "k")) (EVar "prov"))))) (EApp (EVar "omKeys") (EVar "prov"))))
+(DTypeSig false "provMidsOf" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "provMidsOf" ((PVar "k") (PVar "prov")) (EMatch (EApp (EApp (EVar "omLookup") (EVar "k")) (EVar "prov")) (arm (PCon "Some" (PVar "mids")) () (EVar "mids")) (arm (PCon "None") () (EListLit))))
+(DTypeSig false "ambiguousSet" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "ambiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "valueProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "userValueNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EApp (EVar "provToPairs") (EVar "prov"))))))
 (DTypeSig false "keepAmbiguous" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "keepAmbiguous" (PWild (PList)) (EListLit))
 (DFunDef false "keepAmbiguous" ((PVar "sameMod") (PCons (PTuple (PVar "n") (PVar "mids")) (PVar "rest"))) (EIf (EBinOp "&&" (EBinOp ">=" (EApp (EVar "listLen") (EVar "mids")) (ELit (LInt 2))) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "sameMod")))) (EBinOp "::" (ETuple (EVar "n") (EVar "mids")) (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "importCtorNames" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "importCtorNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expCtors")) (EVar "names"))))))))
-(DTypeSig false "ctorProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "ctorProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldCtorProvenance") (EVar "known")) (EListLit)) (EVar "paths")))
-(DTypeSig false "foldCtorProvenance" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "importCtorNames" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "importCtorNames" ((PVar "known") (PVar "path")) (EIf (EBinOp "==" (EApp (EVar "useModId") (EVar "path")) (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EApp (EVar "useModId") (EVar "path"))) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EBlock (DoLet false false (PTuple (PVar "names") PWild) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (EApp (EApp (EVar "filterInSet") (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "exp") "expCtors")) (EVar "omEmpty"))) (EVar "names"))))))))
+(DTypeSig false "ctorProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "ctorProvenance" ((PVar "known") (PVar "paths")) (EApp (EApp (EApp (EVar "foldCtorProvenance") (EVar "known")) (EVar "omEmpty")) (EVar "paths")))
+(DTypeSig false "foldCtorProvenance" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyCon "UsePath")) (TyApp (TyCon "OrdMap") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "foldCtorProvenance" (PWild (PVar "prov") (PList)) (EVar "prov"))
 (DFunDef false "foldCtorProvenance" ((PVar "known") (PVar "prov") (PCons (PVar "p") (PVar "rest"))) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "p"))) (DoLet false false (PVar "prov2") (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EVar "prov") (EApp (EApp (EApp (EVar "addImportProvenance") (EVar "prov")) (EVar "mid")) (EApp (EApp (EVar "importCtorNames") (EVar "known")) (EVar "p"))))) (DoExpr (EApp (EApp (EApp (EVar "foldCtorProvenance") (EVar "known")) (EVar "prov2")) (EVar "rest")))))
-(DTypeSig false "ctorAmbiguousSet" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
-(DFunDef false "ctorAmbiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "ctorProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "ctorNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EVar "prov")))))
-(DTypeSig false "foldImports" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "UsePath") (TyCon "Loc"))) (TyCon "ImportAdds"))))
+(DTypeSig false "ctorAmbiguousSet" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DFunDef false "ctorAmbiguousSet" ((PVar "known") (PVar "prog")) (EBlock (DoLet false false (PVar "prov") (EApp (EApp (EVar "ctorProvenance") (EVar "known")) (EApp (EVar "usePathsOf") (EVar "prog")))) (DoLet false false (PVar "sameMod") (EApp (EVar "ctorNames") (EVar "prog"))) (DoExpr (EApp (EApp (EVar "keepAmbiguous") (EVar "sameMod")) (EApp (EVar "provToPairs") (EVar "prov"))))))
+(DTypeSig false "foldImports" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "UsePath") (TyCon "Loc"))) (TyCon "ImportAdds"))))
 (DFunDef false "foldImports" (PWild (PList)) (EVar "emptyAdds"))
 (DFunDef false "foldImports" ((PVar "known") (PCons (PTuple (PVar "p") (PVar "loc")) (PVar "rest"))) (EApp (EApp (EVar "mergeAdds") (EApp (EApp (EApp (EVar "oneImport") (EVar "known")) (EVar "p")) (EVar "loc"))) (EApp (EApp (EVar "foldImports") (EVar "known")) (EVar "rest"))))
-(DTypeSig false "oneImport" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "Loc") (TyCon "ImportAdds")))))
+(DTypeSig false "oneImport" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "Loc") (TyCon "ImportAdds")))))
 (DFunDef false "oneImport" ((PVar "known") (PVar "path") (PVar "loc")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EVar "emptyAdds") (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EApp (EApp (EApp (EApp (EVar "stubOrUnknown") (EVar "known")) (EVar "path")) (EVar "mid")) (EVar "loc"))) (arm (PCon "Some" (PVar "exp")) () (EApp (EApp (EApp (EVar "realImport") (EVar "exp")) (EVar "path")) (EVar "loc"))))))))
-(DTypeSig false "stubOrUnknown" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "ImportAdds"))))))
-(DFunDef false "stubOrUnknown" ((PVar "known") (PVar "path") (PVar "mid") (PVar "loc")) (EIf (EApp (EVar "isNonEmpty") (EVar "known")) (ERecordCreate "ImportAdds" ((fa "iaImported" (EListLit)) (fa "iaValues" (EListLit)) (fa "iaTypes" (EListLit)) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit (EApp (EApp (EVar "UnknownModule") (EVar "mid")) (EApp (EVar "Some") (EVar "loc"))))))) (EBlock (DoLet false false (PVar "names") (EApp (EVar "useStubNames") (EVar "path"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EVar "names")) (fa "iaTypes" (EVar "names")) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit))))))))
+(DTypeSig false "stubOrUnknown" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "ImportAdds"))))))
+(DFunDef false "stubOrUnknown" ((PVar "known") (PVar "path") (PVar "mid") (PVar "loc")) (EIf (EBinOp ">" (EApp (EVar "omSize") (EVar "known")) (ELit (LInt 0))) (ERecordCreate "ImportAdds" ((fa "iaImported" (EListLit)) (fa "iaValues" (EListLit)) (fa "iaTypes" (EListLit)) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit (EApp (EApp (EVar "UnknownModule") (EVar "mid")) (EApp (EVar "Some") (EVar "loc"))))))) (EBlock (DoLet false false (PVar "names") (EApp (EVar "useStubNames") (EVar "path"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EVar "names")) (fa "iaTypes" (EVar "names")) (fa "iaCtors" (EListLit)) (fa "iaIfaces" (EListLit)) (fa "iaFieldOwners" (EListLit)) (fa "iaErrors" (EListLit))))))))
 (DTypeSig false "realImport" (TyFun (TyCon "ModuleExports") (TyFun (TyCon "UsePath") (TyFun (TyCon "Loc") (TyCon "ImportAdds")))))
-(DFunDef false "realImport" ((PVar "exp") (PVar "path") (PVar "loc")) (EBlock (DoLet false false (PTuple (PVar "names") (PVar "errs")) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expValues")) (EVar "names"))) (fa "iaTypes" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expTypes")) (EVar "names"))) (fa "iaCtors" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expCtors")) (EVar "names"))) (fa "iaIfaces" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expInterfaces")) (EVar "names"))) (fa "iaFieldOwners" (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EFieldAccess (EVar "exp") "expFieldOwners"))) (fa "iaErrors" (EApp (EApp (EMethodRef "map") (EApp (EVar "withResErrorLoc") (EVar "loc"))) (EVar "errs"))))))))
+(DFunDef false "realImport" ((PVar "exp") (PVar "path") (PVar "loc")) (EBlock (DoLet false false (PTuple (PVar "names") (PVar "errs")) (EApp (EApp (EVar "importedNamesMM") (EVar "path")) (EVar "exp"))) (DoExpr (ERecordCreate "ImportAdds" ((fa "iaImported" (EVar "names")) (fa "iaValues" (EApp (EApp (EVar "filterInSet") (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "exp") "expValues")) (EVar "omEmpty"))) (EVar "names"))) (fa "iaTypes" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expTypes")) (EVar "names"))) (fa "iaCtors" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expCtors")) (EVar "names"))) (fa "iaIfaces" (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "exp") "expInterfaces")) (EVar "names"))) (fa "iaFieldOwners" (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EFieldAccess (EVar "exp") "expFieldOwners"))) (fa "iaErrors" (EApp (EApp (EMethodRef "map") (EApp (EVar "withResErrorLoc") (EVar "loc"))) (EVar "errs"))))))))
 (DTypeSig false "withResErrorLoc" (TyFun (TyCon "Loc") (TyFun (TyCon "ResError") (TyCon "ResError"))))
 (DFunDef false "withResErrorLoc" ((PVar "loc") (PCon "PrivateNameAccess" (PVar "n") (PVar "m") (PCon "None"))) (EApp (EApp (EApp (EVar "PrivateNameAccess") (EVar "n")) (EVar "m")) (EApp (EVar "Some") (EVar "loc"))))
 (DFunDef false "withResErrorLoc" (PWild (PCon "PrivateNameAccess" (PVar "n") (PVar "m") (PCon "Some" (PVar "l")))) (EApp (EApp (EApp (EVar "PrivateNameAccess") (EVar "n")) (EVar "m")) (EApp (EVar "Some") (EVar "l"))))
@@ -4597,22 +4633,22 @@ stampBindingIds decls =
 (DTypeSig false "ownedFieldOwners" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "ownedFieldOwners" (PWild (PList)) (EListLit))
 (DFunDef false "ownedFieldOwners" ((PVar "exp") (PCons (PTuple (PVar "f") (PVar "o")) (PVar "rest"))) (EIf (EBinOp "||" (EApp (EApp (EVar "contains") (EVar "o")) (EFieldAccess (EVar "exp") "expTypes")) (EApp (EApp (EVar "contains") (EVar "o")) (EFieldAccess (EVar "exp") "expCtors"))) (EBinOp "::" (ETuple (EVar "f") (EVar "o")) (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "ownedFieldOwners") (EVar "exp")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "importedIfaceMethods" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "importedIfaceMethods" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "importedIfaceMethods" ((PVar "known") (PVar "prog") (PVar "baseIfaces")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EVar "oneImportIfaceMethods") (EVar "known")) (EVar "baseIfaces"))) (EApp (EVar "usePathsOf") (EVar "prog"))))
-(DTypeSig false "oneImportIfaceMethods" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "oneImportIfaceMethods" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "oneImportIfaceMethods" ((PVar "known") (PVar "baseIfaces") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EApp (EApp (EVar "filterIfaceMethods") (EVar "baseIfaces")) (EFieldAccess (EVar "exp") "expIfaceMethods"))))))))
 (DTypeSig false "filterIfaceMethods" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "filterIfaceMethods" (PWild (PList)) (EListLit))
 (DFunDef false "filterIfaceMethods" ((PVar "baseIfaces") (PCons (PTuple (PVar "iface") (PVar "ms")) (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "iface")) (EVar "baseIfaces")) (EBinOp "::" (ETuple (EVar "iface") (EVar "ms")) (EApp (EApp (EVar "filterIfaceMethods") (EVar "baseIfaces")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "filterIfaceMethods") (EVar "baseIfaces")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "importedEffects" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String")))))
+(DTypeSig false "importedEffects" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "importedEffects" ((PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "oneImportEffects") (EVar "known"))) (EApp (EVar "usePathsOf") (EVar "prog"))))
-(DTypeSig false "oneImportEffects" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
+(DTypeSig false "oneImportEffects" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "oneImportEffects" ((PVar "known") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EFieldAccess (EVar "exp") "expEffects")))))))
-(DTypeSig false "buildEnvMM" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyTuple (TyCon "Env") (TyApp (TyCon "List") (TyCon "ResError")))))))))
+(DTypeSig false "buildEnvMM" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyTuple (TyCon "Env") (TyApp (TyCon "List") (TyCon "ResError")))))))))
 (DFunDef false "buildEnvMM" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "known") (PVar "prog") (PVar "internalGuard")) (EBlock (DoLet false false (PVar "seed") (EApp (EVar "not") (EApp (EVar "programIsCore") (EVar "prog")))) (DoLet false false (PVar "pTypes") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "dataRecordNames") (EVar "preludeDecls")))) (DoLet false false (PVar "pCtors") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "ctorNames") (EVar "preludeDecls")))) (DoLet false false (PVar "pIfaces") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "interfaceList") (EVar "preludeDecls")))) (DoLet false false (PVar "pValues") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "preludeValueNames") (EVar "preludeDecls")))) (DoLet false false (PVar "pFieldOwners") (EApp (EApp (EVar "whenL") (EVar "seed")) (EApp (EVar "fieldOwnersOf") (EVar "preludeDecls")))) (DoLet false false (PVar "uIfaces") (EApp (EVar "interfaceList") (EVar "prog"))) (DoLet false false (PVar "adds") (EApp (EApp (EVar "collectImports") (EVar "known")) (EVar "prog"))) (DoLet false false (PVar "baseIfaces") (EBinOp "++" (EBinOp "++" (EApp (EApp (EMethodRef "map") (EVar "fst")) (EVar "pIfaces")) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EVar "uIfaces"))) (EFieldAccess (EVar "adds") "iaIfaces"))) (DoLet false false (PVar "impIfaceMethods") (EApp (EApp (EApp (EVar "importedIfaceMethods") (EVar "known")) (EVar "prog")) (EVar "baseIfaces"))) (DoLet false false (PVar "impEffects") (EApp (EApp (EVar "importedEffects") (EVar "known")) (EVar "prog"))) (DoLet false false (PVar "impModValues") (EApp (EApp (EVar "importedModuleValueSets") (EVar "known")) (EVar "prog"))) (DoLet false false (PVar "env") (ERecordCreate "Env" ((fa "values" (EApp (EApp (EVar "omFromNames") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EApp (EVar "externNames") (EVar "runtimeDecls")) (EVar "pValues")) (EApp (EVar "userValueNames") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaValues"))) (EVar "omEmpty"))) (fa "types" (EApp (EApp (EVar "omFromNames") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "primitiveTypes") (EVar "pTypes")) (EApp (EVar "dataRecordNames") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaTypes"))) (EVar "omEmpty"))) (fa "ctors" (EApp (EApp (EVar "omFromNames") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EVar "primitiveConstructors") (EVar "pCtors")) (EApp (EVar "ctorNames") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaCtors"))) (EVar "omEmpty"))) (fa "fields" (EBinOp "++" (EBinOp "++" (EApp (EApp (EMethodRef "map") (EVar "fst")) (EVar "pFieldOwners")) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EApp (EVar "fieldOwnersOf") (EVar "prog")))) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EFieldAccess (EVar "adds") "iaFieldOwners")))) (fa "fieldOwners" (EBinOp "++" (EBinOp "++" (EVar "pFieldOwners") (EApp (EVar "fieldOwnersOf") (EVar "prog"))) (EFieldAccess (EVar "adds") "iaFieldOwners"))) (fa "interfaces" (EVar "baseIfaces")) (fa "ifaceMethods" (EBinOp "++" (EBinOp "++" (EVar "pIfaces") (EVar "uIfaces")) (EVar "impIfaceMethods"))) (fa "effects" (EBinOp "++" (EApp (EVar "effectNames") (EVar "prog")) (EVar "impEffects"))) (fa "imported" (EApp (EApp (EVar "omFromNames") (EFieldAccess (EVar "adds") "iaImported")) (EVar "omEmpty"))) (fa "importedModuleValues" (EVar "impModValues")) (fa "ambiguous" (EApp (EApp (EVar "ambiguousSet") (EVar "known")) (EVar "prog"))) (fa "ctorAmbiguous" (EApp (EApp (EVar "ctorAmbiguousSet") (EVar "known")) (EVar "prog"))) (fa "internalGuard" (EApp (EApp (EVar "omFromNames") (EVar "internalGuard")) (EVar "omEmpty")))))) (DoExpr (ETuple (EVar "env") (EFieldAccess (EVar "adds") "iaErrors")))))
-(DTypeSig false "importedModuleValueSets" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DTypeSig false "importedModuleValueSets" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "importedModuleValueSets" ((PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "oneImportedModuleValues") (EVar "known"))) (EApp (EVar "usePathsOf") (EVar "prog"))))
-(DTypeSig false "oneImportedModuleValues" (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
+(DTypeSig false "oneImportedModuleValues" (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "oneImportedModuleValues" ((PVar "known") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EListLit) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "exp")) () (EListLit (ETuple (EVar "mid") (EFieldAccess (EVar "exp") "expValues")))))))))
 (DTypeSig false "coreExports" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "ModuleExports")))
 (DFunDef false "coreExports" ((PVar "preludeDecls")) (ERecordCreate "ModuleExports" ((fa "modId" (ELit (LString "core"))) (fa "expValues" (EApp (EVar "preludeValueNames") (EVar "preludeDecls"))) (fa "expTypes" (EApp (EVar "dataRecordNames") (EVar "preludeDecls"))) (fa "expCtors" (EApp (EVar "ctorNames") (EVar "preludeDecls"))) (fa "expTypeCtors" (EApp (EVar "typeCtorsAllOf") (EVar "preludeDecls"))) (fa "expFieldOwners" (EApp (EVar "fieldOwnersOf") (EVar "preludeDecls"))) (fa "expInterfaces" (EApp (EApp (EMethodRef "map") (EVar "fst")) (EApp (EVar "interfaceList") (EVar "preludeDecls")))) (fa "expIfaceMethods" (EApp (EVar "interfaceList") (EVar "preludeDecls"))) (fa "expEffects" (EApp (EVar "effectNames") (EVar "preludeDecls"))))))
@@ -4622,7 +4658,7 @@ stampBindingIds decls =
 (DFunDef false "typeCtorsAllOf" ((PCons (PCon "DData" PWild (PVar "n") PWild (PVar "vs") PWild) (PVar "rest"))) (EBinOp "::" (ETuple (EVar "n") (EApp (EApp (EMethodRef "map") (EVar "variantName")) (EVar "vs"))) (EApp (EVar "typeCtorsAllOf") (EVar "rest"))))
 (DFunDef false "typeCtorsAllOf" ((PCons (PCon "DAttrib" PWild (PVar "d")) (PVar "rest"))) (EApp (EVar "typeCtorsAllOf") (EBinOp "::" (EVar "d") (EVar "rest"))))
 (DFunDef false "typeCtorsAllOf" ((PCons PWild (PVar "rest"))) (EApp (EVar "typeCtorsAllOf") (EVar "rest")))
-(DTypeSig false "buildExports" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "Env") (TyCon "ModuleExports")))))))
+(DTypeSig false "buildExports" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyCon "Env") (TyCon "ModuleExports")))))))
 (DFunDef false "buildExports" ((PVar "coreExp") (PVar "known") (PVar "modId") (PVar "prog") (PVar "env")) (ERecordCreate "ModuleExports" ((fa "modId" (EVar "modId")) (fa "expValues" (EBinOp "++" (EBinOp "++" (EApp (EVar "expValuesDirect") (EVar "prog")) (EApp (EApp (EVar "publicIfaceMethodVals") (EVar "prog")) (EVar "env"))) (EApp (EApp (EApp (EVar "reExpValues") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expTypes" (EBinOp "++" (EApp (EVar "expTypesDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpTypes") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expCtors" (EBinOp "++" (EApp (EVar "expCtorsDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpCtors") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expTypeCtors" (EApp (EVar "expTypeCtorsDirect") (EVar "prog"))) (fa "expFieldOwners" (EBinOp "++" (EApp (EVar "expFieldOwnersDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpFieldOwners") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expInterfaces" (EBinOp "++" (EApp (EVar "expInterfacesDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpInterfaces") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expIfaceMethods" (EBinOp "++" (EApp (EVar "expIfaceMethodsDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpIfaceMethods") (EVar "coreExp")) (EVar "known")) (EVar "prog")))) (fa "expEffects" (EBinOp "++" (EApp (EVar "expEffectsDirect") (EVar "prog")) (EApp (EApp (EApp (EVar "reExpEffects") (EVar "coreExp")) (EVar "known")) (EVar "prog")))))))
 (DTypeSig false "expValuesDirect" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "expValuesDirect" ((PList)) (EListLit))
@@ -4671,7 +4707,7 @@ stampBindingIds decls =
 (DFunDef false "expEffectsDirect" ((PList)) (EListLit))
 (DFunDef false "expEffectsDirect" ((PCons (PCon "DEffect" (PCon "True") (PVar "n") PWild) (PVar "rest"))) (EBinOp "::" (EVar "n") (EApp (EVar "expEffectsDirect") (EVar "rest"))))
 (DFunDef false "expEffectsDirect" ((PCons PWild (PVar "rest"))) (EApp (EVar "expEffectsDirect") (EVar "rest")))
-(DTypeSig false "reExpEffects" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpEffects" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpEffects" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpEffectsFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpEffectsFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpEffectsFrom" ((PCon "UseWild" PWild) (PVar "src")) (EFieldAccess (EVar "src") "expEffects"))
@@ -4686,67 +4722,67 @@ stampBindingIds decls =
 (DTypeSig false "selfBinding" (TyFun (TyCon "String") (TyTuple (TyCon "String") (TyCon "String"))))
 (DFunDef false "selfBinding" ((PVar "n")) (ETuple (EVar "n") (EVar "n")))
 (DTypeSig false "localsExportedFrom" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "localsExportedFrom" ((PVar "origins") (PVar "bindings")) (EApp (EApp (EMethodRef "map") (EVar "snd")) (EApp (EApp (EVar "filterList") (ELam ((PVar "b")) (EApp (EApp (EVar "contains") (EApp (EVar "fst") (EVar "b"))) (EVar "origins")))) (EVar "bindings"))))
-(DTypeSig false "reExpValues" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DFunDef false "localsExportedFrom" ((PVar "origins") (PVar "bindings")) (EBlock (DoLet false false (PVar "dom") (EApp (EApp (EVar "omFromNames") (EVar "origins")) (EVar "omEmpty"))) (DoExpr (EApp (EApp (EMethodRef "map") (EVar "snd")) (EApp (EApp (EVar "filterList") (ELam ((PVar "b")) (EApp (EApp (EVar "omHasKey") (EApp (EVar "fst") (EVar "b"))) (EVar "dom")))) (EVar "bindings"))))))
+(DTypeSig false "reExpValues" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpValues" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpValuesFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpValuesFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpValuesFrom" ((PVar "path") (PVar "src")) (EBlock (DoLet false false (PVar "bindings") (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))) (DoExpr (EBinOp "++" (EApp (EApp (EVar "localsExportedFrom") (EFieldAccess (EVar "src") "expValues")) (EVar "bindings")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "ifaceValsOf") (EVar "src"))) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EVar "bindings")))))))
 (DTypeSig false "ifaceValsOf" (TyFun (TyCon "ModuleExports") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "ifaceValsOf" ((PVar "src") (PVar "n")) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EFieldAccess (EVar "src") "expInterfaces")) (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expValues")) (EApp (EApp (EVar "ifaceMethodsOf") (EVar "n")) (EFieldAccess (EVar "src") "expIfaceMethods"))) (EListLit)))
-(DTypeSig false "reExpTypes" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpTypes" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpTypes" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpTypesFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpTypesFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpTypesFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "localsExportedFrom") (EFieldAccess (EVar "src") "expTypes")) (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))))
-(DTypeSig false "reExpCtors" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpCtors" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpCtors" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpCtorsFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpCtorsFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpCtorsFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "localsExportedFrom") (EFieldAccess (EVar "src") "expCtors")) (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))))
-(DTypeSig false "reExpInterfaces" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
+(DTypeSig false "reExpInterfaces" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "reExpInterfaces" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpInterfacesFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reexportOrigins" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reexportOrigins" ((PVar "path") (PVar "src")) (EApp (EApp (EMethodRef "map") (EVar "fst")) (EApp (EApp (EVar "reexportBindings") (EVar "path")) (EVar "src"))))
 (DTypeSig false "reExpInterfacesFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "String")))))
 (DFunDef false "reExpInterfacesFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expInterfaces")) (EApp (EApp (EVar "reexportOrigins") (EVar "path")) (EVar "src"))))
-(DTypeSig false "reExpIfaceMethods" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
+(DTypeSig false "reExpIfaceMethods" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))))))
 (DFunDef false "reExpIfaceMethods" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpIfaceMethodsFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpIfaceMethodsFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "reExpIfaceMethodsFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "ifaceMethodPairs") (EVar "src")) (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expInterfaces")) (EApp (EApp (EVar "reexportOrigins") (EVar "path")) (EVar "src")))))
 (DTypeSig false "ifaceMethodPairs" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "String")))))))
 (DFunDef false "ifaceMethodPairs" (PWild (PList)) (EListLit))
 (DFunDef false "ifaceMethodPairs" ((PVar "src") (PCons (PVar "i") (PVar "rest"))) (EBinOp "::" (ETuple (EVar "i") (EApp (EApp (EVar "ifaceMethodsOf") (EVar "i")) (EFieldAccess (EVar "src") "expIfaceMethods"))) (EApp (EApp (EVar "ifaceMethodPairs") (EVar "src")) (EVar "rest"))))
-(DTypeSig false "reExpFieldOwners" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))))
+(DTypeSig false "reExpFieldOwners" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String")))))))
 (DFunDef false "reExpFieldOwners" ((PVar "coreExp") (PVar "known") (PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EApp (EApp (EApp (EVar "overPubUse") (EVar "coreExp")) (EVar "known")) (EVar "reExpFieldOwnersFrom"))) (EApp (EVar "pubUsePaths") (EVar "prog"))))
 (DTypeSig false "reExpFieldOwnersFrom" (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "reExpFieldOwnersFrom" ((PVar "path") (PVar "src")) (EApp (EApp (EVar "ownersForTypes") (EApp (EApp (EVar "filterContains") (EFieldAccess (EVar "src") "expTypes")) (EApp (EApp (EVar "reexportOrigins") (EVar "path")) (EVar "src")))) (EFieldAccess (EVar "src") "expFieldOwners")))
 (DTypeSig false "ownersForTypes" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))))))
 (DFunDef false "ownersForTypes" (PWild (PList)) (EListLit))
 (DFunDef false "ownersForTypes" ((PVar "types") (PCons (PTuple (PVar "f") (PVar "o")) (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "o")) (EVar "types")) (EBinOp "::" (ETuple (EVar "f") (EVar "o")) (EApp (EApp (EVar "ownersForTypes") (EVar "types")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "ownersForTypes") (EVar "types")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
-(DTypeSig false "overPubUse" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyVar "b")))) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyVar "b")))))))
+(DTypeSig false "overPubUse" (TyFun (TyCon "ModuleExports") (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyFun (TyCon "UsePath") (TyFun (TyCon "ModuleExports") (TyApp (TyCon "List") (TyVar "b")))) (TyFun (TyCon "UsePath") (TyApp (TyCon "List") (TyVar "b")))))))
 (DFunDef false "overPubUse" ((PVar "coreExp") (PVar "known") (PVar "f") (PVar "path")) (EBlock (DoLet false false (PVar "mid") (EApp (EVar "useModId") (EVar "path"))) (DoExpr (EIf (EBinOp "==" (EVar "mid") (ELit (LString "core"))) (EApp (EApp (EVar "f") (EVar "path")) (EVar "coreExp")) (EMatch (EApp (EApp (EVar "findExports") (EVar "mid")) (EVar "known")) (arm (PCon "None") () (EListLit)) (arm (PCon "Some" (PVar "src")) () (EApp (EApp (EVar "f") (EVar "path")) (EVar "src"))))))))
-(DTypeSig true "resolveModule" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError")))))))))
+(DTypeSig true "resolveModule" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError")))))))))
 (DFunDef false "resolveModule" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "known") (PVar "modId") (PVar "prog")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EListLit)) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "known")) (EVar "modId")) (EVar "prog")))
-(DTypeSig true "resolveModuleG" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError"))))))))))
+(DTypeSig true "resolveModuleG" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyTuple (TyCon "ModuleExports") (TyApp (TyCon "List") (TyCon "ResError"))))))))))
 (DFunDef false "resolveModuleG" ((PVar "internalGuard") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "known") (PVar "modId") (PVar "prog")) (EBlock (DoLet false false (PTuple (PVar "env") (PVar "importErrs")) (EApp (EApp (EApp (EApp (EApp (EVar "buildEnvMM") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "known")) (EVar "prog")) (EVar "internalGuard"))) (DoLet false false (PVar "errs") (EApp (EVar "dedupResErrors") (EBinOp "++" (EBinOp "++" (EApp (EApp (EVar "buildErrors") (EVar "preludeDecls")) (EVar "prog")) (EVar "importErrs")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "checkDecl") (EVar "env"))) (EVar "prog"))))) (DoLet false false (PVar "exp") (EApp (EApp (EApp (EApp (EApp (EVar "buildExports") (EApp (EVar "coreExports") (EVar "preludeDecls"))) (EVar "known")) (EVar "modId")) (EVar "prog")) (EVar "env"))) (DoExpr (ETuple (EVar "exp") (EVar "errs")))))
-(DTypeSig false "resolveModulesErrors" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))
+(DTypeSig false "resolveModulesErrors" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "resolveModulesErrors" ((PVar "rt") (PVar "pre") (PVar "known") (PVar "mods")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "True")) (EListLit)) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mods")))
-(DTypeSig false "resolveModulesErrorsG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))))
+(DTypeSig false "resolveModulesErrorsG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "ResError")))))))))
 (DFunDef false "resolveModulesErrorsG" (PWild PWild PWild PWild PWild (PList)) (EListLit))
-(DFunDef false "resolveModulesErrorsG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EDictApp "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoExpr (EBinOp "++" (EVar "errs") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EBinOp "::" (EVar "exp") (EVar "known"))) (EVar "rest"))))))
+(DFunDef false "resolveModulesErrorsG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EDictApp "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoExpr (EBinOp "++" (EVar "errs") (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EApp (EApp (EApp (EVar "omInsert") (EFieldAccess (EVar "exp") "modId")) (EVar "exp")) (EVar "known"))) (EVar "rest"))))))
 (DTypeSig true "resolveModulesToLines" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))
-(DFunDef false "resolveModulesToLines" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToLines" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToLinesG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))))
-(DFunDef false "resolveModulesToLinesG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToLinesG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "resErrorSexp")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumane" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))
-(DFunDef false "resolveModulesToHumane" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToHumane" ((PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EVar "resolveModulesErrors") (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneG" (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String")))))))
-(DFunDef false "resolveModulesToHumaneG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToHumaneG" ((PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EVar "ppResErrorLocated")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneGF" (TyFun (TyCon "String") (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
-(DFunDef false "resolveModulesToHumaneGF" ((PVar "fallbackFile") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EApp (EVar "ppResErrorLocatedF") (EVar "fallbackFile"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods")))))
+(DFunDef false "resolveModulesToHumaneGF" ((PVar "fallbackFile") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EMethodRef "map") (EApp (EVar "ppResErrorLocatedF") (EVar "fallbackFile"))) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsG") (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods")))))
 (DTypeSig true "resolveModulesToHumaneByPath" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyCon "String"))))))))
-(DFunDef false "resolveModulesToHumaneByPath" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EListLit)) (EVar "mods"))))
-(DTypeSig false "resolveModulesErrorsByPathGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))))))
+(DFunDef false "resolveModulesToHumaneByPath" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "runtimeDecls") (PVar "preludeDecls") (PVar "mods")) (EApp (EVar "joinNl") (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "runtimeDecls")) (EVar "preludeDecls")) (EVar "omEmpty")) (EVar "mods"))))
+(DTypeSig false "resolveModulesErrorsByPathGo" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String"))) (TyFun (TyCon "Bool") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "ModuleExports")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyApp (TyCon "List") (TyCon "String"))))))))))
 (DFunDef false "resolveModulesErrorsByPathGo" (PWild PWild PWild PWild PWild PWild (PList)) (EListLit))
-(DFunDef false "resolveModulesErrorsByPathGo" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EDictApp "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoLet false false (PVar "file") (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mid")) (EVar "modPaths")) (arm (PCon "Some" (PVar "p")) () (EVar "p")) (arm (PCon "None") () (ELit (LString ""))))) (DoExpr (EBinOp "++" (EApp (EApp (EMethodRef "map") (EApp (EVar "ppResErrorLocatedF") (EVar "file"))) (EVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EBinOp "::" (EVar "exp") (EVar "known"))) (EVar "rest"))))))
+(DFunDef false "resolveModulesErrorsByPathGo" ((PVar "modPaths") (PVar "allowInternal") (PVar "trustedMods") (PVar "rt") (PVar "pre") (PVar "known") (PCons (PTuple (PVar "mid") (PVar "prog")) (PVar "rest"))) (EBlock (DoLet false false (PVar "guard") (EIf (EBinOp "||" (EVar "allowInternal") (EApp (EApp (EVar "contains") (EVar "mid")) (EVar "trustedMods"))) (EListLit) (EVar "internalExterns"))) (DoLet false false (PTuple (PVar "exp") (PVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModuleG") (EDictApp "guard")) (EVar "rt")) (EVar "pre")) (EVar "known")) (EVar "mid")) (EVar "prog"))) (DoLet false false (PVar "file") (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "mid")) (EVar "modPaths")) (arm (PCon "Some" (PVar "p")) () (EVar "p")) (arm (PCon "None") () (ELit (LString ""))))) (DoExpr (EBinOp "++" (EApp (EApp (EMethodRef "map") (EApp (EVar "ppResErrorLocatedF") (EVar "file"))) (EVar "errs")) (EApp (EApp (EApp (EApp (EApp (EApp (EApp (EVar "resolveModulesErrorsByPathGo") (EVar "modPaths")) (EVar "allowInternal")) (EVar "trustedMods")) (EVar "rt")) (EVar "pre")) (EApp (EApp (EApp (EVar "omInsert") (EFieldAccess (EVar "exp") "modId")) (EVar "exp")) (EVar "known"))) (EVar "rest"))))))
 (DTypeSig true "ppResErrorLocated" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "ppResErrorLocated" ((PVar "e")) (EApp (EApp (EVar "ppResErrorLocatedF") (ELit (LString ""))) (EVar "e")))
 (DTypeSig true "ppResErrorLocatedF" (TyFun (TyCon "String") (TyFun (TyCon "ResError") (TyCon "String"))))
