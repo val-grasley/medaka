@@ -564,17 +564,20 @@ gen_marksweep() {
 # prepends `preludeMethods`, so that scan stops in the O(1) prelude prefix — it does
 # not add to the quadratic (only the non-method `base` refs do).
 #
-# GRADED OP-ONLY (like marksweep): `mark` sits FAR under the 200ms TIME_FLOOR here
-# (~40-200 ms), so the TIME arm grades it NOWHERE; the deterministic OP arm grades it
-# from the shared run. The shared run also surfaces a SECOND, INDEPENDENT quadratic:
-# resolve is O(interfaces^2) on this shape (op r1=3.68 r2=3.83), INDEPENDENT of the
-# ref count R (interface-method registration/duplicate-checking scanning the growing
-# ifaceMethods/interfaces lists once per interface — see #954);
-# it is ledgered `manyifaces:resolve`. typecheck (op r1=2.65 r2=3.09) and elaborate
-# (r1=2.52 r2=2.99) both CLIMB but stay r1<3 at this band — the #907/#882 decl-count
-# classes diluted below the sustained-both-doublings rule — so they read `ok` and are
-# NOT ledgered (WATCH: a future source change lifting r1 over 3 will correctly fail and
-# force a ledger decision then, exactly as the comments:typecheck note warns).
+# GRADED OP-ONLY (like marksweep): these stages sit FAR under the 200ms TIME_FLOOR here
+# (~40-200 ms), so the TIME arm grades them NOWHERE; the deterministic OP arm does. The
+# shared run surfaces the SAME O(interfaces^2) interface-registration/duplicate-checking
+# class (scanning the growing ifaceMethods/interfaces lists once per interface — #954)
+# across several stages, most now fixed:
+#   * mark — FIXED (#975); was `manyifaces:mark`.
+#   * resolve — FIXED (#969, findDups -> OrdMap); was `manyifaces:resolve` (r1=3.68 r2=3.83).
+#   * typecheck — ledgered `manyifaces:typecheck` (r1=3.27 r2=3.60). It read `ok` on main
+#     (r1=2.65) only because the #907 stampBindingIds op-quadratic (typecheck's checkBodyImpl)
+#     DILUTED it; fixing #907 removed that masking term and surfaced the true ratio, exactly
+#     the "future source change lifting r1 over 3 forces a ledger decision" this note predicted.
+# elaborate (op r1=2.71 r2=3.21) still CLIMBs but stays r1<3, so it reads `ok` and is NOT
+# ledgered (WATCH: a future source change lifting r1 over 3 will correctly fail and force a
+# ledger decision then, exactly as the comments:typecheck note warns).
 gen_manyifaces() {
   n=$1; f=$2; : > "$f"
   r=8
@@ -1216,39 +1219,19 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck elaborate dce m
 # Measured on a QUIET box (min-of-5, GC heap pinned, load ~1.5) at N=4000->8000->16000:
 # r1=2.82 r2=3.37 — r2 comfortably over the 3.0 threshold and strengthening (an
 # under-LOAD DEEP run read 3.04/3.31, the same signal). It is REAL, not a flap: TIME is
-# the only arm that sees it (lint's alloc dilutes to ~2.0, its op-scan quadratic is the
-# SEPARATE `manydefs:typecheck` OP entry). Pre-existing — unrelated to #883's shapes.
-# Ledgered self-drainingly, exactly like the xref:typecheck TIME entry below: ceiling 4.3
+# the only arm that sees it (lint's alloc dilutes to ~2.0; the `manydefs:typecheck` OP
+# quadratic that used to be its SEPARATE op-arm sibling was fixed by #907). Pre-existing —
+# unrelated to #883's shapes. Ledgered self-drainingly: ceiling 4.3
 # clears the observed r2=3.37 by ~28% (op counts... n/a here, TIME, so this absorbs
 # runner noise too — hence the wider margin), TFIXED 2.60 (file convention). Tracked in
 # #956 (the TIME-arm fragility issue); self-drains when the lint cost is made linear.
 # One entry per line so draining a single row is a conflict-free one-line deletion
 # (see #880 follow-up; the vars are word-split by `for k in $VAR`, newlines are IFS).
 KNOWN_SLOW_TIME="
-xref:typecheck
 manydefs:lint
 "
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
-# xref:typecheck (TIME) — the SAME #907 typecheck superquadratic already ledgered on the
-# OP arm (KNOWN_SLOW_OPS, below). `match:typecheck`/`listlit:typecheck` ceilings already
-# exist above for this class, but those stages SKIP under the 200 ms TIME floor at their
-# small N and so never grade on TIME; `xref` is the first typecheck-class shape that
-# CLEARS the floor at the DEEP band (N=16000 typecheck ~8-10 s) and thus gets a real TIME
-# ratio. That ratio sits right on the 3.0 threshold and FLAPS across it: measured this box
-# at N=4000->8000->16000, r1=2.86-3.03 r2=3.01-3.66 (min-of-5, r1 dips under 3.0 on a quiet
-# box and over it under load) — a genuine boundary flap, not a clean pass, so the plain
-# `bad = r1>3 && r2>3` grading intermittently RED-FLAPS the nightly DEEP gate. It is NOT
-# introduced by #882 (typecheck runs entirely BEFORE the elaborate/dce/mangle stages this
-# PR added; a stage cannot perturb an earlier stage's time) — it is pre-existing, surfaced
-# by #882's real-N DEEP run (and likely nudged over the line by the effect-var-laundering
-# typecheck.mdk change that merged just ahead of this branch). Ledgered self-drainingly,
-# mirroring #881's manydefs:typecheck: ceiling 4.6 (the match:typecheck-class precedent)
-# clears the observed top (3.66) by ~26%; TFIXED 2.60 (file convention) sits well under the
-# band's floor (3.01), so a busy runner cannot false-PROMOTE it. Promotes out when #907's
-# root cause lands (which should drop the OP entry at the same time). Candidate #880 epic
-# follow-up: give the TIME arm the same ledger discipline the OP arm already has here.
-KNOWN_TCEIL_xref_typecheck="4.6";     KNOWN_TFIXED_xref_typecheck="2.60"
 # manydefs:lint (TIME) — see the block above KNOWN_SLOW_TIME. Ceiling 4.3 clears the
 # quiet-box r2=3.37 by ~28% (TIME is noisy, so the margin is wider than an op-arm ceiling);
 # TFIXED 2.60 (file convention) sits well under the observed band so a quiet runner cannot
@@ -1328,13 +1311,10 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 #         it. MEASURED N=250/500/1000: 35644 -> 133769 -> 517519, r1=3.75 r2=3.87
 #         (climbing toward the pure-quadratic 4.0).
 #
-#   xref:typecheck — typecheck's assoc-list bookkeeping (util.lookupAssoc over a table
-#         that grows with the top-level decl count) is O(decls^2) in op count on the
-#         `xref` chain. It is invisible to the TIME arm — the ledger elsewhere in this
-#         file records that xref TYPECHECKS LINEARLY IN TIME (r ~2.03/2.10), because
-#         these scans are not typecheck's wall-time bottleneck at this N — and blind to
-#         allocation. The op arm reads the underlying quadratic directly. MEASURED
-#         N=2000/4000/8000: 6.08M -> 20.08M -> 72.09M, r1=3.30 r2=3.59.
+#   xref:typecheck — FIXED (#907). Was typecheck's O(decls^2) assoc-list bookkeeping: the
+#         binding-id stamp (stampBindingIds/lookupBindId, run in typecheck's checkBodyImpl)
+#         scanned the O(decls) top-level frame once per EVar. Now an OrdMap (op r1/r2 ~1.95
+#         at N=2000/4000/8000; TIME also promoted linear, r2=2.11). De-ledgered on both arms.
 #
 # NOT LEDGERED, but WATCH: `comments:typecheck` reads r1=2.62 r2=3.00 at N=1000/2000/4000
 # — genuinely climbing, but r1 is under the 3.0 threshold so the sustained-both-doublings
@@ -1363,25 +1343,12 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 #         quadratic is uncounted AND dwarfed by linear buildEnvMM alloc — so it is a
 #         regression guard, NOT ledgered; see gen_starimports.)
 #
-#   xref:elaborate — the ELABORATE stage (issue #882), the whole point of putting the
-#         install* dict-route table-builders + elaborateDict on the CI map. This block ran
-#         in the UNTIMED gap between typecheck and lower ("elaboration is deliberately
-#         OUTSIDE both timers"), so a superlinearity in it was structurally invisible. It
-#         IS superlinear — but SHAPE-SPECIFICALLY: on `xref` (an N-deep chain where each
-#         `fN x = f(N-1) x + N` references the previous def) the counted op work climbs
-#         ~n^1.75, while on `manydefs` (N unrelated defs, no cross-refs) elaborate reads a
-#         clean LINEAR r1=1.94 r2=1.97. That split localizes the cost to elaborateDict's
-#         reference-walking dict-routing (which scales with the REFERENCE fan-in of the
-#         call graph), NOT the install* table-builders (which scale with decl COUNT and
-#         would show on manydefs too). MEASURED (this box, deterministic single run):
-#         QUICK band N=2000/4000/8000 reads r1=2.92 r2=3.31 (r1 under 3.0 → the QUICK op
-#         arm would call it "ok" and HIDE it — the #884 reduced-N trap); the DEEP band
-#         N=4000/8000/16000 reads 24.13M -> 79.88M -> 287.40M, r1=3.31 r2=3.60 — both over
-#         the 3.0 threshold, so unledgered it FAILS at real N. Ledgered (not shipped red)
-#         because it is a PRE-EXISTING cost surfaced by #882's wiring, out of scope for the
-#         wiring itself — a candidate follow-up for the #880 epic. Op-count is the arm
-#         graded (deterministic, one run, no floor); it self-drains — promote it out the
-#         moment a fix drops r2 under OFIXED (linear).
+#   xref:elaborate — FIXED (#907). The elaborate stage runs elaborateDict, which re-checks
+#         the program via checkProgramSeeded -> checkBodyImpl -> stampBindingIds — so it hit
+#         the SAME O(decls^2) binding-id-stamp quadratic as xref:typecheck (the earlier
+#         "elaborateDict reference-walking dict-routing" attribution was wrong; the cost was
+#         stampBindingIds). Indexing the top frame drained it: op r1/r2 ~1.9 at both the
+#         QUICK (2000/4000/8000) and DEEP (4000/8000/16000) bands. De-ledgered.
 #   manyifaces:mark — THE HEADLINE #883 FIND. mark's `contains x methods`
 #         (marker.mdk markVar/markInfix — a List-as-set walked for EVERY var/op node,
 #         `methods` = every interface-method name) is O(sites x pool). No shape stressed
@@ -1414,34 +1381,21 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 # One entry per line so draining a single row is a conflict-free one-line deletion
 # (see #880 follow-up; the var is word-split by `for k in $VAR`, newlines are IFS).
 KNOWN_SLOW_OPS="
-xref:typecheck
 reexports:resolve
-manydefs:typecheck
-xref:elaborate
+manyifaces:typecheck
 "
-KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
-# xref:elaborate — see the #882 block above. Ceiling 4.3 clears the observed DEEP r2=3.60
-# by ~19% (same headroom convention as manydefs:typecheck's 4.3 over 3.62); op counts are
-# deterministic so this absorbs only unrelated compiler-source drift, not runner noise.
-# OFIXED 2.60 (file convention): drops under it when elaborateDict's reference-walk routing
-# is made linear and this entry must be promoted out.
-KNOWN_OCEIL_xref_elaborate="4.3";     KNOWN_OFIXED_xref_elaborate="2.60"
-# manydefs:typecheck — the SAME typecheck O(decls^2) op-quadratic class as xref:typecheck
-# (issue #907), on the DEEP-only `manydefs` shape. It is NOT introduced by #881; it is a
-# pre-existing #884 op-arm signal that #884's QUICK-only validation never graded (manydefs
-# is DEEP/nightly-only, single-file, via the unchanged profile_main). Surfaced by #881's
-# full-DEEP run at the real N=4000->16000 band (op 11.7M->39.4M->142.8M, r2=3.62). Ledgered
-# here so nightly DEEP is green and it self-drains: ceiling 4.3 clears r2=3.62 by ~19% (same
-# convention as xref:typecheck); op counts are deterministic so this absorbs only unrelated
-# source drift, not runner noise. OFIXED 2.60 — drops under it when #907's root cause is
-# fixed (which likely promotes xref:typecheck out at the same time).
-KNOWN_OCEIL_manydefs_typecheck="4.3"; KNOWN_OFIXED_manydefs_typecheck="2.60"
-# manyifaces:mark / manyifaces:resolve (issue #883) — see the block above. Ceilings clear
-# the observed r2 by ~20% (mark 4.3 over 3.54; resolve 4.6 over 3.83), the file's headroom
-# convention; op counts are deterministic so this absorbs only unrelated compiler-source
-# drift, not runner noise. OFIXED 2.60 (file convention): drops under it when `methods`
-# becomes a set (mark) / the interface-method scan is indexed (resolve), at which point the
-# entry must be promoted out.
+# manyifaces:typecheck — an O(interfaces^2) interface-registration quadratic in the typecheck
+# stage (the interface-method scheme/constraint registration scanning the growing interface
+# list once per interface — the #954 class, the typecheck-stage sibling of resolve's findDups
+# which #969 fixed). It was ALREADY quadratic on main but DILUTED under the sustained-both-
+# doublings rule (r1=2.65 r2=3.09, read `ok`) by the #907 stampBindingIds op-quadratic that
+# ran in typecheck's checkBodyImpl. Fixing #907 removed that masking term — the absolute op
+# count DROPPED while the underlying interface quadratic's true ratio surfaced (r1=3.27
+# r2=3.60), exactly the "future source change lifting r1 over 3 forces a ledger decision" the
+# gen_manyifaces note predicted. Ledgered here (not a regression: op count fell): ceiling 4.3
+# clears the observed r2=3.60 by ~19% (the file's headroom convention); OFIXED 2.60 — drops
+# under it when the typecheck-side interface-method scan is indexed.
+KNOWN_OCEIL_manyifaces_typecheck="4.3"; KNOWN_OFIXED_manyifaces_typecheck="2.60"
 # Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
 # entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
 # from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):

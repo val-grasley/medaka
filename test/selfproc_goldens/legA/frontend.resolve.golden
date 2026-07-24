@@ -152,7 +152,7 @@ letBindName : LetBind -> String
 locKey : Option Loc -> String
 localOfExpanded : (String, String, Loc) -> String
 localsExportedFrom : List String -> List (String, String) -> List String
-lookupBindId : List (List (String, Int)) -> String -> Int
+lookupBindId : List BScope -> String -> Int
 lookupValue : Env -> List String -> String -> Bool
 matchesExport : String -> (String, List String) -> List String
 mergeAdds : ImportAdds -> ImportAdds -> ImportAdds
@@ -170,7 +170,7 @@ ownedFieldOwners : ModuleExports -> List (String, String) -> List (String, Strin
 ownersForTypes : List String -> List (String, String) -> List (String, String)
 ownersOf : String -> List (String, String) -> List String
 ownsAnyField : String -> List (String, String) -> Bool
-paramZeroFrames : List Pat -> List (List (String, Int))
+paramZeroFrames : List Pat -> List BScope
 patBindings : Pat -> List String
 patGroupDupErrors : Option Loc -> String -> List Pat -> List ResError
 patsBindings : List Pat -> List String
@@ -235,23 +235,23 @@ rewriteNonRec : List String -> ResError -> ResError
 sameCaseClass : String -> String -> Bool
 selfBinding : String -> (String, String)
 singleFileImportErrors : List Decl -> List ResError
-stampArm : List (List (String, Int)) -> Arm -> Arm
+stampArm : List BScope -> Arm -> Arm
 stampBindingIds : List Decl -> (List Decl, List (String, Int))
-stampClause : List (List (String, Int)) -> FunClause -> FunClause
-stampDecl : List (String, Int) -> Decl -> Decl
-stampExpr : List (List (String, Int)) -> Expr -> Expr
-stampFieldAssign : List (List (String, Int)) -> FieldAssign -> FieldAssign
-stampGuardArm : List (List (String, Int)) -> GuardArm -> GuardArm
-stampGuards : List (List (String, Int)) -> List Guard -> (List Guard, List (List (String, Int)))
-stampIfaceMethod : List (String, Int) -> IfaceMethod -> IfaceMethod
-stampImplMethod : List (String, Int) -> ImplMethod -> ImplMethod
-stampInterp : List (List (String, Int)) -> InterpPart -> InterpPart
-stampKv : List (List (String, Int)) -> (Expr, Expr) -> (Expr, Expr)
-stampLet : List (List (String, Int)) -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
-stampLetBind : List (List (String, Int)) -> LetBind -> LetBind
-stampLetGroup : List (List (String, Int)) -> List LetBind -> Expr -> Expr
-stampSection : List (List (String, Int)) -> Section -> Section
-stampStmts : List (List (String, Int)) -> List DoStmt -> List DoStmt
+stampClause : List BScope -> FunClause -> FunClause
+stampDecl : Map String Int -> Decl -> Decl
+stampExpr : List BScope -> Expr -> Expr
+stampFieldAssign : List BScope -> FieldAssign -> FieldAssign
+stampGuardArm : List BScope -> GuardArm -> GuardArm
+stampGuards : List BScope -> List Guard -> (List Guard, List BScope)
+stampIfaceMethod : Map String Int -> IfaceMethod -> IfaceMethod
+stampImplMethod : Map String Int -> ImplMethod -> ImplMethod
+stampInterp : List BScope -> InterpPart -> InterpPart
+stampKv : List BScope -> (Expr, Expr) -> (Expr, Expr)
+stampLet : List BScope -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
+stampLetBind : List BScope -> LetBind -> LetBind
+stampLetGroup : List BScope -> List LetBind -> Expr -> Expr
+stampSection : List BScope -> Section -> Section
+stampStmts : List BScope -> List DoStmt -> List DoStmt
 startsUpper : String -> Bool
 startsWithAt : Array Char -> Bool
 stubOrUnknown : List ModuleExports -> UsePath -> String -> Loc -> ImportAdds
@@ -276,4 +276,4 @@ variantFieldOwners : Variant -> List (String, String)
 variantName : Variant -> String
 whenL : Bool -> List a -> List a
 withResErrorLoc : Loc -> ResError -> ResError
-zeroFrame : List String -> List (String, Int)
+zeroFrame : List String -> BScope
