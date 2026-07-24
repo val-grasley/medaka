@@ -4497,6 +4497,20 @@ instantiateTracked (Forall ids evars t) =
   let subst = freshSubst ids
   (substMonoP True subst (freshEffSubst evars) t, subst)
 
+-- #840 2c: instantiateTracked with a CALLER-SUPPLIED effect-cell list, so the
+-- caller keeps NAMED handles to the instantiation's effect-var cells.  Identical
+-- to instantiateTracked except the effect substitution uses [effCells] (in the
+-- scheme's own [evars] order) instead of a buried anonymous freshEffSubst.  The
+-- impl path gets these named handles for free from fromAstTypeE's effMap; the
+-- default path routes through a Scheme, so this lets it read effect-var rigidity
+-- off the PRIMARY instantiation rather than rebuilding a second one (retires the
+-- expected2/effMap2 contortion).  [effCells] MUST align 1:1 with [evars] — the
+-- default caller builds it from the SAME name list sigToSchemeTvs quantified over.
+instantiateTrackedEff : Scheme -> List (Ref Effvar) -> (Mono, List (Int, Mono))
+instantiateTrackedEff (Forall ids evars t) effCells =
+  let subst = freshSubst ids
+  (substMonoP True subst (zipL evars effCells) t, subst)
+
 constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
 constraintMonosOf [] _ = []
 constraintMonosOf (id::rest) subst = match lookupAssocI id subst
@@ -12432,7 +12446,18 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   -- #837: the schemeObligationsRef snapshot/restore window is RETIRED — a where-helper
   -- named like a top-level binding can no longer leak, now that registration/lookup key
   -- by (name, binding-id) rather than the bare name.
-  let inst = instantiateTracked (fst st)
+  -- #840 2c: build the method's NAMED effect table up front and thread its cells
+  -- into the PRIMARY instantiation (instantiateTrackedEff), so the #816 effect-var
+  -- rigidity read below inspects the very cells the body's own unify solves — the
+  -- impl path gets this for free from fromAstTypeE's effMap.  freshEffMap here uses
+  -- the IDENTICAL name list sigToSchemeTvs used to quantify [fst st]'s effect vars
+  -- (`dedup (effTailNames mty ++ rowArgNames mty)`, same order), so
+  -- instantiateTrackedEff substitutes each named tail's cell into [fst inst].
+  -- Retires the old expected2/effMap2 rebuild + its secondary unify ("contortion
+  -- #3"): that rebuilt a SECOND instantiation of mty over a private effMap and
+  -- re-unified it against the already-solved actualTy purely to name the cells.
+  let effMap = freshEffMap (dedup (effTailNames mty ++ rowArgNames mty))
+  let inst = instantiateTrackedEff (fst st) (map snd effMap)
   -- W3 on the GENERIC default path (adversarial break 1): window this body's
   -- obligations on both channels, exactly as inferImplMethod does.
   let oblN0 = wMark perRun.value.implObls
@@ -12445,18 +12470,18 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   -- specialized copy goes through inferImplMethod, and module placement must
   -- not flip soundness.  The #803 launder residual is queried from the
   -- absorption trail INSIDE inferDefaultMethodBody, around its PRIMARY unify
-  -- (#839 2b — see there).  [expected2] rebuilds the declared type over a
-  -- private effMap/tvMap purely for the #816 effect-var rigidity read below:
-  -- after the body unifies clean, aliasing [expected2] onto the solved
-  -- [actualTy] lets the same post-unify rigidity used on the impl path read the
-  -- solution through [effMap2] (contortion #3; 2c retires this rebuild).
-  let effMap2 = freshEffMap (dedup (effTailNames mty ++ rowArgNames mty))
-  let expected2 = fromAstTypeE effMap2 (freshTvMap (removeAllS (rowArgNames mty) (dedup (tyVarNames mty)))) mty
+  -- (#839 2b — see there).  #816 effect-var rigidity then reads the SAME primary
+  -- instantiation: [effMap]'s cells are threaded into [fst inst] above, so the
+  -- body's own unify (inside inferDefaultMethodBody) is the one that solves them —
+  -- exactly as the impl path reads its [effMap] after the single `unify expected
+  -- actual`.  #840 2c retired the prior expected2/effMap2 rebuild + secondary
+  -- `unify expected2 actualTy` (a pure read-linking re-projection, not a checkpoint:
+  -- it only ran when the body was error-free, and a clean body launders nothing for
+  -- its closed rows to catch).
   let errsB0 = listLen perRun.value.typeErrors.value
   let actualTy = inferDefaultMethodBody mname subject defLoc env (fst inst) pats body
   let _ = if listLen perRun.value.typeErrors.value == errsB0 then
-    let _ = unify expected2 actualTy
-    checkImplEffVarRigidity subject mty effMap2 False defLoc
+    checkImplEffVarRigidity subject mty effMap False defLoc
   else
     ()
   let addedObls = wWindow perRun.value.implObls oblN0
@@ -12475,20 +12500,25 @@ inferDefaultMethod env iface typarams (IfaceMethod mname mty (Some (MethodDefaul
   -- grounding onto the GENERIC-DEFAULT path.  A cross-module impl inherits the
   -- untagged generic default (fillImplDefaults specializes SAME-MODULE only), so
   -- an ambiguous Num literal consumed body-locally in a default body — its element
-  -- var surfacing NOWHERE in the method's declared type ([expected2]) — reached the
+  -- var surfacing NOWHERE in the method's declared type ([fst inst]) — reached the
   -- route resolver UNGROUNDED here, exactly the #518 hole reopened: `t _ = s [1, 2]`
   -- left `[1,2] : List _a`, matching only the GENERAL `impl S (List a)` and never the
   -- specific `impl S (List Int)`.  So `t Foo` dispatched to a DIFFERENT impl than the
   -- same-module (impl-path) placement, a wrong value keyed purely on module placement,
   -- `check` green either way.  [addedObls] = this default body's obligation window (the
-  -- SAME [implObls] channel inferImplMethod grounds over after #841/#876) and [expected2]
-  -- = the declared method type as a Mono, aliased by the body's unify above — the exact
-  -- pair inferImplMethod passes.  defaultBodyLocalNum grounds ONLY vars absent from
-  -- [expected2], so a legitimately polymorphic default (a Num var reflected in the
-  -- signature, dict-supplied by the caller) stays polymorphic — no over-grounding.  Runs
-  -- AFTER checkDefaultMethodRigidity so a body-local Num default can never mask a pin,
-  -- matching the impl path's ordering.
-  let _ = defaultBodyLocalNum addedObls expected2
+  -- SAME [implObls] channel inferImplMethod grounds over after #841/#876) and [fst inst]
+  -- = the declared method type as a Mono, aliased by the body's PRIMARY unify above — the
+  -- exact pair inferImplMethod passes as [expected].  #840 2c retargeted this from the
+  -- retired [expected2] to [fst inst]: defaultBodyLocalNum uses only monoUnboundIds (the
+  -- type-var half), and monoUnboundIds normalizes union-find roots, so
+  -- `monoUnboundIds (fst inst)` ≡ `monoUnboundIds expected2` — both are the unbound roots
+  -- of the SAME body solution (expected2 only ever linked to it via the retired secondary
+  -- unify).  defaultBodyLocalNum grounds ONLY vars absent from [fst inst], so a
+  -- legitimately polymorphic default (a Num var reflected in the signature, dict-supplied
+  -- by the caller) stays polymorphic — no over-grounding.  Runs AFTER
+  -- checkDefaultMethodRigidity so a body-local Num default can never mask a pin, matching
+  -- the impl path's ordering.
+  let _ = defaultBodyLocalNum addedObls (fst inst)
   -- #837: schemeObligationsRef restore RETIRED (see snapshot site above).
   let _ = setRef perRun.value.inRigidityBodyRef False
   -- register AFTER body inference, so each constraint var's id in [snd inst] is
@@ -12525,11 +12555,12 @@ inferDefaultMethodBody mname subject defLoc env expectedTy pats body =
   else
     -- #839 2b: the #803 launder residual as a POST-unify query over the absorption
     -- trail (default-path phrasing; keeps defaultEffectLaunderMsg's committed
-    -- golden verbatim).  Query against [expectedTy] (the PRIMARY instantiation) —
-    -- the exact rows THIS unify merges — so its declared tails are the ones that
-    -- link and absorb.  (The caller's private [expected2]/[effMap2] rebuild — for
-    -- the #816 rigidity read — is unified only AFTER this, by which point the atom
-    -- is already merged away, so it must NOT be the query source; contortion #3.)
+    -- golden verbatim).  Query against [expectedTy] (the PRIMARY instantiation,
+    -- = the caller's [fst inst]) — the exact rows THIS unify merges — so its declared
+    -- tails are the ones that link and absorb.  (#840 2c: the #816 rigidity read now
+    -- shares THIS same primary instantiation — the caller threads its named [effMap]
+    -- cells into [fst inst] — so there is no longer a separate expected2/effMap2 to
+    -- re-project the solution onto; the retired rebuild was "contortion #3".)
     let launderMark = wMark perRun.value.absorptions
     let declArrows = allArrowEffs expectedTy
     let actualArrows = allArrowEffs actualTy
