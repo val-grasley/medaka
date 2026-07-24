@@ -1,5 +1,5 @@
 # META
-source_lines=1426
+source_lines=1479
 stages=DESUGAR,MARK
 # SOURCE
 -- elaborated-AST → Core IR lowering (STAGE2-DESIGN §2.1).  Consumes the SAME
@@ -388,18 +388,54 @@ dedupHeads ((c, a)::rest) seen
   | otherwise = (c, a) :: dedupHeads rest (omInsert c () seen)
 
 distinctLits : List (List Pat, Int) -> List Lit
-distinctLits rows = dedupLits (colLits rows) []
+distinctLits rows = dedupLits (colLits rows) omEmpty
 
 colLits : List (List Pat, Int) -> List Lit
 colLits [] = []
 colLits (((PLit l)::_, _)::rest) = l :: colLits rest
 colLits (_::rest) = colLits rest
 
-dedupLits : List Lit -> List Lit -> List Lit
+-- First-seen dedup of the column's literal heads.  Mirrors #960's `dedupHeads`
+-- fix: the old `seen` List scanned with `anyList (l == _)` per literal was
+-- O(arms^2) on an N-arm literal match (a lexer/opcode/state-machine dispatch),
+-- and — unlike `dedupHeads`' `contains` — the scan used the UNcounted `anyList`
+-- AND each `Eq Lit` compare allocated, so the quadratic was invisible to the op
+-- arm yet superlinear in allocation (#970).  `seen` is now an `OrdMap Unit`
+-- membership set keyed by `litKey` (an injective, Eq-exact string render of the
+-- literal): O(log n) test/insert.  The output is still built at each literal's
+-- FIRST occurrence, recursing on `rest` unchanged, so first-occurrence order —
+-- and therefore the emitted literal-switch — is byte-identical to the old form.
+dedupLits : List Lit -> OrdMap Unit -> List Lit
 dedupLits [] _ = []
-dedupLits (l::rest) seen
-  | anyList (l == _) seen = dedupLits rest seen
-  | otherwise = l :: dedupLits rest (l::seen)
+dedupLits (l::rest) seen =
+  let k = litKey l
+  match omHasKey k seen
+    True => dedupLits rest seen
+    False => l :: dedupLits rest (omInsert k () seen)
+
+-- A total, injective, Eq-exact string key for a match-column literal.  Each
+-- constructor gets a distinct one-char tag, so keys can never collide ACROSS
+-- constructors (the tag partitions the space); WITHIN a constructor the render
+-- is injective, so `litKey a == litKey b`  iff  `a == b` (derived `Eq Lit`) —
+-- exactly the membership test the old `anyList (l == _)` performed, preserving
+-- dedup semantics.  Float note: -0.0 is normalised to +0.0 (they are `Eq`-equal
+-- and the old `==` deduped them); NaN cannot be written as a pattern literal so
+-- its `NaN != NaN` edge is unreachable here.  LBool/LUnit are canonicalised to
+-- constructors before lowering (see `canonPat`), so those arms never reach this
+-- function but are kept total.
+litKey : Lit -> String
+litKey (LInt n) = "i" ++ intToString n
+litKey (LChar c) = "c" ++ c
+litKey (LString s) = "s" ++ s
+litKey (LFloat f) = "f" ++ floatToString (normLitZero f)
+litKey (LBool True) = "bT"
+litKey (LBool False) = "bF"
+litKey LUnit = "u"
+
+-- collapse -0.0 to +0.0 so the float key matches `Eq Lit` (which treats them
+-- equal); a no-op for every other value.
+normLitZero : Float -> Float
+normLitZero f = if f == 0.0 then 0.0 else f
 
 -- ── matrix specialization / default (over index-carrying rows) ─────────────
 filterMapRows : ((List Pat, Int) -> Option (List Pat, Int)) -> List (List Pat, Int) -> List (List Pat, Int)
@@ -427,9 +463,26 @@ specializeLit : Lit -> List (List Pat, Int) -> List (List Pat, Int)
 specializeLit l rows = filterMapRows (specLitRow l) rows
 
 specLitRow : Lit -> (List Pat, Int) -> Option (List Pat, Int)
-specLitRow l ((PLit l2)::rest, i) = if l2 == l then Some (rest, i) else None
+specLitRow l ((PLit l2)::rest, i) = if litEq l2 l then Some (rest, i) else None
 specLitRow _ (PWild::rest, i) = Some (rest, i)
 specLitRow _ _ = None
+
+-- Alloc-free structural equality on literals, identical in result to the derived
+-- `Eq Lit`.  `specLitRow` compares a literal ONCE PER (row × distinct-literal)
+-- while lowering a literal switch, i.e. O(arms^2) compares on an N-arm match; the
+-- derived `Eq Lit` (`mdk_impl_Lit_eq`) allocates on every call (verified by
+-- profiling — GC_malloc_kind ← mdk_alloc ← mdk_impl_Lit_eq dominated the lowering
+-- of a wide literal match), so those O(arms^2) compares allocated O(arms^2) too.
+-- Comparing the primitive fields directly allocates nothing — exactly why the
+-- constructor path (`specConRow`, a `String ==`) is already alloc-linear (#970).
+litEq : Lit -> Lit -> Bool
+litEq (LInt a) (LInt b) = a == b
+litEq (LFloat a) (LFloat b) = a == b
+litEq (LString a) (LString b) = a == b
+litEq (LChar a) (LChar b) = a == b
+litEq (LBool a) (LBool b) = a == b
+litEq LUnit LUnit = True
+litEq _ _ = False
 
 -- the default matrix: rows whose head is a wildcard (head dropped); used for the
 -- switch's default branch and (when column 0 is all wildcards) CTDrop.
@@ -1589,14 +1642,24 @@ nodeTag _ = "?"
 (DFunDef false "dedupHeads" ((PList) PWild) (EListLit))
 (DFunDef false "dedupHeads" ((PCons (PTuple (PVar "c") (PVar "a")) (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "c")) (EVar "seen")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "c") (EVar "a")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "c")) (ELit LUnit)) (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "distinctLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))
-(DFunDef false "distinctLits" ((PVar "rows")) (EApp (EApp (EVar "dedupLits") (EApp (EVar "colLits") (EVar "rows"))) (EListLit)))
+(DFunDef false "distinctLits" ((PVar "rows")) (EApp (EApp (EVar "dedupLits") (EApp (EVar "colLits") (EVar "rows"))) (EVar "omEmpty")))
 (DTypeSig false "colLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))
 (DFunDef false "colLits" ((PList)) (EListLit))
 (DFunDef false "colLits" ((PCons (PTuple (PCons (PCon "PLit" (PVar "l")) PWild) PWild) (PVar "rest"))) (EBinOp "::" (EVar "l") (EApp (EVar "colLits") (EVar "rest"))))
 (DFunDef false "colLits" ((PCons PWild (PVar "rest"))) (EApp (EVar "colLits") (EVar "rest")))
-(DTypeSig false "dedupLits" (TyFun (TyApp (TyCon "List") (TyCon "Lit")) (TyFun (TyApp (TyCon "List") (TyCon "Lit")) (TyApp (TyCon "List") (TyCon "Lit")))))
+(DTypeSig false "dedupLits" (TyFun (TyApp (TyCon "List") (TyCon "Lit")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyCon "Lit")))))
 (DFunDef false "dedupLits" ((PList) PWild) (EListLit))
-(DFunDef false "dedupLits" ((PCons (PVar "l") (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "anyList") (ELam ((PVar "_s")) (EBinOp "==" (EVar "l") (EVar "_s")))) (EVar "seen")) (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "l") (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EBinOp "::" (EVar "l") (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "dedupLits" ((PCons (PVar "l") (PVar "rest")) (PVar "seen")) (EBlock (DoLet false false (PVar "k") (EApp (EVar "litKey") (EVar "l"))) (DoExpr (EMatch (EApp (EApp (EVar "omHasKey") (EVar "k")) (EVar "seen")) (arm (PCon "True") () (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EVar "seen"))) (arm (PCon "False") () (EBinOp "::" (EVar "l") (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "k")) (ELit LUnit)) (EVar "seen")))))))))
+(DTypeSig false "litKey" (TyFun (TyCon "Lit") (TyCon "String")))
+(DFunDef false "litKey" ((PCon "LInt" (PVar "n"))) (EBinOp "++" (ELit (LString "i")) (EApp (EVar "intToString") (EVar "n"))))
+(DFunDef false "litKey" ((PCon "LChar" (PVar "c"))) (EBinOp "++" (ELit (LString "c")) (EVar "c")))
+(DFunDef false "litKey" ((PCon "LString" (PVar "s"))) (EBinOp "++" (ELit (LString "s")) (EVar "s")))
+(DFunDef false "litKey" ((PCon "LFloat" (PVar "f"))) (EBinOp "++" (ELit (LString "f")) (EApp (EVar "floatToString") (EApp (EVar "normLitZero") (EVar "f")))))
+(DFunDef false "litKey" ((PCon "LBool" (PCon "True"))) (ELit (LString "bT")))
+(DFunDef false "litKey" ((PCon "LBool" (PCon "False"))) (ELit (LString "bF")))
+(DFunDef false "litKey" ((PCon "LUnit")) (ELit (LString "u")))
+(DTypeSig false "normLitZero" (TyFun (TyCon "Float") (TyCon "Float")))
+(DFunDef false "normLitZero" ((PVar "f")) (EIf (EBinOp "==" (EVar "f") (ELit (LFloat 0.0))) (ELit (LFloat 0.0)) (EVar "f")))
 (DTypeSig false "filterMapRows" (TyFun (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))))))
 (DFunDef false "filterMapRows" (PWild (PList)) (EListLit))
 (DFunDef false "filterMapRows" ((PVar "f") (PCons (PVar "r") (PVar "rest"))) (EMatch (EApp (EVar "f") (EVar "r")) (arm (PCon "Some" (PVar "r2")) () (EBinOp "::" (EVar "r2") (EApp (EApp (EVar "filterMapRows") (EVar "f")) (EVar "rest")))) (arm (PCon "None") () (EApp (EApp (EVar "filterMapRows") (EVar "f")) (EVar "rest")))))
@@ -1609,9 +1672,17 @@ nodeTag _ = "?"
 (DTypeSig false "specializeLit" (TyFun (TyCon "Lit") (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))))))
 (DFunDef false "specializeLit" ((PVar "l") (PVar "rows")) (EApp (EApp (EVar "filterMapRows") (EApp (EVar "specLitRow") (EVar "l"))) (EVar "rows")))
 (DTypeSig false "specLitRow" (TyFun (TyCon "Lit") (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))))))
-(DFunDef false "specLitRow" ((PVar "l") (PTuple (PCons (PCon "PLit" (PVar "l2")) (PVar "rest")) (PVar "i"))) (EIf (EBinOp "==" (EVar "l2") (EVar "l")) (EApp (EVar "Some") (ETuple (EVar "rest") (EVar "i"))) (EVar "None")))
+(DFunDef false "specLitRow" ((PVar "l") (PTuple (PCons (PCon "PLit" (PVar "l2")) (PVar "rest")) (PVar "i"))) (EIf (EApp (EApp (EVar "litEq") (EVar "l2")) (EVar "l")) (EApp (EVar "Some") (ETuple (EVar "rest") (EVar "i"))) (EVar "None")))
 (DFunDef false "specLitRow" (PWild (PTuple (PCons (PCon "PWild") (PVar "rest")) (PVar "i"))) (EApp (EVar "Some") (ETuple (EVar "rest") (EVar "i"))))
 (DFunDef false "specLitRow" (PWild PWild) (EVar "None"))
+(DTypeSig false "litEq" (TyFun (TyCon "Lit") (TyFun (TyCon "Lit") (TyCon "Bool"))))
+(DFunDef false "litEq" ((PCon "LInt" (PVar "a")) (PCon "LInt" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LFloat" (PVar "a")) (PCon "LFloat" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LString" (PVar "a")) (PCon "LString" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LChar" (PVar "a")) (PCon "LChar" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LBool" (PVar "a")) (PCon "LBool" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LUnit") (PCon "LUnit")) (EVar "True"))
+(DFunDef false "litEq" (PWild PWild) (EVar "False"))
 (DTypeSig false "defaultMatrix" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))))
 (DFunDef false "defaultMatrix" ((PVar "rows")) (EApp (EApp (EVar "filterMapRows") (EVar "defRow")) (EVar "rows")))
 (DTypeSig false "defRow" (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))))
@@ -2174,14 +2245,24 @@ nodeTag _ = "?"
 (DFunDef false "dedupHeads" ((PList) PWild) (EListLit))
 (DFunDef false "dedupHeads" ((PCons (PTuple (PVar "c") (PVar "a")) (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "c")) (EVar "seen")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "c") (EVar "a")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "c")) (ELit LUnit)) (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "distinctLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))
-(DFunDef false "distinctLits" ((PVar "rows")) (EApp (EApp (EVar "dedupLits") (EApp (EVar "colLits") (EVar "rows"))) (EListLit)))
+(DFunDef false "distinctLits" ((PVar "rows")) (EApp (EApp (EVar "dedupLits") (EApp (EVar "colLits") (EVar "rows"))) (EVar "omEmpty")))
 (DTypeSig false "colLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))
 (DFunDef false "colLits" ((PList)) (EListLit))
 (DFunDef false "colLits" ((PCons (PTuple (PCons (PCon "PLit" (PVar "l")) PWild) PWild) (PVar "rest"))) (EBinOp "::" (EVar "l") (EApp (EVar "colLits") (EVar "rest"))))
 (DFunDef false "colLits" ((PCons PWild (PVar "rest"))) (EApp (EVar "colLits") (EVar "rest")))
-(DTypeSig false "dedupLits" (TyFun (TyApp (TyCon "List") (TyCon "Lit")) (TyFun (TyApp (TyCon "List") (TyCon "Lit")) (TyApp (TyCon "List") (TyCon "Lit")))))
+(DTypeSig false "dedupLits" (TyFun (TyApp (TyCon "List") (TyCon "Lit")) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyCon "Lit")))))
 (DFunDef false "dedupLits" ((PList) PWild) (EListLit))
-(DFunDef false "dedupLits" ((PCons (PVar "l") (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "anyList") (ELam ((PVar "_s")) (EBinOp "==" (EVar "l") (EVar "_s")))) (EVar "seen")) (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (EVar "l") (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EBinOp "::" (EVar "l") (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "dedupLits" ((PCons (PVar "l") (PVar "rest")) (PVar "seen")) (EBlock (DoLet false false (PVar "k") (EApp (EVar "litKey") (EVar "l"))) (DoExpr (EMatch (EApp (EApp (EVar "omHasKey") (EVar "k")) (EVar "seen")) (arm (PCon "True") () (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EVar "seen"))) (arm (PCon "False") () (EBinOp "::" (EVar "l") (EApp (EApp (EVar "dedupLits") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "k")) (ELit LUnit)) (EVar "seen")))))))))
+(DTypeSig false "litKey" (TyFun (TyCon "Lit") (TyCon "String")))
+(DFunDef false "litKey" ((PCon "LInt" (PVar "n"))) (EBinOp "++" (ELit (LString "i")) (EApp (EVar "intToString") (EVar "n"))))
+(DFunDef false "litKey" ((PCon "LChar" (PVar "c"))) (EBinOp "++" (ELit (LString "c")) (EVar "c")))
+(DFunDef false "litKey" ((PCon "LString" (PVar "s"))) (EBinOp "++" (ELit (LString "s")) (EVar "s")))
+(DFunDef false "litKey" ((PCon "LFloat" (PVar "f"))) (EBinOp "++" (ELit (LString "f")) (EApp (EVar "floatToString") (EApp (EVar "normLitZero") (EVar "f")))))
+(DFunDef false "litKey" ((PCon "LBool" (PCon "True"))) (ELit (LString "bT")))
+(DFunDef false "litKey" ((PCon "LBool" (PCon "False"))) (ELit (LString "bF")))
+(DFunDef false "litKey" ((PCon "LUnit")) (ELit (LString "u")))
+(DTypeSig false "normLitZero" (TyFun (TyCon "Float") (TyCon "Float")))
+(DFunDef false "normLitZero" ((PVar "f")) (EIf (EBinOp "==" (EVar "f") (ELit (LFloat 0.0))) (ELit (LFloat 0.0)) (EVar "f")))
 (DTypeSig false "filterMapRows" (TyFun (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))) (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))))))
 (DFunDef false "filterMapRows" (PWild (PList)) (EListLit))
 (DFunDef false "filterMapRows" ((PVar "f") (PCons (PVar "r") (PVar "rest"))) (EMatch (EApp (EVar "f") (EVar "r")) (arm (PCon "Some" (PVar "r2")) () (EBinOp "::" (EVar "r2") (EApp (EApp (EVar "filterMapRows") (EVar "f")) (EVar "rest")))) (arm (PCon "None") () (EApp (EApp (EVar "filterMapRows") (EVar "f")) (EVar "rest")))))
@@ -2194,9 +2275,17 @@ nodeTag _ = "?"
 (DTypeSig false "specializeLit" (TyFun (TyCon "Lit") (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))))))
 (DFunDef false "specializeLit" ((PVar "l") (PVar "rows")) (EApp (EApp (EVar "filterMapRows") (EApp (EVar "specLitRow") (EVar "l"))) (EVar "rows")))
 (DTypeSig false "specLitRow" (TyFun (TyCon "Lit") (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))))))
-(DFunDef false "specLitRow" ((PVar "l") (PTuple (PCons (PCon "PLit" (PVar "l2")) (PVar "rest")) (PVar "i"))) (EIf (EBinOp "==" (EVar "l2") (EVar "l")) (EApp (EVar "Some") (ETuple (EVar "rest") (EVar "i"))) (EVar "None")))
+(DFunDef false "specLitRow" ((PVar "l") (PTuple (PCons (PCon "PLit" (PVar "l2")) (PVar "rest")) (PVar "i"))) (EIf (EApp (EApp (EVar "litEq") (EVar "l2")) (EVar "l")) (EApp (EVar "Some") (ETuple (EVar "rest") (EVar "i"))) (EVar "None")))
 (DFunDef false "specLitRow" (PWild (PTuple (PCons (PCon "PWild") (PVar "rest")) (PVar "i"))) (EApp (EVar "Some") (ETuple (EVar "rest") (EVar "i"))))
 (DFunDef false "specLitRow" (PWild PWild) (EVar "None"))
+(DTypeSig false "litEq" (TyFun (TyCon "Lit") (TyFun (TyCon "Lit") (TyCon "Bool"))))
+(DFunDef false "litEq" ((PCon "LInt" (PVar "a")) (PCon "LInt" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LFloat" (PVar "a")) (PCon "LFloat" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LString" (PVar "a")) (PCon "LString" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LChar" (PVar "a")) (PCon "LChar" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LBool" (PVar "a")) (PCon "LBool" (PVar "b"))) (EBinOp "==" (EVar "a") (EVar "b")))
+(DFunDef false "litEq" ((PCon "LUnit") (PCon "LUnit")) (EVar "True"))
+(DFunDef false "litEq" (PWild PWild) (EVar "False"))
 (DTypeSig false "defaultMatrix" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))))
 (DFunDef false "defaultMatrix" ((PVar "rows")) (EApp (EApp (EVar "filterMapRows") (EVar "defRow")) (EVar "rows")))
 (DTypeSig false "defRow" (TyFun (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int")))))

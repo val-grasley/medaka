@@ -384,18 +384,54 @@ dedupHeads ((c, a)::rest) seen
   | otherwise = (c, a) :: dedupHeads rest (omInsert c () seen)
 
 distinctLits : List (List Pat, Int) -> List Lit
-distinctLits rows = dedupLits (colLits rows) []
+distinctLits rows = dedupLits (colLits rows) omEmpty
 
 colLits : List (List Pat, Int) -> List Lit
 colLits [] = []
 colLits (((PLit l)::_, _)::rest) = l :: colLits rest
 colLits (_::rest) = colLits rest
 
-dedupLits : List Lit -> List Lit -> List Lit
+-- First-seen dedup of the column's literal heads.  Mirrors #960's `dedupHeads`
+-- fix: the old `seen` List scanned with `anyList (l == _)` per literal was
+-- O(arms^2) on an N-arm literal match (a lexer/opcode/state-machine dispatch),
+-- and — unlike `dedupHeads`' `contains` — the scan used the UNcounted `anyList`
+-- AND each `Eq Lit` compare allocated, so the quadratic was invisible to the op
+-- arm yet superlinear in allocation (#970).  `seen` is now an `OrdMap Unit`
+-- membership set keyed by `litKey` (an injective, Eq-exact string render of the
+-- literal): O(log n) test/insert.  The output is still built at each literal's
+-- FIRST occurrence, recursing on `rest` unchanged, so first-occurrence order —
+-- and therefore the emitted literal-switch — is byte-identical to the old form.
+dedupLits : List Lit -> OrdMap Unit -> List Lit
 dedupLits [] _ = []
-dedupLits (l::rest) seen
-  | anyList (l == _) seen = dedupLits rest seen
-  | otherwise = l :: dedupLits rest (l::seen)
+dedupLits (l::rest) seen =
+  let k = litKey l
+  match omHasKey k seen
+    True => dedupLits rest seen
+    False => l :: dedupLits rest (omInsert k () seen)
+
+-- A total, injective, Eq-exact string key for a match-column literal.  Each
+-- constructor gets a distinct one-char tag, so keys can never collide ACROSS
+-- constructors (the tag partitions the space); WITHIN a constructor the render
+-- is injective, so `litKey a == litKey b`  iff  `a == b` (derived `Eq Lit`) —
+-- exactly the membership test the old `anyList (l == _)` performed, preserving
+-- dedup semantics.  Float note: -0.0 is normalised to +0.0 (they are `Eq`-equal
+-- and the old `==` deduped them); NaN cannot be written as a pattern literal so
+-- its `NaN != NaN` edge is unreachable here.  LBool/LUnit are canonicalised to
+-- constructors before lowering (see `canonPat`), so those arms never reach this
+-- function but are kept total.
+litKey : Lit -> String
+litKey (LInt n) = "i" ++ intToString n
+litKey (LChar c) = "c" ++ c
+litKey (LString s) = "s" ++ s
+litKey (LFloat f) = "f" ++ floatToString (normLitZero f)
+litKey (LBool True) = "bT"
+litKey (LBool False) = "bF"
+litKey LUnit = "u"
+
+-- collapse -0.0 to +0.0 so the float key matches `Eq Lit` (which treats them
+-- equal); a no-op for every other value.
+normLitZero : Float -> Float
+normLitZero f = if f == 0.0 then 0.0 else f
 
 -- ── matrix specialization / default (over index-carrying rows) ─────────────
 filterMapRows : ((List Pat, Int) -> Option (List Pat, Int)) -> List (List Pat, Int) -> List (List Pat, Int)
@@ -423,9 +459,26 @@ specializeLit : Lit -> List (List Pat, Int) -> List (List Pat, Int)
 specializeLit l rows = filterMapRows (specLitRow l) rows
 
 specLitRow : Lit -> (List Pat, Int) -> Option (List Pat, Int)
-specLitRow l ((PLit l2)::rest, i) = if l2 == l then Some (rest, i) else None
+specLitRow l ((PLit l2)::rest, i) = if litEq l2 l then Some (rest, i) else None
 specLitRow _ (PWild::rest, i) = Some (rest, i)
 specLitRow _ _ = None
+
+-- Alloc-free structural equality on literals, identical in result to the derived
+-- `Eq Lit`.  `specLitRow` compares a literal ONCE PER (row × distinct-literal)
+-- while lowering a literal switch, i.e. O(arms^2) compares on an N-arm match; the
+-- derived `Eq Lit` (`mdk_impl_Lit_eq`) allocates on every call (verified by
+-- profiling — GC_malloc_kind ← mdk_alloc ← mdk_impl_Lit_eq dominated the lowering
+-- of a wide literal match), so those O(arms^2) compares allocated O(arms^2) too.
+-- Comparing the primitive fields directly allocates nothing — exactly why the
+-- constructor path (`specConRow`, a `String ==`) is already alloc-linear (#970).
+litEq : Lit -> Lit -> Bool
+litEq (LInt a) (LInt b) = a == b
+litEq (LFloat a) (LFloat b) = a == b
+litEq (LString a) (LString b) = a == b
+litEq (LChar a) (LChar b) = a == b
+litEq (LBool a) (LBool b) = a == b
+litEq LUnit LUnit = True
+litEq _ _ = False
 
 -- the default matrix: rows whose head is a wildcard (head dropped); used for the
 -- switch's default branch and (when column 0 is all wildcards) CTDrop.
