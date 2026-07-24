@@ -1,0 +1,13 @@
+-- module `rdefs` — rename gate (#254 Stage 2) shared definitions. Rename
+-- TARGETS are PARAMETER-LESS top-level values (`foo`, `also`): per #913 a click
+-- on a function name WITH parameters resolves to the WRONG binder (a param's
+-- local-binder def Loc collides with the function name's own Loc), so a rename
+-- target must be parameter-less. `foo` carries a TYPE SIGNATURE and is
+-- SELECTIVELY imported by rmain, so a COMPLETE rename must rewrite the def, the
+-- `foo :` signature, every use, AND the `import …{foo}` clause — all now indexed
+-- (refindex.mdk records sig-name + import-clause occurrences, #254 Stage 2).
+export foo : Int
+foo = 10
+
+export also : Int
+also = foo + 1

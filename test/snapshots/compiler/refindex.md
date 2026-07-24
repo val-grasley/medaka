@@ -1,5 +1,5 @@
 # META
-source_lines=1309
+source_lines=1357
 stages=DESUGAR,MARK
 # SOURCE
 -- compiler/tools/refindex.mdk — cross-file reference index (#254 Stage 0).
@@ -535,6 +535,9 @@ mkOneLocal (W ctx mid uri _ _) name loc =
 ctxOf : W -> Ctx
 ctxOf (W ctx _ _ _ _) = ctx
 
+midOf : W -> String
+midOf (W _ mid _ _ _) = mid
+
 uriOf : W -> String
 uriOf (W _ _ uri _ _) = uri
 
@@ -688,7 +691,15 @@ walkDeclBody : W -> Decl -> Loc -> Unit
 walkDeclBody w (DFunDef _ _ pats body) loc =
   let frame = mkNamedFrame w (flatMap (patBinders loc) pats)
   walkExpr w [frame] loc body
-walkDeclBody w (DTypeSig _ _ ty) loc = walkTy w loc ty
+walkDeclBody w (DTypeSig _ n ty) loc =
+  -- A signature's NAME is another occurrence of the value binding the matching
+  -- `DFunDef n` defines — same top-level key `mkKey mid nsVal n`. Recording it
+  -- (at the sig name's #331 `Loc`, `loc` here) lets references/rename cover the
+  -- `n :` position, so renaming a SIGNED binding also rewrites its signature.
+  -- Guard against a dummy (0-line) Loc from a #331 name-Loc miss — never emit a
+  -- bogus 0:0 occurrence.
+  let _ = recordSigName w n loc
+  walkTy w loc ty
 walkDeclBody w (DExtern _ _ ty) loc = walkTy w loc ty
 walkDeclBody w (DData _ _ _ variants _) loc = walkVariants w loc variants
 walkDeclBody w (DNewtype _ _ _ _ fieldTy _) loc = walkTy w loc fieldTy
@@ -708,6 +719,17 @@ walkDeclBody w (DLetGroup _ binds) loc =
   walkBinds w [frame] loc binds
 walkDeclBody w (DAttrib _ inner) loc = walkDeclBody w inner loc
 walkDeclBody _ _ _ = ()
+
+-- Record a signature name `n` as an occurrence of its value binding, unless its
+-- name Loc is a dummy (declPosNameLoc miss → line 0), which would be a bogus
+-- 0:0 edit range. Keyed under the SAME `mkKey mid nsVal n` the matching
+-- `DFunDef`'s def uses, so the sig groups with the def and its uses.
+recordSigName : W -> String -> Loc -> Unit
+recordSigName w n (Loc _ sl sc el ec) =
+  if sl > 0 then
+    recordRef (ctxOf w) (mkKey (midOf w) nsVal n) (uriOf w) (Loc (uriOf w) sl sc el ec)
+  else
+    ()
 
 walkVariants : W -> Loc -> List Variant -> Unit
 walkVariants _ _ [] = ()
@@ -833,32 +855,58 @@ reExportWildGo ctx mid ((ns, name, originKey)::rest) =
   reExportWildGo ctx mid rest
 
 -- ── imports → this module's useEnv (all DUse, pub or not) ────────────────────
-processImports : Ctx -> HashMap String String -> HashMap String String -> List Decl -> Unit
-processImports _ _ _ [] = ()
-processImports ctx useEnv aliasM ((DUse _ path _)::rest) =
-  let _ = importPath ctx useEnv aliasM path
-  processImports ctx useEnv aliasM rest
-processImports ctx useEnv aliasM ((DAttrib _ inner)::rest) =
-  processImports ctx useEnv aliasM (inner::rest)
-processImports ctx useEnv aliasM (_::rest) =
-  processImports ctx useEnv aliasM rest
+-- `uri` is threaded through so a SELECTIVE `import m.{name}` clause's own name
+-- token can be recorded as an occurrence of `m`'s `name` (its origin key) —
+-- references/rename then cover the import clause, so renaming a symbol also
+-- rewrites the `import …{name}` that brings it in (a partial rename that skipped
+-- the clause would break the importing file). Only `UseGroup` members carry a
+-- per-name `Loc` (`UseMember`'s 3rd field); `UseName`/`UseWild`/`UseAlias` name
+-- no importable symbol at a precise span, so there is nothing to record for them.
+processImports : Ctx -> HashMap String String -> HashMap String String -> String -> List Decl -> Unit
+processImports _ _ _ _ [] = ()
+processImports ctx useEnv aliasM uri ((DUse _ path _)::rest) =
+  let _ = importPath ctx useEnv aliasM uri path
+  processImports ctx useEnv aliasM uri rest
+processImports ctx useEnv aliasM uri ((DAttrib _ inner)::rest) =
+  processImports ctx useEnv aliasM uri (inner::rest)
+processImports ctx useEnv aliasM uri (_::rest) =
+  processImports ctx useEnv aliasM uri rest
 
-importPath : Ctx -> HashMap String String -> HashMap String String -> UsePath -> Unit
-importPath ctx useEnv _ (UseName ns) = match splitLastL ns
+importPath : Ctx -> HashMap String String -> HashMap String String -> String -> UsePath -> Unit
+importPath ctx useEnv _ _ (UseName ns) = match splitLastL ns
   Some (pre, nm) => importOne ctx useEnv (joinDotL pre) nm nm
   None => ()
-importPath ctx useEnv _ (UseGroup srcPath members) =
-  importMembers ctx useEnv (joinDotL srcPath) members
-importPath ctx useEnv _ (UseWild srcPath) =
+importPath ctx useEnv _ uri (UseGroup srcPath members) =
+  importMembers ctx useEnv (joinDotL srcPath) uri members
+importPath ctx useEnv _ _ (UseWild srcPath) =
   importWild ctx useEnv (joinDotL srcPath)
-importPath ctx _ aliasM (UseAlias srcPath alias) =
+importPath ctx _ aliasM _ (UseAlias srcPath alias) =
   hmSetC ctx aliasM alias (joinDotL srcPath)
 
-importMembers : Ctx -> HashMap String String -> String -> List UseMember -> Unit
-importMembers _ _ _ [] = ()
-importMembers ctx useEnv srcMod (m::rest) =
+importMembers : Ctx -> HashMap String String -> String -> String -> List UseMember -> Unit
+importMembers _ _ _ _ [] = ()
+importMembers ctx useEnv srcMod uri (m::rest) =
   let _ = importOne ctx useEnv srcMod (useMemberOrigin m) (useMemberLocal m)
-  importMembers ctx useEnv srcMod rest
+  let _ = recordImportMember ctx uri srcMod m
+  importMembers ctx useEnv srcMod uri rest
+
+-- Record a selective-import clause member as an occurrence of its ORIGIN key
+-- (what `m` exports the name as), at the member's own name `Loc`, in every
+-- namespace the origin resolves under (in practice exactly one — a value under
+-- `nsVal`, an imported type under `nsTy`). A dummy (0-line) Loc is skipped.
+recordImportMember : Ctx -> String -> String -> UseMember -> Unit
+recordImportMember ctx uri srcMod (UseMember o _ loc _) =
+  let _ = recordImportNs ctx uri srcMod o loc nsVal
+  let _ = recordImportNs ctx uri srcMod o loc nsTy
+  let _ = recordImportNs ctx uri srcMod o loc nsCtor
+  recordImportNs ctx uri srcMod o loc nsMethod
+
+recordImportNs : Ctx -> String -> String -> String -> Loc -> String -> Unit
+recordImportNs ctx uri srcMod o (Loc _ sl sc el ec) ns =
+  if sl > 0 then match hmGetC ctx ctx.originOf (mkKey srcMod ns o)
+    Some originKey => recordRef ctx originKey uri (Loc uri sl sc el ec)
+    None => ()
+  else ()
 
 importOne : Ctx -> HashMap String String -> String -> String -> String -> Unit
 importOne ctx useEnv srcMod o l =
@@ -967,7 +1015,7 @@ indexModule ctx mid uri src = match parseWithPositionsOpt src
     let aliasM = hmNew ()
     let _ = seedUseEnvPrelude ctx useEnv
     let _ = addOwnToEnv ctx useEnv ownDefs
-    let _ = processImports ctx useEnv aliasM decls
+    let _ = processImports ctx useEnv aliasM uri decls
     let _ = registerExports ctx mid ownDefs decls
     walkDecls (W ctx mid uri useEnv aliasM) paired
 
@@ -1496,6 +1544,8 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "mkOneLocal" ((PCon "W" (PVar "ctx") (PVar "mid") (PVar "uri") PWild PWild) (PVar "name") (PVar "loc")) (EBlock (DoLet false false (PVar "fid") (EApp (EVar "nextFresh") (EVar "ctx"))) (DoLet false false (PVar "key") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EVar "mid"))) (ELit (LString ""))) (EApp (EVar "display") (EVar "sep"))) (ELit (LString "local"))) (EApp (EVar "display") (EVar "sep"))) (ELit (LString ""))) (EApp (EVar "display") (EVar "name"))) (ELit (LString ""))) (EApp (EVar "display") (EVar "sep"))) (ELit (LString ""))) (EApp (EVar "display") (EApp (EVar "intToString") (EVar "fid")))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordDef") (EVar "ctx")) (EVar "key")) (EVar "uri")) (EApp (EApp (EVar "withUri") (EVar "uri")) (EVar "loc")))) (DoExpr (ETuple (EVar "name") (EVar "key")))))
 (DTypeSig false "ctxOf" (TyFun (TyCon "W") (TyCon "Ctx")))
 (DFunDef false "ctxOf" ((PCon "W" (PVar "ctx") PWild PWild PWild PWild)) (EVar "ctx"))
+(DTypeSig false "midOf" (TyFun (TyCon "W") (TyCon "String")))
+(DFunDef false "midOf" ((PCon "W" PWild (PVar "mid") PWild PWild PWild)) (EVar "mid"))
 (DTypeSig false "uriOf" (TyFun (TyCon "W") (TyCon "String")))
 (DFunDef false "uriOf" ((PCon "W" PWild PWild (PVar "uri") PWild PWild)) (EVar "uri"))
 (DTypeSig false "locWithUriOf" (TyFun (TyCon "W") (TyFun (TyCon "Loc") (TyCon "Loc"))))
@@ -1564,7 +1614,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "walkDecls" ((PVar "w") (PCons (PTuple (PVar "d") (PVar "p")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "walkDeclBody") (EVar "w")) (EVar "d")) (EApp (EApp (EVar "nameLocOf") (EApp (EVar "uriOf") (EVar "w"))) (EVar "p")))) (DoExpr (EApp (EApp (EVar "walkDecls") (EVar "w")) (EVar "rest")))))
 (DTypeSig false "walkDeclBody" (TyFun (TyCon "W") (TyFun (TyCon "Decl") (TyFun (TyCon "Loc") (TyCon "Unit")))))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DFunDef" PWild PWild (PVar "pats") (PVar "body")) (PVar "loc")) (EBlock (DoLet false false (PVar "frame") (EApp (EApp (EVar "mkNamedFrame") (EVar "w")) (EApp (EApp (EVar "flatMap") (EApp (EVar "patBinders") (EVar "loc"))) (EVar "pats")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "walkExpr") (EVar "w")) (EListLit (EVar "frame"))) (EVar "loc")) (EVar "body")))))
-(DFunDef false "walkDeclBody" ((PVar "w") (PCon "DTypeSig" PWild PWild (PVar "ty")) (PVar "loc")) (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "ty")))
+(DFunDef false "walkDeclBody" ((PVar "w") (PCon "DTypeSig" PWild (PVar "n") (PVar "ty")) (PVar "loc")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "recordSigName") (EVar "w")) (EVar "n")) (EVar "loc"))) (DoExpr (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "ty")))))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DExtern" PWild PWild (PVar "ty")) (PVar "loc")) (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "ty")))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DData" PWild PWild PWild (PVar "variants") PWild) (PVar "loc")) (EApp (EApp (EApp (EVar "walkVariants") (EVar "w")) (EVar "loc")) (EVar "variants")))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DNewtype" PWild PWild PWild PWild (PVar "fieldTy") PWild) (PVar "loc")) (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "fieldTy")))
@@ -1577,6 +1627,8 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DLetGroup" PWild (PVar "binds")) (PVar "loc")) (EBlock (DoLet false false (PVar "frame") (EApp (EApp (EVar "mkNamedFrame") (EVar "w")) (EApp (EApp (EVar "namesAtLoc") (EVar "loc")) (EApp (EApp (EVar "map") (EVar "letBindName")) (EVar "binds"))))) (DoExpr (EApp (EApp (EApp (EApp (EVar "walkBinds") (EVar "w")) (EListLit (EVar "frame"))) (EVar "loc")) (EVar "binds")))))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DAttrib" PWild (PVar "inner")) (PVar "loc")) (EApp (EApp (EApp (EVar "walkDeclBody") (EVar "w")) (EVar "inner")) (EVar "loc")))
 (DFunDef false "walkDeclBody" (PWild PWild PWild) (ELit LUnit))
+(DTypeSig false "recordSigName" (TyFun (TyCon "W") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "Unit")))))
+(DFunDef false "recordSigName" ((PVar "w") (PVar "n") (PCon "Loc" PWild (PVar "sl") (PVar "sc") (PVar "el") (PVar "ec"))) (EIf (EBinOp ">" (EVar "sl") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EVar "recordRef") (EApp (EVar "ctxOf") (EVar "w"))) (EApp (EApp (EApp (EVar "mkKey") (EApp (EVar "midOf") (EVar "w"))) (EVar "nsVal")) (EVar "n"))) (EApp (EVar "uriOf") (EVar "w"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (EApp (EVar "uriOf") (EVar "w"))) (EVar "sl")) (EVar "sc")) (EVar "el")) (EVar "ec"))) (ELit LUnit)))
 (DTypeSig false "walkVariants" (TyFun (TyCon "W") (TyFun (TyCon "Loc") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Unit")))))
 (DFunDef false "walkVariants" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "walkVariants" ((PVar "w") (PVar "loc") (PCons (PCon "Variant" PWild (PVar "payload")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "walkPayload") (EVar "w")) (EVar "loc")) (EVar "payload"))) (DoExpr (EApp (EApp (EApp (EVar "walkVariants") (EVar "w")) (EVar "loc")) (EVar "rest")))))
@@ -1632,19 +1684,23 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "reExportWildGo" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyCon "String"))) (TyCon "Unit")))))
 (DFunDef false "reExportWildGo" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "reExportWildGo" ((PVar "ctx") (PVar "mid") (PCons (PTuple (PVar "ns") (PVar "name") (PVar "originKey")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "addExport") (EVar "ctx")) (EVar "mid")) (EVar "ns")) (EVar "name")) (EVar "originKey"))) (DoExpr (EApp (EApp (EApp (EVar "reExportWildGo") (EVar "ctx")) (EVar "mid")) (EVar "rest")))))
-(DTypeSig false "processImports" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))))
-(DFunDef false "processImports" (PWild PWild PWild (PList)) (ELit LUnit))
-(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "importPath") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "path"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "rest")))))
-(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PCons (PCon "DAttrib" PWild (PVar "inner")) (PVar "rest"))) (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EBinOp "::" (EVar "inner") (EVar "rest"))))
-(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PCons PWild (PVar "rest"))) (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "rest")))
-(DTypeSig false "importPath" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "UsePath") (TyCon "Unit"))))))
-(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PCon "UseName" (PVar "ns"))) (EMatch (EApp (EVar "splitLastL") (EVar "ns")) (arm (PCon "Some" (PTuple (PVar "pre") (PVar "nm"))) () (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "pre"))) (EVar "nm")) (EVar "nm"))) (arm (PCon "None") () (ELit LUnit))))
-(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PCon "UseGroup" (PVar "srcPath") (PVar "members"))) (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))) (EVar "members")))
-(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PCon "UseWild" (PVar "srcPath"))) (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
-(DFunDef false "importPath" ((PVar "ctx") PWild (PVar "aliasM") (PCon "UseAlias" (PVar "srcPath") (PVar "alias"))) (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "aliasM")) (EVar "alias")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
-(DTypeSig false "importMembers" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "UseMember")) (TyCon "Unit"))))))
-(DFunDef false "importMembers" (PWild PWild PWild (PList)) (ELit LUnit))
-(DFunDef false "importMembers" ((PVar "ctx") (PVar "useEnv") (PVar "srcMod") (PCons (PVar "m") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EApp (EVar "useMemberOrigin") (EVar "m"))) (EApp (EVar "useMemberLocal") (EVar "m")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "rest")))))
+(DTypeSig false "processImports" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))))
+(DFunDef false "processImports" (PWild PWild PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PVar "uri") (PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "importPath") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "path"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "rest")))))
+(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PVar "uri") (PCons (PCon "DAttrib" PWild (PVar "inner")) (PVar "rest"))) (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EBinOp "::" (EVar "inner") (EVar "rest"))))
+(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PVar "uri") (PCons PWild (PVar "rest"))) (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "rest")))
+(DTypeSig false "importPath" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "UsePath") (TyCon "Unit")))))))
+(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild PWild (PCon "UseName" (PVar "ns"))) (EMatch (EApp (EVar "splitLastL") (EVar "ns")) (arm (PCon "Some" (PTuple (PVar "pre") (PVar "nm"))) () (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "pre"))) (EVar "nm")) (EVar "nm"))) (arm (PCon "None") () (ELit LUnit))))
+(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PVar "uri") (PCon "UseGroup" (PVar "srcPath") (PVar "members"))) (EApp (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))) (EVar "uri")) (EVar "members")))
+(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild PWild (PCon "UseWild" (PVar "srcPath"))) (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
+(DFunDef false "importPath" ((PVar "ctx") PWild (PVar "aliasM") PWild (PCon "UseAlias" (PVar "srcPath") (PVar "alias"))) (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "aliasM")) (EVar "alias")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
+(DTypeSig false "importMembers" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "UseMember")) (TyCon "Unit")))))))
+(DFunDef false "importMembers" (PWild PWild PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "importMembers" ((PVar "ctx") (PVar "useEnv") (PVar "srcMod") (PVar "uri") (PCons (PVar "m") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EApp (EVar "useMemberOrigin") (EVar "m"))) (EApp (EVar "useMemberLocal") (EVar "m")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordImportMember") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "m"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "uri")) (EVar "rest")))))
+(DTypeSig false "recordImportMember" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "UseMember") (TyCon "Unit"))))))
+(DFunDef false "recordImportMember" ((PVar "ctx") (PVar "uri") (PVar "srcMod") (PCon "UseMember" (PVar "o") PWild (PVar "loc") PWild)) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsVal"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsTy"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsCtor"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsMethod")))))
+(DTypeSig false "recordImportNs" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyFun (TyCon "String") (TyCon "Unit"))))))))
+(DFunDef false "recordImportNs" ((PVar "ctx") (PVar "uri") (PVar "srcMod") (PVar "o") (PCon "Loc" PWild (PVar "sl") (PVar "sc") (PVar "el") (PVar "ec")) (PVar "ns")) (EIf (EBinOp ">" (EVar "sl") (ELit (LInt 0))) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "originOf")) (EApp (EApp (EApp (EVar "mkKey") (EVar "srcMod")) (EVar "ns")) (EVar "o"))) (arm (PCon "Some" (PVar "originKey")) () (EApp (EApp (EApp (EApp (EVar "recordRef") (EVar "ctx")) (EVar "originKey")) (EVar "uri")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (EVar "uri")) (EVar "sl")) (EVar "sc")) (EVar "el")) (EVar "ec")))) (arm (PCon "None") () (ELit LUnit))) (ELit LUnit)))
 (DTypeSig false "importOne" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit")))))))
 (DFunDef false "importOne" ((PVar "ctx") (PVar "useEnv") (PVar "srcMod") (PVar "o") (PVar "l")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsVal"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsTy"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsCtor"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsMethod")))))
 (DTypeSig false "importNs" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))))))
@@ -1685,7 +1741,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "seedUseEnvPrelude" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyCon "Unit"))))
 (DFunDef false "seedUseEnvPrelude" ((PVar "ctx") (PVar "useEnv")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (ELit (LString "core")))) (DoExpr (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (ELit (LString "runtime"))))))
 (DTypeSig false "indexModule" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))))
-(DFunDef false "indexModule" ((PVar "ctx") (PVar "mid") (PVar "uri") (PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EBlock (DoLet false false (PVar "paired") (EApp (EApp (EVar "zipL") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions")))) (DoLet false false (PVar "expSet") (EApp (EApp (EVar "collectExportedValues") (EVar "ctx")) (EVar "decls"))) (DoLet false false (PVar "ownDefs") (EApp (EApp (EApp (EApp (EApp (EVar "collectDefs") (EVar "ctx")) (EVar "expSet")) (EVar "mid")) (EVar "uri")) (EVar "paired"))) (DoLet false false (PVar "useEnv") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false (PVar "aliasM") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "seedUseEnvPrelude") (EVar "ctx")) (EVar "useEnv"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "addOwnToEnv") (EVar "ctx")) (EVar "useEnv")) (EVar "ownDefs"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "decls"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerExports") (EVar "ctx")) (EVar "mid")) (EVar "ownDefs")) (EVar "decls"))) (DoExpr (EApp (EApp (EVar "walkDecls") (EApp (EApp (EApp (EApp (EApp (EVar "W") (EVar "ctx")) (EVar "mid")) (EVar "uri")) (EVar "useEnv")) (EVar "aliasM"))) (EVar "paired")))))))
+(DFunDef false "indexModule" ((PVar "ctx") (PVar "mid") (PVar "uri") (PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EBlock (DoLet false false (PVar "paired") (EApp (EApp (EVar "zipL") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions")))) (DoLet false false (PVar "expSet") (EApp (EApp (EVar "collectExportedValues") (EVar "ctx")) (EVar "decls"))) (DoLet false false (PVar "ownDefs") (EApp (EApp (EApp (EApp (EApp (EVar "collectDefs") (EVar "ctx")) (EVar "expSet")) (EVar "mid")) (EVar "uri")) (EVar "paired"))) (DoLet false false (PVar "useEnv") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false (PVar "aliasM") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "seedUseEnvPrelude") (EVar "ctx")) (EVar "useEnv"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "addOwnToEnv") (EVar "ctx")) (EVar "useEnv")) (EVar "ownDefs"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "decls"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerExports") (EVar "ctx")) (EVar "mid")) (EVar "ownDefs")) (EVar "decls"))) (DoExpr (EApp (EApp (EVar "walkDecls") (EApp (EApp (EApp (EApp (EApp (EVar "W") (EVar "ctx")) (EVar "mid")) (EVar "uri")) (EVar "useEnv")) (EVar "aliasM"))) (EVar "paired")))))))
 (DTypeSig false "processModules" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("IO") None (TyCon "Unit"))))))
 (DFunDef false "processModules" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "processModules" ((PVar "ctx") (PVar "read") (PCons (PTuple (PVar "mid") (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EMatch (EApp (EApp (EVar "getSrc") (EVar "read")) (EVar "path")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "src")) () (EApp (EApp (EApp (EApp (EVar "indexModule") (EVar "ctx")) (EVar "mid")) (EVar "path")) (EVar "src"))))) (DoExpr (EApp (EApp (EApp (EVar "processModules") (EVar "ctx")) (EVar "read")) (EVar "rest")))))
@@ -1959,6 +2015,8 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "mkOneLocal" ((PCon "W" (PVar "ctx") (PVar "mid") (PVar "uri") PWild PWild) (PVar "name") (PVar "loc")) (EBlock (DoLet false false (PVar "fid") (EApp (EVar "nextFresh") (EVar "ctx"))) (DoLet false false (PVar "key") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EVar "mid"))) (ELit (LString ""))) (EApp (EMethodRef "display") (EVar "sep"))) (ELit (LString "local"))) (EApp (EMethodRef "display") (EVar "sep"))) (ELit (LString ""))) (EApp (EMethodRef "display") (EVar "name"))) (ELit (LString ""))) (EApp (EMethodRef "display") (EVar "sep"))) (ELit (LString ""))) (EApp (EMethodRef "display") (EApp (EVar "intToString") (EVar "fid")))) (ELit (LString "")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordDef") (EVar "ctx")) (EVar "key")) (EVar "uri")) (EApp (EApp (EVar "withUri") (EVar "uri")) (EVar "loc")))) (DoExpr (ETuple (EVar "name") (EVar "key")))))
 (DTypeSig false "ctxOf" (TyFun (TyCon "W") (TyCon "Ctx")))
 (DFunDef false "ctxOf" ((PCon "W" (PVar "ctx") PWild PWild PWild PWild)) (EVar "ctx"))
+(DTypeSig false "midOf" (TyFun (TyCon "W") (TyCon "String")))
+(DFunDef false "midOf" ((PCon "W" PWild (PVar "mid") PWild PWild PWild)) (EVar "mid"))
 (DTypeSig false "uriOf" (TyFun (TyCon "W") (TyCon "String")))
 (DFunDef false "uriOf" ((PCon "W" PWild PWild (PVar "uri") PWild PWild)) (EVar "uri"))
 (DTypeSig false "locWithUriOf" (TyFun (TyCon "W") (TyFun (TyCon "Loc") (TyCon "Loc"))))
@@ -2027,7 +2085,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "walkDecls" ((PVar "w") (PCons (PTuple (PVar "d") (PVar "p")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "walkDeclBody") (EVar "w")) (EVar "d")) (EApp (EApp (EVar "nameLocOf") (EApp (EVar "uriOf") (EVar "w"))) (EVar "p")))) (DoExpr (EApp (EApp (EVar "walkDecls") (EVar "w")) (EVar "rest")))))
 (DTypeSig false "walkDeclBody" (TyFun (TyCon "W") (TyFun (TyCon "Decl") (TyFun (TyCon "Loc") (TyCon "Unit")))))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DFunDef" PWild PWild (PVar "pats") (PVar "body")) (PVar "loc")) (EBlock (DoLet false false (PVar "frame") (EApp (EApp (EVar "mkNamedFrame") (EVar "w")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "patBinders") (EVar "loc"))) (EVar "pats")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "walkExpr") (EVar "w")) (EListLit (EVar "frame"))) (EVar "loc")) (EVar "body")))))
-(DFunDef false "walkDeclBody" ((PVar "w") (PCon "DTypeSig" PWild PWild (PVar "ty")) (PVar "loc")) (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "ty")))
+(DFunDef false "walkDeclBody" ((PVar "w") (PCon "DTypeSig" PWild (PVar "n") (PVar "ty")) (PVar "loc")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "recordSigName") (EVar "w")) (EVar "n")) (EVar "loc"))) (DoExpr (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "ty")))))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DExtern" PWild PWild (PVar "ty")) (PVar "loc")) (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "ty")))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DData" PWild PWild PWild (PVar "variants") PWild) (PVar "loc")) (EApp (EApp (EApp (EVar "walkVariants") (EVar "w")) (EVar "loc")) (EVar "variants")))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DNewtype" PWild PWild PWild PWild (PVar "fieldTy") PWild) (PVar "loc")) (EApp (EApp (EApp (EVar "walkTy") (EVar "w")) (EVar "loc")) (EVar "fieldTy")))
@@ -2040,6 +2098,8 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DLetGroup" PWild (PVar "binds")) (PVar "loc")) (EBlock (DoLet false false (PVar "frame") (EApp (EApp (EVar "mkNamedFrame") (EVar "w")) (EApp (EApp (EVar "namesAtLoc") (EVar "loc")) (EApp (EApp (EMethodRef "map") (EVar "letBindName")) (EVar "binds"))))) (DoExpr (EApp (EApp (EApp (EApp (EVar "walkBinds") (EVar "w")) (EListLit (EVar "frame"))) (EVar "loc")) (EVar "binds")))))
 (DFunDef false "walkDeclBody" ((PVar "w") (PCon "DAttrib" PWild (PVar "inner")) (PVar "loc")) (EApp (EApp (EApp (EVar "walkDeclBody") (EVar "w")) (EVar "inner")) (EVar "loc")))
 (DFunDef false "walkDeclBody" (PWild PWild PWild) (ELit LUnit))
+(DTypeSig false "recordSigName" (TyFun (TyCon "W") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyCon "Unit")))))
+(DFunDef false "recordSigName" ((PVar "w") (PVar "n") (PCon "Loc" PWild (PVar "sl") (PVar "sc") (PVar "el") (PVar "ec"))) (EIf (EBinOp ">" (EVar "sl") (ELit (LInt 0))) (EApp (EApp (EApp (EApp (EVar "recordRef") (EApp (EVar "ctxOf") (EVar "w"))) (EApp (EApp (EApp (EVar "mkKey") (EApp (EVar "midOf") (EVar "w"))) (EVar "nsVal")) (EVar "n"))) (EApp (EVar "uriOf") (EVar "w"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (EApp (EVar "uriOf") (EVar "w"))) (EVar "sl")) (EVar "sc")) (EVar "el")) (EVar "ec"))) (ELit LUnit)))
 (DTypeSig false "walkVariants" (TyFun (TyCon "W") (TyFun (TyCon "Loc") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Unit")))))
 (DFunDef false "walkVariants" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "walkVariants" ((PVar "w") (PVar "loc") (PCons (PCon "Variant" PWild (PVar "payload")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "walkPayload") (EVar "w")) (EVar "loc")) (EVar "payload"))) (DoExpr (EApp (EApp (EApp (EVar "walkVariants") (EVar "w")) (EVar "loc")) (EVar "rest")))))
@@ -2095,19 +2155,23 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "reExportWildGo" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyCon "String"))) (TyCon "Unit")))))
 (DFunDef false "reExportWildGo" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "reExportWildGo" ((PVar "ctx") (PVar "mid") (PCons (PTuple (PVar "ns") (PVar "name") (PVar "originKey")) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "addExport") (EVar "ctx")) (EVar "mid")) (EVar "ns")) (EVar "name")) (EVar "originKey"))) (DoExpr (EApp (EApp (EApp (EVar "reExportWildGo") (EVar "ctx")) (EVar "mid")) (EVar "rest")))))
-(DTypeSig false "processImports" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit"))))))
-(DFunDef false "processImports" (PWild PWild PWild (PList)) (ELit LUnit))
-(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "importPath") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "path"))) (DoExpr (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "rest")))))
-(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PCons (PCon "DAttrib" PWild (PVar "inner")) (PVar "rest"))) (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EBinOp "::" (EVar "inner") (EVar "rest"))))
-(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PCons PWild (PVar "rest"))) (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "rest")))
-(DTypeSig false "importPath" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "UsePath") (TyCon "Unit"))))))
-(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PCon "UseName" (PVar "ns"))) (EMatch (EApp (EVar "splitLastL") (EVar "ns")) (arm (PCon "Some" (PTuple (PVar "pre") (PVar "nm"))) () (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "pre"))) (EVar "nm")) (EVar "nm"))) (arm (PCon "None") () (ELit LUnit))))
-(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PCon "UseGroup" (PVar "srcPath") (PVar "members"))) (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))) (EVar "members")))
-(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PCon "UseWild" (PVar "srcPath"))) (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
-(DFunDef false "importPath" ((PVar "ctx") PWild (PVar "aliasM") (PCon "UseAlias" (PVar "srcPath") (PVar "alias"))) (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "aliasM")) (EVar "alias")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
-(DTypeSig false "importMembers" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "UseMember")) (TyCon "Unit"))))))
-(DFunDef false "importMembers" (PWild PWild PWild (PList)) (ELit LUnit))
-(DFunDef false "importMembers" ((PVar "ctx") (PVar "useEnv") (PVar "srcMod") (PCons (PVar "m") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EApp (EVar "useMemberOrigin") (EVar "m"))) (EApp (EVar "useMemberLocal") (EVar "m")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "rest")))))
+(DTypeSig false "processImports" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))))
+(DFunDef false "processImports" (PWild PWild PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PVar "uri") (PCons (PCon "DUse" PWild (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "importPath") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "path"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "rest")))))
+(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PVar "uri") (PCons (PCon "DAttrib" PWild (PVar "inner")) (PVar "rest"))) (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EBinOp "::" (EVar "inner") (EVar "rest"))))
+(DFunDef false "processImports" ((PVar "ctx") (PVar "useEnv") (PVar "aliasM") (PVar "uri") (PCons PWild (PVar "rest"))) (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "rest")))
+(DTypeSig false "importPath" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "UsePath") (TyCon "Unit")))))))
+(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild PWild (PCon "UseName" (PVar "ns"))) (EMatch (EApp (EVar "splitLastL") (EVar "ns")) (arm (PCon "Some" (PTuple (PVar "pre") (PVar "nm"))) () (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "pre"))) (EVar "nm")) (EVar "nm"))) (arm (PCon "None") () (ELit LUnit))))
+(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild (PVar "uri") (PCon "UseGroup" (PVar "srcPath") (PVar "members"))) (EApp (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))) (EVar "uri")) (EVar "members")))
+(DFunDef false "importPath" ((PVar "ctx") (PVar "useEnv") PWild PWild (PCon "UseWild" (PVar "srcPath"))) (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
+(DFunDef false "importPath" ((PVar "ctx") PWild (PVar "aliasM") PWild (PCon "UseAlias" (PVar "srcPath") (PVar "alias"))) (EApp (EApp (EApp (EApp (EVar "hmSetC") (EVar "ctx")) (EVar "aliasM")) (EVar "alias")) (EApp (EVar "joinDotL") (EVar "srcPath"))))
+(DTypeSig false "importMembers" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "UseMember")) (TyCon "Unit")))))))
+(DFunDef false "importMembers" (PWild PWild PWild PWild (PList)) (ELit LUnit))
+(DFunDef false "importMembers" ((PVar "ctx") (PVar "useEnv") (PVar "srcMod") (PVar "uri") (PCons (PVar "m") (PVar "rest"))) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "importOne") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EApp (EVar "useMemberOrigin") (EVar "m"))) (EApp (EVar "useMemberLocal") (EVar "m")))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "recordImportMember") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "m"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "importMembers") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "uri")) (EVar "rest")))))
+(DTypeSig false "recordImportMember" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "UseMember") (TyCon "Unit"))))))
+(DFunDef false "recordImportMember" ((PVar "ctx") (PVar "uri") (PVar "srcMod") (PCon "UseMember" (PVar "o") PWild (PVar "loc") PWild)) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsVal"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsTy"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsCtor"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "recordImportNs") (EVar "ctx")) (EVar "uri")) (EVar "srcMod")) (EVar "o")) (EVar "loc")) (EVar "nsMethod")))))
+(DTypeSig false "recordImportNs" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "Loc") (TyFun (TyCon "String") (TyCon "Unit"))))))))
+(DFunDef false "recordImportNs" ((PVar "ctx") (PVar "uri") (PVar "srcMod") (PVar "o") (PCon "Loc" PWild (PVar "sl") (PVar "sc") (PVar "el") (PVar "ec")) (PVar "ns")) (EIf (EBinOp ">" (EVar "sl") (ELit (LInt 0))) (EMatch (EApp (EApp (EApp (EVar "hmGetC") (EVar "ctx")) (EFieldAccess (EVar "ctx") "originOf")) (EApp (EApp (EApp (EVar "mkKey") (EVar "srcMod")) (EVar "ns")) (EVar "o"))) (arm (PCon "Some" (PVar "originKey")) () (EApp (EApp (EApp (EApp (EVar "recordRef") (EVar "ctx")) (EVar "originKey")) (EVar "uri")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (EVar "uri")) (EVar "sl")) (EVar "sc")) (EVar "el")) (EVar "ec")))) (arm (PCon "None") () (ELit LUnit))) (ELit LUnit)))
 (DTypeSig false "importOne" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit")))))))
 (DFunDef false "importOne" ((PVar "ctx") (PVar "useEnv") (PVar "srcMod") (PVar "o") (PVar "l")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsVal"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsTy"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsCtor"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EApp (EVar "importNs") (EVar "ctx")) (EVar "useEnv")) (EVar "srcMod")) (EVar "o")) (EVar "l")) (EVar "nsMethod")))))
 (DTypeSig false "importNs" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))))))
@@ -2148,7 +2212,7 @@ splitLastL (x::rest) = map ((pre, last) => (x::pre, last)) (splitLastL rest)
 (DTypeSig false "seedUseEnvPrelude" (TyFun (TyCon "Ctx") (TyFun (TyApp (TyApp (TyCon "HashMap") (TyCon "String")) (TyCon "String")) (TyCon "Unit"))))
 (DFunDef false "seedUseEnvPrelude" ((PVar "ctx") (PVar "useEnv")) (EBlock (DoLet false false PWild (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (ELit (LString "core")))) (DoExpr (EApp (EApp (EApp (EVar "importWild") (EVar "ctx")) (EVar "useEnv")) (ELit (LString "runtime"))))))
 (DTypeSig false "indexModule" (TyFun (TyCon "Ctx") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "Unit"))))))
-(DFunDef false "indexModule" ((PVar "ctx") (PVar "mid") (PVar "uri") (PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EBlock (DoLet false false (PVar "paired") (EApp (EApp (EVar "zipL") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions")))) (DoLet false false (PVar "expSet") (EApp (EApp (EVar "collectExportedValues") (EVar "ctx")) (EVar "decls"))) (DoLet false false (PVar "ownDefs") (EApp (EApp (EApp (EApp (EApp (EVar "collectDefs") (EVar "ctx")) (EVar "expSet")) (EVar "mid")) (EVar "uri")) (EVar "paired"))) (DoLet false false (PVar "useEnv") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false (PVar "aliasM") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "seedUseEnvPrelude") (EVar "ctx")) (EVar "useEnv"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "addOwnToEnv") (EVar "ctx")) (EVar "useEnv")) (EVar "ownDefs"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "decls"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerExports") (EVar "ctx")) (EVar "mid")) (EVar "ownDefs")) (EVar "decls"))) (DoExpr (EApp (EApp (EVar "walkDecls") (EApp (EApp (EApp (EApp (EApp (EVar "W") (EVar "ctx")) (EVar "mid")) (EVar "uri")) (EVar "useEnv")) (EVar "aliasM"))) (EVar "paired")))))))
+(DFunDef false "indexModule" ((PVar "ctx") (PVar "mid") (PVar "uri") (PVar "src")) (EMatch (EApp (EVar "parseWithPositionsOpt") (EVar "src")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PTuple (PVar "decls") (PVar "positions"))) () (EBlock (DoLet false false (PVar "paired") (EApp (EApp (EVar "zipL") (EVar "decls")) (EApp (EVar "positionsDecls") (EVar "positions")))) (DoLet false false (PVar "expSet") (EApp (EApp (EVar "collectExportedValues") (EVar "ctx")) (EVar "decls"))) (DoLet false false (PVar "ownDefs") (EApp (EApp (EApp (EApp (EApp (EVar "collectDefs") (EVar "ctx")) (EVar "expSet")) (EVar "mid")) (EVar "uri")) (EVar "paired"))) (DoLet false false (PVar "useEnv") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false (PVar "aliasM") (EApp (EVar "hmNew") (ELit LUnit))) (DoLet false false PWild (EApp (EApp (EVar "seedUseEnvPrelude") (EVar "ctx")) (EVar "useEnv"))) (DoLet false false PWild (EApp (EApp (EApp (EVar "addOwnToEnv") (EVar "ctx")) (EVar "useEnv")) (EVar "ownDefs"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EApp (EVar "processImports") (EVar "ctx")) (EVar "useEnv")) (EVar "aliasM")) (EVar "uri")) (EVar "decls"))) (DoLet false false PWild (EApp (EApp (EApp (EApp (EVar "registerExports") (EVar "ctx")) (EVar "mid")) (EVar "ownDefs")) (EVar "decls"))) (DoExpr (EApp (EApp (EVar "walkDecls") (EApp (EApp (EApp (EApp (EApp (EVar "W") (EVar "ctx")) (EVar "mid")) (EVar "uri")) (EVar "useEnv")) (EVar "aliasM"))) (EVar "paired")))))))
 (DTypeSig false "processModules" (TyFun (TyCon "Ctx") (TyFun (TyFun (TyCon "String") (TyApp (TyCon "Option") (TyCon "String"))) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "String") (TyApp (TyCon "List") (TyCon "Decl")))) (TyEffect ("IO") None (TyCon "Unit"))))))
 (DFunDef false "processModules" (PWild PWild (PList)) (ELit LUnit))
 (DFunDef false "processModules" ((PVar "ctx") (PVar "read") (PCons (PTuple (PVar "mid") (PVar "path") PWild) (PVar "rest"))) (EBlock (DoLet false false PWild (EMatch (EApp (EApp (EVar "getSrc") (EVar "read")) (EVar "path")) (arm (PCon "None") () (ELit LUnit)) (arm (PCon "Some" (PVar "src")) () (EApp (EApp (EApp (EApp (EVar "indexModule") (EVar "ctx")) (EVar "mid")) (EVar "path")) (EVar "src"))))) (DoExpr (EApp (EApp (EApp (EVar "processModules") (EVar "ctx")) (EVar "read")) (EVar "rest")))))

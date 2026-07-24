@@ -1,0 +1,13 @@
+-- module `rmain` — SELECTIVELY imports `foo` from rdefs and uses it here, so a
+-- rename of `foo` must edit BOTH files INCLUDING this import clause (the `foo`
+-- inside `import rdefs.{foo}` is now indexed as an occurrence of rdefs' `foo`,
+-- so it is rewritten too — a partial rename that skipped it would break this
+-- file's import). `flag` uses the prelude `not` (defined outside the project)
+-- to prove rename REFUSES an out-of-project symbol.
+import rdefs.{foo}
+
+export doubled : Int
+doubled = foo + foo
+
+export flag : Bool
+flag = not True

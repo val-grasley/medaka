@@ -1,0 +1,6 @@
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+{"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "medaka_rename", "arguments": {"file": "test/references_fixtures/rename/rmain.mdk", "line": 9, "col": 10, "newName": "bar"}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "medaka_rename", "arguments": {"file": "test/references_fixtures/rename/rmain.mdk", "line": 12, "col": 7, "newName": "whatever"}}}
+{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "medaka_rename", "arguments": {"file": "test/references_fixtures/rename/rmain.mdk", "line": 9, "col": 10, "newName": "also"}}}
+{"jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": {}}

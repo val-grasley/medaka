@@ -20,6 +20,12 @@
 # A regression that keyed by spelling (or lost import-origin threading) would
 # merge or split these keys and MOVE this golden — that is the whole point.
 #
+# #254 Stage 2: each binding's USES now also include its TYPE SIGNATURE name
+# (`foo :`) and every SELECTIVE / RE-EXPORT import CLAUSE name (`import m.{foo}`),
+# recorded under the SAME key — so a signed, selectively-imported symbol's
+# `references`/`rename` cover its signature and import clauses too. This grew the
+# per-key USE lists in the golden; the binder-identity property above is unchanged.
+#
 # The dump prints absolute file uris, so paths are normalized to the fixture-
 # relative basename before diffing, keeping the golden machine/worktree-stable.
 #

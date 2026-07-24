@@ -31,17 +31,34 @@
 # miss anything; `leaf_def_to_importer.jsonl` and `two_hop_reexport.jsonl`
 # below deliberately click OTHER files precisely to prove that.
 #
+# ⚠️ #254 STAGE 2 EXPANDED THE INDEXED OCCURRENCE SET (and thus these counts).
+# refindex now records, as occurrences of a binding's key, (i) a TYPE
+# SIGNATURE's name — `export helper : Int -> Int`'s `helper`; and (ii) a
+# SELECTIVE / RE-EXPORT import CLAUSE name — the `helper`/`shared` inside
+# `import defs.{helper, shared}` and `export import defs.{helper}`. These make
+# `rename` COMPLETE (a signed, selectively-imported symbol's signature and
+# import clauses get rewritten too). So Q1/Q3 below now return MORE locations
+# than Stage 1 did (12 and 5, was 6 and 3); the per-range prose covers the
+# original occurrences, and the committed golden is the authoritative expected
+# set for the exact ranges (re-derive with the Python scan at the bottom).
+#
 #   Q1 (id 2): click on `helper` in main.mdk's `usesDirect = helper 3 + shared`
 #     (line 15 0-based, col 13) — includeDeclaration defaults true. Proves
 #     CROSS-FILE (defs.mdk's own internal use), ALIAS IMPORT (`D.helper` on
 #     line 18), and RE-EXPORT CHAIN (`rHelper`, imported from `reexport.mdk`,
 #     whose own `export import defs.{helper}` re-exports defs' true origin —
 #     line 21) all collapse onto the SAME BinderKey as the def in defs.mdk.
-#     Expect 6 locations: defs.mdk def (6:0-6 1-based) + defs.mdk use
+#     Expect 12 locations (Stage 2 — see the ⚠️ note above; was 6). The 6
+#     Stage-1 occurrences: defs.mdk def (6:0-6 1-based) + defs.mdk use
 #     (12:25-31) + via2.mdk's two-hop-reexport use (11:13-21 — see
 #     two_hop_reexport.jsonl below; it lands in THIS result too because the
 #     index is whole-project) + main.mdk uses at 16:13-19 (the click site)
 #     and 22:15-22 (rHelper — a plain EVar, so its own precise ELoc span).
+#     The 6 Stage-2 additions: defs.mdk's `helper :` SIGNATURE name + the
+#     `helper` CLAUSE name inside `import defs.{helper, shared}` (main.mdk) and
+#     inside each re-export clause on the chain (reexport.mdk / reexport2.mdk)
+#     and via2.mdk's `helper as rHelper2` clause — all precise name spans, all
+#     under the SAME key (see the golden for exact ranges).
 #     The 6th, for `D.helper` (main.mdk line 19), is a hand-verified SURPRISE:
 #     refindex's alias-qualified-field-access walk (`walkFieldAccess`'s alias
 #     branch, compiler/tools/refindex.mdk) records the reference at whatever
@@ -70,19 +87,22 @@
 #     non-contamination: `other.mdk` defines its OWN `shared` (loaded into
 #     the SAME project graph via main's `import other as O`) — a regression
 #     that keyed by spelling instead of (module, namespace, name) would pull
-#     other.mdk's 2 `shared` occurrences into this result. Expect exactly 3
-#     locations: defs.mdk def (9:0-6) + defs.mdk use (12:16-22) + main.mdk's
-#     own use (16:24-30, the click site) — other.mdk's `shared` and topG's
-#     LOCAL `shared` (Q2) are BOTH absent.
+#     other.mdk's 2 `shared` occurrences into this result. Expect exactly 5
+#     locations (Stage 2; was 3): defs.mdk `shared :` SIGNATURE (8:7-13) + def
+#     (9:0-6) + defs.mdk use (12:16-22) + main.mdk's `import defs.{…, shared}`
+#     CLAUSE (5:21-27) + main.mdk's own use (16:24-30, the click site) —
+#     other.mdk's `shared` and topG's LOCAL `shared` (Q2) are BOTH absent.
 #
 # WHAT leaf_def_to_importer.jsonl PROVES (#254 Stage 1.1's decisive fixture)
 # ---------------------------------------------------------------------------
 # Clicks defs.mdk's `shared` DEFINITION (line 9 1-based / 8 0-based, col 2) —
 # a LEAF module with no imports of its own, so the OLD entry-rooted scope
 # (Stage 1) would only ever have seen defs.mdk itself from here. Expect
-# exactly 3 locations: def (9:0-6) + defs.mdk's own use (12:16-22) + main.mdk's
-# `usesDirect` use (16:24-30) — the IMPORTER's use, only reachable because the
-# index now covers the whole project, not one entry's closure. `shared` (no
+# exactly 5 locations (Stage 2; was 3): `shared :` SIGNATURE (8:7-13) + def
+# (9:0-6) + defs.mdk's own use (12:16-22) + main.mdk's `import defs.{…, shared}`
+# CLAUSE (5:21-27) + main.mdk's `usesDirect` use (16:24-30) — the IMPORTER's
+# clause+use, only reachable because the index covers the whole project, not
+# one entry's closure. `shared` (no
 # parameters) was chosen over `helper` deliberately: `helper x = x + 1` has a
 # param `x` whose local-binder def Loc COLLIDES with `helper`'s own name Loc
 # (both come from `walkDeclBody`'s single `loc` argument — a pre-existing
@@ -106,10 +126,11 @@
 # longer chain even after the one-hop regression this stage's first cut hit
 # was patched — see the commit message for that bug). Click `rHelper2` in
 # via2.mdk (line 11 1-based / 10 0-based, col 13 — `usesTwoHop = rHelper2 9`),
-# includeDeclaration defaults true. Expect 6 locations, EXACTLY the same set
-# Q1 above resolves to (defs def + defs use + via2's own use, the click site,
-# + main.mdk's 3 uses) — proving `rHelper2` merges under the IDENTICAL
-# BinderKey as every direct/aliased/one-hop-reexported use of `helper`.
+# includeDeclaration defaults true. Expect 12 locations (Stage 2; was 6),
+# EXACTLY the same set Q1 above resolves to (def + sig + defs use + via2's own
+# clause+use + main.mdk's uses + every re-export clause on the chain) — proving
+# `rHelper2` merges under the IDENTICAL BinderKey as every direct/aliased/
+# one-hop-reexported use, sig, and import clause of `helper`.
 #
 # All (line, col) pairs above were hand-derived from the fixture source with
 # a Python regex scan (word-boundary

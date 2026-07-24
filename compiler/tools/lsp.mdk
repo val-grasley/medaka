@@ -68,7 +68,7 @@ import frontend.parser.{
 }
 import frontend.lexer.{Token(..), tokenizeWithOffsetPairs}
 import support.char.{isIdentChar, isDigit}
-import support.util.{maxI, utf8Len, joinWith}
+import support.util.{maxI, utf8Len, joinWith, splitOnChar}
 import io.{stripCR}
 import frontend.desugar.{desugar}
 import types.typecheck.{
@@ -80,7 +80,14 @@ import types.typecheck.{
   currentSeedSchemes,
 }
 import tools.fmt.{formatSource}
-import tools.refindex.{RefIndex, buildRefIndexProject, binderAt, usesOf, defOf}
+import tools.refindex.{
+  RefIndex,
+  buildRefIndexProject,
+  binderAt,
+  usesOf,
+  defOf,
+  allDefKeys,
+}
 import list.{sortBy}
 import frontend.ast.{
   Decl,
@@ -1120,6 +1127,18 @@ responseMsg : Json -> Json -> Json
 responseMsg idJson result =
   jObject [("jsonrpc", JString "2.0"), ("id", idJson), ("result", result)]
 
+-- A JSON-RPC error response: { jsonrpc, id, error: { code, message } }. Used by
+-- `textDocument/rename` to surface an F3 refusal as an error (so the client
+-- shows the reason and applies NO edit) rather than a malformed WorkspaceEdit.
+-- code -32803 = LSP `RequestFailed`.
+responseErr : Json -> String -> Json
+responseErr idJson message = jObject
+  [
+    ("jsonrpc", JString "2.0"),
+    ("id", idJson),
+    ("error", jObject [("code", JInt (-32803)), ("message", JString message)]),
+  ]
+
 -- A JSON-RPC notification envelope: { jsonrpc, method, params }.
 notificationMsg : String -> Json -> Json
 notificationMsg meth params = jObject
@@ -1413,6 +1432,7 @@ initializeResult = jObject
         ("definitionProvider", JBool True),
         ("documentHighlightProvider", JBool True),
         ("referencesProvider", JBool True),
+        ("renameProvider", JBool True),
         ("hoverProvider", JBool True),
         ("completionProvider", jObject []),
         ("inlayHintProvider", JBool True),
@@ -1743,6 +1763,172 @@ includeDeclarationOf params = match lookup "context" params
     Some (JBool b) => b
     _ => True
 
+-- ── rename (#254 Stage 2) ────────────────────────────────────────────────────
+-- The SHARED rename substrate: MCP's `medaka_rename` and LSP's
+-- `textDocument/rename` both call this ONE function (the #254 "one code path"
+-- design). It reuses the Stage-1 reference index verbatim
+-- (`buildRefIndexProject`/`binderAt`/`usesOf`/`defOf`) — rename is "references +
+-- an edit per site + safety checks", nothing more.
+--
+-- Returns EITHER an LSP `WorkspaceEdit { changes: { <uri>: [ {range, newText} ] } }`
+-- (F5) on success, OR a structured refusal `{ refused: true, reason }` — NEVER a
+-- crash and NEVER a wrong/silent edit (F3 conservative-refuse: a bad edit set the
+-- client applies BREAKS the program, so when in doubt we REFUSE with a reason).
+-- It NEVER writes to disk — the caller applies the returned edits (the #250 /
+-- `fmt --write` guardrail, exactly as `medaka_fmt`).
+--
+-- The def site is ALWAYS in the edit set (F6 rename-includes-def) and is sorted
+-- IN with the uses by (path, line, char) — the same deterministic order
+-- `referenceLocations` uses, so the emitted edit list is stable across
+-- runs/machines (the merge queue runs the full suite on a DIFFERENT runner; any
+-- enumeration/hash-order-dependent list BOUNCES it — #912 did exactly that).
+--
+-- F3 refusal cases (each SAFETY-CRITICAL):
+--   (a) out-of-project — `defOf key` is `None` (an external/`?ext`/prelude key
+--       carries no project def site), so the symbol is defined outside the
+--       project (stdlib/prelude): REFUSE. `buildRefIndexProject` only indexes
+--       files under the project root, so every `defOf`-Some uri is in-project.
+--   (b) capture/shadow — `newName` already names a same-namespace binder anywhere
+--       in the project (a coarse conservative scan of `allDefKeys`): REFUSE.
+--       Over-refusal is acceptable (conservative spirit); silent capture is NOT.
+export renameResult : String -> String -> String -> String -> Json -> Docs -> <IO> Json
+renameResult runtimeSrc coreSrc uri src params docs = match (positionLine params, positionChar params, renameNewName params)
+  (Some line, Some col, Some newName) => match identifierAt src line col
+    None => renameRefusal "position is not on an identifier"
+    Some _ =>
+      let rootFile = pathOfUri uri
+      let projectDir = findProjectRoot (dirOfPath rootFile)
+      let read = path => docsGet (uriOfPath path) docs
+      let idx = buildRefIndexProject read projectDir runtimeSrc coreSrc
+      -- `binderAt` wants a 1-based line (the `Loc` convention); LSP positions
+      -- are 0-based, hence `line + 1`. `col` is 0-based in both conventions.
+      match binderAt idx rootFile (line + 1) col
+        None => renameRefusal "no renameable symbol at this position"
+        Some key => renameEditFor idx key newName
+  _ => renameRefusal "rename requires a position and a newName"
+
+-- LSP `textDocument/rename` carries the target spelling in top-level
+-- `params.newName`; MCP synthesizes the same shape (`renameParams`, mcp.mdk).
+renameNewName : Json -> Option String
+renameNewName params = fieldStr "newName" params
+
+-- The refusal object surfaced to BOTH layers. MCP renders it as an isError text
+-- result; LSP maps it to a JSON-RPC error response (`isRenameRefusal`).
+renameRefusal : String -> Json
+renameRefusal reason =
+  jObject [("refused", JBool True), ("reason", JString reason)]
+
+-- True iff a `renameResult` Json is a refusal (vs a WorkspaceEdit). The MCP/LSP
+-- wrappers key their error rendering off this.
+export isRenameRefusal : Json -> Bool
+isRenameRefusal j = match lookup "refused" j
+  Some (JBool True) => True
+  _ => False
+
+-- Build the WorkspaceEdit for `key` → `newName`, or refuse (F3).
+renameEditFor : RefIndex -> String -> String -> Json
+renameEditFor idx key newName =
+  if isExternalKey key then renameRefusal "cannot rename a symbol defined outside the project"
+  else match defOf idx key
+    None => renameRefusal "cannot rename a symbol defined outside the project"
+    Some defEntry =>
+      if renameCollides idx key newName then
+        renameRefusal (stringConcat ["renaming to `", newName, "` would collide with an existing binder"])
+      else
+        -- F6: the def site is ALWAYS included, sorted IN with the uses (never a
+        -- duplicate — `recordDef` never pushes into `refs`, refindex.mdk).
+        let all = defEntry :: usesOf idx key
+        workspaceEditJson newName (sortBy compareUseLoc all)
+
+-- An external / prelude / out-of-project key: refindex mints these as
+-- `"?ext\t<ns>\t<name>"` (extKey, refindex.mdk). `defOf` already returns `None`
+-- for them, but the explicit prefix check documents the F3(a) intent.
+isExternalKey : String -> Bool
+isExternalKey key = match splitOnChar keyTab key
+  m::_ => m == "?ext"
+  _ => False
+
+-- The TAB separator refindex forms binder keys with (`sep`, refindex.mdk) —
+-- an identifier / module id / namespace tag can contain none, so a split on it
+-- recovers the key's fields injectively.
+keyTab : Char
+keyTab = '\t'
+
+-- (namespace, name) of a binder key — field 1 and field 2 of the
+-- TAB-separated `"<mod>\t<ns>\t<name>[\t<freshId>]"`. `None` if unparseable
+-- (treated as a collision → conservative refuse).
+keyNsName : String -> Option (String, String)
+keyNsName key = match splitOnChar keyTab key
+  _::ns::name::_ => Some (ns, name)
+  _ => None
+
+-- F3(b) coarse conservative capture check: does `newName` already name a binder
+-- in the SAME namespace anywhere in the project? Scans `allDefKeys` (O(#defs),
+-- linear). Over-refusal is acceptable (F3 spirit); a silent capture is not. An
+-- unparseable key → refuse.
+renameCollides : RefIndex -> String -> String -> Bool
+renameCollides idx key newName = match keyNsName key
+  None => True
+  Some (ns, _name) => anyDefKeyMatches (allDefKeys idx) ns newName
+
+anyDefKeyMatches : List String -> String -> String -> Bool
+anyDefKeyMatches [] _ _ = False
+anyDefKeyMatches (k::ks) ns newName = match keyNsName k
+  Some (ns2, nm2) =>
+    if ns2 == ns && nm2 == newName then
+      True
+    else
+      anyDefKeyMatches ks ns newName
+  None => anyDefKeyMatches ks ns newName
+
+-- Group the sorted (path, Loc) edits by uri into a `WorkspaceEdit { changes }`.
+-- Sorted by path first (compareUseLoc), so same-path entries are contiguous —
+-- one group per file, no `List`-as-map accumulation.
+workspaceEditJson : String -> List (String, Loc) -> Json
+workspaceEditJson newName sorted =
+  jObject [("changes", jObject (groupEdits newName sorted))]
+
+groupEdits : String -> List (String, Loc) -> List (String, Json)
+groupEdits _ [] = []
+groupEdits newName ((p, loc)::rest) =
+  let sameRest = spanSamePath p rest
+  let edits = map (textEditJson newName) (loc :: map snd (fst sameRest))
+  (uriOfPath p, jArray edits) :: groupEdits newName (snd sameRest)
+
+-- (edits whose path == p from the front, then the remainder) — contiguous run.
+spanSamePath : String -> List (String, Loc) -> (List (String, Loc), List (String, Loc))
+spanSamePath _ [] = ([], [])
+spanSamePath p ((q, loc)::rest) =
+  if q == p then
+    let sr = spanSamePath p rest
+    ((q, loc) :: fst sr, snd sr)
+  else ([], (q, loc)::rest)
+
+textEditJson : String -> Loc -> Json
+textEditJson newName loc =
+  jObject [("range", jRangeOfLoc loc), ("newText", JString newName)]
+
+-- textDocument/rename → WorkspaceEdit | error (#254 Stage 2). Shares
+-- `renameResult` with the `medaka_rename` MCP tool. A refusal (F3) becomes a
+-- JSON-RPC error response so the client SHOWS the reason and applies NOTHING —
+-- the correct LSP behavior for a rename that cannot be performed safely.
+handleRename : String -> String -> Json -> Json -> Docs -> <IO> Unit
+handleRename runtimeSrc coreSrc idJson params docs =
+  let msg = match requestUri params
+    None => renameRefusal "rename requires a document uri"
+    Some uri => match docsGet uri docs
+      None => renameRefusal "document is not open"
+      Some src => renameResult runtimeSrc coreSrc uri src params docs
+  if isRenameRefusal msg then
+    writeMessage (responseErr idJson (renameReasonOf msg))
+  else
+    writeMessage (responseMsg idJson msg)
+
+renameReasonOf : Json -> String
+renameReasonOf j = match lookup "reason" j
+  Some (JString s) => s
+  _ => "rename refused"
+
 -- textDocument/documentHighlight → DocumentHighlight[].
 handleHighlight : Json -> Json -> Docs -> <IO> Unit
 handleHighlight idJson params docs =
@@ -1860,7 +2046,11 @@ dispatch runtimeSrc coreSrc msg docs = match methodOf msg
                               if meth == "exit" then
                                 let _ = logLine "exit (clean shutdown)"
                                 Step docs False
-                              else Step docs True  -- unrecognized method — ignore
+                              else
+                                if meth == "textDocument/rename" then
+                                  let _ = handleRename runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
+                                  Step docs True
+                                else Step docs True  -- unrecognized method — ignore
 -- a response/unknown — ignore, keep going
 
 -- stop the loop

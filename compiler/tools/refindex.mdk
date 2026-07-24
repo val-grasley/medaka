@@ -531,6 +531,9 @@ mkOneLocal (W ctx mid uri _ _) name loc =
 ctxOf : W -> Ctx
 ctxOf (W ctx _ _ _ _) = ctx
 
+midOf : W -> String
+midOf (W _ mid _ _ _) = mid
+
 uriOf : W -> String
 uriOf (W _ _ uri _ _) = uri
 
@@ -684,7 +687,15 @@ walkDeclBody : W -> Decl -> Loc -> Unit
 walkDeclBody w (DFunDef _ _ pats body) loc =
   let frame = mkNamedFrame w (flatMap (patBinders loc) pats)
   walkExpr w [frame] loc body
-walkDeclBody w (DTypeSig _ _ ty) loc = walkTy w loc ty
+walkDeclBody w (DTypeSig _ n ty) loc =
+  -- A signature's NAME is another occurrence of the value binding the matching
+  -- `DFunDef n` defines — same top-level key `mkKey mid nsVal n`. Recording it
+  -- (at the sig name's #331 `Loc`, `loc` here) lets references/rename cover the
+  -- `n :` position, so renaming a SIGNED binding also rewrites its signature.
+  -- Guard against a dummy (0-line) Loc from a #331 name-Loc miss — never emit a
+  -- bogus 0:0 occurrence.
+  let _ = recordSigName w n loc
+  walkTy w loc ty
 walkDeclBody w (DExtern _ _ ty) loc = walkTy w loc ty
 walkDeclBody w (DData _ _ _ variants _) loc = walkVariants w loc variants
 walkDeclBody w (DNewtype _ _ _ _ fieldTy _) loc = walkTy w loc fieldTy
@@ -704,6 +715,17 @@ walkDeclBody w (DLetGroup _ binds) loc =
   walkBinds w [frame] loc binds
 walkDeclBody w (DAttrib _ inner) loc = walkDeclBody w inner loc
 walkDeclBody _ _ _ = ()
+
+-- Record a signature name `n` as an occurrence of its value binding, unless its
+-- name Loc is a dummy (declPosNameLoc miss → line 0), which would be a bogus
+-- 0:0 edit range. Keyed under the SAME `mkKey mid nsVal n` the matching
+-- `DFunDef`'s def uses, so the sig groups with the def and its uses.
+recordSigName : W -> String -> Loc -> Unit
+recordSigName w n (Loc _ sl sc el ec) =
+  if sl > 0 then
+    recordRef (ctxOf w) (mkKey (midOf w) nsVal n) (uriOf w) (Loc (uriOf w) sl sc el ec)
+  else
+    ()
 
 walkVariants : W -> Loc -> List Variant -> Unit
 walkVariants _ _ [] = ()
@@ -829,32 +851,58 @@ reExportWildGo ctx mid ((ns, name, originKey)::rest) =
   reExportWildGo ctx mid rest
 
 -- ── imports → this module's useEnv (all DUse, pub or not) ────────────────────
-processImports : Ctx -> HashMap String String -> HashMap String String -> List Decl -> Unit
-processImports _ _ _ [] = ()
-processImports ctx useEnv aliasM ((DUse _ path _)::rest) =
-  let _ = importPath ctx useEnv aliasM path
-  processImports ctx useEnv aliasM rest
-processImports ctx useEnv aliasM ((DAttrib _ inner)::rest) =
-  processImports ctx useEnv aliasM (inner::rest)
-processImports ctx useEnv aliasM (_::rest) =
-  processImports ctx useEnv aliasM rest
+-- `uri` is threaded through so a SELECTIVE `import m.{name}` clause's own name
+-- token can be recorded as an occurrence of `m`'s `name` (its origin key) —
+-- references/rename then cover the import clause, so renaming a symbol also
+-- rewrites the `import …{name}` that brings it in (a partial rename that skipped
+-- the clause would break the importing file). Only `UseGroup` members carry a
+-- per-name `Loc` (`UseMember`'s 3rd field); `UseName`/`UseWild`/`UseAlias` name
+-- no importable symbol at a precise span, so there is nothing to record for them.
+processImports : Ctx -> HashMap String String -> HashMap String String -> String -> List Decl -> Unit
+processImports _ _ _ _ [] = ()
+processImports ctx useEnv aliasM uri ((DUse _ path _)::rest) =
+  let _ = importPath ctx useEnv aliasM uri path
+  processImports ctx useEnv aliasM uri rest
+processImports ctx useEnv aliasM uri ((DAttrib _ inner)::rest) =
+  processImports ctx useEnv aliasM uri (inner::rest)
+processImports ctx useEnv aliasM uri (_::rest) =
+  processImports ctx useEnv aliasM uri rest
 
-importPath : Ctx -> HashMap String String -> HashMap String String -> UsePath -> Unit
-importPath ctx useEnv _ (UseName ns) = match splitLastL ns
+importPath : Ctx -> HashMap String String -> HashMap String String -> String -> UsePath -> Unit
+importPath ctx useEnv _ _ (UseName ns) = match splitLastL ns
   Some (pre, nm) => importOne ctx useEnv (joinDotL pre) nm nm
   None => ()
-importPath ctx useEnv _ (UseGroup srcPath members) =
-  importMembers ctx useEnv (joinDotL srcPath) members
-importPath ctx useEnv _ (UseWild srcPath) =
+importPath ctx useEnv _ uri (UseGroup srcPath members) =
+  importMembers ctx useEnv (joinDotL srcPath) uri members
+importPath ctx useEnv _ _ (UseWild srcPath) =
   importWild ctx useEnv (joinDotL srcPath)
-importPath ctx _ aliasM (UseAlias srcPath alias) =
+importPath ctx _ aliasM _ (UseAlias srcPath alias) =
   hmSetC ctx aliasM alias (joinDotL srcPath)
 
-importMembers : Ctx -> HashMap String String -> String -> List UseMember -> Unit
-importMembers _ _ _ [] = ()
-importMembers ctx useEnv srcMod (m::rest) =
+importMembers : Ctx -> HashMap String String -> String -> String -> List UseMember -> Unit
+importMembers _ _ _ _ [] = ()
+importMembers ctx useEnv srcMod uri (m::rest) =
   let _ = importOne ctx useEnv srcMod (useMemberOrigin m) (useMemberLocal m)
-  importMembers ctx useEnv srcMod rest
+  let _ = recordImportMember ctx uri srcMod m
+  importMembers ctx useEnv srcMod uri rest
+
+-- Record a selective-import clause member as an occurrence of its ORIGIN key
+-- (what `m` exports the name as), at the member's own name `Loc`, in every
+-- namespace the origin resolves under (in practice exactly one — a value under
+-- `nsVal`, an imported type under `nsTy`). A dummy (0-line) Loc is skipped.
+recordImportMember : Ctx -> String -> String -> UseMember -> Unit
+recordImportMember ctx uri srcMod (UseMember o _ loc _) =
+  let _ = recordImportNs ctx uri srcMod o loc nsVal
+  let _ = recordImportNs ctx uri srcMod o loc nsTy
+  let _ = recordImportNs ctx uri srcMod o loc nsCtor
+  recordImportNs ctx uri srcMod o loc nsMethod
+
+recordImportNs : Ctx -> String -> String -> String -> Loc -> String -> Unit
+recordImportNs ctx uri srcMod o (Loc _ sl sc el ec) ns =
+  if sl > 0 then match hmGetC ctx ctx.originOf (mkKey srcMod ns o)
+    Some originKey => recordRef ctx originKey uri (Loc uri sl sc el ec)
+    None => ()
+  else ()
 
 importOne : Ctx -> HashMap String String -> String -> String -> String -> Unit
 importOne ctx useEnv srcMod o l =
@@ -963,7 +1011,7 @@ indexModule ctx mid uri src = match parseWithPositionsOpt src
     let aliasM = hmNew ()
     let _ = seedUseEnvPrelude ctx useEnv
     let _ = addOwnToEnv ctx useEnv ownDefs
-    let _ = processImports ctx useEnv aliasM decls
+    let _ = processImports ctx useEnv aliasM uri decls
     let _ = registerExports ctx mid ownDefs decls
     walkDecls (W ctx mid uri useEnv aliasM) paired
 
