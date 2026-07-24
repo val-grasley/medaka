@@ -1382,20 +1382,7 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 # (see #880 follow-up; the var is word-split by `for k in $VAR`, newlines are IFS).
 KNOWN_SLOW_OPS="
 reexports:resolve
-manyifaces:typecheck
 "
-# manyifaces:typecheck — an O(interfaces^2) interface-registration quadratic in the typecheck
-# stage (the interface-method scheme/constraint registration scanning the growing interface
-# list once per interface — the #954 class, the typecheck-stage sibling of resolve's findDups
-# which #969 fixed). It was ALREADY quadratic on main but DILUTED under the sustained-both-
-# doublings rule (r1=2.65 r2=3.09, read `ok`) by the #907 stampBindingIds op-quadratic that
-# ran in typecheck's checkBodyImpl. Fixing #907 removed that masking term — the absolute op
-# count DROPPED while the underlying interface quadratic's true ratio surfaced (r1=3.27
-# r2=3.60), exactly the "future source change lifting r1 over 3 forces a ledger decision" the
-# gen_manyifaces note predicted. Ledgered here (not a regression: op count fell): ceiling 4.3
-# clears the observed r2=3.60 by ~19% (the file's headroom convention); OFIXED 2.60 — drops
-# under it when the typecheck-side interface-method scan is indexed.
-KNOWN_OCEIL_manyifaces_typecheck="4.3"; KNOWN_OFIXED_manyifaces_typecheck="2.60"
 # Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
 # entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
 # from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):
