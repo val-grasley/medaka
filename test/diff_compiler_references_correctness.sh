@@ -31,37 +31,54 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SELF="$ROOT/test/bin/refindex_main"
 RT="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-FIXDIR="$ROOT/test/references_fixtures/correctness"
-GOLD="$FIXDIR/expected.golden"
 CAPTURE="${CAPTURE:-0}"
 
 [ -x "$SELF" ] || {
   echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one refindex_main (missing $SELF)"
   exit 2
 }
-[ -d "$FIXDIR" ] || { echo "missing fixture dir $FIXDIR"; exit 2; }
 
-# Native dump, with the fixture's absolute path prefix stripped so the golden is
-# machine-independent (`#` delimiter — the path contains `/`, never `#`).
-out="$("$SELF" --dump "$RT" "$CORE" "$FIXDIR/main.mdk" "$FIXDIR" 2>&1 | sed "s#$FIXDIR/##g")"
+rc=0
 
-if [ "$CAPTURE" = 1 ]; then
-  printf '%s\n' "$out" > "$GOLD"
-  echo "captured $GOLD ($(printf '%s\n' "$out" | grep -c '') lines)"
-  exit 0
-fi
+# Dump one fixture project (rooted at <dir>/main.mdk) and diff against
+# <dir>/expected.golden, with the fixture's absolute path prefix stripped so the
+# golden is machine-independent (`#` delimiter — the path contains `/`, never `#`).
+check_project() {
+  fixdir="$1"; what="$2"
+  gold="$fixdir/expected.golden"
+  [ -d "$fixdir" ] || { echo "missing fixture dir $fixdir"; rc=2; return; }
+  out="$("$SELF" --dump "$RT" "$CORE" "$fixdir/main.mdk" "$fixdir" 2>&1 | sed "s#$fixdir/##g")"
 
-[ -f "$GOLD" ] || {
-  echo "no golden at $GOLD — capture it: CAPTURE=1 sh test/diff_compiler_references_correctness.sh"
-  exit 2
+  if [ "$CAPTURE" = 1 ]; then
+    printf '%s\n' "$out" > "$gold"
+    echo "captured $gold ($(printf '%s\n' "$out" | grep -c '') lines)"
+    return
+  fi
+
+  [ -f "$gold" ] || {
+    echo "no golden at $gold — capture it: CAPTURE=1 sh test/diff_compiler_references_correctness.sh"
+    rc=2; return
+  }
+
+  if printf '%s\n' "$out" | diff -u "$gold" - > /dev/null 2>&1; then
+    echo "PASS: $what dump matches golden."
+    return
+  fi
+
+  echo "FAIL: reference-index dump DIFFERS from $gold"
+  echo "  ($what — a binder DEF/USE Loc or BinderKey moved.)"
+  printf '%s\n' "$out" | diff -u "$gold" - | head -60
+  rc=1
 }
 
-if printf '%s\n' "$out" | diff -u "$GOLD" - > /dev/null 2>&1; then
-  echo "PASS: reference-index correctness dump matches golden (shadowing / alias / re-export / same-name / namespace)."
-  exit 0
-fi
+# The original 4-module corpus: shadowing / alias / re-export / same-name / namespace.
+check_project "$ROOT/test/references_fixtures/correctness" \
+  "reference-index correctness (shadowing / alias / re-export / same-name / namespace)"
 
-echo "FAIL: reference-index dump DIFFERS from $GOLD"
-echo "  (a BinderKey moved — shadowing/alias/re-export/same-name/namespace resolution changed.)"
-printf '%s\n' "$out" | diff -u "$GOLD" - | head -60
-exit 1
+# #913 Inc 2: every param/local binder records its DEF at its OWN name-token Loc,
+# not the enclosing declaration's loc (fn param `p` ≠ `incByOne`'s loc; the
+# `let tmp` local sits at the let token, not `shadowLet`'s loc).
+check_project "$ROOT/test/references_fixtures/binder_loc" \
+  "reference-index binder-Loc (#913 Inc 2: each binder at its own name token)"
+
+exit "$rc"

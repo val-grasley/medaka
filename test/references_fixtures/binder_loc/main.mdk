@@ -1,0 +1,25 @@
+-- #913 Inc 2 regression fixture — every param/local binder must record its DEF
+-- at its OWN name-token Loc, NOT the enclosing declaration's name Loc.
+--
+-- Read the golden (test/references_fixtures/binder_loc/expected.golden) as the
+-- assertion: a `local` binder's DEF column must be the binder token's own column,
+-- distinct from the enclosing `val` decl's DEF (always column 0). A regression
+-- that reverts to recording at the enclosing decl loc collapses the two DEF sites
+-- back together and MOVES this golden.
+
+-- S0-1: the fn param `p` must NOT record at `incByOne`'s name Loc. Before the
+-- fix, `binder_loc|local|p|N` sat at `incByOne`'s DEF (`:<line>:0`), so a click on
+-- the function name resolved to the param. After: `p` sits at its own token col.
+export incByOne : Int -> Int
+incByOne p = p + 1
+
+export callIncByOne : Int
+callIncByOne = incByOne 5
+
+-- S0-2: the `let tmp` local must record at the `let tmp` binder token, NOT at
+-- `shadowLet`'s name Loc. Before the fix `tmp`'s DEF was `shadowLet`'s own line:0
+-- (so its uses' declaration resolved to the enclosing binding name).
+export shadowLet : Int
+shadowLet =
+  let tmp = 99
+  tmp + tmp

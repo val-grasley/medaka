@@ -1,6 +1,6 @@
 defs|ctor|Green  DEF defs.mdk:8:19  USES 0  
 defs|ctor|Red  DEF defs.mdk:8:19  USES 3  defs.mdk:27:24 main.mdk:31:10 main.mdk:36:25
-defs|local|x|1  DEF defs.mdk:6:0  USES 1  defs.mdk:6:11
+defs|local|x|1  DEF defs.mdk:6:7  USES 1  defs.mdk:6:11
 defs|method|sizeOf  DEF defs.mdk:19:17  USES 2  defs.mdk:27:17 main.mdk:36:18
 defs|ty|Color  DEF defs.mdk:8:19  USES 2  defs.mdk:22:21 main.mdk:30:17
 defs|ty|Sizeable  DEF defs.mdk:19:17  USES 0  
@@ -9,8 +9,8 @@ defs|val|helper  DEF defs.mdk:6:0  USES 4  defs.mdk:14:16 main.mdk:19:6 main.mdk
 defs|val|shared  DEF defs.mdk:11:0  USES 0  
 defs|val|usesGHere  DEF defs.mdk:14:0  USES 0  
 defs|val|usesMethodHere  DEF defs.mdk:27:0  USES 0  
-main|local|g|3  DEF main.mdk:17:0  USES 2  main.mdk:19:2 main.mdk:19:9
-main|local|x|2  DEF main.mdk:17:0  USES 1  main.mdk:18:10
+main|local|g|3  DEF main.mdk:18:6  USES 2  main.mdk:19:2 main.mdk:19:9
+main|local|x|2  DEF main.mdk:17:5  USES 1  main.mdk:18:10
 main|val|mkColor  DEF main.mdk:31:0  USES 0  
 main|val|topG  DEF main.mdk:17:0  USES 0  
 main|val|usesAlias  DEF main.mdk:28:0  USES 0  

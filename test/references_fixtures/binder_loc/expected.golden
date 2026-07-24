@@ -1,0 +1,5 @@
+main|local|p|1  DEF main.mdk:14:9  USES 1  main.mdk:14:13
+main|local|tmp|2  DEF main.mdk:24:6  USES 2  main.mdk:25:2 main.mdk:25:8
+main|val|callIncByOne  DEF main.mdk:17:0  USES 0  
+main|val|incByOne  DEF main.mdk:14:0  USES 1  main.mdk:17:15
+main|val|shadowLet  DEF main.mdk:23:0  USES 0  
