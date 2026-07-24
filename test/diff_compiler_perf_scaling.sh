@@ -1222,7 +1222,13 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck elaborate dce m
 # clears the observed r2=3.37 by ~28% (op counts... n/a here, TIME, so this absorbs
 # runner noise too — hence the wider margin), TFIXED 2.60 (file convention). Tracked in
 # #956 (the TIME-arm fragility issue); self-drains when the lint cost is made linear.
-KNOWN_SLOW_TIME="xref:wasm-emit xref:typecheck manydefs:lint"
+# One entry per line so draining a single row is a conflict-free one-line deletion
+# (see #880 follow-up; the vars are word-split by `for k in $VAR`, newlines are IFS).
+KNOWN_SLOW_TIME="
+xref:wasm-emit
+xref:typecheck
+manydefs:lint
+"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # xref:typecheck (TIME) — the SAME #907 typecheck superquadratic already ledgered on the
@@ -1433,7 +1439,17 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 #         r1=2.52 r2=2.99 also climb on this shape — the #907/#882 decl-count classes —
 #         but stay r1<3 at this band, so the sustained-both-doublings rule reads them `ok`
 #         and they are NOT ledgered; WATCH, per the comments:typecheck note.)
-KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve manydefs:typecheck xref:elaborate manyifaces:mark manyifaces:resolve"
+# One entry per line so draining a single row is a conflict-free one-line deletion
+# (see #880 follow-up; the var is word-split by `for k in $VAR`, newlines are IFS).
+KNOWN_SLOW_OPS="
+match:resolve
+xref:typecheck
+reexports:resolve
+manydefs:typecheck
+xref:elaborate
+manyifaces:mark
+manyifaces:resolve
+"
 KNOWN_OCEIL_match_resolve="4.3";      KNOWN_OFIXED_match_resolve="2.60"
 KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
 # xref:elaborate — see the #882 block above. Ceiling 4.3 clears the observed DEEP r2=3.60
