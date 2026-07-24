@@ -204,9 +204,9 @@ WIDERECORDS_N="${PERF_WIDERECORDS_N:-$N}"
 
 # `xref` samples the WASM arm at its OWN, SMALLER band — 2000/4000/8000 rather than
 # the shape's 4000/8000/16000. This is a COST fix and it is the reason this gate is
-# not the CI critical path; read the wasm-band note by KNOWN_TCEIL_xref_wasm_emit
-# before changing it, because the ledger's ceiling is calibrated to THIS band and
-# means nothing against another one.
+# not the CI critical path. The band is deliberate — a ratio measured here does not
+# transfer to another band (see the XREF_WASM_N note below and grade_wasm_row's xref
+# arm before changing it).
 #
 # Why the band can move at all: xref's N is sized for `resolve`, the only stage that
 # needs N=16000 to clear the 200ms floor. wasm_emit is ~10x llvm_emit and was being
@@ -1225,7 +1225,6 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck elaborate dce m
 # One entry per line so draining a single row is a conflict-free one-line deletion
 # (see #880 follow-up; the vars are word-split by `for k in $VAR`, newlines are IFS).
 KNOWN_SLOW_TIME="
-xref:wasm-emit
 xref:typecheck
 manydefs:lint
 "
@@ -1275,33 +1274,6 @@ KNOWN_TCEIL_manydefs_lint="4.3";      KNOWN_TFIXED_manydefs_lint="2.60"
 # file-wide convention): drop under it and #349/#350/#352 are fixed and this entry
 # must be promoted out.
 KNOWN_TCEIL_xref_emit="5.6";          KNOWN_TFIXED_xref_emit="2.60"
-# ⚠️ THIS ROW IS MEASURED AT N=2000->4000->8000 (XREF_WASM_N), *NOT* at the shape's
-# 4000->8000->16000 like every other xref row. It is the one stage that could not afford
-# resolve's N — 42 s x K=5 = ~211 s of a required CI shard for one row. Read the
-# XREF_WASM_N note and grade_wasm_row's xref arm before touching either number.
-#
-# Observed at THIS band: r2 3.51-3.79, r1 2.68-2.75 (min-of-5 gate batch: 2.75/3.51;
-# min-of-3 and min-of-1 spot batches: 3.72/3.79).
-#
-# ⚠️ THE OLD BAND'S NUMBERS DO NOT TRANSFER, AND THE RESAMPLE IS CROSS-CHECKED BY THAT:
-# the previous entry recorded r2 3.87-4.15 / r1 3.60-3.82 at 4000->8000->16000. Those are
-# NOT this row's numbers and must not be compared to them — but they are not unrelated
-# either, and the relation is the check. This band's r2 IS the old band's r1: both are the
-# SAME 4000->8000 doubling of the SAME curve. Old r1 3.60-3.82 vs new r2 3.51-3.79 — they
-# agree, which is what says the smaller band resampled the curve rather than lost it. (Had
-# they disagreed, the resample would be measuring something else and this entry would be
-# junk.) Sampling LOWER still, at 1000->2000->4000, DOES lose it: measured r1=1.93 r2=2.68,
-# i.e. UNDER TFIXED — the ~0.215 s prelude constant dominates at small N and the gate would
-# have fired PROMOTE and declared #349/#350/#352 fixed. That is why the band is 2000, not
-# lower, and it is a measured floor, not a preference.
-#
-# Ceiling 5.6 RETAINED, not re-derived: it clears this band's top (3.79) by 1.48, the same
-# headroom convention as xref:emit (1.45) and the modules:typecheck precedent (1.3). TFIXED
-# 2.60 (the file-wide convention) sits 1.35 under this band's floor (3.51) — a tighter
-# margin than the old band's 1.57, so if this row ever starts flapping PROMOTE on a loaded
-# runner, that margin is the first suspect. It should not: per the band warning above, a
-# BUSY box reads this row LOWER... which is the direction of TFIXED. Watch it.
-KNOWN_TCEIL_xref_wasm_emit="5.6";     KNOWN_TFIXED_xref_wasm_emit="2.60"
 
 is_known_time() {
   for k in $KNOWN_SLOW_TIME; do [ "$k" = "$1" ] && return 0; done
@@ -1530,9 +1502,9 @@ backend_graded=0
 # 4000/8000/16000.
 #
 # ⚠️ THE BAND IS PRINTED WITH EVERY RATIO, and that is not decoration. The ledger's
-# ceilings are calibrated per-band ("a scaling ratio is not a constant" — see the
-# KNOWN_TCEIL_xref_wasm_emit note), and two workstreams once appeared to disagree about
-# one curve purely because each quoted a ratio without its band. A row that states
+# ceilings are calibrated per-band ("a scaling ratio is not a constant"), and two
+# workstreams once appeared to disagree about one curve purely because each quoted a
+# ratio without its band. A row that states
 # r2=3.82 and not the N it came from is unfalsifiable.
 #
 # Mutates the caller's fail/known/backend_graded/time_bad/time_lines. Must be called
