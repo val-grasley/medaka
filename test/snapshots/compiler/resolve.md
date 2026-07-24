@@ -1,5 +1,5 @@
 # META
-source_lines=2795
+source_lines=2807
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
@@ -1500,12 +1500,24 @@ duplicateErrors preludeDecls prog =
 dupErr : String -> String -> ResError
 dupErr kind n = DuplicateDefinition kind n None
 
--- names that are already present when declared (order-sensitive, like add_unique)
+-- names that are already present when declared (order-sensitive, like add_unique).
+--
+-- `seen` is an OrdMap-backed SET, not a growing `List` scanned by `contains`: the
+-- membership test is the only thing this walk does per element, and as a list it was
+-- O(elements²) — once per constructor on a wide `data` decl (#906, the `match:resolve`
+-- ledger row) and once per interface on a many-interface file (#954, `manyifaces:resolve`),
+-- both climbing toward the 4.0 quadratic ratio on the perf gate's op-count arm. Keyed
+-- into an OrdMap the walk is O(elements log elements) with BYTE-IDENTICAL output: the
+-- yielded duplicates and their order are unchanged (each already-present name emitted
+-- once, in input order), only the internal membership structure differs.
 findDups : List String -> List String -> List String
-findDups _ [] = []
-findDups seen (n::rest)
-  | contains n seen = n :: findDups seen rest
-  | otherwise = findDups (n::seen) rest
+findDups seen names = findDupsGo (omFromNames seen omEmpty) names
+
+findDupsGo : OrdMap Unit -> List String -> List String
+findDupsGo _ [] = []
+findDupsGo seen (n::rest)
+  | omHasKey n seen = n :: findDupsGo seen rest
+  | otherwise = findDupsGo (omInsert n () seen) rest
 
 -- ── Serialization (matches dev/diagdump.ml's sexp_error) ─────────────────
 -- The loc field (Stage B) is dropped here — the sexp form mirrors the OCaml
@@ -3340,8 +3352,10 @@ stampBindingIds decls =
 (DTypeSig false "dupErr" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "ResError"))))
 (DFunDef false "dupErr" ((PVar "kind") (PVar "n")) (EApp (EApp (EApp (EVar "DuplicateDefinition") (EVar "kind")) (EVar "n")) (EVar "None")))
 (DTypeSig false "findDups" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "findDups" (PWild (PList)) (EListLit))
-(DFunDef false "findDups" ((PVar "seen") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "seen")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "findDups") (EVar "seen")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "findDups") (EBinOp "::" (EVar "n") (EVar "seen"))) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "findDups" ((PVar "seen") (PVar "names")) (EApp (EApp (EVar "findDupsGo") (EApp (EApp (EVar "omFromNames") (EVar "seen")) (EVar "omEmpty"))) (EVar "names")))
+(DTypeSig false "findDupsGo" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "findDupsGo" (PWild (PList)) (EListLit))
+(DFunDef false "findDupsGo" ((PVar "seen") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "seen")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "findDupsGo") (EVar "seen")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "findDupsGo") (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (ELit LUnit)) (EVar "seen"))) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "resErrorSexp" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariable" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariable ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariableExported" (PVar "n") (PVar "m") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariableExported ")) (EApp (EVar "display") (EApp (EVar "escStr") (EVar "n")))) (ELit (LString " "))) (EApp (EVar "display") (EApp (EVar "escStr") (EVar "m")))) (ELit (LString ")"))))
@@ -4352,8 +4366,10 @@ stampBindingIds decls =
 (DTypeSig false "dupErr" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "ResError"))))
 (DFunDef false "dupErr" ((PVar "kind") (PVar "n")) (EApp (EApp (EApp (EVar "DuplicateDefinition") (EVar "kind")) (EVar "n")) (EVar "None")))
 (DTypeSig false "findDups" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
-(DFunDef false "findDups" (PWild (PList)) (EListLit))
-(DFunDef false "findDups" ((PVar "seen") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "contains") (EVar "n")) (EVar "seen")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "findDups") (EVar "seen")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "findDups") (EBinOp "::" (EVar "n") (EVar "seen"))) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "findDups" ((PVar "seen") (PVar "names")) (EApp (EApp (EVar "findDupsGo") (EApp (EApp (EVar "omFromNames") (EVar "seen")) (EVar "omEmpty"))) (EVar "names")))
+(DTypeSig false "findDupsGo" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String")))))
+(DFunDef false "findDupsGo" (PWild (PList)) (EListLit))
+(DFunDef false "findDupsGo" ((PVar "seen") (PCons (PVar "n") (PVar "rest"))) (EIf (EApp (EApp (EVar "omHasKey") (EVar "n")) (EVar "seen")) (EBinOp "::" (EVar "n") (EApp (EApp (EVar "findDupsGo") (EVar "seen")) (EVar "rest"))) (EIf (EVar "otherwise") (EApp (EApp (EVar "findDupsGo") (EApp (EApp (EApp (EVar "omInsert") (EVar "n")) (ELit LUnit)) (EVar "seen"))) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig true "resErrorSexp" (TyFun (TyCon "ResError") (TyCon "String")))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariable" (PVar "n") PWild PWild)) (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariable ")) (EApp (EVar "escStr") (EVar "n"))) (ELit (LString ")"))))
 (DFunDef false "resErrorSexp" ((PCon "UnboundVariableExported" (PVar "n") (PVar "m") PWild)) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "(UnboundVariableExported ")) (EApp (EMethodRef "display") (EApp (EVar "escStr") (EVar "n")))) (ELit (LString " "))) (EApp (EMethodRef "display") (EApp (EVar "escStr") (EVar "m")))) (ELit (LString ")"))))

@@ -1442,15 +1442,12 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 # One entry per line so draining a single row is a conflict-free one-line deletion
 # (see #880 follow-up; the var is word-split by `for k in $VAR`, newlines are IFS).
 KNOWN_SLOW_OPS="
-match:resolve
 xref:typecheck
 reexports:resolve
 manydefs:typecheck
 xref:elaborate
 manyifaces:mark
-manyifaces:resolve
 "
-KNOWN_OCEIL_match_resolve="4.3";      KNOWN_OFIXED_match_resolve="2.60"
 KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
 # xref:elaborate — see the #882 block above. Ceiling 4.3 clears the observed DEEP r2=3.60
 # by ~19% (same headroom convention as manydefs:typecheck's 4.3 over 3.62); op counts are
@@ -1475,7 +1472,6 @@ KNOWN_OCEIL_manydefs_typecheck="4.3"; KNOWN_OFIXED_manydefs_typecheck="2.60"
 # becomes a set (mark) / the interface-method scan is indexed (resolve), at which point the
 # entry must be promoted out.
 KNOWN_OCEIL_manyifaces_mark="4.3";    KNOWN_OFIXED_manyifaces_mark="2.60"
-KNOWN_OCEIL_manyifaces_resolve="4.6"; KNOWN_OFIXED_manyifaces_resolve="2.60"
 # Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
 # entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
 # from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):
