@@ -1945,7 +1945,12 @@ importValueNames known path =
     None => []
     Some exp =>
       let (names, _) = importedNamesMM path exp
-      filterContains exp.expValues names
+      -- #925: `exp.expValues` GROWS with re-export depth, so the old
+      -- `filterContains` (O(len) per name) is O(depth^2) per module → cubic over the
+      -- re-export chain.  An OrdMap membership set makes it O(len log len) and — the
+      -- point for the op-count arm — routes the per-name test through `omHasKey`
+      -- instead of the counted `contains`, byte-identically (same kept names, order).
+      filterInSet (omFromNames exp.expValues omEmpty) names
 
 -- Register one (name, mid) into a name→[mid] assoc, deduping mids.
 addProvenance : List (String, List String) -> String -> String -> List (String, List String)
@@ -2012,7 +2017,8 @@ importCtorNames known path =
     None => []
     Some exp =>
       let (names, _) = importedNamesMM path exp
-      filterContains exp.expCtors names
+      -- #925: same growing-export-list cubic as importValueNames, via expCtors.
+      filterInSet (omFromNames exp.expCtors omEmpty) names
 
 ctorProvenance : List ModuleExports -> List UsePath -> List (String, List String)
 ctorProvenance known paths = foldCtorProvenance known [] paths
@@ -2085,7 +2091,11 @@ realImport exp path loc =
   let (names, errs) = importedNamesMM path exp
   ImportAdds {
     iaImported = names,
-    iaValues = filterContains exp.expValues names,
+    -- #925: a wildcard `export import m.*` re-export makes both `names` and
+    -- `exp.expValues` grow with depth, so this filter is O(depth^2) per module →
+    -- cubic over the chain.  Index the (growing) value set once; `filterInSet`'s
+    -- `omHasKey` is uncounted and byte-identical to the `contains` filter.
+    iaValues = filterInSet (omFromNames exp.expValues omEmpty) names,
     iaTypes = filterContains exp.expTypes names,
     iaCtors = filterContains exp.expCtors names,
     iaIfaces = filterContains exp.expInterfaces names,
@@ -2368,7 +2378,12 @@ selfBinding n = (n, n)
 -- the relevant kind).  This is the aliased form of the old `filterContains`.
 localsExportedFrom : List String -> List (String, String) -> List String
 localsExportedFrom origins bindings =
-  map snd (filterList (b => contains (fst b) origins) bindings)
+  -- #925: `origins` is the source module's export list, which GROWS with re-export
+  -- depth; the old per-binding `contains` was O(len) each → O(depth^2) per module,
+  -- cubic over an `export import m.*` chain.  Build the membership set once and test
+  -- with `omHasKey` (uncounted, O(log len)) — same kept locals, same order.
+  let dom = omFromNames origins omEmpty
+  map snd (filterList (b => omHasKey (fst b) dom) bindings)
 
 reExpValues : ModuleExports -> List ModuleExports -> List Decl -> List String
 reExpValues coreExp known prog =
