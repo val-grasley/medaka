@@ -1,5 +1,5 @@
 # META
-source_lines=1420
+source_lines=1426
 stages=DESUGAR,MARK
 # SOURCE
 -- elaborated-AST → Core IR lowering (STAGE2-DESIGN §2.1).  Consumes the SAME
@@ -64,6 +64,7 @@ import eval.eval.{
   implKeyOf,
 }
 import list.{replicate}
+import support.ordmap.{OrdMap, omEmpty, omInsert, omHasKey}
 import backend.private_mangle.{sanitizeId}
 import support.util.{
   contains,
@@ -368,18 +369,23 @@ dropHead ([], i) = ([], i)
 -- distinct head constructors present in column 0, first-seen order, each with
 -- its arity (uniform per name in a well-typed column).
 distinctConHeads : List (List Pat, Int) -> List (String, Int)
-distinctConHeads rows = dedupHeads (colHeads rows) []
+distinctConHeads rows = dedupHeads (colHeads rows) omEmpty
 
 colHeads : List (List Pat, Int) -> List (String, Int)
 colHeads [] = []
 colHeads (((PCon c args)::_, _)::rest) = (c, listLen args) :: colHeads rest
 colHeads (_::rest) = colHeads rest
 
-dedupHeads : List (String, Int) -> List String -> List (String, Int)
+-- First-seen dedup by constructor name.  `seen` is an `OrdMap`-backed membership
+-- set (O(log n) test/insert) rather than a growing `List` scanned with `contains`
+-- per head — that scan was O(arms^2) on an N-arm match over an N-ctor type (#960).
+-- The output is still built at each head's FIRST occurrence, recursing on `rest`
+-- unchanged, so first-occurrence ordering is byte-identical to the old list form.
+dedupHeads : List (String, Int) -> OrdMap Unit -> List (String, Int)
 dedupHeads [] _ = []
 dedupHeads ((c, a)::rest) seen
-  | contains c seen = dedupHeads rest seen
-  | otherwise = (c, a) :: dedupHeads rest (c::seen)
+  | omHasKey c seen = dedupHeads rest seen
+  | otherwise = (c, a) :: dedupHeads rest (omInsert c () seen)
 
 distinctLits : List (List Pat, Int) -> List Lit
 distinctLits rows = dedupLits (colLits rows) []
@@ -1427,6 +1433,7 @@ nodeTag _ = "?"
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CArm" true) (mem "CGuard" true) (mem "CStmt" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CImplEntry" true) (mem "CImplBody" true) (mem "CProgram" true) (mem "CTree" true) (mem "CTBranch" true) (mem "CHead" true))))
 (DUse false (UseGroup ("eval" "eval") ((mem "buildCtorToType" false) (mem "buildCtorFieldOrders" false) (mem "ctorFieldOrdersRef" false) (mem "installDispatchTables" false) (mem "lookupPositions" false) (mem "tyvarsInArgs" false) (mem "headTyconHead" false) (mem "implKeyOf" false))))
 (DUse false (UseGroup ("list") ((mem "replicate" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "sanitizeId" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "allList" false) (mem "anyList" false) (mem "lookupAssoc" false) (mem "noneHeadTag" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "startsWith" false))))
 (DTypeSig false "composeVar" (TyCon "String"))
@@ -1573,14 +1580,14 @@ nodeTag _ = "?"
 (DFunDef false "dropHead" ((PTuple (PCons PWild (PVar "ps")) (PVar "i"))) (ETuple (EVar "ps") (EVar "i")))
 (DFunDef false "dropHead" ((PTuple (PList) (PVar "i"))) (ETuple (EListLit) (EVar "i")))
 (DTypeSig false "distinctConHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))))
-(DFunDef false "distinctConHeads" ((PVar "rows")) (EApp (EApp (EVar "dedupHeads") (EApp (EVar "colHeads") (EVar "rows"))) (EListLit)))
+(DFunDef false "distinctConHeads" ((PVar "rows")) (EApp (EApp (EVar "dedupHeads") (EApp (EVar "colHeads") (EVar "rows"))) (EVar "omEmpty")))
 (DTypeSig false "colHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))))
 (DFunDef false "colHeads" ((PList)) (EListLit))
 (DFunDef false "colHeads" ((PCons (PTuple (PCons (PCon "PCon" (PVar "c") (PVar "args")) PWild) PWild) (PVar "rest"))) (EBinOp "::" (ETuple (EVar "c") (EApp (EVar "listLen") (EVar "args"))) (EApp (EVar "colHeads") (EVar "rest"))))
 (DFunDef false "colHeads" ((PCons PWild (PVar "rest"))) (EApp (EVar "colHeads") (EVar "rest")))
-(DTypeSig false "dedupHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DTypeSig false "dedupHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "dedupHeads" ((PList) PWild) (EListLit))
-(DFunDef false "dedupHeads" ((PCons (PTuple (PVar "c") (PVar "a")) (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "contains") (EVar "c")) (EVar "seen")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "c") (EVar "a")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EBinOp "::" (EVar "c") (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "dedupHeads" ((PCons (PTuple (PVar "c") (PVar "a")) (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "c")) (EVar "seen")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "c") (EVar "a")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "c")) (ELit LUnit)) (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "distinctLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))
 (DFunDef false "distinctLits" ((PVar "rows")) (EApp (EApp (EVar "dedupLits") (EApp (EVar "colLits") (EVar "rows"))) (EListLit)))
 (DTypeSig false "colLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))
@@ -2011,6 +2018,7 @@ nodeTag _ = "?"
 (DUse false (UseGroup ("ir" "core_ir") ((mem "CExpr" true) (mem "CArm" true) (mem "CGuard" true) (mem "CStmt" true) (mem "CField" true) (mem "CBind" true) (mem "CClause" true) (mem "CImplEntry" true) (mem "CImplBody" true) (mem "CProgram" true) (mem "CTree" true) (mem "CTBranch" true) (mem "CHead" true))))
 (DUse false (UseGroup ("eval" "eval") ((mem "buildCtorToType" false) (mem "buildCtorFieldOrders" false) (mem "ctorFieldOrdersRef" false) (mem "installDispatchTables" false) (mem "lookupPositions" false) (mem "tyvarsInArgs" false) (mem "headTyconHead" false) (mem "implKeyOf" false))))
 (DUse false (UseGroup ("list") ((mem "replicate" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omEmpty" false) (mem "omInsert" false) (mem "omHasKey" false))))
 (DUse false (UseGroup ("backend" "private_mangle") ((mem "sanitizeId" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "listLen" false) (mem "allList" false) (mem "anyList" false) (mem "lookupAssoc" false) (mem "noneHeadTag" false) (mem "isEmptyL" false) (mem "isNonEmptyL" false) (mem "reverseL" false) (mem "startsWith" false))))
 (DTypeSig false "composeVar" (TyCon "String"))
@@ -2157,14 +2165,14 @@ nodeTag _ = "?"
 (DFunDef false "dropHead" ((PTuple (PCons PWild (PVar "ps")) (PVar "i"))) (ETuple (EVar "ps") (EVar "i")))
 (DFunDef false "dropHead" ((PTuple (PList) (PVar "i"))) (ETuple (EListLit) (EVar "i")))
 (DTypeSig false "distinctConHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))))
-(DFunDef false "distinctConHeads" ((PVar "rows")) (EApp (EApp (EVar "dedupHeads") (EApp (EVar "colHeads") (EVar "rows"))) (EListLit)))
+(DFunDef false "distinctConHeads" ((PVar "rows")) (EApp (EApp (EVar "dedupHeads") (EApp (EVar "colHeads") (EVar "rows"))) (EVar "omEmpty")))
 (DTypeSig false "colHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int")))))
 (DFunDef false "colHeads" ((PList)) (EListLit))
 (DFunDef false "colHeads" ((PCons (PTuple (PCons (PCon "PCon" (PVar "c") (PVar "args")) PWild) PWild) (PVar "rest"))) (EBinOp "::" (ETuple (EVar "c") (EApp (EVar "listLen") (EVar "args"))) (EApp (EVar "colHeads") (EVar "rest"))))
 (DFunDef false "colHeads" ((PCons PWild (PVar "rest"))) (EApp (EVar "colHeads") (EVar "rest")))
-(DTypeSig false "dedupHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
+(DTypeSig false "dedupHeads" (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))) (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Int"))))))
 (DFunDef false "dedupHeads" ((PList) PWild) (EListLit))
-(DFunDef false "dedupHeads" ((PCons (PTuple (PVar "c") (PVar "a")) (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "contains") (EVar "c")) (EVar "seen")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "c") (EVar "a")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EBinOp "::" (EVar "c") (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "dedupHeads" ((PCons (PTuple (PVar "c") (PVar "a")) (PVar "rest")) (PVar "seen")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "c")) (EVar "seen")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EVar "seen")) (EIf (EVar "otherwise") (EBinOp "::" (ETuple (EVar "c") (EVar "a")) (EApp (EApp (EVar "dedupHeads") (EVar "rest")) (EApp (EApp (EApp (EVar "omInsert") (EVar "c")) (ELit LUnit)) (EVar "seen")))) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "distinctLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))
 (DFunDef false "distinctLits" ((PVar "rows")) (EApp (EApp (EVar "dedupLits") (EApp (EVar "colLits") (EVar "rows"))) (EListLit)))
 (DTypeSig false "colLits" (TyFun (TyApp (TyCon "List") (TyTuple (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Int"))) (TyApp (TyCon "List") (TyCon "Lit"))))

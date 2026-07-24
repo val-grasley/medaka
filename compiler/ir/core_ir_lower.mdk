@@ -60,6 +60,7 @@ import eval.eval.{
   implKeyOf,
 }
 import list.{replicate}
+import support.ordmap.{OrdMap, omEmpty, omInsert, omHasKey}
 import backend.private_mangle.{sanitizeId}
 import support.util.{
   contains,
@@ -364,18 +365,23 @@ dropHead ([], i) = ([], i)
 -- distinct head constructors present in column 0, first-seen order, each with
 -- its arity (uniform per name in a well-typed column).
 distinctConHeads : List (List Pat, Int) -> List (String, Int)
-distinctConHeads rows = dedupHeads (colHeads rows) []
+distinctConHeads rows = dedupHeads (colHeads rows) omEmpty
 
 colHeads : List (List Pat, Int) -> List (String, Int)
 colHeads [] = []
 colHeads (((PCon c args)::_, _)::rest) = (c, listLen args) :: colHeads rest
 colHeads (_::rest) = colHeads rest
 
-dedupHeads : List (String, Int) -> List String -> List (String, Int)
+-- First-seen dedup by constructor name.  `seen` is an `OrdMap`-backed membership
+-- set (O(log n) test/insert) rather than a growing `List` scanned with `contains`
+-- per head — that scan was O(arms^2) on an N-arm match over an N-ctor type (#960).
+-- The output is still built at each head's FIRST occurrence, recursing on `rest`
+-- unchanged, so first-occurrence ordering is byte-identical to the old list form.
+dedupHeads : List (String, Int) -> OrdMap Unit -> List (String, Int)
 dedupHeads [] _ = []
 dedupHeads ((c, a)::rest) seen
-  | contains c seen = dedupHeads rest seen
-  | otherwise = (c, a) :: dedupHeads rest (c::seen)
+  | omHasKey c seen = dedupHeads rest seen
+  | otherwise = (c, a) :: dedupHeads rest (omInsert c () seen)
 
 distinctLits : List (List Pat, Int) -> List Lit
 distinctLits rows = dedupLits (colLits rows) []
