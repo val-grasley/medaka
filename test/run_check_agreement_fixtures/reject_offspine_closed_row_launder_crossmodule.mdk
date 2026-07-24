@@ -1,0 +1,41 @@
+-- #943 near-miss (S0 soundness hole with NO gate coverage until this fixture): an
+-- OFF-SPINE, CLOSED-LABELED, COVARIANT effect over-performance in a CROSS-MODULE
+-- generic-DEFAULT interface method body. `impl Mk Dog` in THIS module inherits the
+-- default `mk` from lib/offspine_closed_launder_iface.mdk without overriding it --
+-- exercising the cross-module default-method-inheritance path specifically (a
+-- single-file fixture cannot distinguish "default inherited across a module
+-- boundary" from "default inherited in the same file").
+--
+-- `mk`'s own declared arrow (`a -> (..., ...)`) carries NO effect row -- the
+-- <Stdout> annotation is nested one level down, on the arrow inside the returned
+-- tuple's first component. `fstOf` extracts that component and re-types it as pure
+-- <Stdout> at the use site; if the launder escaped, calling it here would silently
+-- perform the undeclared <Stderr> through a value the type system believes is
+-- <Stdout>-only.
+--
+-- Verified 2026-07-24 on a fresh native build: check rejects with a LOCATED
+-- diagnostic in lib/offspine_closed_launder_iface.mdk -- T-EFFECT-LEAK: "Effectful
+-- value used where <Stdout> is allowed, but it performs <Stderr>" -- never a runtime
+-- panic. (Note: T-EFFECT-LEAK, not T-EFFECT-LAUNDER -- see the PR description for
+-- why that matters.)
+--
+-- Discriminating control (confirms this is genuinely off-spine, not redundant with
+-- an already-covered on-spine case): moving the SAME launder onto the method's own
+-- arrow spine (`m2 : a -> <Stdout> Int`, body performs <Stdout, Stderr>) is rejected
+-- too, but via the DIFFERENT, already-gated diagnostic T-EFFECT-LAUNDER ("Default
+-- body of '...' launders an effect ..."), not T-EFFECT-LEAK -- proving the off-spine
+-- path is a genuinely distinct check that had no prior fixture.
+import lib.offspine_closed_launder_iface.{Mk(..), mk}
+
+data Dog = Dog
+
+impl Mk Dog where
+
+
+fstOf : Mk a => a -> (Unit -> <Stdout> Unit)
+fstOf x = match mk x
+  (f, _) => f
+
+main =
+  let f = fstOf Dog
+  f ()

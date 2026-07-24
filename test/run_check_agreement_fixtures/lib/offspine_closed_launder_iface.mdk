@@ -1,0 +1,20 @@
+-- #943 near-miss corpus: shared interface module for the off-spine closed-labeled
+-- covariant effect launder shape. `Mk`'s default method returns a TUPLE whose first
+-- component is an arrow annotated <Stdout> -- the effect sits OFF the method's own
+-- arrow spine (`mk : a -> (Unit -> <Stdout> Unit, Int)` has no row on its own
+-- top-level arrow). The default body performs <Stdout, Stderr> through that nested
+-- arrow via `leak2`. During a #943 refactor of the effect-launder machinery, the
+-- secondary `unify expected2(closed) actualTy` check that is the ONLY thing catching
+-- this off-spine closed-row shape was almost deleted -- the per-arrow residual query
+-- that replaced it inspects only the method's own SPINE arrows and never descends
+-- into a tuple/data arrow nested in the return type. See
+-- reject_offspine_closed_row_launder_crossmodule.mdk for the cross-module use (this
+-- module supplies the interface + default; the impl lives in a SEPARATE module).
+export interface Mk a where
+  mk : a -> (Unit -> <Stdout> Unit, Int)
+  mk d = (u => leak2 u, 1)
+
+leak2 : Unit -> <Stdout, Stderr> Unit
+leak2 u =
+  let _ = putStr "[out]"
+  ePutStr "[err]"
