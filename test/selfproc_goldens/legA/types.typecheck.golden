@@ -186,7 +186,7 @@ checkNestedReqs : ImplUniverse -> String -> List Mono -> Option Loc -> Unit
 checkOneAxis : String -> String -> Param -> Unit
 checkOneCallObligation : Bool -> ImplUniverse -> String -> List Mono -> Option Loc -> Unit
 checkOneEffectParam : String -> String -> Unit
-checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> Unit
+checkOneIfaceCycle : List Decl -> Ref (Map String Unit) -> String -> Unit
 checkPhantomMethods : List Decl -> Unit
 checkProductAxes : String -> Param -> Unit
 checkProductAxesGo : String -> List (String, Param) -> Unit
@@ -392,7 +392,7 @@ drenderN : Param -> String
 driverState : Ref DriverState
 dropFirst : Int -> List a -> List a
 dropPairs : Int -> List (String, Int) -> List (String, Int)
-dropSchemesNamed : List String -> List (String, Scheme) -> List (String, Scheme)
+dropSchemesNamed : Map String Unit -> List (String, Scheme) -> List (String, Scheme)
 dropShadowedCore : List String -> List Decl -> List Decl
 dropVecObls : Int -> List (String, List Int) -> List (String, List Int)
 dsub : Param -> Param -> Bool
@@ -578,9 +578,9 @@ holeFillParam : String -> List (String, Expr) -> Option Expr -> Param
 idsForIfaceSlots : List String -> List Int
 idsForIfaceSlotsGo : Int -> List String -> List Int
 ifaceAtMonoId : Int -> List Mono -> List String -> Option String
-ifaceDfsCycle : List Decl -> Ref (List String) -> List String -> String -> List String
-ifaceDfsCycleOneSuper : List Decl -> Ref (List String) -> List String -> String -> List String
-ifaceDfsCycleSupers : List Decl -> Ref (List String) -> List String -> List Super -> List String
+ifaceDfsCycle : List Decl -> Ref (Map String Unit) -> List String -> String -> List String
+ifaceDfsCycleOneSuper : List Decl -> Ref (Map String Unit) -> List String -> String -> List String
+ifaceDfsCycleSupers : List Decl -> Ref (Map String Unit) -> List String -> List Super -> List String
 ifaceDictPassDefault : String -> Ty -> List Pat -> Expr -> Int -> IfaceMethod
 ifaceDictPassMethod : IfaceMethod -> IfaceMethod
 ifaceForConstraintId : Int -> String

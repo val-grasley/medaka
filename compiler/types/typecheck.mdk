@@ -2879,7 +2879,7 @@ data PerRun = PerRun {
     methodSiteFns : Ref (OrdMap (List Mono)),
     dictAppFns : Ref (OrdMap (List (List Mono))),
     promotedRef : Ref (List String),
-    methodShadowNamesRef : Ref (List String),
+    methodShadowNamesRef : Ref (OrdMap Unit),
     flatShadowScopingRef : Ref Bool,
     flatCoreFnNamesRef : Ref (OrdMap Unit),
     flatUserShadowNamesRef : Ref (List String),
@@ -2945,7 +2945,7 @@ freshPerRun _ = PerRun {
   methodSiteFns = Ref omEmpty,
   dictAppFns = Ref omEmpty,
   promotedRef = Ref [],
-  methodShadowNamesRef = Ref [],
+  methodShadowNamesRef = Ref omEmpty,
   flatShadowScopingRef = Ref False,
   flatCoreFnNamesRef = Ref omEmpty,
   flatUserShadowNamesRef = Ref [],
@@ -10072,7 +10072,15 @@ intercalateComma (x::rest) = "'\{x}', \{intercalateComma rest}"
 checkInterfaceCycles : List Decl -> Unit
 checkInterfaceCycles allDecls =
   let ifaceNames = collectIfaceNames allDecls
-  let done = Ref []
+  -- #973: `done` is an OrdMap-backed SET (omHasKey/omInsert), NOT a growing `List` scanned
+  -- by `contains`.  The membership test (`contains ifaceName done` at checkOneIfaceCycle,
+  -- `contains superName done` at ifaceDfsCycleOneSuper) ran once per interface over the
+  -- fully-explored set, which grows to the interface count → O(interfaces^2), the flat-path
+  -- `manyifaces:typecheck` op-count quadratic (independent of use sites — it surfaces on a
+  -- file of N cycle-free interfaces).  Keyed into a set it is O(log n) with BYTE-IDENTICAL
+  -- behavior: `done` only prunes already-explored nodes (set membership is order-insensitive),
+  -- and the DFS order + cycle messages are driven by `path`/`ifaceNames`, both unchanged.
+  let done = Ref omEmpty
   foreachUnit (checkOneIfaceCycle allDecls done) ifaceNames
 
 -- #152: the whole-program final-checks tail, shared by all five entry points
@@ -10089,9 +10097,9 @@ runFinalChecks cohDecls cycDecls =
   let _ = checkPhantomMethods cohDecls
   checkSuperImpls cohDecls cycDecls
 
-checkOneIfaceCycle : List Decl -> Ref (List String) -> String -> Unit
+checkOneIfaceCycle : List Decl -> Ref (OrdMap Unit) -> String -> Unit
 checkOneIfaceCycle allDecls done ifaceName =
-  if not (contains ifaceName done.value) then
+  if not (omHasKey ifaceName done.value) then
     foreachUnit (pushTypeError "T-CYCLIC-SUPERINTERFACE") (ifaceDfsCycle allDecls done [ifaceName] ifaceName)
   else
     ()
@@ -10106,28 +10114,28 @@ collectIfaceNames (_::rest) = collectIfaceNames rest
 -- DFS from [current]; [path] is the stack of names visited so far (including
 -- [current] as its last element, used to reconstruct the cycle message).
 -- Marks [current] as done after all its supers are explored.
-ifaceDfsCycle : List Decl -> Ref (List String) -> List String -> String -> List String
+ifaceDfsCycle : List Decl -> Ref (OrdMap Unit) -> List String -> String -> List String
 ifaceDfsCycle allDecls done path current = match ifaceSupersOf allDecls current
   None =>
-    let _ = setRef done (current::done.value)
+    let _ = setRef done (omInsert current () done.value)
     []
   Some (_, supers) =>
     let msgs = ifaceDfsCycleSupers allDecls done path supers
-    let _ = setRef done (current::done.value)
+    let _ = setRef done (omInsert current () done.value)
     msgs
 
-ifaceDfsCycleSupers : List Decl -> Ref (List String) -> List String -> List Super -> List String
+ifaceDfsCycleSupers : List Decl -> Ref (OrdMap Unit) -> List String -> List Super -> List String
 ifaceDfsCycleSupers _ _ _ [] = []
 ifaceDfsCycleSupers allDecls done path ((Super superName _)::rest) =
   let msgs1 = ifaceDfsCycleOneSuper allDecls done path superName
   msgs1 ++ ifaceDfsCycleSupers allDecls done path rest
 
 -- check one super edge: cycle if superName is on the DFS path; skip if done; else recurse.
-ifaceDfsCycleOneSuper : List Decl -> Ref (List String) -> List String -> String -> List String
+ifaceDfsCycleOneSuper : List Decl -> Ref (OrdMap Unit) -> List String -> String -> List String
 ifaceDfsCycleOneSuper allDecls done path superName =
   if contains superName path then
     [cyclicSuperIfaceMsg (path ++ [superName])]
-  else if contains superName done.value then
+  else if omHasKey superName done.value then
     []
   else
     ifaceDfsCycle allDecls done (path ++ [superName]) superName
@@ -12007,9 +12015,14 @@ checkBodyImpl seed mode prog0 =
   -- methodNames: FLAT's SECOND ifaceMethodSchemes call over prog — dedup-skipped by
   -- registerMethodConstraints so globalS's registered (first-call) ids stay authoritative.
   -- Module checks core in isolation and never needs it, so NO extra call there.
+  -- #973: an OrdMap-backed SET, not a `List` — its two consumers (methodShadowNamesRef via
+  -- dropSchemesNamed at 12036 and per-SCC at processGroup) test MEMBERSHIP only, and as a
+  -- List `dropSchemesNamed`'s `contains (fst s) names` scanned this whole interface-method
+  -- list once per scheme → O(schemes x methods), a flat-path `manyifaces:typecheck` quadratic
+  -- (once here over topSchemes, once PER SCC group).  omHasKey is byte-identical membership.
   let methodNames = match mode
-    Flat _ => map fst (ifaceMethodSchemes prog)
-    Module _ _ _ => []
+    Flat _ => namesToSet (map fst (ifaceMethodSchemes prog)) omEmpty
+    Module _ _ _ => omEmpty
   -- (#4 cont) post-globalS mode setup.  Module: shadowMethodSchemes env layer (rebinding
   -- imported method names to the interface-method scheme) + the method-constraint cross
   -- seed (AFTER globalS's ifaceMethodSchemes registration, per registerMethodConstraints).
@@ -12374,9 +12387,14 @@ inferDefaultBodiesIfEnabled env prog = inferDefaultBodies env prog
 -- drop every (name, scheme) whose name is in [names] (the flat-path prelude-body
 -- shadow fix: remove user schemes that shadow an interface-method name so the
 -- method scheme stays visible to the prelude's own bodies).
-dropSchemesNamed : List String -> List (String, Scheme) -> List (String, Scheme)
+-- #973: `names` is an OrdMap SET (omHasKey), not a `List` scanned by `contains`.  Callers
+-- (dropSchemesNamed methodNames topSchemes; per-SCC processGroup over methodShadowNamesRef)
+-- probe MEMBERSHIP only; as a list this was O(schemes x methods) — a flat-path
+-- `manyifaces:typecheck` quadratic since the interface-method set grows with the interface
+-- count and processGroup runs once per SCC.  omHasKey is a byte-identical membership test.
+dropSchemesNamed : OrdMap Unit -> List (String, Scheme) -> List (String, Scheme)
 dropSchemesNamed names schemes =
-  filterList (s => not (contains (fst s) names)) schemes
+  filterList (s => not (omHasKey (fst s) names)) schemes
 
 inferDefaultBodies : TcEnv -> List Decl -> Unit
 inferDefaultBodies _ [] = ()
@@ -15827,9 +15845,18 @@ buildDefinerShadows implDecls prog =
   -- standalone `eq : Int -> Int -> Int`, ignoring the binder entirely.  Mirrors the
   -- MARK pass's identical exclusion (marker.mdk's shadowRenames `keepNotIn
   -- (localBoundNames prog)`), so check/run/build agree on which occurrences are shadows.
-  let methodNames = allIfaceMethodNames implDecls
+  --
+  -- #973: `methodNames` is an OrdMap-backed SET (omHasKey), NOT a growing `List` scanned by
+  -- `contains`.  As a list, `filter (n => contains n methodNames) localNames` was
+  -- O(funDefs x methods) — the flat single-file path's `manyifaces:typecheck` O(interfaces^2)
+  -- quadratic (each of the module's funDefs forced a full scan of the interface-method list,
+  -- which grows with the interface count).  Keyed into a set the membership test is O(log n)
+  -- with BYTE-IDENTICAL output: `omHasKey n methodNames` is a point-for-point substitute for
+  -- `contains n methodNames` (same membership over the same names, same declaration order),
+  -- exactly the substitution #154 made for the Module path's `definerShadowsFromSet`.
+  let methodNames = namesToSet (allIfaceMethodNames implDecls) omEmpty
   let localNames = dedup (map fst (funDefs prog))
-  let direct = filter (n => contains n methodNames) localNames
+  let direct = filter (n => omHasKey n methodNames) localNames
   -- P0-18: on the EMIT path this module's funDefs are MANGLED, so `direct` finds no
   -- shadow.  For each mangled funDef that the mangle map flags as an iface-method
   -- shadow, register the BARE method name — that is the name the mark pass stamped
