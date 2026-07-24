@@ -39,13 +39,13 @@ localBoundExpr : Expr -> List String
 localBoundNames : List Decl -> List String
 mapLitPairBound : (Expr, Expr) -> List String
 mapLitPairVars : (Expr, Expr) -> List String
-markDecl : List String -> List String -> Decl -> Decl
+markDecl : Map String Unit -> List String -> Decl -> Decl
 markFunClause : (Expr -> Expr) -> FunClause -> FunClause
-markInfix : List String -> List String -> String -> Expr -> Expr -> Expr
+markInfix : Map String Unit -> List String -> String -> Expr -> Expr -> Expr
 markLetBind : (Expr -> Expr) -> LetBind -> LetBind
-markNode : List String -> List String -> Expr -> Expr
-markProgram : List String -> List String -> List Decl -> List Decl
-markVar : List String -> List String -> String -> Expr
+markNode : Map String Unit -> List String -> Expr -> Expr
+markProgram : Map String Unit -> List String -> List Decl -> List Decl
+markVar : Map String Unit -> List String -> String -> Expr
 markWith : List String -> List String -> List String -> List Decl -> List Decl
 markWithPrelude : List Decl -> List Decl -> List Decl
 markerFor : List Decl -> List Decl -> List Decl

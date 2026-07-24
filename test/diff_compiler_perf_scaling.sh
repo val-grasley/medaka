@@ -1418,7 +1418,6 @@ xref:typecheck
 reexports:resolve
 manydefs:typecheck
 xref:elaborate
-manyifaces:mark
 "
 KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
 # xref:elaborate — see the #882 block above. Ceiling 4.3 clears the observed DEEP r2=3.60
@@ -1443,7 +1442,6 @@ KNOWN_OCEIL_manydefs_typecheck="4.3"; KNOWN_OFIXED_manydefs_typecheck="2.60"
 # drift, not runner noise. OFIXED 2.60 (file convention): drops under it when `methods`
 # becomes a set (mark) / the interface-method scan is indexed (resolve), at which point the
 # entry must be promoted out.
-KNOWN_OCEIL_manyifaces_mark="4.3";    KNOWN_OFIXED_manyifaces_mark="2.60"
 # Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
 # entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
 # from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):

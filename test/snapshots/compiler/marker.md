@@ -1,5 +1,5 @@
 # META
-source_lines=510
+source_lines=518
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted method_marker stage — Stage 1 port of `lib/method_marker.ml`.
@@ -51,6 +51,7 @@ import frontend.ast.{
 }
 import frontend.desugar.{mapProg, mapExpr, mapDecl}
 import support.util.{contains}
+import support.ordmap.{OrdMap, omHasKey, omFromNames, omEmpty}
 
 -- ── Name-set collection ───────────────────────────────────────────────────
 -- Interface method names declared across the decls (DInterface methods).
@@ -76,25 +77,31 @@ constrainedAdd _ _ acc = acc
 
 -- ── The marking rewrite ───────────────────────────────────────────────────
 -- Method names take precedence over constrained-function names.
-markNode : List String -> List String -> Expr -> Expr
+-- `methods` is an `OrdMap Unit` membership set (built ONCE per file in
+-- `markWith`, below) rather than a `List String` — every var/op node in the
+-- program does a `methods` lookup, so with a flat list of ALL interface-method
+-- names that was an O(sites x pool) List-as-set scan (#953). `constrained` stays
+-- a list: it is small (only user functions with a constrained signature) and is
+-- also consulted via `keepIn`/`keepNotIn` elsewhere, where a list is the right shape.
+markNode : OrdMap Unit -> List String -> Expr -> Expr
 markNode methods constrained (EVar x) = markVar methods constrained x
 markNode methods constrained (EInfix op l r) =
   markInfix methods constrained op l r
 markNode _ _ e = e
 
-markVar : List String -> List String -> String -> Expr
+markVar : OrdMap Unit -> List String -> String -> Expr
 markVar methods constrained x
-  | contains x methods = EMethodRef x
+  | omHasKey x methods = EMethodRef x
   | contains x constrained = EDictApp x
   | otherwise = EVar x
 
-markInfix : List String -> List String -> String -> Expr -> Expr -> Expr
+markInfix : OrdMap Unit -> List String -> String -> Expr -> Expr -> Expr
 markInfix methods constrained op l r
-  | contains op methods = EApp (EApp (EMethodRef op) l) r
+  | omHasKey op methods = EApp (EApp (EMethodRef op) l) r
   | contains op constrained = EApp (EApp (EDictApp op) l) r
   | otherwise = EInfix op l r
 
-markProgram : List String -> List String -> List Decl -> List Decl
+markProgram : OrdMap Unit -> List String -> List Decl -> List Decl
 markProgram methods constrained prog = map (markDecl methods constrained) prog
 
 -- desugar.mapDecl's catch-all SKIPS DLetGroup (and DBench) bodies, so a
@@ -103,7 +110,7 @@ markProgram methods constrained prog = map (markDecl methods constrained) prog
 -- dict route → the dict-passed callee is under-applied.  Mirror lib/method_marker.ml's
 -- dedicated mark_decl: handle DLetGroup/DAttrib here, delegate everything else to
 -- mapDecl (whose expr recursion is complete).
-markDecl : List String -> List String -> Decl -> Decl
+markDecl : OrdMap Unit -> List String -> Decl -> Decl
 markDecl methods constrained (DLetGroup pub binds) =
   let f = markNode methods constrained
   DLetGroup pub (map (markLetBind f) binds)
@@ -487,11 +494,12 @@ markWith : List String -> List String -> List String -> List Decl -> List Decl
 markWith preludeMethods preludeDroppable preludeConstrained prog =
   let prog2 = shadowRename preludeMethods prog
   let methods = preludeMethods ++ interfaceMethodNames prog2
+  let methodSet = omFromNames methods omEmpty
   let shadowed = keepIn preludeDroppable (userValueNames prog2)
   let userConstrained = constrainedFnNames prog2
   let toRemove = keepNotIn userConstrained shadowed
   let constrained = keepNotIn toRemove (preludeConstrained ++ userConstrained)
-  markProgram methods constrained prog2
+  markProgram methodSet constrained prog2
 
 export markWithPrelude : List Decl -> List Decl -> List Decl
 markWithPrelude preludeProg prog =
@@ -516,6 +524,7 @@ markerFor preludeProg =
 (DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Route" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "mapProg" false) (mem "mapExpr" false) (mem "mapDecl" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omHasKey" false) (mem "omFromNames" false) (mem "omEmpty" false))))
 (DTypeSig false "interfaceMethodNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "interfaceMethodNames" ((PList)) (EListLit))
 (DFunDef false "interfaceMethodNames" ((PCons (PRec "DInterface" ((rf "methods" None)) true) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EVar "map") (EVar "ifaceMethodName")) (EVar "methods")) (EApp (EVar "interfaceMethodNames") (EVar "rest"))))
@@ -529,17 +538,17 @@ markerFor preludeProg =
 (DTypeSig false "constrainedAdd" (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "constrainedAdd" ((PVar "name") (PCon "TyConstrained" PWild PWild) (PVar "acc")) (EBinOp "::" (EVar "name") (EVar "acc")))
 (DFunDef false "constrainedAdd" (PWild PWild (PVar "acc")) (EVar "acc"))
-(DTypeSig false "markNode" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
+(DTypeSig false "markNode" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "markNode" ((PVar "methods") (PVar "constrained") (PCon "EVar" (PVar "x"))) (EApp (EApp (EApp (EVar "markVar") (EVar "methods")) (EVar "constrained")) (EVar "x")))
 (DFunDef false "markNode" ((PVar "methods") (PVar "constrained") (PCon "EInfix" (PVar "op") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EApp (EApp (EVar "markInfix") (EVar "methods")) (EVar "constrained")) (EVar "op")) (EVar "l")) (EVar "r")))
 (DFunDef false "markNode" (PWild PWild (PVar "e")) (EVar "e"))
-(DTypeSig false "markVar" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Expr")))))
-(DFunDef false "markVar" ((PVar "methods") (PVar "constrained") (PVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "methods")) (EApp (EVar "EMethodRef") (EVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "constrained")) (EApp (EVar "EDictApp") (EVar "x")) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "x")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "markInfix" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr")))))))
-(DFunDef false "markInfix" ((PVar "methods") (PVar "constrained") (PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EApp (EVar "contains") (EVar "op")) (EVar "methods")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EMethodRef") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EApp (EApp (EVar "contains") (EVar "op")) (EVar "constrained")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EDictApp") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "markProgram" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))))
+(DTypeSig false "markVar" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Expr")))))
+(DFunDef false "markVar" ((PVar "methods") (PVar "constrained") (PVar "x")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "x")) (EVar "methods")) (EApp (EVar "EMethodRef") (EVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "constrained")) (EApp (EVar "EDictApp") (EVar "x")) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "x")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "markInfix" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr")))))))
+(DFunDef false "markInfix" ((PVar "methods") (PVar "constrained") (PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "op")) (EVar "methods")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EMethodRef") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EApp (EApp (EVar "contains") (EVar "op")) (EVar "constrained")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EDictApp") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "markProgram" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))))
 (DFunDef false "markProgram" ((PVar "methods") (PVar "constrained") (PVar "prog")) (EApp (EApp (EVar "map") (EApp (EApp (EVar "markDecl") (EVar "methods")) (EVar "constrained"))) (EVar "prog")))
-(DTypeSig false "markDecl" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Decl") (TyCon "Decl")))))
+(DTypeSig false "markDecl" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Decl") (TyCon "Decl")))))
 (DFunDef false "markDecl" ((PVar "methods") (PVar "constrained") (PCon "DLetGroup" (PVar "pub") (PVar "binds"))) (EBlock (DoLet false false (PVar "f") (EApp (EApp (EVar "markNode") (EVar "methods")) (EVar "constrained"))) (DoExpr (EApp (EApp (EVar "DLetGroup") (EVar "pub")) (EApp (EApp (EVar "map") (EApp (EVar "markLetBind") (EVar "f"))) (EVar "binds"))))))
 (DFunDef false "markDecl" ((PVar "methods") (PVar "constrained") (PCon "DAttrib" (PVar "attrs") (PVar "inner"))) (EApp (EApp (EVar "DAttrib") (EVar "attrs")) (EApp (EApp (EApp (EVar "markDecl") (EVar "methods")) (EVar "constrained")) (EVar "inner"))))
 (DFunDef false "markDecl" ((PVar "methods") (PVar "constrained") (PVar "d")) (EApp (EApp (EVar "mapDecl") (EApp (EApp (EVar "markNode") (EVar "methods")) (EVar "constrained"))) (EVar "d")))
@@ -763,7 +772,7 @@ markerFor preludeProg =
 (DTypeSig true "localBoundNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "localBoundNames" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "declLocalBound")) (EVar "prog")))
 (DTypeSig false "markWith" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))))
-(DFunDef false "markWith" ((PVar "preludeMethods") (PVar "preludeDroppable") (PVar "preludeConstrained") (PVar "prog")) (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EVar "shadowRename") (EVar "preludeMethods")) (EVar "prog"))) (DoLet false false (PVar "methods") (EBinOp "++" (EVar "preludeMethods") (EApp (EVar "interfaceMethodNames") (EVar "prog2")))) (DoLet false false (PVar "shadowed") (EApp (EApp (EVar "keepIn") (EVar "preludeDroppable")) (EApp (EVar "userValueNames") (EVar "prog2")))) (DoLet false false (PVar "userConstrained") (EApp (EVar "constrainedFnNames") (EVar "prog2"))) (DoLet false false (PVar "toRemove") (EApp (EApp (EVar "keepNotIn") (EVar "userConstrained")) (EVar "shadowed"))) (DoLet false false (PVar "constrained") (EApp (EApp (EVar "keepNotIn") (EVar "toRemove")) (EBinOp "++" (EVar "preludeConstrained") (EVar "userConstrained")))) (DoExpr (EApp (EApp (EApp (EVar "markProgram") (EVar "methods")) (EVar "constrained")) (EVar "prog2")))))
+(DFunDef false "markWith" ((PVar "preludeMethods") (PVar "preludeDroppable") (PVar "preludeConstrained") (PVar "prog")) (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EVar "shadowRename") (EVar "preludeMethods")) (EVar "prog"))) (DoLet false false (PVar "methods") (EBinOp "++" (EVar "preludeMethods") (EApp (EVar "interfaceMethodNames") (EVar "prog2")))) (DoLet false false (PVar "methodSet") (EApp (EApp (EVar "omFromNames") (EVar "methods")) (EVar "omEmpty"))) (DoLet false false (PVar "shadowed") (EApp (EApp (EVar "keepIn") (EVar "preludeDroppable")) (EApp (EVar "userValueNames") (EVar "prog2")))) (DoLet false false (PVar "userConstrained") (EApp (EVar "constrainedFnNames") (EVar "prog2"))) (DoLet false false (PVar "toRemove") (EApp (EApp (EVar "keepNotIn") (EVar "userConstrained")) (EVar "shadowed"))) (DoLet false false (PVar "constrained") (EApp (EApp (EVar "keepNotIn") (EVar "toRemove")) (EBinOp "++" (EVar "preludeConstrained") (EVar "userConstrained")))) (DoExpr (EApp (EApp (EApp (EVar "markProgram") (EVar "methodSet")) (EVar "constrained")) (EVar "prog2")))))
 (DTypeSig true "markWithPrelude" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "markWithPrelude" ((PVar "preludeProg") (PVar "prog")) (EApp (EApp (EApp (EApp (EVar "markWith") (EApp (EVar "interfaceMethodNames") (EVar "preludeProg"))) (EApp (EVar "droppablePreludeFns") (EVar "preludeProg"))) (EApp (EVar "constrainedFnNames") (EVar "preludeProg"))) (EVar "prog")))
 (DTypeSig true "markerFor" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
@@ -772,6 +781,7 @@ markerFor preludeProg =
 (DUse false (UseGroup ("frontend" "ast") ((mem "Lit" true) (mem "Ty" true) (mem "Constraint" true) (mem "Pat" true) (mem "RecPatField" true) (mem "Guard" true) (mem "Arm" true) (mem "DoStmt" true) (mem "InterpPart" true) (mem "GuardArm" true) (mem "FieldAssign" true) (mem "Section" true) (mem "FunClause" true) (mem "LetBind" true) (mem "Route" true) (mem "Expr" true) (mem "UseMember" true) (mem "UsePath" true) (mem "PropParam" true) (mem "MethodDefault" true) (mem "IfaceMethod" true) (mem "Super" true) (mem "Require" true) (mem "ImplMethod" true) (mem "DataVis" true) (mem "Field" true) (mem "ConPayload" true) (mem "Variant" true) (mem "Decl" true))))
 (DUse false (UseGroup ("frontend" "desugar") ((mem "mapProg" false) (mem "mapExpr" false) (mem "mapDecl" false))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false))))
+(DUse false (UseGroup ("support" "ordmap") ((mem "OrdMap" false) (mem "omHasKey" false) (mem "omFromNames" false) (mem "omEmpty" false))))
 (DTypeSig false "interfaceMethodNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "interfaceMethodNames" ((PList)) (EListLit))
 (DFunDef false "interfaceMethodNames" ((PCons (PRec "DInterface" ((rf "methods" None)) true) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EMethodRef "map") (EVar "ifaceMethodName")) (EVar "methods")) (EApp (EVar "interfaceMethodNames") (EVar "rest"))))
@@ -785,17 +795,17 @@ markerFor preludeProg =
 (DTypeSig false "constrainedAdd" (TyFun (TyCon "String") (TyFun (TyCon "Ty") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "String"))))))
 (DFunDef false "constrainedAdd" ((PVar "name") (PCon "TyConstrained" PWild PWild) (PVar "acc")) (EBinOp "::" (EVar "name") (EVar "acc")))
 (DFunDef false "constrainedAdd" (PWild PWild (PVar "acc")) (EVar "acc"))
-(DTypeSig false "markNode" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
+(DTypeSig false "markNode" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "markNode" ((PVar "methods") (PVar "constrained") (PCon "EVar" (PVar "x"))) (EApp (EApp (EApp (EVar "markVar") (EVar "methods")) (EVar "constrained")) (EVar "x")))
 (DFunDef false "markNode" ((PVar "methods") (PVar "constrained") (PCon "EInfix" (PVar "op") (PVar "l") (PVar "r"))) (EApp (EApp (EApp (EApp (EApp (EVar "markInfix") (EVar "methods")) (EVar "constrained")) (EVar "op")) (EVar "l")) (EVar "r")))
 (DFunDef false "markNode" (PWild PWild (PVar "e")) (EVar "e"))
-(DTypeSig false "markVar" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Expr")))))
-(DFunDef false "markVar" ((PVar "methods") (PVar "constrained") (PVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "methods")) (EApp (EVar "EMethodRef") (EVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "constrained")) (EApp (EVar "EDictApp") (EVar "x")) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "x")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "markInfix" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr")))))))
-(DFunDef false "markInfix" ((PVar "methods") (PVar "constrained") (PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EApp (EVar "contains") (EVar "op")) (EVar "methods")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EMethodRef") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EApp (EApp (EVar "contains") (EVar "op")) (EVar "constrained")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EDictApp") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
-(DTypeSig false "markProgram" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))))
+(DTypeSig false "markVar" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyCon "Expr")))))
+(DFunDef false "markVar" ((PVar "methods") (PVar "constrained") (PVar "x")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "x")) (EVar "methods")) (EApp (EVar "EMethodRef") (EVar "x")) (EIf (EApp (EApp (EVar "contains") (EVar "x")) (EVar "constrained")) (EApp (EVar "EDictApp") (EVar "x")) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "x")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "markInfix" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyCon "Expr")))))))
+(DFunDef false "markInfix" ((PVar "methods") (PVar "constrained") (PVar "op") (PVar "l") (PVar "r")) (EIf (EApp (EApp (EVar "omHasKey") (EVar "op")) (EVar "methods")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EMethodRef") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EApp (EApp (EVar "contains") (EVar "op")) (EVar "constrained")) (EApp (EApp (EVar "EApp") (EApp (EApp (EVar "EApp") (EApp (EVar "EDictApp") (EVar "op"))) (EVar "l"))) (EVar "r")) (EIf (EVar "otherwise") (EApp (EApp (EApp (EVar "EInfix") (EVar "op")) (EVar "l")) (EVar "r")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))
+(DTypeSig false "markProgram" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl"))))))
 (DFunDef false "markProgram" ((PVar "methods") (PVar "constrained") (PVar "prog")) (EApp (EApp (EMethodRef "map") (EApp (EApp (EVar "markDecl") (EVar "methods")) (EVar "constrained"))) (EVar "prog")))
-(DTypeSig false "markDecl" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Decl") (TyCon "Decl")))))
+(DTypeSig false "markDecl" (TyFun (TyApp (TyCon "OrdMap") (TyCon "Unit")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Decl") (TyCon "Decl")))))
 (DFunDef false "markDecl" ((PVar "methods") (PVar "constrained") (PCon "DLetGroup" (PVar "pub") (PVar "binds"))) (EBlock (DoLet false false (PVar "f") (EApp (EApp (EVar "markNode") (EVar "methods")) (EVar "constrained"))) (DoExpr (EApp (EApp (EVar "DLetGroup") (EVar "pub")) (EApp (EApp (EMethodRef "map") (EApp (EVar "markLetBind") (EVar "f"))) (EVar "binds"))))))
 (DFunDef false "markDecl" ((PVar "methods") (PVar "constrained") (PCon "DAttrib" (PVar "attrs") (PVar "inner"))) (EApp (EApp (EVar "DAttrib") (EVar "attrs")) (EApp (EApp (EApp (EVar "markDecl") (EVar "methods")) (EVar "constrained")) (EVar "inner"))))
 (DFunDef false "markDecl" ((PVar "methods") (PVar "constrained") (PVar "d")) (EApp (EApp (EVar "mapDecl") (EApp (EApp (EVar "markNode") (EVar "methods")) (EVar "constrained"))) (EVar "d")))
@@ -1019,7 +1029,7 @@ markerFor preludeProg =
 (DTypeSig true "localBoundNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "localBoundNames" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "declLocalBound")) (EVar "prog")))
 (DTypeSig false "markWith" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))))
-(DFunDef false "markWith" ((PVar "preludeMethods") (PVar "preludeDroppable") (PVar "preludeConstrained") (PVar "prog")) (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EVar "shadowRename") (EVar "preludeMethods")) (EVar "prog"))) (DoLet false false (PVar "methods") (EBinOp "++" (EVar "preludeMethods") (EApp (EVar "interfaceMethodNames") (EVar "prog2")))) (DoLet false false (PVar "shadowed") (EApp (EApp (EVar "keepIn") (EVar "preludeDroppable")) (EApp (EVar "userValueNames") (EVar "prog2")))) (DoLet false false (PVar "userConstrained") (EApp (EVar "constrainedFnNames") (EVar "prog2"))) (DoLet false false (PVar "toRemove") (EApp (EApp (EVar "keepNotIn") (EVar "userConstrained")) (EVar "shadowed"))) (DoLet false false (PVar "constrained") (EApp (EApp (EVar "keepNotIn") (EVar "toRemove")) (EBinOp "++" (EVar "preludeConstrained") (EVar "userConstrained")))) (DoExpr (EApp (EApp (EApp (EVar "markProgram") (EVar "methods")) (EVar "constrained")) (EVar "prog2")))))
+(DFunDef false "markWith" ((PVar "preludeMethods") (PVar "preludeDroppable") (PVar "preludeConstrained") (PVar "prog")) (EBlock (DoLet false false (PVar "prog2") (EApp (EApp (EVar "shadowRename") (EVar "preludeMethods")) (EVar "prog"))) (DoLet false false (PVar "methods") (EBinOp "++" (EVar "preludeMethods") (EApp (EVar "interfaceMethodNames") (EVar "prog2")))) (DoLet false false (PVar "methodSet") (EApp (EApp (EVar "omFromNames") (EVar "methods")) (EVar "omEmpty"))) (DoLet false false (PVar "shadowed") (EApp (EApp (EVar "keepIn") (EVar "preludeDroppable")) (EApp (EVar "userValueNames") (EVar "prog2")))) (DoLet false false (PVar "userConstrained") (EApp (EVar "constrainedFnNames") (EVar "prog2"))) (DoLet false false (PVar "toRemove") (EApp (EApp (EVar "keepNotIn") (EVar "userConstrained")) (EVar "shadowed"))) (DoLet false false (PVar "constrained") (EApp (EApp (EVar "keepNotIn") (EVar "toRemove")) (EBinOp "++" (EVar "preludeConstrained") (EVar "userConstrained")))) (DoExpr (EApp (EApp (EApp (EVar "markProgram") (EVar "methodSet")) (EVar "constrained")) (EVar "prog2")))))
 (DTypeSig true "markWithPrelude" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
 (DFunDef false "markWithPrelude" ((PVar "preludeProg") (PVar "prog")) (EApp (EApp (EApp (EApp (EVar "markWith") (EApp (EVar "interfaceMethodNames") (EVar "preludeProg"))) (EApp (EVar "droppablePreludeFns") (EVar "preludeProg"))) (EApp (EVar "constrainedFnNames") (EVar "preludeProg"))) (EVar "prog")))
 (DTypeSig true "markerFor" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "Decl")))))
