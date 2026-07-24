@@ -12,6 +12,11 @@
 --   resolve         name resolution (resolveToLines; raw prelude, desugared target)
 --   mark            method-reference marking (markWithPrelude; desugared core)
 --   typecheck       HM type inference (checkToLinesWithRuntime; desugared runtime+core)
+--   elaborate       install* dict-route table builders + elaborateDict (issue #882)
+--   dce             dead-code filter over the elaborated program (dceFilter; #882)
+--   mangle          universal per-module private-name de-collision (mangleUnits; #882)
+--                   ADDITIVE: run standalone for measurement and DISCARDED — it does
+--                   NOT feed lower/emit, so those stages stay byte-unchanged.
 --   lower           Core IR lowering (lowerProgramEmit over the elaborated program)
 --   emit            LLVM text IR emission (emitProgram over the Core IR)
 --   wasm-emit       WasmGC text WAT emission (wasm_emit.emitProgram over the SAME Core IR)
@@ -53,6 +58,7 @@ import ir.core_ir_lower.{
   declSigTypeNames,
 }
 import ir.dce.{dceFilter}
+import backend.private_mangle.{mangleUnits}
 import backend.llvm_emit.{
   emitProgram,
   installReturnsSelf,
@@ -213,6 +219,17 @@ runStaged on rsrc csrc tsrc =
   --     baseline, so that fixed cost dilutes a `lower`/`emit` ratio DOWNWARD.
   --   * Single-file only: no loader, no multi-module link, no clang. `medaka build`
   --     also links (and `--gc-sections` prunes again at the object level).
+  -- elaborate: the dict-route STAMPING pass (issue #882). The eight install* table-
+  -- builders (returnsSelfTable, methodIfaceTable, …) + the dictNames scans
+  -- (preludeReturnPosDictNames, …) + elaborateDict itself all ran here UNTIMED — the
+  -- "elaboration is deliberately OUTSIDE both timers" gap between typecheck and lower.
+  -- Any of those table-builds is a candidate List-as-set quadratic; this stage puts the
+  -- whole block on the CI map as ONE [perf] row. It is measurement-only bracketing: the
+  -- exact same computation runs, in the same order, so `elaborated`/`live` and every
+  -- downstream stage are byte-unchanged.
+  let tEl0 = now ()
+  let aEl0 = allocSnap ()
+  let oEl0 = opSnap ()
   let userNames = funNamesOf desugared
   let livePrelude = dropShadowedExp userNames cDecls
   let combined = livePrelude ++ desugared
@@ -228,8 +245,33 @@ runStaged on rsrc csrc tsrc =
   let _ = installMainIsUnitHint (mainTypeIsUnit ())
   let _ = installMainIsFloatHint (mainTypeIsFloat ())
   let elaborated = elaborateDict rDecls dictNames userNames combined
-  -- Source DCE, as the real build driver does it in default (whole-module) mode.
+  let tEl1 = now ()
+  let _ = emitPhaseAO on "elaborate" (tEl1 - tEl0) (allocSnap () - aEl0) declsOp (opSnap () - oEl0)
+  -- dce: source DCE, as the real build driver does it in default (whole-module) mode.
+  -- Ran in the same untimed gap; its reachable-name closure is a List-as-set suspect
+  -- (issue #882). Bracketed only — dceFilter's input/output are unchanged.
+  let tDc0 = now ()
+  let aDc0 = allocSnap ()
+  let oDc0 = opSnap ()
   let live = dceFilter elaborated
+  let tDc1 = now ()
+  let _ = emitPhaseAO on "dce" (tDc1 - tDc0) (allocSnap () - aDc0) declsOp (opSnap () - oDc0)
+  -- mangle: universal per-module private-name de-collision (issue #882). The real emit
+  -- drivers (entry_support.runEmitWith) run mangleUnits BEFORE elaborateModules,
+  -- renaming a unit's PRIVATE defs to `<mid>__name` so cross-module bare-name collisions
+  -- cannot alias at emit; #352 flags its `pubFnNames` list-as-set. profile_main never
+  -- called it — a whole production pass was off the CI map. ADDITIVE (mirrors #881's
+  -- resolve stage): run it standalone over (cDecls, [("target", desugared)]) — the same
+  -- core-plus-one-module shape the emit drivers feed it — and DISCARD the result; it
+  -- does NOT transform the decls that reach lower/emit, so those stages are byte-
+  -- unchanged. The tuple is forced (listLen both halves) so the work is not a thunk.
+  let tMg0 = now ()
+  let aMg0 = allocSnap ()
+  let oMg0 = opSnap ()
+  let (mgCore, mgMods) = mangleUnits cDecls (("target", desugared)::[])
+  let _ = listLen mgCore + listLen mgMods
+  let tMg1 = now ()
+  let _ = emitPhaseAO on "mangle" (tMg1 - tMg0) (allocSnap () - aMg0) declsOp (opSnap () - oMg0)
   -- tLw*/aLw* — NOT tL*: the `lint` stage below independently uses tL0/tL1/aL0.
   -- Both stages landed in the same merge; today the shadowing is harmless only
   -- because these are consumed before lint rebinds them, which is exactly the kind
@@ -322,8 +364,8 @@ runStaged on rsrc csrc tsrc =
 -- The `wasm-emit` stage, OPT-IN on MEDAKA_PERF_WASM (2nd arg). Off => `()`, and the
 -- WAT is never rendered.
 --
--- ⚠️ THIS MUST STAY A CLAUSE, NOT A GUARD ON emitPhaseA. Medaka is strict: passing
--- `wasmText cprog` as an argument to anything — emitPhaseA, whenL, a `let _` — RUNS
+-- ⚠️ THIS MUST STAY A CLAUSE, NOT A GUARD ON emitPhaseAO. Medaka is strict: passing
+-- `wasmText cprog` as an argument to anything — emitPhaseAO, whenL, a `let _` — RUNS
 -- it. Only an unforced clause body actually skips the work. This is AGENTS.md's
 -- `whenL False (expensiveCall …)` trap, and the entire ~277 s saving lives or dies on
 -- it: get it wrong and the gate still pays in full while printing nothing, which is
@@ -368,6 +410,12 @@ wasmStage on True cprog live rDecls declsOp =
 -- mark: method-reference marking (desugared core as the prelude)
 
 -- typecheck: HM inference over desugared runtime + core ++ target
+
+-- elaborate: install* dict-route table builders + elaborateDict (dict-route stamping)
+
+-- dce: dead-code filter over the elaborated program (reachable-name closure)
+
+-- mangle: universal per-module private-name de-collision (standalone, discarded)
 
 -- lower: Core IR lowering of the elaborated program (prelude ++ target)
 

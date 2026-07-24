@@ -902,7 +902,7 @@ stage_times_min_modules() {
 # grade_time_stage, so a profiler that stops emitting the row still hard-fails with
 # "NO MEASUREMENT". This list is "stages graded at the shape's own band"; wasm-emit is
 # the one stage that is not, because it cannot afford resolve's N.
-TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower emit"
+TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck elaborate dce mangle fmt lint lower emit"
 
 # ── KNOWN SLOW (TIME) — a ledger, NOT a skip-list ────────────────────────────
 #
@@ -1089,9 +1089,28 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck fmt lint lower 
 #     not subtracted), and it is a WEAKER bound than `emit`'s: wasm's constant is ~10x
 #     llvm's, so it dilutes harder.
 #
-KNOWN_SLOW_TIME="xref:wasm-emit"
+KNOWN_SLOW_TIME="xref:wasm-emit xref:typecheck"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
+# xref:typecheck (TIME) — the SAME #907 typecheck superquadratic already ledgered on the
+# OP arm (KNOWN_SLOW_OPS, below). `match:typecheck`/`listlit:typecheck` ceilings already
+# exist above for this class, but those stages SKIP under the 200 ms TIME floor at their
+# small N and so never grade on TIME; `xref` is the first typecheck-class shape that
+# CLEARS the floor at the DEEP band (N=16000 typecheck ~8-10 s) and thus gets a real TIME
+# ratio. That ratio sits right on the 3.0 threshold and FLAPS across it: measured this box
+# at N=4000->8000->16000, r1=2.86-3.03 r2=3.01-3.66 (min-of-5, r1 dips under 3.0 on a quiet
+# box and over it under load) — a genuine boundary flap, not a clean pass, so the plain
+# `bad = r1>3 && r2>3` grading intermittently RED-FLAPS the nightly DEEP gate. It is NOT
+# introduced by #882 (typecheck runs entirely BEFORE the elaborate/dce/mangle stages this
+# PR added; a stage cannot perturb an earlier stage's time) — it is pre-existing, surfaced
+# by #882's real-N DEEP run (and likely nudged over the line by the effect-var-laundering
+# typecheck.mdk change that merged just ahead of this branch). Ledgered self-drainingly,
+# mirroring #881's manydefs:typecheck: ceiling 4.6 (the match:typecheck-class precedent)
+# clears the observed top (3.66) by ~26%; TFIXED 2.60 (file convention) sits well under the
+# band's floor (3.01), so a busy runner cannot false-PROMOTE it. Promotes out when #907's
+# root cause lands (which should drop the OP entry at the same time). Candidate #880 epic
+# follow-up: give the TIME arm the same ledger discipline the OP arm already has here.
+KNOWN_TCEIL_xref_typecheck="4.6";     KNOWN_TFIXED_xref_typecheck="2.60"
 # ⚠️ THIS ROW IS MEASURED AT TWO DIFFERENT BANDS depending on PERF_DEEP, and the entry
 # below has to hold for BOTH:
 #     DEEP  (nightly)  xref @ 4000->8000->16000   observed r2 3.85-4.15  (r1 3.57-3.82)
@@ -1156,7 +1175,7 @@ is_known_time() {
 # `desugar`/`exhaust-guards` are in the list for completeness: they currently do ZERO
 # counted ops (they call neither util.contains nor util.lookupAssoc), so they always
 # self-skip below OP_FLOOR — but the plumbing is here the day either starts scanning.
-OP_STAGES="desugar resolve mark typecheck exhaust-guards"
+OP_STAGES="desugar resolve mark typecheck exhaust-guards elaborate dce mangle"
 
 # TOOSMALL guard (mirrors the alloc arm's d1<1.0, NOT TIME's noise floor — op counts
 # are deterministic, so this is an ABSOLUTE-count guard, not a noise guard). A stage
@@ -1227,9 +1246,35 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 #         (The STAR dual, `starimports`, reads LINEAR on every arm — its findExports
 #         quadratic is uncounted AND dwarfed by linear buildEnvMM alloc — so it is a
 #         regression guard, NOT ledgered; see gen_starimports.)
-KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve manydefs:typecheck"
+#
+#   xref:elaborate — the ELABORATE stage (issue #882), the whole point of putting the
+#         install* dict-route table-builders + elaborateDict on the CI map. This block ran
+#         in the UNTIMED gap between typecheck and lower ("elaboration is deliberately
+#         OUTSIDE both timers"), so a superlinearity in it was structurally invisible. It
+#         IS superlinear — but SHAPE-SPECIFICALLY: on `xref` (an N-deep chain where each
+#         `fN x = f(N-1) x + N` references the previous def) the counted op work climbs
+#         ~n^1.75, while on `manydefs` (N unrelated defs, no cross-refs) elaborate reads a
+#         clean LINEAR r1=1.94 r2=1.97. That split localizes the cost to elaborateDict's
+#         reference-walking dict-routing (which scales with the REFERENCE fan-in of the
+#         call graph), NOT the install* table-builders (which scale with decl COUNT and
+#         would show on manydefs too). MEASURED (this box, deterministic single run):
+#         QUICK band N=2000/4000/8000 reads r1=2.92 r2=3.31 (r1 under 3.0 → the QUICK op
+#         arm would call it "ok" and HIDE it — the #884 reduced-N trap); the DEEP band
+#         N=4000/8000/16000 reads 24.13M -> 79.88M -> 287.40M, r1=3.31 r2=3.60 — both over
+#         the 3.0 threshold, so unledgered it FAILS at real N. Ledgered (not shipped red)
+#         because it is a PRE-EXISTING cost surfaced by #882's wiring, out of scope for the
+#         wiring itself — a candidate follow-up for the #880 epic. Op-count is the arm
+#         graded (deterministic, one run, no floor); it self-drains — promote it out the
+#         moment a fix drops r2 under OFIXED (linear).
+KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve manydefs:typecheck xref:elaborate"
 KNOWN_OCEIL_match_resolve="4.3";      KNOWN_OFIXED_match_resolve="2.60"
 KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
+# xref:elaborate — see the #882 block above. Ceiling 4.3 clears the observed DEEP r2=3.60
+# by ~19% (same headroom convention as manydefs:typecheck's 4.3 over 3.62); op counts are
+# deterministic so this absorbs only unrelated compiler-source drift, not runner noise.
+# OFIXED 2.60 (file convention): drops under it when elaborateDict's reference-walk routing
+# is made linear and this entry must be promoted out.
+KNOWN_OCEIL_xref_elaborate="4.3";     KNOWN_OFIXED_xref_elaborate="2.60"
 # manydefs:typecheck — the SAME typecheck O(decls^2) op-quadratic class as xref:typecheck
 # (issue #907), on the DEEP-only `manydefs` shape. It is NOT introduced by #881; it is a
 # pre-existing #884 op-arm signal that #884's QUICK-only validation never graded (manydefs

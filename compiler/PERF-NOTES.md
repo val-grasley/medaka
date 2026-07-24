@@ -778,6 +778,8 @@ mark_batch / desugar_batch unchanged.
   OCaml values created through the tree-walker, including GC-reclaimed temporaries).
 - `compiler/timer.mdk`: `allocSnap`, `emitPhaseA`, `emitTotalA` — new variants
   of the timing helpers that include an allocation-delta column (bytes → MB).
+  (`emitPhaseA` was later superseded by `emitPhaseAO`, which appends the #884
+  op-count column; the alloc-only `emitPhaseA` was removed as orphaned in #914.)
 - `compiler/typecheck.mdk`: `markModules` exported — the mark sub-phase of
   `elaborateModules` (compute rpNames + prePassDict over the full module graph);
   allows profiling drivers to bracket mark vs typecheck separately.
@@ -786,8 +788,8 @@ mark_batch / desugar_batch unchanged.
   Breaks out the `elaborate` lump that `perf_main.mdk` reports as one phase.
 - `test/profile_compiler.sh` updated: adds `profile_modules` section, handles
   4-field output format (stage / time / allocMB / ops).
-- `compiler/entries/profile_main.mdk` updated: uses `emitPhaseA`/`emitTotalA` — alloc
-  column now appears in the single-file table too.
+- `compiler/entries/profile_main.mdk` updated: uses `emitPhaseAO`/`emitTotalA` — alloc
+  (and op-count) columns now appear in the single-file table too.
 
 **Correctness:** check_modules_batch 13 ok; selfproc 16 ok; eval_dict 16 ok;
 mark_batch/desugar_batch 121 matched; eval_modules 4 ok.  perf_main.mdk still

@@ -23,14 +23,14 @@ perfEnabled () = match getEnv "MEDAKA_PERF"
 -- True when MEDAKA_PERF_WASM is set to any value in the environment.
 --
 -- SEPARATE from perfEnabled, and it gates WORK rather than OUTPUT — that is the
--- whole point. Every other stage is gated only on printing (`emitPhaseA on ...`),
+-- whole point. Every other stage is gated only on printing (`emitPhaseAO on ...`),
 -- because every other stage is cheap enough to always run. `wasm-emit` is not: it
 -- is ~10x llvm_emit and, sampled at the `xref` shape's resolve-driven N=16000, it
 -- cost the `gates (types)` shard ~277 s per run and made it the CI critical path
 -- at 12 min against engines' 3.7 min.
 --
--- ⚠️ A CALLER MUST BRANCH ON THIS, NOT PASS IT TO emitPhaseA. Medaka is strict, so
--- `emitPhaseA (perfWasmEnabled ()) "wasm-emit" ... (wasmText cprog)` still RUNS the
+-- ⚠️ A CALLER MUST BRANCH ON THIS, NOT PASS IT TO emitPhaseAO. Medaka is strict, so
+-- `emitPhaseAO (perfWasmEnabled ()) "wasm-emit" ... (wasmText cprog)` still RUNS the
 -- emission and saves nothing — it only hides the line. See profile_main.mdk.
 --
 -- ⚠️ EMPTY IS OFF — a DELIBERATE divergence from perfEnabled's "set to any value",
@@ -82,15 +82,7 @@ countList (_::xs) = 1 + countList xs
 export allocSnap : Unit -> <IO> Float
 allocSnap () = allocBytes ()
 
--- Extended phase emit that includes an allocation-delta column (bytes → MB).
--- Format: [perf] <label>\t<elapsed>s\t<allocMB>MB\t<ops>
-export emitPhaseA : Bool -> String -> Float -> Float -> String -> <IO> Unit
-emitPhaseA False _ _ _ _ = ()
-emitPhaseA True label elapsed allocDelta ops =
-  ePutStrLn
-    "[perf] \{label}\t\{floatToString elapsed}s\t\{floatToString (allocDelta / 1048576.0)}MB\t\{ops}"
-
--- Extended total emit with allocation (four-field format to match emitPhaseA).
+-- Extended total emit with allocation (four-field format to match emitPhaseAO).
 export emitTotalA : Bool -> Float -> Float -> <IO> Unit
 emitTotalA False _ _ = ()
 emitTotalA True elapsed allocTotal =
@@ -104,7 +96,7 @@ emitTotalA True elapsed allocTotal =
 -- ⚠️ The op-delta MUST be its own tab-delimited field. The existing `<ops>` field is
 -- FREE-FORM and contains spaces ("N decls", "runtime+core"), so the perf gate's
 -- op-arm parses this with `awk -F'\t'` and reads field 5. A whitespace split would
--- land inside `<ops>` and read garbage — see diff_compiler_perf_scaling.sh:stage_ops.
+-- land inside `<ops>` and read garbage — see diff_compiler_perf_scaling.sh:ops_from.
 --
 -- No existing consumer breaks: the gate's TIME/ALLOC arms and profile_compiler.sh
 -- read whitespace-split fields 2/3/4, none of which move when a 5th tab-field is

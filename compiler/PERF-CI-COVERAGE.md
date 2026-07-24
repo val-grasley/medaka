@@ -75,16 +75,21 @@ That is genuinely strong. The holes are specific.
    `contains`-over-`expValues`. A star (one module importing N) or a re-export fan-out is O(N²) in
    one module — and *nothing in CI can see it*. The single biggest hole.
 
-2. **DCE (`dceFilter`) is exercised but timed by nothing.** (#882) In `profile_main` it runs in
-   the untimed gap between the `typecheck` and `lower` timers — not its own stage, not folded
-   into a measured one. `compiler/ir/dce.mdk`.
+2. **DCE (`dceFilter`) is exercised but timed by nothing.** (#882 — ✅ CLOSED) `profile_main` now
+   has its own `dce` stage (op arm reads 0 counted ops — no util.contains/lookupAssoc — so it
+   self-skips the op floor and is graded on TIME/alloc). `compiler/ir/dce.mdk`.
 
-3. **Elaboration is deliberately untimed.** (#882) `elaborateDict` + the eight `install*`
-   table-builders sit outside both timers by design. Any of these table-builds could go O(n²) unseen.
+3. **Elaboration is deliberately untimed.** (#882 — ✅ CLOSED) `profile_main` now has an
+   `elaborate` stage over `elaborateDict` + the eight `install*` table-builders. It IS superlinear
+   — but shape-specifically: `xref` (reference fan-in) reads op r1=3.31 r2=3.60 at N=4000→16000,
+   while `manydefs` (decl count, no cross-refs) is linear — localizing the cost to
+   `elaborateDict`'s reference-walk dict-routing, not the table-builds. Ledgered self-draining as
+   `xref:elaborate` in `KNOWN_SLOW_OPS`; candidate #880 follow-up.
 
-4. **`mangleUnits` is not exercised by either profiler at all.** (#882) The real emit drivers run
-   it before lowering; `profile_main` skips straight to `dceFilter → lowerProgramEmit`.
-   `compiler/backend/private_mangle.mdk`.
+4. **`mangleUnits` is not exercised by either profiler at all.** (#882 — ✅ CLOSED) `profile_main`
+   now has a `mangle` stage: it runs `mangleUnits` standalone over `(core, [("target", target)])`
+   and DISCARDS the result (additive — `lower`/`emit` stay byte-unchanged). Reads LINEAR on every
+   shape. `compiler/backend/private_mangle.mdk`.
 
 5. **The multi-module path has no backend coverage.** (#881) `profile_modules_main` stops at
    typecheck — no `lower`/`emit`/`wasm-emit`. An O(modules²) in lowering or cross-module dict
@@ -147,9 +152,11 @@ N-statement `do` blocks. Parser op-chains are provably linear — `chainl1` is a
 `profile_modules_main` (run `resolveModulesErrorsG` and time it), and optionally `lower`/`emit` so
 the multi-module backend is covered. Then add the shapes in §5.
 
-**P2 — Time DCE, elaboration, and mangle.** (#882) In `profile_main`, wrap `dceFilter`,
-`elaborateDict`+`install*`, and add a `mangleUnits` call, each as its own `[perf]` stage (or one
-combined `elaborate` stage). Enrol the new stages in `TIME_STAGES` and the op-count arm.
+**P2 — Time DCE, elaboration, and mangle.** (#882 — ✅ DONE) `profile_main` now emits `elaborate`,
+`dce`, and `mangle` stages (the `mangleUnits` call is standalone + discarded, so `lower`/`emit` are
+byte-unchanged), all enrolled in `TIME_STAGES` and `OP_STAGES`. Zero new profiler invocations — the
+new stages ride the runs already happening. Surfaced one pre-existing superlinear (`xref:elaborate`,
+op), ledgered self-draining. Also folded in the #914 cleanup (stale `emitPhaseA` comment/orphan).
 
 **P3 — An eval scaling gate (nightly).** (#887) New profiler over `eval.mdk`/`cevalModules`, graded
 on per-stage time (+ op-count). Shapes: deep tail recursion, a big-`match` interpreted hot loop,
