@@ -2869,7 +2869,7 @@ data PerRun = PerRun {
     obls : Windowed UObligation,  -- #838 I1: the call channel (pendingCallObligations/N), ported onto Windowed
     absorptions : Windowed AbsorptionEvent,  -- #839 2a: row-unifier atom-discard trail (write-only in 2a); windowed per body by the existing obls brackets
     schemeObligationsRef : Ref (List ((String, Int), List (String, List Int))),  -- #837: keyed by (binding-name, binding-id) — the id from resolve's
-    schemeDefIdsRef : Ref (List (String, Int)),  -- stampBindingIds, so a where-helper `g`'s obligations can no longer leak
+    schemeDefIdsRef : Ref (OrdMap Int),  -- stampBindingIds, so a where-helper `g`'s obligations can no longer leak
     methodConstraintsRef : Ref (List (String, List Int)),  -- onto an unrelated top-level `g` (retires the three snapshot/restore windows).
     methodConstraintPositionsRef : Ref (List (String, List Int)),  -- id 0 = a local/where/cross-module binder → the bare-name fallback path.
     pendingMethodDicts : Ref (List (Ref (List Route), List Mono)),
@@ -2935,7 +2935,7 @@ freshPerRun _ = PerRun {
   obls = wNew (),
   absorptions = wNew (),  -- #839 2a: resets per module for free via this whole-record re-mint
   schemeObligationsRef = Ref [],
-  schemeDefIdsRef = Ref [],
+  schemeDefIdsRef = Ref omEmpty,
   methodConstraintsRef = Ref [],
   methodConstraintPositionsRef = Ref [],
   pendingMethodDicts = Ref [],
@@ -3387,7 +3387,7 @@ ppSchemeNamed n s =
   -- module last checked).  With the leak-guard windows retired this is what stops a
   -- where-helper `g`'s obligation rendering on an unrelated top-level `g`; a binder
   -- absent from schemeDefIdsRef (id 0) falls to the bare-name scan (today's path).
-  let id = fromOption 0 (lookupAssoc n perRun.value.schemeDefIdsRef.value)
+  let id = fromOption 0 (omLookup n perRun.value.schemeDefIdsRef.value)
   ppSchemeCon
     (fromOption [] (lookupSchemeObls n id perRun.value.schemeObligationsRef.value))
     s
@@ -7332,7 +7332,7 @@ registerLocalScheme x sch oblN0 callN0 dictN0 =
   -- mirroring PCallSlot obligation recorded at inferDictAtFound (recordCallObligations,
   -- beside pushDictApp), reaching schemeOblsForMember via forwardedVecObls; the old
   -- `allDictObls` re-derivation was a redundant second source (deduped away). Retired.
-  registerSchemeObligations [] [] callOblsDelta addedObls [(x, sch)]
+  registerSchemeObligations omEmpty [] callOblsDelta addedObls [(x, sch)]
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> Mono
 inferLetSimple env pat e1 e2 =
@@ -8074,7 +8074,7 @@ processLetGroup env binds =
   -- reject, closing the orphaned-local-constraint S0 (#827).  See registerLocalScheme.
   -- #838 I5: dict-slot forwarding rides callOblsDelta's PCallSlot obligations (see
   -- registerLocalScheme); the redundant `allDictObls` re-derivation is retired.
-  let _ = registerSchemeObligations [] [] callOblsDelta addedObls (groupSchemesOf genv binds)
+  let _ = registerSchemeObligations omEmpty [] callOblsDelta addedObls (groupSchemesOf genv binds)
   genv
 
 -- the generalized (name, scheme) pairs of a just-closed local group
@@ -11866,7 +11866,11 @@ checkBodyImpl seed mode prog0 =
   -- into core/user slices for the two-phase Flat inference.
   let stampRes = stampBindingIds prog
   let progS = fst stampRes
-  let _ = setRef perRun.value.schemeDefIdsRef (snd stampRes)
+  -- #907: index name→id as an OrdMap (was a List scanned linearly per rendered
+  -- scheme in ppSchemeNamed / per SCC member in registerSchemeObligations → O(decls²)).
+  -- Built from the REVERSED pairs so omFromPairs' last-write-wins reproduces the old
+  -- `lookupAssoc` first-match-wins on a duplicated binder name (same pattern as sigTyMapRef).
+  let _ = setRef perRun.value.schemeDefIdsRef (omFromPairs (reverseL (snd stampRes)) omEmpty)
   let coreLen = match mode
     Flat coreProg => listLen coreProg
     Module _ _ _ => 0
@@ -15108,9 +15112,9 @@ maybeInferConstraint sigs m sch
 -- `pure` infers Applicative now renders just `Thenable a =>` (Applicative is entailed
 -- by `Thenable requires Applicative`, so it is checked-and-dropped, not merged).
 -- #837: [memberDefIds] carries each TOP-LEVEL member's binding id (processSCC passes
--- schemeDefIdsRef); the local/where call sites pass [] so their members key under the
--- sentinel id 0.  A member absent from [memberDefIds] is a local/where binder → 0.
-registerSchemeObligations : List (String, Int) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+-- schemeDefIdsRef); the local/where call sites pass omEmpty so their members key under
+-- the sentinel id 0.  A member absent from [memberDefIds] is a local/where binder → 0.
+registerSchemeObligations : OrdMap Int -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 registerSchemeObligations _ _ _ _ [] = ()
 registerSchemeObligations memberDefIds sigTvMaps callObls addedObls ((m, sch)::rest) =
   -- #838 I2 / #827: record this binding's QUANTIFIED (generalized) var ids as
@@ -15126,7 +15130,7 @@ registerSchemeObligations memberDefIds sigTvMaps callObls addedObls ((m, sch)::r
   let obs = dedupVecObls (schemeOblsForMember sigTvMaps callObls addedObls m sch)
   let _ = if isEmptyL obs then ()
   else
-    let defId = fromOption 0 (lookupAssoc m memberDefIds)
+    let defId = fromOption 0 (omLookup m memberDefIds)
     setRef
       perRun.value.schemeObligationsRef
       (((m, defId), obs)::perRun.value.schemeObligationsRef.value)

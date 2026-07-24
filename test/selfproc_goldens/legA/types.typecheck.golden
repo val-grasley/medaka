@@ -1092,7 +1092,7 @@ registerOneMethodDict : String -> Int -> Int -> List (Int, Mono) -> Unit
 registerPredGiven : String -> List Mono -> String -> Unit
 registerRecordInfoKeyed : String -> String -> List String -> List Field -> Unit
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> Unit
-registerSchemeObligations : List (String, Int) -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
+registerSchemeObligations : Map String Int -> List (String, Ty, List (String, Mono)) -> List (String, List Mono, Option Loc) -> List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> Unit
 registerVariants : TcEnv -> String -> List String -> List Variant -> TcEnv
 registersElementDict : String -> List String -> Bool
 rejectCyclicAliases : Unit -> Unit
