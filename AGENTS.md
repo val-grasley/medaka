@@ -580,6 +580,17 @@ narrative lives at the link.
   is a dead end** — it looks for the `.md` next to the source and fails with *"no snapshot …
   `--bless` never creates one — run `medaka snapshot --new` first"* (exit 1). Two agents lost time
   to this on 2026-07-16 because this bullet said *what* to do and never *which command*.
+  ⚠️ **A SECOND, easily-missed golden moves too: the selfproc LEG A *scheme* golden.** A
+  compiler-source change that adds/renames/re-types a top-level binding also moves
+  `test/selfproc_goldens/legA/<module>.golden` (that module's inferred schemes), diffed by
+  `test/diff_compiler_selfproc.sh` **in the CI `backend` shard** — NOT the snapshot/check
+  gates, so it stays green locally and reds only in CI. Re-capture: `sh test/capture_goldens.sh
+  --frozen selfproc_legA`, then read the diff — it must be **additive-only** (no *existing*
+  binding's inferred type may change; if one did, the "fix" changed types). LEG A corpus:
+  `frontend.{ast,desugar,exhaust,lexer,marker,parser,resolve}`, `types.{annotate,typecheck}`,
+  `driver.loader`, `eval.eval`, `ir.sexp`, `tools.check` — **not** `ir.core_ir_lower`, **not**
+  `backend/*`. Three perf PRs reddened only this shard on 2026-07-24 by blessing the snapshot
+  but forgetting this golden.
 - **The compiler MAY import `stdlib/`** — deliberately, per module (policy changed
   2026-06-29; the old blanket ban is retired). **Weigh it per module, don't import
   reflexively.** Measured:
