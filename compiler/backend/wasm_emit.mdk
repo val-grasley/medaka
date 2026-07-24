@@ -7630,13 +7630,21 @@ emitTupleRef prog env d es =
 -- #712/S0: the `[]` terminator is the BUILT-IN list Nil — emit its reserved ordinal
 -- i31 directly, not `emitCtorConstruct "Nil"` (whose `ctorOrdinal "Nil"` a coexisting
 -- user `Nil` ctor would poison to the user's declaration-order ordinal).
+-- Assembled LINEARLY.  The old two-clause recursion emitted, per cons level,
+-- `["i32.const 0"] ++ hd ++ tl ++ ["struct.new $C_Cons"]`, whose right-associated
+-- `tl ++ ["struct.new $C_Cons"]` COPIED the growing accumulated instruction list at
+-- each of N levels — O(n²) instruction-cons allocation in list-literal width (#522;
+-- the LLVM peer emitList/emitRtList prepends via `::` and is linear).  The emitted WAT
+-- is BYTE-IDENTICAL: N leading `(i32.const 0, <head instrs>)` prefixes, then the
+-- built-in Nil i31 terminator, then N `struct.new $C_Cons` closers — exactly the
+-- flattening of the old right-nested `struct.new (Cons hd tl)` spine.  Each `flatMap`
+-- chunk / `replicate` cell is constant-length, so total assembly is O(n).
 emitListRef : Prog -> List String -> Int -> List CExpr -> List String
-emitListRef prog env d [] =
-  ["i32.const " ++ intToString (syntheticCtorOrdinal "Nil"), "ref.i31"]
-emitListRef prog env d (x::xs) =
-  let hd = emitRefExpr prog env d x
-  let tl = emitListRef prog env d xs
-  ["i32.const 0"] ++ hd ++ tl ++ ["struct.new $C_Cons"]
+emitListRef prog env d es =
+  let prefixes = flatMap (x => ["i32.const 0"] ++ emitRefExpr prog env d x) es
+  let nilTerm = ["i32.const " ++ intToString (syntheticCtorOrdinal "Nil"), "ref.i31"]
+  let closers = replicate (listLen es) "struct.new $C_Cons"
+  prefixes ++ nilTerm ++ closers
 
 -- a range list [lo..hi] / [lo..=hi]: a back-to-front counted loop building the cons
 -- spine in a scratch accumulator local.  The accumulator + counter reuse the
