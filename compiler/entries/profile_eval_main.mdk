@@ -1,0 +1,106 @@
+-- Single-file per-stage timing driver for the two INTERPRETERS (issue #887, P3).
+--
+--   MEDAKA_PERF=1 medaka run compiler/entries/profile_eval_main.mdk \
+--       stdlib/runtime.mdk stdlib/core.mdk <target.mdk>
+--
+-- The tree-walking interpreter (compiler/eval/eval.mdk — `medaka run`, doctests,
+-- repl) and the Core-IR interpreter (compiler/ir/core_ir_eval.mdk — `cevalModules`)
+-- are covered for CORRECTNESS only (diff_compiler_eval*.sh); no profiler ran them,
+-- so a quadratic in the tree-walker's env/frame handling or the Core-IR evaluator's
+-- dispatch would ship silently. This driver puts BOTH on the perf map, emitting the
+-- same `[perf] <stage>\t<t>s\t<MB>MB\t<ops>\t<opDelta>` protocol profile_main uses,
+-- graded by test/diff_compiler_eval_scaling.sh (nightly).
+--
+-- Stages timed (per invocation):
+--   parse-prelude   parse + desugar core.mdk (fixed setup cost, subtracted out)
+--   parse           lex + parse + desugar the target file
+--   eval            evalModulesOutput  — the TREE-WALKER over [("target", decls)],
+--                   forcing `main` for its effects and CAPTURING the output string
+--                   (forced via stringLength so it is not left a thunk)
+--   ceval           cevalModulesOutput — the CORE-IR evaluator over the SAME input,
+--                   which lowers each module's groups/impls to Core IR internally
+--                   and forces `main` the same way
+--
+-- ⚠️ UNTYPED PATH, DELIBERATELY. Both drivers take DESUGARED decls and run WITHOUT
+-- marker/typecheck — exactly the untyped multi-module path eval_modules_main.mdk /
+-- core_ir_modules_main.mdk drive. So the profiler's fixtures must be MONOMORPHIC:
+-- no return-position typeclass dispatch (`pure`, the Parser monad), which needs
+-- types to narrow. The eval-scaling shapes (tail recursion, a big `match`, list
+-- builders) are all monomorphic Int/List/ADT work and run correctly untyped.
+--
+-- ⚠️ `runtime.mdk` is accepted for CLI parity with profile_main (so the gate's
+-- `$PROFILE $RUNTIME $CORE $fixture` invocation is byte-identical) but is UNUSED:
+-- untyped eval's externs come from eval.mdk's own `externBindings`, not runtime.mdk.
+--
+-- Without MEDAKA_PERF set the driver exits silently (a measurement tool, not a
+-- pipeline validator). For min-of-K timings the gate runs this driver K times.
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalModulesOutput}
+import ir.core_ir_eval.{cevalModulesOutput}
+import support.timer.{perfEnabled, now, emitPhaseAO, emitTotalA, allocSnap}
+import support.opcount.{setOpCounting, opSnap}
+import support.util.{listLen}
+
+main = match args ()
+  _::corePath::targetPath::_ => run corePath targetPath
+  _ => ePutStrLn "usage: MEDAKA_PERF=1 medaka run compiler/entries/profile_eval_main.mdk <runtime.mdk> <core.mdk> <target.mdk>"
+
+run : String -> String -> <IO> Unit
+run corePath targetPath = match readFile corePath
+  Err e => ePutStrLn e
+  Ok csrc => match readFile targetPath
+    Err e => ePutStrLn e
+    Ok tsrc => runStaged (perfEnabled ()) csrc tsrc
+
+-- Time each interpreter stage; emit [perf] lines to stderr when on. Each line
+-- carries an allocation-delta column (deterministic) and the op-count delta.
+runStaged : Bool -> String -> String -> <IO> Unit
+runStaged on csrc tsrc =
+  -- Turn the deterministic OP-COUNT side channel on exactly when perf output is on
+  -- (issue #884), ONCE at entry — mirrors profile_main. eval's env lookup is its own
+  -- machinery (not util.contains/lookupAssoc), so the op arm reads ~flat here; it is
+  -- a regression tripwire on the counted path, and the gate self-skips a flat op row.
+  let _ = setOpCounting on
+  let tTotal = now ()
+  let aTotal = allocSnap ()
+  -- parse-prelude: parse + desugar core.mdk (the shared prelude both drivers take).
+  let tPP0 = now ()
+  let aPP0 = allocSnap ()
+  let oPP0 = opSnap ()
+  let coreDecls = desugar (parse csrc)
+  let tPP1 = now ()
+  let _ = emitPhaseAO on "parse-prelude" (tPP1 - tPP0) (allocSnap () - aPP0) "core" (opSnap () - oPP0)
+  -- parse: lex + parse + desugar the target file.
+  let tP0 = now ()
+  let aP0 = allocSnap ()
+  let oP0 = opSnap ()
+  let targetDecls = desugar (parse tsrc)
+  let tP1 = now ()
+  let declsOp = intToString (listLen targetDecls) ++ " decls"
+  let _ = emitPhaseAO on "parse" (tP1 - tP0) (allocSnap () - aP0) declsOp (opSnap () - oP0)
+  let modules = ("target", targetDecls) :: []
+  -- eval: the TREE-WALKER. evalModulesOutput forces `main` and captures stdout;
+  -- stringLength forces the captured string so the whole evaluation is realized
+  -- inside the timed region (Medaka is strict, but a returned String is otherwise
+  -- only forced by a consumer — here the consumer is this length probe).
+  let tE0 = now ()
+  let aE0 = allocSnap ()
+  let oE0 = opSnap ()
+  let outE = evalModulesOutput coreDecls modules
+  let _ = stringLength outE
+  let tE1 = now ()
+  let _ = emitPhaseAO on "eval" (tE1 - tE0) (allocSnap () - aE0) declsOp (opSnap () - oE0)
+  -- ceval: the CORE-IR evaluator over the SAME desugared input (it lowers to Core IR
+  -- internally). Its frame semantics deliberately mirror eval's (parallel drivers),
+  -- so a divergence in one interpreter's scaling shows against the other.
+  let tC0 = now ()
+  let aC0 = allocSnap ()
+  let oC0 = opSnap ()
+  let outC = cevalModulesOutput coreDecls modules
+  let _ = stringLength outC
+  let tC1 = now ()
+  let _ = emitPhaseAO on "ceval" (tC1 - tC0) (allocSnap () - aC0) declsOp (opSnap () - oC0)
+  emitTotalA on (tC1 - tTotal) (allocSnap () - aTotal)

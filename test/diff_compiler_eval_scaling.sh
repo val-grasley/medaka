@@ -1,0 +1,295 @@
+#!/bin/sh
+# diff_compiler_eval_scaling.sh — the O(n^2) detector for the two INTERPRETERS
+# (issue #887, epic #880, PERF-CI-COVERAGE.md §4 P3). NIGHTLY.
+#
+# THE HOLE THIS CLOSES
+# --------------------
+# The tree-walking interpreter (compiler/eval/eval.mdk — `medaka run`, doctests,
+# repl) and the Core-IR interpreter (compiler/ir/core_ir_eval.mdk — `cevalModules`)
+# were covered for CORRECTNESS only (diff_compiler_eval*.sh / _core_ir*.sh). No
+# profiler ran them, so a quadratic in the tree-walker's env/frame handling or the
+# Core-IR evaluator's dispatch/lowering would ship silently. This gate runs both
+# over synthetic inputs of size N, 2N, 4N and grades the GROWTH RATIO — the same
+# scaling discipline as diff_compiler_perf_scaling.sh, applied where nothing looked.
+#
+# WHY DETERMINISTIC METRICS ONLY (alloc + op), NOT WALL-TIME
+# ---------------------------------------------------------
+# diff_compiler_perf_scaling.sh grades allocation PLUS a heap-pinned min-of-K TIME
+# arm. That TIME arm is deliberately ABSENT here, and the absence is measured, not
+# lazy: the interpreters' wall-clock latency is SUPER-LINEAR IN RECURSION DEPTH on
+# the CURRENT, CORRECT interpreter — a depth-N non-tail recursion that retains a
+# growing live set (the `listbuild` shape below) reads a ~4.0x TIME ratio while its
+# ALLOCATION ratio is a clean ~2.0x, and pinning the GC heap (which fixes the
+# heap-resize step perf_scaling documents) does NOT remove it (measured 4.1x pinned).
+# It is inherent to a non-TCO tree-walker under a conservative GC (the deep host
+# stack is re-scanned per collection), so a wall-time gate here would be a PERMANENT
+# FALSE-RED, the exact failure mode perf_scaling's rules 2-4 exist to prevent. So
+# this gate follows diff_compiler_references_scaling.sh's precedent instead — grade
+# the DETERMINISTIC, noise-free signals only:
+#
+#   ALLOCATION (primary)  GC-allocated bytes are deterministic and see a frame/env
+#                         COPY quadratic (a tree-walker that copied the whole env per
+#                         call would allocate O(n^2)). Baseline-subtracted per stage.
+#   OP-COUNT   (secondary) util.contains/util.lookupAssoc scan steps (support/opcount.mdk,
+#                         the emitPhaseAO 5th column). Noise-free like allocation but
+#                         ALSO sees a pure O(n^2) SCAN that allocates nothing — the
+#                         List-as-set class. This is what catches the Core-IR lowering
+#                         quadratic the `bigmatch` shape exercises (see the ledger).
+#
+# Both are deterministic ⇒ ONE run per size suffices (no min-of-K, no heap-pin, no
+# floor). A stage whose net op-delta is below OP_FLOOR is graded on ALLOCATION alone
+# and its op arm SELF-SKIPS (loudly) — most eval/ceval stages add ~0 counted ops
+# (their per-iteration env lookup is eval-internal, not util.contains/lookupAssoc),
+# so the op arm is a targeted tripwire, not a universal one.
+#
+# THE SHAPES (each stresses a different interpreter structure)
+# -----------------------------------------------------------
+#   tailrec   — deep TAIL recursion. Stresses env/frame allocation and the value
+#               representation over a long iteration. ALLOC linear (~2.0). Depth is
+#               capped below eval.mdk's 25000-frame guard, so N tops out at 16000.
+#   listbuild — a list BUILDER (non-tail `range`) + a fold. Stresses cons allocation
+#               and list traversal. ALLOC linear (~2.0).
+#   bigmatch  — a value classified by an N-arm `match` over an N-constructor data
+#               type, driven a FIXED number of times. The TREE-WALKER interprets the
+#               match directly (op-count FLAT). The CORE-IR evaluator LOWERS it first
+#               (lowerGroups → core_ir_lower.distinctConHeads → dedupHeads), and that
+#               lowering is a LEDGERED O(arms^2) scan — see KNOWN_SLOW_OPS below.
+#
+# NON-ZERO-GRADED ASSERTION (PERF-CI-COVERAGE.md §8): the gate refuses to exit 0 if
+# the ALLOC arm graded nothing OR the OP arm (ledger included) graded nothing — a
+# blind spot must name itself, never pass silently.
+#
+# Usage:  sh test/diff_compiler_eval_scaling.sh
+# Exit:   0 both interpreters scale as expected; 1 a shape regressed (or a ledgered
+#         quadratic was FIXED and needs promotion); 2 opt-in skip (oracle missing).
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROFILE="$ROOT/test/bin/profile_eval_main"
+RUNTIME="$ROOT/stdlib/runtime.mdk"
+CORE="$ROOT/stdlib/core.mdk"
+
+[ -x "$PROFILE" ] || {
+  echo "build oracles first: FORCE=1 JOBS=1 sh test/build_oracles.sh --build-one profile_eval_main (missing $PROFILE)"
+  exit 2
+}
+
+# FAIL threshold per doubling — same calibration as perf_scaling: linear 2.0,
+# n log n ~2.1, quadratic 4.0. 3.0 admits n log n with slack and catches n^2.
+THRESH="${EVAL_THRESH:-3.0}"
+
+# A stage whose net op-delta (largest N) is below this is graded on ALLOCATION only;
+# its op ratio would be computed out of a tiny constant and means nothing.
+OP_FLOOR="${EVAL_OP_FLOOR:-1000}"
+
+# ── The shapes' N bands ──────────────────────────────────────────────────────
+# tailrec/listbuild scale the iteration/list dimension; bigmatch scales the match
+# ARM (= constructor) count, so its N is smaller (parse + lower of N ctors).
+TAILREC_N="${EVAL_TAILREC_N:-4000}"      # 4000/8000/16000  (16000 < eval's 25000 guard)
+LISTBUILD_N="${EVAL_LISTBUILD_N:-4000}"  # 4000/8000/16000
+BIGMATCH_N="${EVAL_BIGMATCH_N:-500}"     # 500/1000/2000
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+# ── KNOWN SUPERLINEAR (a self-draining LEDGER, NOT a skip-list) ───────────────
+# Same model as perf_scaling's KNOWN_SUPERLINEAR / references_scaling's design: an
+# entry asserts the CURRENT, WRONG behaviour so (a) it cannot get worse silently and
+# (b) an ACCIDENTAL FIX is DETECTED and demands promotion. (b) is the whole point.
+#
+#   ceval:bigmatch (op) — the CORE-IR evaluator's op-count is O(arms^2) when it lowers
+#     an N-arm match over an N-constructor type. Localized: cevalModules (core_ir_eval.mdk)
+#     calls lowerGroups (core_ir_lower.mdk), whose match compiler calls distinctConHeads →
+#     dedupHeads, which does `contains c seen` against a GROWING `seen` list — a textbook
+#     List-as-set scan, O(arms^2). The TREE-WALKER (eval.mdk) interprets the AST match
+#     directly and never lowers, so its op-count is FLAT — this is a CORE-IR-lowering
+#     quadratic surfaced through ceval, and it is on the `medaka build` lowering path too
+#     (lowerProgramEmit shares core_ir_lower). Filed as #960 (a #880 follow-up).
+#     MEASURED (this box, deterministic net op-count, N=500/1000/2000/4000):
+#       124750 → 499500 → 1999000 → 7998000   r = 4.004 / 4.002 / 4.001  (pure n^2)
+#     ALLOCATION is blind to it (ceval:bigmatch net alloc reads a clean ~1.97x linear —
+#     the scan allocates ~nothing), which is exactly why the op arm exists.
+# A ledgered "<stage>:<shape>" entry is graded against a WINDOW [PROMOTE_BELOW, CEIL]
+# on its worst doubling ratio: below PROMOTE_BELOW ⇒ FIXED, promote out (FAIL); above
+# CEIL ⇒ worsened (FAIL); inside ⇒ ledgered-OK.
+KNOWN_SLOW_OPS="ceval:bigmatch"
+# ratio window for the ledgered quadratic: it must stay quadratic (>= PROMOTE_BELOW)
+# but not get worse than CEIL. 4.0 is pure-n^2; 3.0 would mean it dropped toward
+# linear (fixed). Generous CEIL headroom over the measured 4.004 for runner variance
+# (op-count is deterministic, so this is belt-and-braces, not noise tolerance).
+LEDGER_PROMOTE_BELOW="${EVAL_LEDGER_PROMOTE_BELOW:-3.0}"
+LEDGER_CEIL="${EVAL_LEDGER_CEIL:-4.5}"
+
+is_ledgered() {
+  for k in $KNOWN_SLOW_OPS; do [ "$k" = "$1" ] && return 0; done
+  return 1
+}
+
+# ── Generators ───────────────────────────────────────────────────────────────
+gen_tailrec() {
+  n=$1; f=$2
+  # A tail-recursive countdown. eval.mdk has no TCO, so this recurses N frames deep
+  # in the interpreter (native, 256MB worker stack) — N is kept under the 25000-frame
+  # guard. Allocation is O(N) (one frame per step); a frame/env COPY regression is O(N^2).
+  printf 'loop : Int -> Int -> Int\nloop n acc = match n\n  0 => acc\n  _ => loop (n - 1) (acc + 1)\nmain = println (loop %s 0)\n' "$n" > "$f"
+}
+
+gen_listbuild() {
+  n=$1; f=$2
+  # Build an N-element list via non-tail `range`, then fold it. Stresses cons
+  # allocation + list traversal. ALLOC is O(N); the wall-TIME super-linearity noted
+  # in the header lives here (retained growing live set) — which is exactly why this
+  # gate does not grade time.
+  {
+    printf 'range : Int -> Int -> List Int\n'
+    printf 'range lo hi = match lo < hi\n  False => []\n  True => lo :: range (lo + 1) hi\n'
+    printf 'sum : List Int -> Int\n'
+    printf 'sum xs = match xs\n  [] => 0\n  y :: ys => y + sum ys\n'
+    printf 'main = println (sum (range 0 %s))\n' "$n"
+  } > "$f"
+}
+
+gen_bigmatch() {
+  n=$1; f=$2
+  # data T with N NULLARY constructors; classify is an N-arm match hitting the LAST
+  # arm (worst-case linear scan in the tree-walker), driven a FIXED number of times.
+  # The tree-walker interprets the match directly (op FLAT); the Core-IR evaluator
+  # LOWERS it, hitting the ledgered dedupHeads O(arms^2) scan.
+  printf 'data T =\n' > "$f"
+  i=0; while [ "$i" -lt "$n" ]; do
+    if [ "$i" -eq 0 ]; then printf '  C%s\n' "$i"; else printf '  | C%s\n' "$i"; fi
+    i=$((i+1))
+  done >> "$f"
+  printf 'classify : T -> Int\nclassify v = match v\n' >> "$f"
+  i=0; while [ "$i" -lt "$n" ]; do printf '  C%s => %s\n' "$i" "$i"; i=$((i+1)); done >> "$f"
+  last=$((n - 1))
+  printf 'drive : Int -> Int -> Int\n' >> "$f"
+  printf 'drive k acc = match k\n  0 => acc\n  _ => drive (k - 1) (acc + classify C%s)\n' "$last" >> "$f"
+  printf 'main = println (drive 400 0)\n' >> "$f"
+}
+
+# ── Measure: run the profiler ONCE, print "<stage> <allocMB> <opDelta>" per stage ─
+# The profiler line is  [perf] <label>\t<t>s\t<MB>MB\t<ops>\t<opDelta>  — parse with
+# awk -F'\t' and read fields 3 (alloc) and 5 (op); the <ops> field 4 is free-form
+# with spaces (see support/timer.mdk:emitPhaseAO). Deterministic ⇒ one run suffices.
+measure() {
+  MEDAKA_PERF=1 "$PROFILE" "$RUNTIME" "$CORE" "$1" 2>&1 \
+    | awk -F'\t' '/^\[perf\] (eval|ceval)\t/ {
+        split($1, a, " "); m = $3; gsub(/MB/, "", m); print a[2], m, $5 }'
+}
+
+# baseline (empty program): subtract each stage's fixed prelude-eval constant so the
+# ALLOC ratio reflects what the INPUT costs, not the ~1 MB constant that dominates at
+# small N (the same trap perf_scaling's BASE_ALLOC subtraction avoids).
+BASE_FIX="$WORK/_baseline.mdk"
+printf 'main = println 1\n' > "$BASE_FIX"
+BASE_OUT="$(measure "$BASE_FIX")"
+base_alloc() { printf '%s\n' "$BASE_OUT" | awk -v s="$1" '$1==s{print $2; exit}'; }
+base_op()    { printf '%s\n' "$BASE_OUT" | awk -v s="$1" '$1==s{print $3; exit}'; }
+BASE_EVAL_A="$(base_alloc eval)";  BASE_EVAL_O="$(base_op eval)"
+BASE_CEVAL_A="$(base_alloc ceval)"; BASE_CEVAL_O="$(base_op ceval)"
+case "$BASE_EVAL_A" in ''|*[!0-9.]*) echo "FAIL: could not measure baseline eval alloc (harness bug)"; exit 1 ;; esac
+case "$BASE_CEVAL_A" in ''|*[!0-9.]*) echo "FAIL: could not measure baseline ceval alloc (harness bug)"; exit 1 ;; esac
+
+echo "baseline: eval ${BASE_EVAL_A}MB / ${BASE_EVAL_O} ops   ceval ${BASE_CEVAL_A}MB / ${BASE_CEVAL_O} ops"
+echo "threshold=$THRESH  op-floor=$OP_FLOOR"
+echo
+
+fail=0
+alloc_graded=0
+op_graded=0
+
+# stage_field <full measure output> <stage> <field#>  (2=alloc, 3=op)
+sf() { printf '%s\n' "$1" | awk -v s="$2" -v c="$3" '$1==s{print $c; exit}'; }
+
+# grade one (shape, stage) across the three sizes.
+#   $1 shape  $2 stage  $3 base-alloc  $4 base-op  $5 outN  $6 out2N  $7 out4N
+grade() {
+  shape="$1"; stage="$2"; bA="$3"; bO="$4"; oN="$5"; o2N="$6"; o4N="$7"
+  aN="$(sf "$oN" "$stage" 2)";  a2N="$(sf "$o2N" "$stage" 2)";  a4N="$(sf "$o4N" "$stage" 2)"
+  pN="$(sf "$oN" "$stage" 3)";  p2N="$(sf "$o2N" "$stage" 3)";  p4N="$(sf "$o4N" "$stage" 3)"
+
+  # ── ALLOCATION arm (primary) — baseline-subtracted net, sustained-both-doublings. ─
+  read na n2 n4 r1 r2 <<EOF
+$(awk -v a="$aN" -v b="$a2N" -v c="$a4N" -v base="$bA" 'BEGIN{
+    na=a-base; n2=b-base; n4=c-base;
+    r1=(na>0)?n2/na:0; r2=(n2>0)?n4/n2:0;
+    printf "%.3f %.3f %.3f %.3f %.3f", na, n2, n4, r1, r2 }')
+EOF
+  printf '  %-9s %-5s ALLOC net MB %s -> %s -> %s   r1=%s r2=%s\n' "$shape" "$stage" "$na" "$n2" "$n4" "$r1" "$r2"
+  alloc_graded=$((alloc_graded + 1))
+  bad="$(awk -v r1="$r1" -v r2="$r2" -v t="$THRESH" 'BEGIN{ print (r1>=t && r2>=t) ? 1 : 0 }')"
+  if [ "$bad" = "1" ]; then
+    echo "  FAIL: $shape:$stage ALLOCATION is super-linear (r1=$r1 r2=$r2 >= $THRESH) — a frame/env/list quadratic in the interpreter."
+    fail=1
+  fi
+
+  # ── OP-COUNT arm (secondary) — net delta; self-skip below floor; ledger otherwise. ─
+  read qN q2 q4 s1 s2 <<EOF
+$(awk -v a="$pN" -v b="$p2N" -v c="$p4N" -v base="$bO" 'BEGIN{
+    qN=a-base; q2=b-base; q4=c-base;
+    s1=(qN>0)?q2/qN:0; s2=(q2>0)?q4/q2:0;
+    printf "%d %d %d %.3f %.3f", qN, q2, q4, s1, s2 }')
+EOF
+  below="$(awk -v q="$q4" -v f="$OP_FLOOR" 'BEGIN{ print (q < f) ? 1 : 0 }')"
+  if [ "$below" = "1" ]; then
+    printf '  %-9s %-5s OP   net %s ops at 4N < floor %s — op arm SKIPPED (graded on alloc only)\n' "$shape" "$stage" "$q4" "$OP_FLOOR"
+    return
+  fi
+  printf '  %-9s %-5s OP   net ops %s -> %s -> %s   s1=%s s2=%s\n' "$shape" "$stage" "$qN" "$q2" "$q4" "$s1" "$s2"
+  op_graded=$((op_graded + 1))
+  if is_ledgered "$stage:$shape"; then
+    # ledgered quadratic: must stay inside the [PROMOTE_BELOW, CEIL] window.
+    worst="$(awk -v s1="$s1" -v s2="$s2" 'BEGIN{ print (s1>s2)?s1:s2 }')"
+    if awk -v w="$worst" -v lo="$LEDGER_PROMOTE_BELOW" 'BEGIN{ exit !(w < lo) }'; then
+      echo "  FAIL: LEDGER $stage:$shape dropped to ~linear (worst r=$worst < $LEDGER_PROMOTE_BELOW) — the Core-IR lowering quadratic (dedupHeads) was FIXED. PROMOTE it out of KNOWN_SLOW_OPS and close #960."
+      fail=1
+    elif awk -v w="$worst" -v hi="$LEDGER_CEIL" 'BEGIN{ exit !(w > hi) }'; then
+      echo "  FAIL: LEDGER $stage:$shape WORSENED (worst r=$worst > $LEDGER_CEIL) — the known quadratic got worse."
+      fail=1
+    else
+      echo "  ($stage:$shape is a LEDGERED, currently-unfixed O(arms^2) — worst r=$worst, inside [$LEDGER_PROMOTE_BELOW, $LEDGER_CEIL]. See KNOWN_SLOW_OPS.)"
+    fi
+  else
+    bad="$(awk -v s1="$s1" -v s2="$s2" -v t="$THRESH" 'BEGIN{ print (s1>=t && s2>=t) ? 1 : 0 }')"
+    if [ "$bad" = "1" ]; then
+      echo "  FAIL: $shape:$stage OP-COUNT is super-linear (s1=$s1 s2=$s2 >= $THRESH) — a List-as-set scan (util.contains/lookupAssoc) in the interpreter."
+      fail=1
+    fi
+  fi
+}
+
+run_shape() {
+  shape="$1"; base="$2"
+  n2=$((base * 2)); n4=$((base * 4))
+  case "$shape" in
+    tailrec)   gen_tailrec   "$base" "$WORK/a.mdk"; gen_tailrec   "$n2" "$WORK/b.mdk"; gen_tailrec   "$n4" "$WORK/c.mdk" ;;
+    listbuild) gen_listbuild "$base" "$WORK/a.mdk"; gen_listbuild "$n2" "$WORK/b.mdk"; gen_listbuild "$n4" "$WORK/c.mdk" ;;
+    bigmatch)  gen_bigmatch  "$base" "$WORK/a.mdk"; gen_bigmatch  "$n2" "$WORK/b.mdk"; gen_bigmatch  "$n4" "$WORK/c.mdk" ;;
+  esac
+  echo "── $shape  (N=$base, $n2, $n4) ──"
+  oN="$(measure "$WORK/a.mdk")"; o2N="$(measure "$WORK/b.mdk")"; o4N="$(measure "$WORK/c.mdk")"
+  grade "$shape" eval  "$BASE_EVAL_A"  "$BASE_EVAL_O"  "$oN" "$o2N" "$o4N"
+  grade "$shape" ceval "$BASE_CEVAL_A" "$BASE_CEVAL_O" "$oN" "$o2N" "$o4N"
+  echo
+}
+
+run_shape tailrec   "$TAILREC_N"
+run_shape listbuild "$LISTBUILD_N"
+run_shape bigmatch  "$BIGMATCH_N"
+
+# ── NON-ZERO-GRADED assertion (PERF-CI-COVERAGE.md §8) ───────────────────────
+if [ "$alloc_graded" -eq 0 ]; then
+  echo "FAIL: the ALLOCATION arm graded NOTHING — a blind spot must name itself, not pass silently."
+  fail=1
+fi
+if [ "$op_graded" -eq 0 ]; then
+  echo "FAIL: the OP-COUNT arm graded NOTHING (not even the ledgered ceval:bigmatch) — the op tripwire is dead."
+  fail=1
+fi
+
+if [ "$fail" -eq 0 ]; then
+  echo "PASS: both interpreters scale as expected (alloc linear; the Core-IR lowering quadratic stays ledgered)."
+  exit 0
+fi
+exit 1

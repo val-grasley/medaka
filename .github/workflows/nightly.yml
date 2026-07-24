@@ -135,6 +135,52 @@ jobs:
           PERF_DEEP: "1"
         run: sh test/diff_compiler_perf_scaling.sh
 
+  eval-scaling:
+    name: "eval_scaling (interpreter O(n^2) detector — #887, nightly)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libgc-dev
+
+      - name: Restore cached medaka binary
+        id: medaka-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            medaka
+            medaka_emitter
+          key: medaka-bin-v1-${{ hashFiles('compiler/**', 'stdlib/**', 'runtime/**', 'test/build_native_medaka.sh', 'test/bootstrap_from_seed.sh', 'test/build_oracles.sh', 'Makefile') }}
+
+      - name: Build medaka (cold bootstrap from seed)
+        if: steps.medaka-cache.outputs.cache-hit != 'true'
+        run: make medaka
+
+      - name: Build the oracle eval_scaling needs
+        run: FORCE=1 sh test/build_oracles.sh --for 'diff_compiler_eval_scaling'
+
+      # ⚠️ NIGHTLY-ONLY, DELIBERATELY (PERF-CI-COVERAGE.md §4 P3). The interpreter is
+      # not on the `medaka build` critical path, so this is lower per-PR value than
+      # the front-end/backend perf_scaling gate. It runs BOTH interpreters
+      # (compiler/eval/eval.mdk tree-walker + compiler/ir/core_ir_eval.mdk Core-IR
+      # evaluator) over tail-recursion / list-builder / big-match shapes and grades
+      # the DETERMINISTIC signals only — allocation (primary) + op-count (secondary,
+      # with a self-draining ledger for the Core-IR lowering O(arms^2) it surfaced).
+      # No wall-time arm: the interpreters' latency is super-linear-by-construction on
+      # deep recursion (see the gate header), which would be a permanent false-red.
+      #
+      # PLAIN pass/fail: a RED means either a NEW interpreter quadratic landed, or the
+      # ledgered Core-IR lowering quadratic (dedupHeads) was FIXED and needs promoting
+      # out of KNOWN_SLOW_OPS — read the failing row before touching the ledger.
+      - name: eval_scaling (both interpreters, deterministic metrics)
+        env:
+          MEDAKA_ROOT: ${{ github.workspace }}
+        run: sh test/diff_compiler_eval_scaling.sh
+
   fuzz-diff:
     name: fuzz_diff (bounded nightly sweep; findings are FILED, not failed)
     runs-on: ubuntu-latest
