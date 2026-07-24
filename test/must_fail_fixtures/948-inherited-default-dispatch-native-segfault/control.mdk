@@ -1,0 +1,16 @@
+-- CONTROL for #948: byte-identical to main.mdk EXCEPT the impl OVERRIDES `speak`
+-- instead of inheriting the default. The single flipped feature is inherit-vs-override.
+-- `use` then monomorphizes to a direct `@mdk_impl_Dog_speak` call (no dispatcher), so
+-- the native binary builds AND runs cleanly (prints `woof`, exit 0). If THIS breaks, the
+-- emitter regressed generally, not #948 specifically.
+import iface.{Speak(..), speak}
+
+data Dog = Dog
+
+impl Speak Dog where
+  speak d = "woof"
+
+use : Speak a => a -> String
+use x = speak x
+
+main = putStrLn (use Dog)
