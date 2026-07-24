@@ -188,22 +188,32 @@ headIsUpper s = match arrayGet 0 (stringToChars s)
   Some c => isUpper c
   None => False
 
--- names bound by a pattern (each becomes a DISTINCT local binder / key).
-patBinderNames : Pat -> List String
-patBinderNames (PVar x _) = [x]
-patBinderNames PWild = []
-patBinderNames (PLit _) = []
-patBinderNames (PCon _ ps) = flatMap patBinderNames ps
-patBinderNames (PCons a b) = patBinderNames a ++ patBinderNames b
-patBinderNames (PTuple ps) = flatMap patBinderNames ps
-patBinderNames (PList ps) = flatMap patBinderNames ps
-patBinderNames (PAs x _ p) = x :: patBinderNames p
-patBinderNames (PRng _ _ _) = []
-patBinderNames (PRec _ fields _) = flatMap recFieldBinderNames fields
+-- names bound by a pattern, each paired with its OWN name-token `Loc` (§9.4) so a
+-- param/local binder records at its own token, not the enclosing decl's loc.
+-- `PVar`/`PAs` carry a real binder token from the parser; the `fb` (fallback) Loc
+-- is used ONLY for a punned record field (`RecPatField name None`), whose name has
+-- no `Loc` in the AST (a documented residual — see the report / §9.5 B-notes).
+patBinders : Loc -> Pat -> List (String, Loc)
+patBinders _ (PVar x l) = [(x, l)]
+patBinders _ PWild = []
+patBinders _ (PLit _) = []
+patBinders fb (PCon _ ps) = flatMap (patBinders fb) ps
+patBinders fb (PCons a b) = patBinders fb a ++ patBinders fb b
+patBinders fb (PTuple ps) = flatMap (patBinders fb) ps
+patBinders fb (PList ps) = flatMap (patBinders fb) ps
+patBinders fb (PAs x l p) = (x, l) :: patBinders fb p
+patBinders _ (PRng _ _ _) = []
+patBinders fb (PRec _ fields _) = flatMap (recFieldBinders fb) fields
 
-recFieldBinderNames : RecPatField -> List String
-recFieldBinderNames (RecPatField name None) = [name]
-recFieldBinderNames (RecPatField _ (Some p)) = patBinderNames p
+recFieldBinders : Loc -> RecPatField -> List (String, Loc)
+recFieldBinders fb (RecPatField name None) = [(name, fb)]
+recFieldBinders fb (RecPatField _ (Some p)) = patBinders fb p
+
+-- a bare name list (let-group binds, prop params — neither carries a token `Loc`
+-- in the AST) paired with the enclosing `Loc` as a fallback: those binder sites
+-- (§9.5 B4/B8) stay a documented residual until their AST node grows a `Loc`.
+namesAtLoc : Loc -> List String -> List (String, Loc)
+namesAtLoc loc ns = map (n => (n, loc)) ns
 
 -- innermost-first scope lookup (shadowing: first frame wins).  Every frame hop
 -- and every element comparison is `bump`ed, so the frame-stack walk (an O(nesting
@@ -295,15 +305,15 @@ walkExpr w scope curLoc (EApp f x) =
   let _ = walkExpr w scope curLoc f
   walkExpr w scope curLoc x
 walkExpr w scope curLoc (ELam pats body) =
-  let frame = mkNamedFrame w curLoc (flatMap patBinderNames pats)
+  let frame = mkNamedFrame w (flatMap (patBinders curLoc) pats)
   walkExpr w (frame::scope) curLoc body
 walkExpr w scope curLoc (ELet _ isRec pat e1 e2) =
-  let frame = mkNamedFrame w curLoc (patBinderNames pat)
+  let frame = mkNamedFrame w (patBinders curLoc pat)
   let scope1 = if isRec then frame::scope else scope
   let _ = walkExpr w scope1 curLoc e1
   walkExpr w (frame::scope) curLoc e2
 walkExpr w scope curLoc (ELetGroup binds body) =
-  let frame = mkNamedFrame w curLoc (map letBindName binds)
+  let frame = mkNamedFrame w (namesAtLoc curLoc (map letBindName binds))
   let scope1 = frame::scope
   let _ = walkBinds w scope1 curLoc binds
   walkExpr w scope1 curLoc body
@@ -428,11 +438,11 @@ walkStmts w scope curLoc ((DoExpr e)::rest) =
   walkStmts w scope curLoc rest
 walkStmts w scope curLoc ((DoBind p e)::rest) =
   let _ = walkExpr w scope curLoc e
-  let frame = mkNamedFrame w curLoc (patBinderNames p)
+  let frame = mkNamedFrame w (patBinders curLoc p)
   walkStmts w (frame::scope) curLoc rest
 walkStmts w scope curLoc ((DoLet _ _ p e)::rest) =
   let _ = walkExpr w scope curLoc e
-  let frame = mkNamedFrame w curLoc (patBinderNames p)
+  let frame = mkNamedFrame w (patBinders curLoc p)
   walkStmts w (frame::scope) curLoc rest
 walkStmts w scope curLoc ((DoAssign _ e)::rest) =
   let _ = walkExpr w scope curLoc e
@@ -444,7 +454,7 @@ walkStmts w scope curLoc ((DoFieldAssign _ _ e)::rest) =
 walkArms : W -> List (List (String, String)) -> Loc -> List Arm -> Unit
 walkArms _ _ _ [] = ()
 walkArms w scope curLoc ((Arm pat gs body)::rest) =
-  let frame = mkNamedFrame w curLoc (patBinderNames pat)
+  let frame = mkNamedFrame w (patBinders curLoc pat)
   let scope1 = frame::scope
   let scope2 = walkGuards w scope1 curLoc gs
   let _ = walkExpr w scope2 curLoc body
@@ -465,7 +475,7 @@ walkGuards w scope curLoc ((GBool e)::rest) =
   walkGuards w scope curLoc rest
 walkGuards w scope curLoc ((GBind p e)::rest) =
   let _ = walkExpr w scope curLoc e
-  let frame = mkNamedFrame w curLoc (patBinderNames p)
+  let frame = mkNamedFrame w (patBinders curLoc p)
   walkGuards w (frame::scope) curLoc rest
 
 walkBinds : W -> List (List (String, String)) -> Loc -> List LetBind -> Unit
@@ -477,7 +487,7 @@ walkBinds w scope curLoc ((LetBind _ clauses)::rest) =
 walkClauses : W -> List (List (String, String)) -> Loc -> List FunClause -> Unit
 walkClauses _ _ _ [] = ()
 walkClauses w scope curLoc ((FunClause pats body)::rest) =
-  let frame = mkNamedFrame w curLoc (flatMap patBinderNames pats)
+  let frame = mkNamedFrame w (flatMap (patBinders curLoc) pats)
   let _ = walkExpr w (frame::scope) curLoc body
   walkClauses w scope curLoc rest
 
@@ -504,16 +514,17 @@ walkTys w curLoc (t::rest) =
   walkTys w curLoc rest
 
 -- ── local binder frames (each name → a fresh, shadow-distinct key) ───────────
-mkNamedFrame : W -> Loc -> List String -> List (String, String)
-mkNamedFrame _ _ [] = []
-mkNamedFrame w atLoc (n::rest) =
-  mkOneLocal w atLoc n :: mkNamedFrame w atLoc rest
+-- Each binder records its DEF at its OWN name-token `Loc` (from `patBinders`), so
+-- a fn-name / decl-name click no longer `locContains`-matches a param/local (§9.4).
+mkNamedFrame : W -> List (String, Loc) -> List (String, String)
+mkNamedFrame _ [] = []
+mkNamedFrame w ((n, l)::rest) = mkOneLocal w n l :: mkNamedFrame w rest
 
-mkOneLocal : W -> Loc -> String -> (String, String)
-mkOneLocal (W ctx mid uri _ _) atLoc name =
+mkOneLocal : W -> String -> Loc -> (String, String)
+mkOneLocal (W ctx mid uri _ _) name loc =
   let fid = nextFresh ctx
   let key = "\{mid}\{sep}local\{sep}\{name}\{sep}\{intToString fid}"
-  let _ = recordDef ctx key uri (withUri uri atLoc)
+  let _ = recordDef ctx key uri (withUri uri loc)
   (name, key)
 
 -- ── accessors ────────────────────────────────────────────────────────────────
@@ -669,7 +680,7 @@ walkDecls w ((d, p)::rest) =
 
 walkDeclBody : W -> Decl -> Loc -> Unit
 walkDeclBody w (DFunDef _ _ pats body) loc =
-  let frame = mkNamedFrame w loc (flatMap patBinderNames pats)
+  let frame = mkNamedFrame w (flatMap (patBinders loc) pats)
   walkExpr w [frame] loc body
 walkDeclBody w (DTypeSig _ _ ty) loc = walkTy w loc ty
 walkDeclBody w (DExtern _ _ ty) loc = walkTy w loc ty
@@ -682,12 +693,12 @@ walkDeclBody w (DImpl { tys, methods, ... }) loc =
   let _ = walkTys w loc tys
   walkImplMethods w loc methods
 walkDeclBody w (DProp _ _ params body) loc =
-  let frame = mkNamedFrame w loc (map ppName params)
+  let frame = mkNamedFrame w (namesAtLoc loc (map ppName params))
   walkExpr w [frame] loc body
 walkDeclBody w (DTest _ _ body) loc = walkExpr w [] loc body
 walkDeclBody w (DBench _ _ body) loc = walkExpr w [] loc body
 walkDeclBody w (DLetGroup _ binds) loc =
-  let frame = mkNamedFrame w loc (map letBindName binds)
+  let frame = mkNamedFrame w (namesAtLoc loc (map letBindName binds))
   walkBinds w [frame] loc binds
 walkDeclBody w (DAttrib _ inner) loc = walkDeclBody w inner loc
 walkDeclBody _ _ _ = ()
@@ -718,13 +729,13 @@ walkIfaceMethods w loc ((IfaceMethod _ ty mdef)::rest) =
 walkMethodDefault : W -> Loc -> Option MethodDefault -> Unit
 walkMethodDefault _ _ None = ()
 walkMethodDefault w loc (Some (MethodDefault pats body)) =
-  let frame = mkNamedFrame w loc (flatMap patBinderNames pats)
+  let frame = mkNamedFrame w (flatMap (patBinders loc) pats)
   walkExpr w [frame] loc body
 
 walkImplMethods : W -> Loc -> List ImplMethod -> Unit
 walkImplMethods _ _ [] = ()
 walkImplMethods w loc ((ImplMethod _ pats body)::rest) =
-  let frame = mkNamedFrame w loc (flatMap patBinderNames pats)
+  let frame = mkNamedFrame w (flatMap (patBinders loc) pats)
   let _ = walkExpr w [frame] loc body
   walkImplMethods w loc rest
 
