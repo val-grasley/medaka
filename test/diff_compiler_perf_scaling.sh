@@ -194,6 +194,14 @@ COMMENTS_N="${PERF_COMMENTS_N:-1000}"
 # stage this shape exists to grade. Sized for ~3x floor headroom instead.
 MANYDEFS_N="${PERF_MANYDEFS_N:-4000}"
 
+# `manyifaces` / `widerecords` (issue #883) run at the DEFAULT N band (250/500/1000).
+# Both are OP-ONLY (deterministic, no min-of-K), so the band is chosen for the OP arm,
+# not a TIME floor: at 250/500/1000 `manyifaces` clears mark op r1>3 (3.07/3.54) with R=8
+# co-scaling, and `widerecords` keeps resolve op1 (~2783) over OP_FLOOR while its counted
+# stages all read `ok`. Knobs reserved for DEEP/tuning; defaults match the ledgered bands.
+MANYIFACES_N="${PERF_MANYIFACES_N:-$N}"
+WIDERECORDS_N="${PERF_WIDERECORDS_N:-$N}"
+
 # `xref` samples the WASM arm at its OWN, SMALLER band — 2000/4000/8000 rather than
 # the shape's 4000/8000/16000. This is a COST fix and it is the reason this gate is
 # not the CI critical path; read the wasm-band note by KNOWN_TCEIL_xref_wasm_emit
@@ -339,6 +347,16 @@ trap 'rm -rf "$WORK"' EXIT
 #              `contains` over signed names) — the same shape as #78/#115 — and
 #              BOTH are invisible to the alloc verdict (see the `lint` note in
 #              TIME_STAGES), so this shape is graded on lint TIME.
+#   manyifaces — CO-SCALED interfaces x call sites (issue #883). N interface decls
+#              (methods pool ~N) AND N reference sites, growing TOGETHER, so mark's
+#              `contains x methods` List-as-set reads O(N^2). OP-ONLY (mark is under the
+#              TIME floor); ledgers manyifaces:mark (the target) + manyifaces:resolve (a
+#              second, interface-count quadratic the shape surfaces). See gen_manyifaces.
+#   widerecords — the RECORD shape (issue #883). One record type with N fields + N tiny
+#              accessor/updater decls. Exercises resolve's ownersOf/lookupRecordByName —
+#              but those are HAND-ROLLED (uncounted), so op reads LINEAR: an `ok` guard,
+#              not an ownersOf detector (the real O(N^2) is TIME-only, N>=~4000). OP-ONLY.
+#              See gen_widerecords.
 #   modules  — MULTI-MODULE (issue #153). The five shapes above are single-file,
 #              so they run only the single-file driver and are STRUCTURALLY BLIND
 #              to the O(modules^2) family in checkModuleFullImpl / elabModuleStamp.
@@ -523,6 +541,106 @@ gen_marksweep() {
   # run BEFORE DCE and see the whole file, which is all this shape needs (it is a
   # front-end shape; its backend stages are not graded and xref carries backend).
   printf 'main = println h0\n' >> "$f"
+}
+
+# gen_manyifaces — THE CO-SCALED MARK QUADRATIC (issue #883, §5 hole 8). It is the
+# marksweep money-shot's QUADRATIC counterpart: where marksweep grows ONLY the method
+# pool (fixed sites => LINEAR), this grows BOTH the pool AND the reference-site count
+# together, so mark's `contains x methods` scan (marker.mdk markVar/markInfix — a
+# List-as-set walked for EVERY var/op node, `methods` = every interface-method name)
+# reads O(sites x pool) = O(N^2). This is the §5 "co-scale the two dimensions that
+# multiply" rule: the N->2N doubling of a single axis sees only a linear slice of an
+# O(a x b) blow-up (marksweep's fixed-site read is exactly that linear slice, on
+# purpose — the two shapes are a matched pair).
+#
+#   N interface decls, each ONE method  => `methods` pool ~N (base names m0..m{N-1}).
+#   N reference sites (h0..h{N-1}), each R=8 refs to the NON-method value `base`.
+# `base` is not in `methods`, so each of the R*N `base` var nodes forces a FULL
+# `contains base methods` scan of the O(N) pool => R*N * O(N) = O(N^2) counted ops.
+# R is a small FIXED constant so it out-scales the ~125k fixed prelude-marking op
+# constant enough for a clean read at the default N band (mark op r1=3.07 r2=3.54 at
+# 250/500/1000 — climbing; ledgered `manyifaces:mark`). The `+` operator nodes hit
+# markInfix's `contains op methods` too, but `+` IS a prelude method and `methods`
+# prepends `preludeMethods`, so that scan stops in the O(1) prelude prefix — it does
+# not add to the quadratic (only the non-method `base` refs do).
+#
+# GRADED OP-ONLY (like marksweep): `mark` sits FAR under the 200ms TIME_FLOOR here
+# (~40-200 ms), so the TIME arm grades it NOWHERE; the deterministic OP arm grades it
+# from the shared run. The shared run also surfaces a SECOND, INDEPENDENT quadratic:
+# resolve is O(interfaces^2) on this shape (op r1=3.68 r2=3.83), INDEPENDENT of the
+# ref count R (interface-method registration/duplicate-checking scanning the growing
+# ifaceMethods/interfaces lists once per interface — see #954);
+# it is ledgered `manyifaces:resolve`. typecheck (op r1=2.65 r2=3.09) and elaborate
+# (r1=2.52 r2=2.99) both CLIMB but stay r1<3 at this band — the #907/#882 decl-count
+# classes diluted below the sustained-both-doublings rule — so they read `ok` and are
+# NOT ledgered (WATCH: a future source change lifting r1 over 3 will correctly fail and
+# force a ledger decision then, exactly as the comments:typecheck note warns).
+gen_manyifaces() {
+  n=$1; f=$2; : > "$f"
+  r=8
+  {
+    i=0; while [ "$i" -lt "$n" ]; do
+      printf 'interface P%s a where\n  m%s : a -> Int\n' "$i" "$i"
+      i=$((i+1))
+    done
+    printf 'base : Int\nbase = 1\n'
+    i=0; while [ "$i" -lt "$n" ]; do
+      printf 'h%s : Int\nh%s = base' "$i" "$i"
+      j=1; while [ "$j" -lt "$r" ]; do printf ' + base'; j=$((j+1)); done
+      printf '\n'
+      i=$((i+1))
+    done
+    # mark/resolve/typecheck run BEFORE DCE and see every decl; `main` reaches only
+    # h0 (the rest are pruned before the backend, which this front-end shape does not
+    # grade — xref carries backend).
+    printf 'main = println h0\n'
+  } >> "$f"
+}
+
+# gen_widerecords — THE WIDE-RECORD SHAPE (issue #883, §5 hole 9). The ONLY shape that
+# declares a record: a data decl with N fields, plus N tiny accessor decls (`gI r =
+# r.fI`) and N tiny updater decls (`uI r = { r | fI = I }`), each ONE field mention.
+# In resolve every field mention routes through `ownersOf fname env.fieldOwners`
+# (resolve.mdk) — a linear scan of the (field,owner) multimap, which is N long — so the
+# 2N field mentions cost O(N^2). Tiny per-decl bodies (one field mention each) avoid the
+# one-big-expression typecheck/emit blow-up a single N-wide `r.f0 + ... + r.fN` sum or
+# an N-deep nested `{ ... | fN = N }` update would trigger (measured: the wide-expr cut
+# spent 2 s in `emit` at N=500 alone).
+#
+# ⚠️ DISPROVEN OP PREMISE — THIS SHAPE READS LINEAR ON OP-COUNT, and that is a real
+# #883 finding, not a defect. `ownersOf` (and its sibling `ownsAnyField`) are
+# HAND-ROLLED recursive scans that call NEITHER util.contains NOR util.lookupAssoc, so
+# the deterministic OP counter (which only instruments those two) is STRUCTURALLY BLIND
+# to them — identical to `starimports`/`findExports`. resolve's counted op work here is
+# only the O(1) `contains owner owners` over the tiny per-field owners result, so op
+# reads a flat r~2.0 (LINEAR). So this is an `ok` LINEAR regression guard on the counted
+# record-resolution paths, NOT an ownersOf quadratic detector.
+#
+# The REAL ownersOf O(N^2) is visible only on resolve TIME, and only at N>=~4000 (it is
+# ~180 ms at N=2000, under the 200ms floor; the counted path is cheap so alloc is blind
+# too). A DEEP-only resolve-TIME arm would catch it, but at that N typecheck/elaborate
+# TIME are also superlinear (the #907/#882 decl-count classes, over the floor) and would
+# need their own ledger rows — filed as a #880 follow-up rather than paid for in QUICK.
+# GRADED OP-ONLY (cheap, deterministic), with the loop's TOOSMALL=fail guard so a band
+# that drops resolve op1 under OP_FLOOR fails loudly instead of silent-passing.
+gen_widerecords() {
+  n=$1; f=$2; : > "$f"
+  {
+    printf 'data R = R { '
+    i=0; while [ "$i" -lt "$n" ]; do [ "$i" -gt 0 ] && printf ', '; printf 'f%s : Int' "$i"; i=$((i+1)); done
+    printf ' }\n'
+    printf 'mk : R\nmk = R { '
+    i=0; while [ "$i" -lt "$n" ]; do [ "$i" -gt 0 ] && printf ', '; printf 'f%s = %s' "$i" "$i"; i=$((i+1)); done
+    printf ' }\n'
+    i=0; while [ "$i" -lt "$n" ]; do
+      printf 'g%s : R -> Int\ng%s r = r.f%s\n' "$i" "$i" "$i"
+      printf 'u%s : R -> R\nu%s r = { r | f%s = %s }\n' "$i" "$i" "$i" "$i"
+      i=$((i+1))
+    done
+    # main roots only g0/u0/mk; resolve/typecheck (the graded stages) run pre-DCE over
+    # every decl. The tiny reached set keeps the backend stages small.
+    printf 'main = println (g0 (u0 mk))\n'
+  } >> "$f"
 }
 
 # gen_modules — the ONLY multi-module generator (issue #153). Writes N separate
@@ -1266,7 +1384,36 @@ OP_FLOOR="${PERF_OP_FLOOR:-1000}"
 #         wiring itself — a candidate follow-up for the #880 epic. Op-count is the arm
 #         graded (deterministic, one run, no floor); it self-drains — promote it out the
 #         moment a fix drops r2 under OFIXED (linear).
-KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve manydefs:typecheck xref:elaborate"
+#   manyifaces:mark — THE HEADLINE #883 FIND. mark's `contains x methods`
+#         (marker.mdk markVar/markInfix — a List-as-set walked for EVERY var/op node,
+#         `methods` = every interface-method name) is O(sites x pool). No shape stressed
+#         it: `marksweep` (#884) grows only the pool with FIXED sites, so it reads LINEAR
+#         on purpose; `modules` has ONE interface with ONE method. `manyifaces` co-scales
+#         N interfaces AND N reference sites (§5's "co-scale the two multiplying
+#         dimensions" rule), so the scan reads O(N^2). MEASURED (this box, deterministic
+#         single run, R=8, N=250/500/1000): 818999 -> 2512749 -> 8900249, r1=3.07 r2=3.54.
+#         TIME never grades mark (it is ~40-200 ms here, under the 200ms floor on EVERY
+#         shape) and allocation is blind to a pure scan — so ONLY the op arm sees it.
+#         Ledgered (not shipped red) because it is a PRE-EXISTING, currently-unfixed
+#         quadratic surfaced by #883's shape, out of scope for the gate-only wiring — a
+#         candidate #880 follow-up, filed as #953. Op-count is the arm graded (one run,
+#         no floor); it self-drains — promote it out the moment `methods` becomes a set
+#         (OrdSet) and the op-ratio drops under OFIXED (linear).
+#
+#   manyifaces:resolve — A SECOND, INDEPENDENT quadratic the same shape surfaces, and a
+#         DIFFERENT mechanism from match:resolve (which is O(ctors^2)). Here resolve is
+#         O(interfaces^2) INDEPENDENT of the reference-site count R (the op-count is
+#         identical at R=4 and R=8) — the cost is interface-method registration /
+#         duplicate-checking scanning the growing ifaceMethods/interfaces lists once per
+#         interface (resolve.mdk; localize precisely — filed as #954). It is
+#         invisible to TIME (resolve ~8-40 ms here, under the floor) and to allocation.
+#         MEASURED N=250/500/1000: 37126 -> 136751 -> 523501, r1=3.68 r2=3.83 (climbing
+#         toward the pure-quadratic 4.0). Ledgered self-drainingly; promotes out when the
+#         interface-method scan is indexed. (typecheck r1=2.65 r2=3.09 and elaborate
+#         r1=2.52 r2=2.99 also climb on this shape — the #907/#882 decl-count classes —
+#         but stay r1<3 at this band, so the sustained-both-doublings rule reads them `ok`
+#         and they are NOT ledgered; WATCH, per the comments:typecheck note.)
+KNOWN_SLOW_OPS="match:resolve xref:typecheck reexports:resolve manydefs:typecheck xref:elaborate manyifaces:mark manyifaces:resolve"
 KNOWN_OCEIL_match_resolve="4.3";      KNOWN_OFIXED_match_resolve="2.60"
 KNOWN_OCEIL_xref_typecheck="4.2";     KNOWN_OFIXED_xref_typecheck="2.60"
 # xref:elaborate — see the #882 block above. Ceiling 4.3 clears the observed DEEP r2=3.60
@@ -1285,6 +1432,14 @@ KNOWN_OCEIL_xref_elaborate="4.3";     KNOWN_OFIXED_xref_elaborate="2.60"
 # source drift, not runner noise. OFIXED 2.60 — drops under it when #907's root cause is
 # fixed (which likely promotes xref:typecheck out at the same time).
 KNOWN_OCEIL_manydefs_typecheck="4.3"; KNOWN_OFIXED_manydefs_typecheck="2.60"
+# manyifaces:mark / manyifaces:resolve (issue #883) — see the block above. Ceilings clear
+# the observed r2 by ~20% (mark 4.3 over 3.54; resolve 4.6 over 3.83), the file's headroom
+# convention; op counts are deterministic so this absorbs only unrelated compiler-source
+# drift, not runner noise. OFIXED 2.60 (file convention): drops under it when `methods`
+# becomes a set (mark) / the interface-method scan is indexed (resolve), at which point the
+# entry must be promoted out.
+KNOWN_OCEIL_manyifaces_mark="4.3";    KNOWN_OFIXED_manyifaces_mark="2.60"
+KNOWN_OCEIL_manyifaces_resolve="4.6"; KNOWN_OFIXED_manyifaces_resolve="2.60"
 # Ceiling 8.9 clears the observed r2 (7.92) by ~12%, the same headroom convention as the
 # entries above (4.2 over 3.8); op counts are deterministic so this absorbs only drift
 # from unrelated compiler-source changes, not runner noise. OFIXED 2.60 (file convention):
@@ -1598,7 +1753,12 @@ printf -- '---------------------------------------------------------------------
 # op arm, and `mark` is under the floor on every shape anyway), so per-PR it costs only
 # the 3 shared deterministic runs. That every other shape's rows show `time mark: SKIP`
 # is the standing proof that TIME grades `mark` nowhere.
-SHAPES="bindings match listlit nesting xref comments marksweep"
+# `manyifaces` / `widerecords` (issue #883) are OP-ONLY single-file shapes, run at the
+# default N band. `manyifaces` co-scales N interfaces AND N reference sites to catch
+# mark's `contains x methods` List-as-set quadratic (ledgered manyifaces:mark, and the
+# independent manyifaces:resolve it surfaces); `widerecords` is the record shape — a
+# LINEAR op regression guard (its ownersOf target is uncounted; see gen_widerecords).
+SHAPES="bindings match listlit nesting xref comments marksweep manyifaces widerecords"
 if [ "$PERF_DEEP" = "1" ]; then
   SHAPES="$SHAPES manydefs"
 else
@@ -1612,10 +1772,12 @@ fi
 
 for shape in $SHAPES; do
   case "$shape" in
-    xref)     base_n="$XREF_N" ;;
-    comments) base_n="$COMMENTS_N" ;;
-    manydefs) base_n="$MANYDEFS_N" ;;
-    *)        base_n="$N" ;;
+    xref)       base_n="$XREF_N" ;;
+    comments)   base_n="$COMMENTS_N" ;;
+    manydefs)   base_n="$MANYDEFS_N" ;;
+    manyifaces) base_n="$MANYIFACES_N" ;;
+    widerecords) base_n="$WIDERECORDS_N" ;;
+    *)          base_n="$N" ;;
   esac
   n1="$base_n"; n2=$((base_n * 2)); n3=$((base_n * 4))
   f1="$WORK/${shape}_$n1.mdk"; f2="$WORK/${shape}_$n2.mdk"; f3="$WORK/${shape}_$n3.mdk"
@@ -1643,15 +1805,18 @@ for shape in $SHAPES; do
   # "ok" to a failure — never the reverse.
   time_bad=0
   time_lines=""
-  # ⚠️ `marksweep` is an OP-ONLY shape (issue #884): it exists to op-grade `mark`,
-  # which sits UNDER the 200ms floor on every shape, so the TIME min-of-K arm would
-  # grade nothing on it while paying ~K timing runs per size. Skip that arm entirely —
-  # its op grading rides the shared runs above — so it costs the 3 shared runs, not
-  # 3 + 3*K. Every OTHER shape still runs the full TIME arm.
-  if [ "$shape" = "marksweep" ]; then
-    time_lines="           time: (OP-ONLY shape — TIME min-of-K arm skipped, #884 cost fix. mark is under the ${TIME_FLOOR}s floor on every shape, so TIME grades it nowhere; the op arm below is mark's coverage.)
+  # ⚠️ OP-ONLY shapes skip the TIME min-of-K arm (issue #884 cost fix). `marksweep`
+  # (#884) and `manyifaces`/`widerecords` (#883) all grade a stage — `mark`/`resolve` —
+  # that sits UNDER the 200ms floor at their bands, so the TIME arm would grade nothing
+  # while paying ~K timing runs per size. Their op grading rides the 3 shared
+  # deterministic runs above, so each costs 3 runs, not 3 + 3*K. Every OTHER shape still
+  # runs the full TIME arm.
+  case "$shape" in
+    marksweep|manyifaces|widerecords)
+    time_lines="           time: (OP-ONLY shape — TIME min-of-K arm skipped, #883/#884 cost fix. its graded stage is under the ${TIME_FLOOR}s floor at this band, so TIME grades it nowhere; the op arm below is its coverage.)
 "
-  else
+    ;;
+    *)
     # These are written to files rather than shell vars because there is one line
     # per stage per size and sh has no arrays.
     TF1="$WORK/${shape}_t1"; TF2="$WORK/${shape}_t2"; TF3="$WORK/${shape}_t3"
@@ -1679,7 +1844,8 @@ for shape in $SHAPES; do
         "$n1" "$n2" "$n3"
     done
     grade_wasm_row "$shape" "$n1" "$n2" "$n3"
-  fi
+    ;;
+  esac
 
   # ── OP verdict: PER STAGE, deterministic — reads the op column of the shared runs
   # (issue #884). No min-of-K, no heap pin, no floor (the op counter is noise-free).
