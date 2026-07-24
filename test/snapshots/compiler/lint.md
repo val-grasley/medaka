@@ -1137,8 +1137,8 @@ patIrrefutable orc (PAs _ _ p) = patIrrefutable orc p
 patIrrefutable _ _ = False
 
 recPatFieldIrrefutable : Oracle -> RecPatField -> Bool
-recPatFieldIrrefutable _ (RecPatField _ None) = True
-recPatFieldIrrefutable orc (RecPatField _ (Some p)) = patIrrefutable orc p
+recPatFieldIrrefutable _ (RecPatField _ _ None) = True
+recPatFieldIrrefutable orc (RecPatField _ _ (Some p)) = patIrrefutable orc p
 
 -- the constructor `c` belongs to a type declared (or built-in) with EXACTLY one
 -- constructor — so a `c …` pattern can never fail to match.  An unknown ctor
@@ -1465,8 +1465,8 @@ refutablePat : Oracle -> Pat -> Bool
 refutablePat orc p = not (irrefutablePat orc p)
 
 refutableField : Oracle -> RecPatField -> Bool
-refutableField _ (RecPatField _ None) = False
-refutableField orc (RecPatField _ (Some p)) = refutablePat orc p
+refutableField _ (RecPatField _ _ None) = False
+refutableField orc (RecPatField _ _ (Some p)) = refutablePat orc p
 
 -- the bound-var/pattern/expr/body of a collapsible bind-then-match tail, plus the
 -- statements preceding it.  Returns None when the last two statements don't form
@@ -4270,8 +4270,8 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "patIrrefutable" ((PVar "orc") (PCon "PAs" PWild PWild (PVar "p"))) (EApp (EApp (EVar "patIrrefutable") (EVar "orc")) (EVar "p")))
 (DFunDef false "patIrrefutable" (PWild PWild) (EVar "False"))
 (DTypeSig false "recPatFieldIrrefutable" (TyFun (TyCon "Oracle") (TyFun (TyCon "RecPatField") (TyCon "Bool"))))
-(DFunDef false "recPatFieldIrrefutable" (PWild (PCon "RecPatField" PWild (PCon "None"))) (EVar "True"))
-(DFunDef false "recPatFieldIrrefutable" ((PVar "orc") (PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "patIrrefutable") (EVar "orc")) (EVar "p")))
+(DFunDef false "recPatFieldIrrefutable" (PWild (PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "True"))
+(DFunDef false "recPatFieldIrrefutable" ((PVar "orc") (PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "patIrrefutable") (EVar "orc")) (EVar "p")))
 (DTypeSig false "ctorIsSingle" (TyFun (TyCon "Oracle") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "ctorIsSingle" ((PVar "orc") (PVar "c")) (EMatch (EApp (EApp (EVar "oGetCtorType") (EVar "orc")) (EVar "c")) (arm (PCon "Some" (PVar "t")) () (EMatch (EApp (EApp (EVar "oGetCtors") (EVar "orc")) (EVar "t")) (arm (PCon "Some" (PVar "ctors")) () (EBinOp "==" (EApp (EVar "listLen") (EVar "ctors")) (ELit (LInt 1)))) (arm (PCon "None") () (EVar "False")))) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "destructureInParamFix" (TyFun (TyCon "Oracle") (TyFun (TyCon "Decl") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "Decl"))))))
@@ -4370,8 +4370,8 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "refutablePat" (TyFun (TyCon "Oracle") (TyFun (TyCon "Pat") (TyCon "Bool"))))
 (DFunDef false "refutablePat" ((PVar "orc") (PVar "p")) (EApp (EVar "not") (EApp (EApp (EVar "irrefutablePat") (EVar "orc")) (EVar "p"))))
 (DTypeSig false "refutableField" (TyFun (TyCon "Oracle") (TyFun (TyCon "RecPatField") (TyCon "Bool"))))
-(DFunDef false "refutableField" (PWild (PCon "RecPatField" PWild (PCon "None"))) (EVar "False"))
-(DFunDef false "refutableField" ((PVar "orc") (PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "refutablePat") (EVar "orc")) (EVar "p")))
+(DFunDef false "refutableField" (PWild (PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "False"))
+(DFunDef false "refutableField" ((PVar "orc") (PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "refutablePat") (EVar "orc")) (EVar "p")))
 (DTypeSig false "bindMatchTail" (TyFun (TyCon "Oracle") (TyFun (TyApp (TyCon "List") (TyCon "DoStmt")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "DoStmt")) (TyCon "String") (TyCon "Pat") (TyCon "Expr") (TyCon "Expr"))))))
 (DFunDef false "bindMatchTail" ((PVar "orc") (PVar "stmts")) (EMatch (EApp (EVar "splitTail2") (EVar "stmts")) (arm (PCon "Some" (PTuple (PVar "prefix") (PCon "DoBind" (PCon "PVar" (PVar "v") PWild) (PVar "boundE")) (PCon "DoExpr" (PVar "matchE")))) () (EApp (EApp (EApp (EApp (EApp (EVar "bindMatchArm") (EVar "orc")) (EVar "prefix")) (EVar "v")) (EVar "boundE")) (EApp (EVar "unwrapLoc") (EVar "matchE")))) (arm PWild () (EVar "None"))))
 (DTypeSig false "bindMatchArm" (TyFun (TyCon "Oracle") (TyFun (TyApp (TyCon "List") (TyCon "DoStmt")) (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "DoStmt")) (TyCon "String") (TyCon "Pat") (TyCon "Expr") (TyCon "Expr")))))))))
@@ -5647,8 +5647,8 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DFunDef false "patIrrefutable" ((PVar "orc") (PCon "PAs" PWild PWild (PVar "p"))) (EApp (EApp (EVar "patIrrefutable") (EVar "orc")) (EVar "p")))
 (DFunDef false "patIrrefutable" (PWild PWild) (EVar "False"))
 (DTypeSig false "recPatFieldIrrefutable" (TyFun (TyCon "Oracle") (TyFun (TyCon "RecPatField") (TyCon "Bool"))))
-(DFunDef false "recPatFieldIrrefutable" (PWild (PCon "RecPatField" PWild (PCon "None"))) (EVar "True"))
-(DFunDef false "recPatFieldIrrefutable" ((PVar "orc") (PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "patIrrefutable") (EVar "orc")) (EVar "p")))
+(DFunDef false "recPatFieldIrrefutable" (PWild (PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "True"))
+(DFunDef false "recPatFieldIrrefutable" ((PVar "orc") (PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "patIrrefutable") (EVar "orc")) (EVar "p")))
 (DTypeSig false "ctorIsSingle" (TyFun (TyCon "Oracle") (TyFun (TyCon "String") (TyCon "Bool"))))
 (DFunDef false "ctorIsSingle" ((PVar "orc") (PVar "c")) (EMatch (EApp (EApp (EVar "oGetCtorType") (EVar "orc")) (EVar "c")) (arm (PCon "Some" (PVar "t")) () (EMatch (EApp (EApp (EVar "oGetCtors") (EVar "orc")) (EVar "t")) (arm (PCon "Some" (PVar "ctors")) () (EBinOp "==" (EApp (EVar "listLen") (EVar "ctors")) (ELit (LInt 1)))) (arm (PCon "None") () (EVar "False")))) (arm (PCon "None") () (EVar "False"))))
 (DTypeSig false "destructureInParamFix" (TyFun (TyCon "Oracle") (TyFun (TyCon "Decl") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "Decl"))))))
@@ -5747,8 +5747,8 @@ dupOccLe a b = match stringCompare (occFile a) (occFile b)
 (DTypeSig false "refutablePat" (TyFun (TyCon "Oracle") (TyFun (TyCon "Pat") (TyCon "Bool"))))
 (DFunDef false "refutablePat" ((PVar "orc") (PVar "p")) (EApp (EVar "not") (EApp (EApp (EVar "irrefutablePat") (EVar "orc")) (EVar "p"))))
 (DTypeSig false "refutableField" (TyFun (TyCon "Oracle") (TyFun (TyCon "RecPatField") (TyCon "Bool"))))
-(DFunDef false "refutableField" (PWild (PCon "RecPatField" PWild (PCon "None"))) (EVar "False"))
-(DFunDef false "refutableField" ((PVar "orc") (PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "refutablePat") (EVar "orc")) (EVar "p")))
+(DFunDef false "refutableField" (PWild (PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "False"))
+(DFunDef false "refutableField" ((PVar "orc") (PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "refutablePat") (EVar "orc")) (EVar "p")))
 (DTypeSig false "bindMatchTail" (TyFun (TyCon "Oracle") (TyFun (TyApp (TyCon "List") (TyCon "DoStmt")) (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "DoStmt")) (TyCon "String") (TyCon "Pat") (TyCon "Expr") (TyCon "Expr"))))))
 (DFunDef false "bindMatchTail" ((PVar "orc") (PVar "stmts")) (EMatch (EApp (EVar "splitTail2") (EVar "stmts")) (arm (PCon "Some" (PTuple (PVar "prefix") (PCon "DoBind" (PCon "PVar" (PVar "v") PWild) (PVar "boundE")) (PCon "DoExpr" (PVar "matchE")))) () (EApp (EApp (EApp (EApp (EApp (EVar "bindMatchArm") (EVar "orc")) (EVar "prefix")) (EVar "v")) (EVar "boundE")) (EApp (EVar "unwrapLoc") (EVar "matchE")))) (arm PWild () (EVar "None"))))
 (DTypeSig false "bindMatchArm" (TyFun (TyCon "Oracle") (TyFun (TyApp (TyCon "List") (TyCon "DoStmt")) (TyFun (TyCon "String") (TyFun (TyCon "Expr") (TyFun (TyCon "Expr") (TyApp (TyCon "Option") (TyTuple (TyApp (TyCon "List") (TyCon "DoStmt")) (TyCon "String") (TyCon "Pat") (TyCon "Expr") (TyCon "Expr")))))))))

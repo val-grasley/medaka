@@ -253,7 +253,7 @@ lookupRecField oracle fields fn = match findRecField fn fields
 
 findRecField : String -> List RecPatField -> Option (Option Pat)
 findRecField _ [] = None
-findRecField fn ((RecPatField f mPat)::rest)
+findRecField fn ((RecPatField f _ mPat)::rest)
   | f == fn = Some mPat
   | otherwise = findRecField fn rest
 
@@ -448,8 +448,8 @@ patHasRange (PRec _ fields _) = anyList recFieldHasRange fields
 patHasRange _ = False
 
 recFieldHasRange : RecPatField -> Bool
-recFieldHasRange (RecPatField _ None) = False
-recFieldHasRange (RecPatField _ (Some p)) = patHasRange p
+recFieldHasRange (RecPatField _ _ None) = False
+recFieldHasRange (RecPatField _ _ (Some p)) = patHasRange p
 
 -- ── witness extraction (the Maranget `I` algorithm) ───────────────────────
 -- A witness-producing companion to `useful`: when the ALL-WILDCARD query of
@@ -564,8 +564,8 @@ isIrrefutablePat (PRec _ fields _) = allList recFieldIrrefutable fields
 isIrrefutablePat _ = False
 
 recFieldIrrefutable : RecPatField -> Bool
-recFieldIrrefutable (RecPatField _ None) = True
-recFieldIrrefutable (RecPatField _ (Some p)) = isIrrefutablePat p
+recFieldIrrefutable (RecPatField _ _ None) = True
+recFieldIrrefutable (RecPatField _ _ (Some p)) = isIrrefutablePat p
 
 boolAlwaysTrue : Expr -> Bool
 -- strip ELoc (mirror of lib/exhaust.ml's `strip_eloc`): guard conditions arrive
@@ -986,7 +986,7 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "lookupRecField" ((PVar "oracle") (PVar "fields") (PVar "fn")) (EMatch (EApp (EApp (EVar "findRecField") (EVar "fn")) (EVar "fields")) (arm (PCon "None") () (EVar "PWild")) (arm (PCon "Some" (PCon "None")) () (EVar "PWild")) (arm (PCon "Some" (PCon "Some" (PVar "p"))) () (EApp (EApp (EVar "desugarPat") (EVar "oracle")) (EVar "p")))))
 (DTypeSig false "findRecField" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyApp (TyCon "Option") (TyApp (TyCon "Option") (TyCon "Pat"))))))
 (DFunDef false "findRecField" (PWild (PList)) (EVar "None"))
-(DFunDef false "findRecField" ((PVar "fn") (PCons (PCon "RecPatField" (PVar "f") (PVar "mPat")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "f") (EVar "fn")) (EApp (EVar "Some") (EVar "mPat")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findRecField") (EVar "fn")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "findRecField" ((PVar "fn") (PCons (PCon "RecPatField" (PVar "f") PWild (PVar "mPat")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "f") (EVar "fn")) (EApp (EVar "Some") (EVar "mPat")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findRecField") (EVar "fn")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "specializeCon" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Pat"))) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Pat")))))))
 (DFunDef false "specializeCon" (PWild PWild (PList)) (EListLit))
 (DFunDef false "specializeCon" ((PVar "c") (PVar "arity") (PCons (PVar "row") (PVar "rest"))) (EMatch (EApp (EApp (EApp (EVar "specConRow") (EVar "c")) (EVar "arity")) (EVar "row")) (arm (PCon "Some" (PVar "r")) () (EBinOp "::" (EVar "r") (EApp (EApp (EApp (EVar "specializeCon") (EVar "c")) (EVar "arity")) (EVar "rest")))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "specializeCon") (EVar "c")) (EVar "arity")) (EVar "rest")))))
@@ -1066,8 +1066,8 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "patHasRange" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EVar "anyList") (EVar "recFieldHasRange")) (EVar "fields")))
 (DFunDef false "patHasRange" (PWild) (EVar "False"))
 (DTypeSig false "recFieldHasRange" (TyFun (TyCon "RecPatField") (TyCon "Bool")))
-(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild (PCon "None"))) (EVar "False"))
-(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patHasRange") (EVar "p")))
+(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "False"))
+(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patHasRange") (EVar "p")))
 (DTypeSig true "usefulWitness" (TyFun (TyCon "Oracle") (TyFun (TyApp (TyCon "Option") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Pat"))) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "Pat"))))))))
 (DFunDef false "usefulWitness" (PWild PWild (PList) (PVar "ncols")) (EApp (EVar "Some") (EApp (EApp (EVar "replicate") (EVar "ncols")) (EVar "PWild"))))
 (DFunDef false "usefulWitness" (PWild PWild (PCons PWild PWild) (PLit (LInt 0))) (EVar "None"))
@@ -1114,8 +1114,8 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "isIrrefutablePat" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EVar "allList") (EVar "recFieldIrrefutable")) (EVar "fields")))
 (DFunDef false "isIrrefutablePat" (PWild) (EVar "False"))
 (DTypeSig false "recFieldIrrefutable" (TyFun (TyCon "RecPatField") (TyCon "Bool")))
-(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild (PCon "None"))) (EVar "True"))
-(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "isIrrefutablePat") (EVar "p")))
+(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "True"))
+(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "isIrrefutablePat") (EVar "p")))
 (DTypeSig false "boolAlwaysTrue" (TyFun (TyCon "Expr") (TyCon "Bool")))
 (DFunDef false "boolAlwaysTrue" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "boolAlwaysTrue") (EVar "e")))
 (DFunDef false "boolAlwaysTrue" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "boolAlwaysTrue") (EVar "e")))
@@ -1360,7 +1360,7 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "lookupRecField" ((PVar "oracle") (PVar "fields") (PVar "fn")) (EMatch (EApp (EApp (EVar "findRecField") (EVar "fn")) (EVar "fields")) (arm (PCon "None") () (EVar "PWild")) (arm (PCon "Some" (PCon "None")) () (EVar "PWild")) (arm (PCon "Some" (PCon "Some" (PVar "p"))) () (EApp (EApp (EVar "desugarPat") (EVar "oracle")) (EVar "p")))))
 (DTypeSig false "findRecField" (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyApp (TyCon "Option") (TyApp (TyCon "Option") (TyCon "Pat"))))))
 (DFunDef false "findRecField" (PWild (PList)) (EVar "None"))
-(DFunDef false "findRecField" ((PVar "fn") (PCons (PCon "RecPatField" (PVar "f") (PVar "mPat")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "f") (EVar "fn")) (EApp (EVar "Some") (EVar "mPat")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findRecField") (EVar "fn")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
+(DFunDef false "findRecField" ((PVar "fn") (PCons (PCon "RecPatField" (PVar "f") PWild (PVar "mPat")) (PVar "rest"))) (EIf (EBinOp "==" (EVar "f") (EVar "fn")) (EApp (EVar "Some") (EVar "mPat")) (EIf (EVar "otherwise") (EApp (EApp (EVar "findRecField") (EVar "fn")) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "specializeCon" (TyFun (TyCon "String") (TyFun (TyCon "Int") (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Pat"))) (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Pat")))))))
 (DFunDef false "specializeCon" (PWild PWild (PList)) (EListLit))
 (DFunDef false "specializeCon" ((PVar "c") (PVar "arity") (PCons (PVar "row") (PVar "rest"))) (EMatch (EApp (EApp (EApp (EVar "specConRow") (EVar "c")) (EVar "arity")) (EVar "row")) (arm (PCon "Some" (PVar "r")) () (EBinOp "::" (EVar "r") (EApp (EApp (EApp (EVar "specializeCon") (EVar "c")) (EVar "arity")) (EVar "rest")))) (arm (PCon "None") () (EApp (EApp (EApp (EVar "specializeCon") (EVar "c")) (EVar "arity")) (EVar "rest")))))
@@ -1440,8 +1440,8 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "patHasRange" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EVar "anyList") (EVar "recFieldHasRange")) (EVar "fields")))
 (DFunDef false "patHasRange" (PWild) (EVar "False"))
 (DTypeSig false "recFieldHasRange" (TyFun (TyCon "RecPatField") (TyCon "Bool")))
-(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild (PCon "None"))) (EVar "False"))
-(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patHasRange") (EVar "p")))
+(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "False"))
+(DFunDef false "recFieldHasRange" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patHasRange") (EVar "p")))
 (DTypeSig true "usefulWitness" (TyFun (TyCon "Oracle") (TyFun (TyApp (TyCon "Option") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "List") (TyCon "Pat"))) (TyFun (TyCon "Int") (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyCon "Pat"))))))))
 (DFunDef false "usefulWitness" (PWild PWild (PList) (PVar "ncols")) (EApp (EVar "Some") (EApp (EApp (EVar "replicate") (EVar "ncols")) (EVar "PWild"))))
 (DFunDef false "usefulWitness" (PWild PWild (PCons PWild PWild) (PLit (LInt 0))) (EVar "None"))
@@ -1488,8 +1488,8 @@ exhaustToLines prog = exhaustToLinesWith prog prog
 (DFunDef false "isIrrefutablePat" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EVar "allList") (EVar "recFieldIrrefutable")) (EVar "fields")))
 (DFunDef false "isIrrefutablePat" (PWild) (EVar "False"))
 (DTypeSig false "recFieldIrrefutable" (TyFun (TyCon "RecPatField") (TyCon "Bool")))
-(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild (PCon "None"))) (EVar "True"))
-(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "isIrrefutablePat") (EVar "p")))
+(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild PWild (PCon "None"))) (EVar "True"))
+(DFunDef false "recFieldIrrefutable" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "isIrrefutablePat") (EVar "p")))
 (DTypeSig false "boolAlwaysTrue" (TyFun (TyCon "Expr") (TyCon "Bool")))
 (DFunDef false "boolAlwaysTrue" ((PCon "ELoc" PWild (PVar "e"))) (EApp (EVar "boolAlwaysTrue") (EVar "e")))
 (DFunDef false "boolAlwaysTrue" ((PCon "EDoOrigin" PWild (PVar "e"))) (EApp (EVar "boolAlwaysTrue") (EVar "e")))

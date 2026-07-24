@@ -1,5 +1,5 @@
 # META
-source_lines=1030
+source_lines=1031
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted desugar stage — Stage 1 port of `lib/desugar.ml`.  Lowers surface
@@ -557,7 +557,8 @@ recPatFields : List Field -> List String -> List RecPatField
 recPatFields [] _ = []
 recPatFields _ [] = []
 recPatFields ((Field n _)::fs) (v::vs) =
-  RecPatField n (Some (PVar v (Loc "" 0 0 0 0))) :: recPatFields fs vs
+  RecPatField n (Loc "" 0 0 0 0) (Some (PVar v (Loc "" 0 0 0 0))) ::
+    recPatFields fs vs
 
 -- Debug and Display share the rendering ("Con " ++ <call> a0 ++ " " ++ …);
 -- only the interface + method-call name differ.
@@ -1263,7 +1264,7 @@ desugar prog = qualifyAliasRefs prog
 (DTypeSig false "recPatFields" (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "RecPatField")))))
 (DFunDef false "recPatFields" ((PList) PWild) (EListLit))
 (DFunDef false "recPatFields" (PWild (PList)) (EListLit))
-(DFunDef false "recPatFields" ((PCons (PCon "Field" (PVar "n") PWild) (PVar "fs")) (PCons (PVar "v") (PVar "vs"))) (EBinOp "::" (EApp (EApp (EVar "RecPatField") (EVar "n")) (EApp (EVar "Some") (EApp (EApp (EVar "PVar") (EVar "v")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))) (EApp (EApp (EVar "recPatFields") (EVar "fs")) (EVar "vs"))))
+(DFunDef false "recPatFields" ((PCons (PCon "Field" (PVar "n") PWild) (PVar "fs")) (PCons (PVar "v") (PVar "vs"))) (EBinOp "::" (EApp (EApp (EApp (EVar "RecPatField") (EVar "n")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))) (EApp (EVar "Some") (EApp (EApp (EVar "PVar") (EVar "v")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))) (EApp (EApp (EVar "recPatFields") (EVar "fs")) (EVar "vs"))))
 (DTypeSig false "deriveShowData" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Decl"))))))
 (DFunDef false "deriveShowData" ((PVar "iface") (PVar "callName") (PVar "name") (PVar "variants")) (EApp (EApp (EApp (EVar "derivedImpl") (EVar "iface")) (EVar "name")) (EListLit (EApp (EApp (EApp (EVar "ImplMethod") (EVar "callName")) (EListLit (EApp (EApp (EVar "PVar") (ELit (LString "__x"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))) (EApp (EApp (EVar "EMatch") (EApp (EVar "EVar") (ELit (LString "__x")))) (EApp (EApp (EVar "map") (EApp (EVar "showArm") (EVar "callName"))) (EVar "variants")))))))
 (DTypeSig false "showArm" (TyFun (TyCon "String") (TyFun (TyCon "Variant") (TyCon "Arm"))))
@@ -1683,7 +1684,7 @@ desugar prog = qualifyAliasRefs prog
 (DTypeSig false "recPatFields" (TyFun (TyApp (TyCon "List") (TyCon "Field")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "RecPatField")))))
 (DFunDef false "recPatFields" ((PList) PWild) (EListLit))
 (DFunDef false "recPatFields" (PWild (PList)) (EListLit))
-(DFunDef false "recPatFields" ((PCons (PCon "Field" (PVar "n") PWild) (PVar "fs")) (PCons (PVar "v") (PVar "vs"))) (EBinOp "::" (EApp (EApp (EVar "RecPatField") (EVar "n")) (EApp (EVar "Some") (EApp (EApp (EVar "PVar") (EVar "v")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))) (EApp (EApp (EVar "recPatFields") (EVar "fs")) (EVar "vs"))))
+(DFunDef false "recPatFields" ((PCons (PCon "Field" (PVar "n") PWild) (PVar "fs")) (PCons (PVar "v") (PVar "vs"))) (EBinOp "::" (EApp (EApp (EApp (EVar "RecPatField") (EVar "n")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))) (EApp (EVar "Some") (EApp (EApp (EVar "PVar") (EVar "v")) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))) (EApp (EApp (EVar "recPatFields") (EVar "fs")) (EVar "vs"))))
 (DTypeSig false "deriveShowData" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Variant")) (TyCon "Decl"))))))
 (DFunDef false "deriveShowData" ((PVar "iface") (PVar "callName") (PVar "name") (PVar "variants")) (EApp (EApp (EApp (EVar "derivedImpl") (EVar "iface")) (EVar "name")) (EListLit (EApp (EApp (EApp (EVar "ImplMethod") (EVar "callName")) (EListLit (EApp (EApp (EVar "PVar") (ELit (LString "__x"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))) (EApp (EApp (EVar "EMatch") (EApp (EVar "EVar") (ELit (LString "__x")))) (EApp (EApp (EMethodRef "map") (EApp (EVar "showArm") (EVar "callName"))) (EVar "variants")))))))
 (DTypeSig false "showArm" (TyFun (TyCon "String") (TyFun (TyCon "Variant") (TyCon "Arm"))))

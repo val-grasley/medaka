@@ -279,8 +279,8 @@ patBindings (PRng _ _ _) = []
 patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 
 recFieldBindings : RecPatField -> List String
-recFieldBindings (RecPatField fname None) = [fname]
-recFieldBindings (RecPatField _ (Some p)) = patBindings p
+recFieldBindings (RecPatField fname _ None) = [fname]
+recFieldBindings (RecPatField _ _ (Some p)) = patBindings p
 
 patsBindings : List Pat -> List String
 patsBindings ps = flatMap patBindings ps
@@ -376,7 +376,7 @@ recPatHead cur env name =
     [UnknownType name cur (suggestType env name)]
 
 checkRecField : Option Loc -> Env -> String -> RecPatField -> List ResError
-checkRecField cur env owner (RecPatField fname popt) = fieldCheck cur env owner fname
+checkRecField cur env owner (RecPatField fname _ popt) = fieldCheck cur env owner fname
   ++ recFieldSub cur env popt
 
 fieldCheck : Option Loc -> Env -> String -> String -> List ResError
@@ -951,10 +951,10 @@ checkProp env params body = flatMap (checkPropParamTy env) params
   ++ checkExpr None env (map propParamName params) body
 
 checkPropParamTy : Env -> PropParam -> List ResError
-checkPropParamTy env (PropParam _ t) = checkType None env t
+checkPropParamTy env (PropParam _ _ t) = checkType None env t
 
 propParamName : PropParam -> String
-propParamName (PropParam x _) = x
+propParamName (PropParam x _ _) = x
 
 checkInterfaceDecl : Env -> List Super -> List IfaceMethod -> List ResError
 checkInterfaceDecl env supers methods = flatMap (checkSuper env) supers

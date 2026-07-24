@@ -75,8 +75,8 @@ patSexp (PRec name fields rest) =
   node "PRec" [escStr name, slist (map recPatFieldSexp fields), boolStr rest]
 
 recPatFieldSexp : RecPatField -> String
-recPatFieldSexp (RecPatField f (Some p)) = node "rf" [escStr f, patSexp p]
-recPatFieldSexp (RecPatField f None) = node "rf" [escStr f, "None"]
+recPatFieldSexp (RecPatField f _ (Some p)) = node "rf" [escStr f, patSexp p]
+recPatFieldSexp (RecPatField f _ None) = node "rf" [escStr f, "None"]
 
 tySexp : Ty -> String
 tySexp (TyCon c _) = node "TyCon" [escStr c]
@@ -296,7 +296,7 @@ attrSexp AttrInline = "AttrInline"
 attrSexp AttrMustUse = "AttrMustUse"
 
 propParamSexp : PropParam -> String
-propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]
+propParamSexp (PropParam n _ t) = node "pp" [escStr n, tySexp t]
 
 methodDefaultSexp : Option MethodDefault -> String
 methodDefaultSexp None = "None"

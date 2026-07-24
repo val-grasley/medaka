@@ -302,10 +302,10 @@ mapFieldsB f ((Field n t)::rest) =
 
 mapPropParamsB : (Ty -> (Ty, Bool)) -> List PropParam -> (List PropParam, Bool)
 mapPropParamsB _ [] = ([], False)
-mapPropParamsB f ((PropParam n t)::rest) =
+mapPropParamsB f ((PropParam n l t)::rest) =
   let (t2, c1) = mapTyFull f t
   let (rest2, c2) = mapPropParamsB f rest
-  (PropParam n t2 :: rest2, c1 || c2)
+  (PropParam n l t2 :: rest2, c1 || c2)
 
 mapIfaceMethodsB : (Ty -> (Ty, Bool)) -> List IfaceMethod -> (List IfaceMethod, Bool)
 mapIfaceMethodsB _ [] = ([], False)
@@ -765,7 +765,7 @@ declEffectWarn _ _ = []
 (DFunDef false "mapFieldsB" ((PVar "f") (PCons (PCon "Field" (PVar "n") (PVar "t")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "t2") (PVar "c1")) (EApp (EApp (EVar "mapTyFull") (EVar "f")) (EVar "t"))) (DoLet false false (PTuple (PVar "rest2") (PVar "c2")) (EApp (EApp (EVar "mapFieldsB") (EVar "f")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EVar "Field") (EVar "n")) (EVar "t2")) (EVar "rest2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
 (DTypeSig false "mapPropParamsB" (TyFun (TyFun (TyCon "Ty") (TyTuple (TyCon "Ty") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyTuple (TyApp (TyCon "List") (TyCon "PropParam")) (TyCon "Bool")))))
 (DFunDef false "mapPropParamsB" (PWild (PList)) (ETuple (EListLit) (EVar "False")))
-(DFunDef false "mapPropParamsB" ((PVar "f") (PCons (PCon "PropParam" (PVar "n") (PVar "t")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "t2") (PVar "c1")) (EApp (EApp (EVar "mapTyFull") (EVar "f")) (EVar "t"))) (DoLet false false (PTuple (PVar "rest2") (PVar "c2")) (EApp (EApp (EVar "mapPropParamsB") (EVar "f")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EVar "PropParam") (EVar "n")) (EVar "t2")) (EVar "rest2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
+(DFunDef false "mapPropParamsB" ((PVar "f") (PCons (PCon "PropParam" (PVar "n") (PVar "l") (PVar "t")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "t2") (PVar "c1")) (EApp (EApp (EVar "mapTyFull") (EVar "f")) (EVar "t"))) (DoLet false false (PTuple (PVar "rest2") (PVar "c2")) (EApp (EApp (EVar "mapPropParamsB") (EVar "f")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EApp (EVar "PropParam") (EVar "n")) (EVar "l")) (EVar "t2")) (EVar "rest2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
 (DTypeSig false "mapIfaceMethodsB" (TyFun (TyFun (TyCon "Ty") (TyTuple (TyCon "Ty") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyTuple (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyCon "Bool")))))
 (DFunDef false "mapIfaceMethodsB" (PWild (PList)) (ETuple (EListLit) (EVar "False")))
 (DFunDef false "mapIfaceMethodsB" ((PVar "f") (PCons (PVar "m") (PVar "ms"))) (EBlock (DoLet false false (PTuple (PVar "m2") (PVar "c1")) (EApp (EApp (EVar "mapIfaceMethodB") (EVar "f")) (EVar "m"))) (DoLet false false (PTuple (PVar "ms2") (PVar "c2")) (EApp (EApp (EVar "mapIfaceMethodsB") (EVar "f")) (EVar "ms"))) (DoExpr (ETuple (EBinOp "::" (EVar "m2") (EVar "ms2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
@@ -986,7 +986,7 @@ declEffectWarn _ _ = []
 (DFunDef false "mapFieldsB" ((PVar "f") (PCons (PCon "Field" (PVar "n") (PVar "t")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "t2") (PVar "c1")) (EApp (EApp (EVar "mapTyFull") (EVar "f")) (EVar "t"))) (DoLet false false (PTuple (PVar "rest2") (PVar "c2")) (EApp (EApp (EVar "mapFieldsB") (EVar "f")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EVar "Field") (EVar "n")) (EVar "t2")) (EVar "rest2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
 (DTypeSig false "mapPropParamsB" (TyFun (TyFun (TyCon "Ty") (TyTuple (TyCon "Ty") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyTuple (TyApp (TyCon "List") (TyCon "PropParam")) (TyCon "Bool")))))
 (DFunDef false "mapPropParamsB" (PWild (PList)) (ETuple (EListLit) (EVar "False")))
-(DFunDef false "mapPropParamsB" ((PVar "f") (PCons (PCon "PropParam" (PVar "n") (PVar "t")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "t2") (PVar "c1")) (EApp (EApp (EVar "mapTyFull") (EVar "f")) (EVar "t"))) (DoLet false false (PTuple (PVar "rest2") (PVar "c2")) (EApp (EApp (EVar "mapPropParamsB") (EVar "f")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EVar "PropParam") (EVar "n")) (EVar "t2")) (EVar "rest2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
+(DFunDef false "mapPropParamsB" ((PVar "f") (PCons (PCon "PropParam" (PVar "n") (PVar "l") (PVar "t")) (PVar "rest"))) (EBlock (DoLet false false (PTuple (PVar "t2") (PVar "c1")) (EApp (EApp (EVar "mapTyFull") (EVar "f")) (EVar "t"))) (DoLet false false (PTuple (PVar "rest2") (PVar "c2")) (EApp (EApp (EVar "mapPropParamsB") (EVar "f")) (EVar "rest"))) (DoExpr (ETuple (EBinOp "::" (EApp (EApp (EApp (EVar "PropParam") (EVar "n")) (EVar "l")) (EVar "t2")) (EVar "rest2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))
 (DTypeSig false "mapIfaceMethodsB" (TyFun (TyFun (TyCon "Ty") (TyTuple (TyCon "Ty") (TyCon "Bool"))) (TyFun (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyTuple (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyCon "Bool")))))
 (DFunDef false "mapIfaceMethodsB" (PWild (PList)) (ETuple (EListLit) (EVar "False")))
 (DFunDef false "mapIfaceMethodsB" ((PVar "f") (PCons (PVar "m") (PVar "ms"))) (EBlock (DoLet false false (PTuple (PVar "m2") (PVar "c1")) (EApp (EApp (EVar "mapIfaceMethodB") (EVar "f")) (EVar "m"))) (DoLet false false (PTuple (PVar "ms2") (PVar "c2")) (EApp (EApp (EVar "mapIfaceMethodsB") (EVar "f")) (EVar "ms"))) (DoExpr (ETuple (EBinOp "::" (EVar "m2") (EVar "ms2")) (EBinOp "||" (EVar "c1") (EVar "c2"))))))

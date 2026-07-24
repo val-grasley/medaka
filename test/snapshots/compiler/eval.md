@@ -752,7 +752,7 @@ charUpper c hi False = ordLt (stringCompare c hi)
 
 matchRecFields : List RecPatField -> List (String, Value e) -> Option (List (String, Value e))
 matchRecFields [] _ = Some []
-matchRecFields ((RecPatField fname mp)::rest) recFields = match lookupAssoc fname recFields
+matchRecFields ((RecPatField fname _ mp)::rest) recFields = match lookupAssoc fname recFields
   None => None
   Some v => matchRecField fname mp v rest recFields
 
@@ -3793,7 +3793,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "charUpper" ((PVar "c") (PVar "hi") (PCon "False")) (EApp (EVar "ordLt") (EApp (EApp (EVar "stringCompare") (EVar "c")) (EVar "hi"))))
 (DTypeSig false "matchRecFields" (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "matchRecFields" ((PList) PWild) (EApp (EVar "Some") (EListLit)))
-(DFunDef false "matchRecFields" ((PCons (PCon "RecPatField" (PVar "fname") (PVar "mp")) (PVar "rest")) (PVar "recFields")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "fname")) (EVar "recFields")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "v")) () (EApp (EApp (EApp (EApp (EApp (EVar "matchRecField") (EVar "fname")) (EVar "mp")) (EVar "v")) (EVar "rest")) (EVar "recFields")))))
+(DFunDef false "matchRecFields" ((PCons (PCon "RecPatField" (PVar "fname") PWild (PVar "mp")) (PVar "rest")) (PVar "recFields")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "fname")) (EVar "recFields")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "v")) () (EApp (EApp (EApp (EApp (EApp (EVar "matchRecField") (EVar "fname")) (EVar "mp")) (EVar "v")) (EVar "rest")) (EVar "recFields")))))
 (DTypeSig false "zipFieldOrder" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "zipFieldOrder" ((PList) PWild) (EListLit))
 (DFunDef false "zipFieldOrder" (PWild (PList)) (EListLit))
@@ -5194,7 +5194,7 @@ evalOneRootEnvWith extraExterns preludeDecls (rootId, prog) =
 (DFunDef false "charUpper" ((PVar "c") (PVar "hi") (PCon "False")) (EApp (EVar "ordLt") (EApp (EApp (EVar "stringCompare") (EVar "c")) (EVar "hi"))))
 (DTypeSig false "matchRecFields" (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))) (TyApp (TyCon "Option") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e"))))))))
 (DFunDef false "matchRecFields" ((PList) PWild) (EApp (EVar "Some") (EListLit)))
-(DFunDef false "matchRecFields" ((PCons (PCon "RecPatField" (PVar "fname") (PVar "mp")) (PVar "rest")) (PVar "recFields")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "fname")) (EVar "recFields")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "v")) () (EApp (EApp (EApp (EApp (EApp (EVar "matchRecField") (EVar "fname")) (EVar "mp")) (EVar "v")) (EVar "rest")) (EVar "recFields")))))
+(DFunDef false "matchRecFields" ((PCons (PCon "RecPatField" (PVar "fname") PWild (PVar "mp")) (PVar "rest")) (PVar "recFields")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "fname")) (EVar "recFields")) (arm (PCon "None") () (EVar "None")) (arm (PCon "Some" (PVar "v")) () (EApp (EApp (EApp (EApp (EApp (EVar "matchRecField") (EVar "fname")) (EVar "mp")) (EVar "v")) (EVar "rest")) (EVar "recFields")))))
 (DTypeSig false "zipFieldOrder" (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyApp (TyCon "Value") (TyVar "e"))) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyApp (TyCon "Value") (TyVar "e")))))))
 (DFunDef false "zipFieldOrder" ((PList) PWild) (EListLit))
 (DFunDef false "zipFieldOrder" (PWild (PList)) (EListLit))

@@ -471,7 +471,7 @@ recordFieldExpr : Parser (List String, Expr)
 recordFieldExprRest : List String -> Token -> Parser (List String, Expr)
 recordPat : String -> Parser Pat
 recordPatField : Parser RecPatField
-recordPatFieldRest : String -> Token -> Parser RecPatField
+recordPatFieldRest : String -> Loc -> Token -> Parser RecPatField
 recordPatFields : Parser (List RecPatField, Bool)
 recordPatFieldsFor : Token -> Parser (List RecPatField, Bool)
 recordPatFieldsRest : RecPatField -> Token -> Parser (List RecPatField, Bool)

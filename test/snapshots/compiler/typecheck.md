@@ -3922,7 +3922,7 @@ inferPatRec env name fields = match lookupRecordByName name
 -- (the record itself is already-reported unknown; see inferPatRec error path)
 bindRecPatFieldsFresh : TcEnv -> List RecPatField -> List (String, Scheme)
 bindRecPatFieldsFresh _ [] = []
-bindRecPatFieldsFresh env ((RecPatField fname mp)::rest) = inferRecPatFieldWith env (freshVar ()) fname mp
+bindRecPatFieldsFresh env ((RecPatField fname _ mp)::rest) = inferRecPatFieldWith env (freshVar ()) fname mp
   ++ bindRecPatFieldsFresh env rest
 
 inferPatRecWith : TcEnv -> String -> RecordInfo -> List RecPatField -> (Mono, List (String, Scheme))
@@ -3932,7 +3932,7 @@ inferPatRecWith env rname ri fields =
 
 inferRecPatFields : TcEnv -> String -> List (String, Mono) -> List RecPatField -> List (String, Scheme)
 inferRecPatFields _ _ _ [] = []
-inferRecPatFields env rname fieldTypes ((RecPatField fname mp)::rest) = inferRecPatField env rname fieldTypes fname mp
+inferRecPatFields env rname fieldTypes ((RecPatField fname _ mp)::rest) = inferRecPatField env rname fieldTypes fname mp
   ++ inferRecPatFields env rname fieldTypes rest
 
 inferRecPatField : TcEnv -> String -> List (String, Mono) -> String -> Option Pat -> List (String, Scheme)
@@ -8864,7 +8864,7 @@ propParamNamesTc : List PropParam -> List String
 propParamNamesTc ps = map propParamName ps
 
 propParamName : PropParam -> String
-propParamName (PropParam n _) = n
+propParamName (PropParam n _ _) = n
 
 -- the core scope-threaded rewrite.  `bound` is the set of names in scope as
 -- locals at this node.  At an EVar: the rp arm is scope-blind (unchanged); the
@@ -9060,8 +9060,8 @@ patVarsListTc : List Pat -> List String
 patVarsListTc ps = flatMap patVarsTc ps
 
 recPatFieldVarsTc : RecPatField -> List String
-recPatFieldVarsTc (RecPatField label None) = [label]
-recPatFieldVarsTc (RecPatField _ (Some p)) = patVarsTc p
+recPatFieldVarsTc (RecPatField label _ None) = [label]
+recPatFieldVarsTc (RecPatField _ _ (Some p)) = patVarsTc p
 
 -- interface methods carrying a method-level constraint (a `=>` over a tyvar that is
 -- NOT the interface param, e.g. foldMap's `Monoid m`) — rewritten to EMethodAt
@@ -12221,7 +12221,7 @@ inferTestBodies env (_::rest) = inferTestBodies env rest
 -- for any free type variable in ty; props are normally concrete, e.g. `List Int`).
 extendPropParams : TcEnv -> List PropParam -> TcEnv
 extendPropParams env [] = env
-extendPropParams env ((PropParam x ty)::rest) =
+extendPropParams env ((PropParam x _ ty)::rest) =
   let scheme = monoScheme (fromAstType (freshTvMap (dedup (tyVarNames ty))) ty)
   extendPropParams (extendLocalVar env x scheme) rest
 
@@ -18412,12 +18412,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferPatRec" ((PVar "env") (PVar "name") (PVar "fields")) (EMatch (EApp (EVar "lookupRecordByName") (EVar "name")) (arm (PCon "None") () (EBlock (DoLet false false PWild (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-UNKNOWN-RECORD"))) (EApp (EVar "unknownRecordMsg") (EVar "name")))) (DoExpr (ETuple (EApp (EVar "freshVar") (ELit LUnit)) (EApp (EApp (EVar "bindRecPatFieldsFresh") (EVar "env")) (EVar "fields")))))) (arm (PCon "Some" (PVar "ri")) () (EApp (EApp (EApp (EApp (EVar "inferPatRecWith") (EVar "env")) (EVar "name")) (EVar "ri")) (EVar "fields")))))
 (DTypeSig false "bindRecPatFieldsFresh" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))
 (DFunDef false "bindRecPatFieldsFresh" (PWild (PList)) (EListLit))
-(DFunDef false "bindRecPatFieldsFresh" ((PVar "env") (PCons (PCon "RecPatField" (PVar "fname") (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EApp (EVar "freshVar") (ELit LUnit))) (EVar "fname")) (EVar "mp")) (EApp (EApp (EVar "bindRecPatFieldsFresh") (EVar "env")) (EVar "rest"))))
+(DFunDef false "bindRecPatFieldsFresh" ((PVar "env") (PCons (PCon "RecPatField" (PVar "fname") PWild (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EApp (EVar "freshVar") (ELit LUnit))) (EVar "fname")) (EVar "mp")) (EApp (EApp (EVar "bindRecPatFieldsFresh") (EVar "env")) (EVar "rest"))))
 (DTypeSig false "inferPatRecWith" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "RecordInfo") (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyTuple (TyCon "Mono") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme")))))))))
 (DFunDef false "inferPatRecWith" ((PVar "env") (PVar "rname") (PVar "ri") (PVar "fields")) (EBlock (DoLet false false (PVar "ir") (EApp (EVar "instantiateRecord") (EVar "ri"))) (DoExpr (ETuple (EApp (EVar "fst") (EVar "ir")) (EApp (EApp (EApp (EApp (EVar "inferRecPatFields") (EVar "env")) (EVar "rname")) (EApp (EVar "snd") (EVar "ir"))) (EVar "fields"))))))
 (DTypeSig false "inferRecPatFields" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))))
 (DFunDef false "inferRecPatFields" (PWild PWild PWild (PList)) (EListLit))
-(DFunDef false "inferRecPatFields" ((PVar "env") (PVar "rname") (PVar "fieldTypes") (PCons (PCon "RecPatField" (PVar "fname") (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EApp (EVar "inferRecPatField") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "fname")) (EVar "mp")) (EApp (EApp (EApp (EApp (EVar "inferRecPatFields") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "rest"))))
+(DFunDef false "inferRecPatFields" ((PVar "env") (PVar "rname") (PVar "fieldTypes") (PCons (PCon "RecPatField" (PVar "fname") PWild (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EApp (EVar "inferRecPatField") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "fname")) (EVar "mp")) (EApp (EApp (EApp (EApp (EVar "inferRecPatFields") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "rest"))))
 (DTypeSig false "inferRecPatField" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Pat")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme")))))))))
 (DFunDef false "inferRecPatField" ((PVar "env") (PVar "rname") (PVar "fieldTypes") (PVar "fname") (PVar "mp")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "fname")) (EVar "fieldTypes")) (arm (PCon "None") () (EBlock (DoLet false false PWild (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-UNKNOWN-FIELD"))) (EApp (EApp (EVar "unknownFieldMsg") (EVar "fname")) (EVar "rname")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EApp (EVar "freshVar") (ELit LUnit))) (EVar "fname")) (EVar "mp"))))) (arm (PCon "Some" (PVar "ft")) () (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EVar "ft")) (EVar "fname")) (EVar "mp")))))
 (DTypeSig false "inferRecPatFieldWith" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Mono") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Pat")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))))
@@ -19525,7 +19525,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "propParamNamesTc" (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "propParamNamesTc" ((PVar "ps")) (EApp (EApp (EVar "map") (EVar "propParamName")) (EVar "ps")))
 (DTypeSig false "propParamName" (TyFun (TyCon "PropParam") (TyCon "String")))
-(DFunDef false "propParamName" ((PCon "PropParam" (PVar "n") PWild)) (EVar "n"))
+(DFunDef false "propParamName" ((PCon "PropParam" (PVar "n") PWild PWild)) (EVar "n"))
 (DTypeSig false "rewriteArgScoped" (TyFun (TyCon "ArgRw") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "rewriteArgScoped" ((PCon "ArgRw" (PVar "rp") (PVar "dn") (PVar "an") (PVar "sm")) (PVar "bound") (PCon "EVar" (PVar "n"))) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound"))) (EApp (EVar "isSome") (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "sm")))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "sm")) (arm (PCon "Some" (PVar "bare")) () (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "bare")) (EApp (EVar "Ref") (EApp (EApp (EVar "RLocal") (EVar "n")) (EListLit)))) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit)))) (arm (PCon "None") () (EApp (EVar "EVar") (EVar "n")))) (EIf (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "n")) (EVar "rp")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound")))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "n")) (EApp (EVar "Ref") (EVar "RNone"))) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit))) (EIf (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "n")) (EVar "an")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound")))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "n")) (EApp (EVar "Ref") (EVar "RNone"))) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit))) (EIf (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "n")) (EVar "dn")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound")))) (EApp (EApp (EVar "EDictAt") (EVar "n")) (EApp (EVar "Ref") (EListLit))) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DFunDef false "rewriteArgScoped" ((PVar "rw") (PVar "bound") (PCon "ELam" (PVar "ps") (PVar "body"))) (EApp (EApp (EVar "ELam") (EVar "ps")) (EApp (EApp (EApp (EVar "rewriteArgScoped") (EVar "rw")) (EBinOp "++" (EApp (EVar "patVarsListTc") (EVar "ps")) (EVar "bound"))) (EVar "body"))))
@@ -19604,8 +19604,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "patVarsListTc" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "patVarsListTc" ((PVar "ps")) (EApp (EApp (EVar "flatMap") (EVar "patVarsTc")) (EVar "ps")))
 (DTypeSig false "recPatFieldVarsTc" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" (PVar "label") (PCon "None"))) (EListLit (EVar "label")))
-(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsTc") (EVar "p")))
+(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" (PVar "label") PWild (PCon "None"))) (EListLit (EVar "label")))
+(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsTc") (EVar "p")))
 (DTypeSig false "methodConstraintNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "methodConstraintNames" ((PVar "prog")) (EApp (EApp (EVar "flatMap") (EVar "methodConstraintNamesOfDecl")) (EVar "prog")))
 (DTypeSig false "methodConstraintNamesOfDecl" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
@@ -20369,7 +20369,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferTestBodies" ((PVar "env") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "inferTestBodies") (EVar "env")) (EVar "rest")))
 (DTypeSig false "extendPropParams" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyCon "TcEnv"))))
 (DFunDef false "extendPropParams" ((PVar "env") (PList)) (EVar "env"))
-(DFunDef false "extendPropParams" ((PVar "env") (PCons (PCon "PropParam" (PVar "x") (PVar "ty")) (PVar "rest"))) (EBlock (DoLet false false (PVar "scheme") (EApp (EVar "monoScheme") (EApp (EApp (EVar "fromAstType") (EApp (EVar "freshTvMap") (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "ty"))))) (EVar "ty")))) (DoExpr (EApp (EApp (EVar "extendPropParams") (EApp (EApp (EApp (EVar "extendLocalVar") (EVar "env")) (EVar "x")) (EVar "scheme"))) (EVar "rest")))))
+(DFunDef false "extendPropParams" ((PVar "env") (PCons (PCon "PropParam" (PVar "x") PWild (PVar "ty")) (PVar "rest"))) (EBlock (DoLet false false (PVar "scheme") (EApp (EVar "monoScheme") (EApp (EApp (EVar "fromAstType") (EApp (EVar "freshTvMap") (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "ty"))))) (EVar "ty")))) (DoExpr (EApp (EApp (EVar "extendPropParams") (EApp (EApp (EApp (EVar "extendLocalVar") (EVar "env")) (EVar "x")) (EVar "scheme"))) (EVar "rest")))))
 (DTypeSig false "inferImplBodiesIfEnabledIn" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))
 (DFunDef false "inferImplBodiesIfEnabledIn" ((PVar "env") (PVar "allProg") (PVar "decls")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "implInferEnabled") "value") (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EApp (EVar "returnPosMethodNames") (EVar "allProg"))) (EVar "decls")) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "inferUserImplBodies" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))
@@ -22374,12 +22374,12 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferPatRec" ((PVar "env") (PVar "name") (PVar "fields")) (EMatch (EApp (EVar "lookupRecordByName") (EVar "name")) (arm (PCon "None") () (EBlock (DoLet false false PWild (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-UNKNOWN-RECORD"))) (EApp (EVar "unknownRecordMsg") (EVar "name")))) (DoExpr (ETuple (EApp (EVar "freshVar") (ELit LUnit)) (EApp (EApp (EVar "bindRecPatFieldsFresh") (EVar "env")) (EVar "fields")))))) (arm (PCon "Some" (PVar "ri")) () (EApp (EApp (EApp (EApp (EVar "inferPatRecWith") (EVar "env")) (EVar "name")) (EVar "ri")) (EVar "fields")))))
 (DTypeSig false "bindRecPatFieldsFresh" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))
 (DFunDef false "bindRecPatFieldsFresh" (PWild (PList)) (EListLit))
-(DFunDef false "bindRecPatFieldsFresh" ((PVar "env") (PCons (PCon "RecPatField" (PVar "fname") (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EApp (EVar "freshVar") (ELit LUnit))) (EVar "fname")) (EVar "mp")) (EApp (EApp (EVar "bindRecPatFieldsFresh") (EVar "env")) (EVar "rest"))))
+(DFunDef false "bindRecPatFieldsFresh" ((PVar "env") (PCons (PCon "RecPatField" (PVar "fname") PWild (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EApp (EVar "freshVar") (ELit LUnit))) (EVar "fname")) (EVar "mp")) (EApp (EApp (EVar "bindRecPatFieldsFresh") (EVar "env")) (EVar "rest"))))
 (DTypeSig false "inferPatRecWith" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyCon "RecordInfo") (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyTuple (TyCon "Mono") (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme")))))))))
 (DFunDef false "inferPatRecWith" ((PVar "env") (PVar "rname") (PVar "ri") (PVar "fields")) (EBlock (DoLet false false (PVar "ir") (EApp (EVar "instantiateRecord") (EVar "ri"))) (DoExpr (ETuple (EApp (EVar "fst") (EVar "ir")) (EApp (EApp (EApp (EApp (EVar "inferRecPatFields") (EVar "env")) (EVar "rname")) (EApp (EVar "snd") (EVar "ir"))) (EVar "fields"))))))
 (DTypeSig false "inferRecPatFields" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyFun (TyApp (TyCon "List") (TyCon "RecPatField")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))))
 (DFunDef false "inferRecPatFields" (PWild PWild PWild (PList)) (EListLit))
-(DFunDef false "inferRecPatFields" ((PVar "env") (PVar "rname") (PVar "fieldTypes") (PCons (PCon "RecPatField" (PVar "fname") (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EApp (EVar "inferRecPatField") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "fname")) (EVar "mp")) (EApp (EApp (EApp (EApp (EVar "inferRecPatFields") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "rest"))))
+(DFunDef false "inferRecPatFields" ((PVar "env") (PVar "rname") (PVar "fieldTypes") (PCons (PCon "RecPatField" (PVar "fname") PWild (PVar "mp")) (PVar "rest"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EApp (EVar "inferRecPatField") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "fname")) (EVar "mp")) (EApp (EApp (EApp (EApp (EVar "inferRecPatFields") (EVar "env")) (EVar "rname")) (EVar "fieldTypes")) (EVar "rest"))))
 (DTypeSig false "inferRecPatField" (TyFun (TyCon "TcEnv") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Mono"))) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Pat")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme")))))))))
 (DFunDef false "inferRecPatField" ((PVar "env") (PVar "rname") (PVar "fieldTypes") (PVar "fname") (PVar "mp")) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "fname")) (EVar "fieldTypes")) (arm (PCon "None") () (EBlock (DoLet false false PWild (EApp (EApp (EVar "pushTypeError") (ELit (LString "T-UNKNOWN-FIELD"))) (EApp (EApp (EVar "unknownFieldMsg") (EVar "fname")) (EVar "rname")))) (DoExpr (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EApp (EVar "freshVar") (ELit LUnit))) (EVar "fname")) (EVar "mp"))))) (arm (PCon "Some" (PVar "ft")) () (EApp (EApp (EApp (EApp (EVar "inferRecPatFieldWith") (EVar "env")) (EVar "ft")) (EVar "fname")) (EVar "mp")))))
 (DTypeSig false "inferRecPatFieldWith" (TyFun (TyCon "TcEnv") (TyFun (TyCon "Mono") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "Option") (TyCon "Pat")) (TyApp (TyCon "List") (TyTuple (TyCon "String") (TyCon "Scheme"))))))))
@@ -23487,7 +23487,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "propParamNamesTc" (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "propParamNamesTc" ((PVar "ps")) (EApp (EApp (EMethodRef "map") (EVar "propParamName")) (EVar "ps")))
 (DTypeSig false "propParamName" (TyFun (TyCon "PropParam") (TyCon "String")))
-(DFunDef false "propParamName" ((PCon "PropParam" (PVar "n") PWild)) (EVar "n"))
+(DFunDef false "propParamName" ((PCon "PropParam" (PVar "n") PWild PWild)) (EVar "n"))
 (DTypeSig false "rewriteArgScoped" (TyFun (TyCon "ArgRw") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "rewriteArgScoped" ((PCon "ArgRw" (PVar "rp") (PVar "dn") (PVar "an") (PVar "sm")) (PVar "bound") (PCon "EVar" (PVar "n"))) (EIf (EBinOp "&&" (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound"))) (EApp (EVar "isSome") (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "sm")))) (EMatch (EApp (EApp (EVar "lookupAssoc") (EVar "n")) (EVar "sm")) (arm (PCon "Some" (PVar "bare")) () (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "bare")) (EApp (EVar "Ref") (EApp (EApp (EVar "RLocal") (EVar "n")) (EListLit)))) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit)))) (arm (PCon "None") () (EApp (EVar "EVar") (EVar "n")))) (EIf (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "n")) (EVar "rp")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound")))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "n")) (EApp (EVar "Ref") (EVar "RNone"))) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit))) (EIf (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "n")) (EVar "an")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound")))) (EApp (EApp (EApp (EApp (EVar "EMethodAt") (EVar "n")) (EApp (EVar "Ref") (EVar "RNone"))) (EApp (EVar "Ref") (EListLit))) (EApp (EVar "Ref") (EListLit))) (EIf (EBinOp "&&" (EApp (EApp (EVar "contains") (EVar "n")) (EVar "dn")) (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound")))) (EApp (EApp (EVar "EDictAt") (EVar "n")) (EApp (EVar "Ref") (EListLit))) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit))))))))
 (DFunDef false "rewriteArgScoped" ((PVar "rw") (PVar "bound") (PCon "ELam" (PVar "ps") (PVar "body"))) (EApp (EApp (EVar "ELam") (EVar "ps")) (EApp (EApp (EApp (EVar "rewriteArgScoped") (EVar "rw")) (EBinOp "++" (EApp (EVar "patVarsListTc") (EVar "ps")) (EVar "bound"))) (EVar "body"))))
@@ -23566,8 +23566,8 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DTypeSig false "patVarsListTc" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "patVarsListTc" ((PVar "ps")) (EApp (EApp (EDictApp "flatMap") (EVar "patVarsTc")) (EVar "ps")))
 (DTypeSig false "recPatFieldVarsTc" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" (PVar "label") (PCon "None"))) (EListLit (EVar "label")))
-(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsTc") (EVar "p")))
+(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" (PVar "label") PWild (PCon "None"))) (EListLit (EVar "label")))
+(DFunDef false "recPatFieldVarsTc" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsTc") (EVar "p")))
 (DTypeSig false "methodConstraintNames" (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "methodConstraintNames" ((PVar "prog")) (EApp (EApp (EDictApp "flatMap") (EVar "methodConstraintNamesOfDecl")) (EVar "prog")))
 (DTypeSig false "methodConstraintNamesOfDecl" (TyFun (TyCon "Decl") (TyApp (TyCon "List") (TyCon "String"))))
@@ -24331,7 +24331,7 @@ schemeLines ((n, s)::rest) = "\{n} : \{ppSchemeNamed n s}" :: schemeLines rest
 (DFunDef false "inferTestBodies" ((PVar "env") (PCons PWild (PVar "rest"))) (EApp (EApp (EVar "inferTestBodies") (EVar "env")) (EVar "rest")))
 (DTypeSig false "extendPropParams" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyCon "TcEnv"))))
 (DFunDef false "extendPropParams" ((PVar "env") (PList)) (EVar "env"))
-(DFunDef false "extendPropParams" ((PVar "env") (PCons (PCon "PropParam" (PVar "x") (PVar "ty")) (PVar "rest"))) (EBlock (DoLet false false (PVar "scheme") (EApp (EVar "monoScheme") (EApp (EApp (EVar "fromAstType") (EApp (EVar "freshTvMap") (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "ty"))))) (EVar "ty")))) (DoExpr (EApp (EApp (EVar "extendPropParams") (EApp (EApp (EApp (EVar "extendLocalVar") (EVar "env")) (EVar "x")) (EVar "scheme"))) (EVar "rest")))))
+(DFunDef false "extendPropParams" ((PVar "env") (PCons (PCon "PropParam" (PVar "x") PWild (PVar "ty")) (PVar "rest"))) (EBlock (DoLet false false (PVar "scheme") (EApp (EVar "monoScheme") (EApp (EApp (EVar "fromAstType") (EApp (EVar "freshTvMap") (EApp (EVar "dedup") (EApp (EVar "tyVarNames") (EVar "ty"))))) (EVar "ty")))) (DoExpr (EApp (EApp (EVar "extendPropParams") (EApp (EApp (EApp (EVar "extendLocalVar") (EVar "env")) (EVar "x")) (EVar "scheme"))) (EVar "rest")))))
 (DTypeSig false "inferImplBodiesIfEnabledIn" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))
 (DFunDef false "inferImplBodiesIfEnabledIn" ((PVar "env") (PVar "allProg") (PVar "decls")) (EIf (EFieldAccess (EFieldAccess (EFieldAccess (EVar "driverState") "value") "implInferEnabled") "value") (EApp (EApp (EApp (EApp (EVar "inferImplBodies") (EVar "env")) (EVar "allProg")) (EApp (EVar "returnPosMethodNames") (EVar "allProg"))) (EVar "decls")) (EIf (EVar "otherwise") (ELit LUnit) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DTypeSig false "inferUserImplBodies" (TyFun (TyCon "TcEnv") (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyFun (TyApp (TyCon "List") (TyCon "Decl")) (TyCon "Unit")))))

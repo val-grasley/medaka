@@ -1,5 +1,5 @@
 # META
-source_lines=438
+source_lines=442
 stages=DESUGAR,MARK
 # SOURCE
 -- Self-hosted Medaka AST — mirror of lib/ast.ml's surface (pre-desugar) nodes,
@@ -112,7 +112,9 @@ public export data Pat =
   | PRec String (List RecPatField) Bool
 
 -- one field of a record pattern: `field` (pun, None) or `field = pat`
-public export data RecPatField = RecPatField String (Option Pat)
+-- The Loc is the field-name token (#913 Inc 2b: a punned field `{x}` binds
+-- `x`, and rename must land on the field token, not the enclosing match Loc).
+public export data RecPatField = RecPatField String Loc (Option Pat)
 
 public export data Guard = GBool Expr | GBind Pat Expr
 
@@ -371,8 +373,10 @@ useMemberLocal (UseMember n _ _ alias) = match alias
 export qualifiedLocal : String -> String -> String
 qualifiedLocal alias n = "\{alias}.\{n}"
 
--- a property-test parameter `(name : ty)`
-public export data PropParam = PropParam String Ty
+-- a property-test parameter `(name : ty)`.
+-- The Loc is the param-NAME token (#913 Inc 2b: renaming a prop param must
+-- land on its own token, not the prop's name string).
+public export data PropParam = PropParam String Loc Ty
 
 -- interface / impl pieces
 public export data MethodDefault = MethodDefault (List Pat) Expr
@@ -449,7 +453,7 @@ public export data Decl =
 (DData Public "Route" () ((variant "RNone" (ConPos)) (variant "RKey" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RDict" (ConPos (TyCon "String"))) (variant "RDictFwd" (ConPos (TyCon "String"))) (variant "RLocal" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RScalar" (ConPos (TyCon "String")))) ())
 (DData Public "Addr" () ((variant "ALocal" (ConPos (TyCon "Int") (TyCon "Int"))) (variant "AGlobal" (ConPos))) ())
 (DData Public "Pat" () ((variant "PVar" (ConPos (TyCon "String") (TyCon "Loc"))) (variant "PWild" (ConPos)) (variant "PLit" (ConPos (TyCon "Lit"))) (variant "PCon" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PCons" (ConPos (TyCon "Pat") (TyCon "Pat"))) (variant "PTuple" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PList" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PAs" (ConPos (TyCon "String") (TyCon "Loc") (TyCon "Pat"))) (variant "PRng" (ConPos (TyCon "Lit") (TyCon "Lit") (TyCon "Bool"))) (variant "PRec" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "RecPatField")) (TyCon "Bool")))) ())
-(DData Public "RecPatField" () ((variant "RecPatField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Pat"))))) ())
+(DData Public "RecPatField" () ((variant "RecPatField" (ConPos (TyCon "String") (TyCon "Loc") (TyApp (TyCon "Option") (TyCon "Pat"))))) ())
 (DData Public "Guard" () ((variant "GBool" (ConPos (TyCon "Expr"))) (variant "GBind" (ConPos (TyCon "Pat") (TyCon "Expr")))) ())
 (DData Public "Arm" () ((variant "Arm" (ConPos (TyCon "Pat") (TyApp (TyCon "List") (TyCon "Guard")) (TyCon "Expr")))) ())
 (DData Public "DoStmt" () ((variant "DoExpr" (ConPos (TyCon "Expr"))) (variant "DoBind" (ConPos (TyCon "Pat") (TyCon "Expr"))) (variant "DoLet" (ConPos (TyCon "Bool") (TyCon "Bool") (TyCon "Pat") (TyCon "Expr"))) (variant "DoAssign" (ConPos (TyCon "String") (TyCon "Expr"))) (variant "DoFieldAssign" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr")))) ())
@@ -470,7 +474,7 @@ public export data Decl =
 (DFunDef false "useMemberLocal" ((PCon "UseMember" (PVar "n") PWild PWild (PVar "alias"))) (EMatch (EVar "alias") (arm (PCon "Some" (PVar "a")) () (EVar "a")) (arm (PCon "None") () (EVar "n"))))
 (DTypeSig true "qualifiedLocal" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "qualifiedLocal" ((PVar "alias") (PVar "n")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EVar "display") (EVar "alias"))) (ELit (LString "."))) (EApp (EVar "display") (EVar "n"))) (ELit (LString ""))))
-(DData Public "PropParam" () ((variant "PropParam" (ConPos (TyCon "String") (TyCon "Ty")))) ())
+(DData Public "PropParam" () ((variant "PropParam" (ConPos (TyCon "String") (TyCon "Loc") (TyCon "Ty")))) ())
 (DData Public "MethodDefault" () ((variant "MethodDefault" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr")))) ())
 (DData Public "IfaceMethod" () ((variant "IfaceMethod" (ConPos (TyCon "String") (TyCon "Ty") (TyApp (TyCon "Option") (TyCon "MethodDefault"))))) ())
 (DData Public "Super" () ((variant "Super" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))) ())
@@ -494,7 +498,7 @@ public export data Decl =
 (DData Public "Route" () ((variant "RNone" (ConPos)) (variant "RKey" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RDict" (ConPos (TyCon "String"))) (variant "RDictFwd" (ConPos (TyCon "String"))) (variant "RLocal" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Route")))) (variant "RScalar" (ConPos (TyCon "String")))) ())
 (DData Public "Addr" () ((variant "ALocal" (ConPos (TyCon "Int") (TyCon "Int"))) (variant "AGlobal" (ConPos))) ())
 (DData Public "Pat" () ((variant "PVar" (ConPos (TyCon "String") (TyCon "Loc"))) (variant "PWild" (ConPos)) (variant "PLit" (ConPos (TyCon "Lit"))) (variant "PCon" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PCons" (ConPos (TyCon "Pat") (TyCon "Pat"))) (variant "PTuple" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PList" (ConPos (TyApp (TyCon "List") (TyCon "Pat")))) (variant "PAs" (ConPos (TyCon "String") (TyCon "Loc") (TyCon "Pat"))) (variant "PRng" (ConPos (TyCon "Lit") (TyCon "Lit") (TyCon "Bool"))) (variant "PRec" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "RecPatField")) (TyCon "Bool")))) ())
-(DData Public "RecPatField" () ((variant "RecPatField" (ConPos (TyCon "String") (TyApp (TyCon "Option") (TyCon "Pat"))))) ())
+(DData Public "RecPatField" () ((variant "RecPatField" (ConPos (TyCon "String") (TyCon "Loc") (TyApp (TyCon "Option") (TyCon "Pat"))))) ())
 (DData Public "Guard" () ((variant "GBool" (ConPos (TyCon "Expr"))) (variant "GBind" (ConPos (TyCon "Pat") (TyCon "Expr")))) ())
 (DData Public "Arm" () ((variant "Arm" (ConPos (TyCon "Pat") (TyApp (TyCon "List") (TyCon "Guard")) (TyCon "Expr")))) ())
 (DData Public "DoStmt" () ((variant "DoExpr" (ConPos (TyCon "Expr"))) (variant "DoBind" (ConPos (TyCon "Pat") (TyCon "Expr"))) (variant "DoLet" (ConPos (TyCon "Bool") (TyCon "Bool") (TyCon "Pat") (TyCon "Expr"))) (variant "DoAssign" (ConPos (TyCon "String") (TyCon "Expr"))) (variant "DoFieldAssign" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String")) (TyCon "Expr")))) ())
@@ -515,7 +519,7 @@ public export data Decl =
 (DFunDef false "useMemberLocal" ((PCon "UseMember" (PVar "n") PWild PWild (PVar "alias"))) (EMatch (EVar "alias") (arm (PCon "Some" (PVar "a")) () (EVar "a")) (arm (PCon "None") () (EVar "n"))))
 (DTypeSig true "qualifiedLocal" (TyFun (TyCon "String") (TyFun (TyCon "String") (TyCon "String"))))
 (DFunDef false "qualifiedLocal" ((PVar "alias") (PVar "n")) (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString "")) (EApp (EMethodRef "display") (EVar "alias"))) (ELit (LString "."))) (EApp (EMethodRef "display") (EVar "n"))) (ELit (LString ""))))
-(DData Public "PropParam" () ((variant "PropParam" (ConPos (TyCon "String") (TyCon "Ty")))) ())
+(DData Public "PropParam" () ((variant "PropParam" (ConPos (TyCon "String") (TyCon "Loc") (TyCon "Ty")))) ())
 (DData Public "MethodDefault" () ((variant "MethodDefault" (ConPos (TyApp (TyCon "List") (TyCon "Pat")) (TyCon "Expr")))) ())
 (DData Public "IfaceMethod" () ((variant "IfaceMethod" (ConPos (TyCon "String") (TyCon "Ty") (TyApp (TyCon "Option") (TyCon "MethodDefault"))))) ())
 (DData Public "Super" () ((variant "Super" (ConPos (TyCon "String") (TyApp (TyCon "List") (TyCon "String"))))) ())

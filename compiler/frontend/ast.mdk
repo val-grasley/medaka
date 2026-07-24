@@ -108,7 +108,9 @@ public export data Pat =
   | PRec String (List RecPatField) Bool
 
 -- one field of a record pattern: `field` (pun, None) or `field = pat`
-public export data RecPatField = RecPatField String (Option Pat)
+-- The Loc is the field-name token (#913 Inc 2b: a punned field `{x}` binds
+-- `x`, and rename must land on the field token, not the enclosing match Loc).
+public export data RecPatField = RecPatField String Loc (Option Pat)
 
 public export data Guard = GBool Expr | GBind Pat Expr
 
@@ -367,8 +369,10 @@ useMemberLocal (UseMember n _ _ alias) = match alias
 export qualifiedLocal : String -> String -> String
 qualifiedLocal alias n = "\{alias}.\{n}"
 
--- a property-test parameter `(name : ty)`
-public export data PropParam = PropParam String Ty
+-- a property-test parameter `(name : ty)`.
+-- The Loc is the param-NAME token (#913 Inc 2b: renaming a prop param must
+-- land on its own token, not the prop's name string).
+public export data PropParam = PropParam String Loc Ty
 
 -- interface / impl pieces
 public export data MethodDefault = MethodDefault (List Pat) Expr

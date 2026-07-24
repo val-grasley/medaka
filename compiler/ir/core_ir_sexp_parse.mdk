@@ -205,9 +205,9 @@ toLit other = panic ("core_ir_sexp_parse: bad Lit: " ++ sexprToStr other)
 
 toRecPatField : SExp -> RecPatField
 toRecPatField (SList ((SAtom "rf")::[f, SAtom "None"])) =
-  RecPatField (toStr f) None
+  RecPatField (toStr f) (Loc "" 0 0 0 0) None
 toRecPatField (SList ((SAtom "rf")::[f, p])) =
-  RecPatField (toStr f) (Some (toPat p))
+  RecPatField (toStr f) (Loc "" 0 0 0 0) (Some (toPat p))
 toRecPatField other =
   panic ("core_ir_sexp_parse: bad RecPatField: " ++ sexprToStr other)
 

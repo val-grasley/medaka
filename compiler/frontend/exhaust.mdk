@@ -249,7 +249,7 @@ lookupRecField oracle fields fn = match findRecField fn fields
 
 findRecField : String -> List RecPatField -> Option (Option Pat)
 findRecField _ [] = None
-findRecField fn ((RecPatField f mPat)::rest)
+findRecField fn ((RecPatField f _ mPat)::rest)
   | f == fn = Some mPat
   | otherwise = findRecField fn rest
 
@@ -444,8 +444,8 @@ patHasRange (PRec _ fields _) = anyList recFieldHasRange fields
 patHasRange _ = False
 
 recFieldHasRange : RecPatField -> Bool
-recFieldHasRange (RecPatField _ None) = False
-recFieldHasRange (RecPatField _ (Some p)) = patHasRange p
+recFieldHasRange (RecPatField _ _ None) = False
+recFieldHasRange (RecPatField _ _ (Some p)) = patHasRange p
 
 -- ── witness extraction (the Maranget `I` algorithm) ───────────────────────
 -- A witness-producing companion to `useful`: when the ALL-WILDCARD query of
@@ -560,8 +560,8 @@ isIrrefutablePat (PRec _ fields _) = allList recFieldIrrefutable fields
 isIrrefutablePat _ = False
 
 recFieldIrrefutable : RecPatField -> Bool
-recFieldIrrefutable (RecPatField _ None) = True
-recFieldIrrefutable (RecPatField _ (Some p)) = isIrrefutablePat p
+recFieldIrrefutable (RecPatField _ _ None) = True
+recFieldIrrefutable (RecPatField _ _ (Some p)) = isIrrefutablePat p
 
 boolAlwaysTrue : Expr -> Bool
 -- strip ELoc (mirror of lib/exhaust.ml's `strip_eloc`): guard conditions arrive

@@ -534,20 +534,20 @@ rewritePat _ p = p
 -- not named in the pattern (open `..` / subset).
 recPatForLabel : List (String, List String) -> List RecPatField -> String -> Pat
 recPatForLabel fo recFields label = match findRecField label recFields
-  Some (RecPatField _ (Some sub)) => rewritePat fo sub
-  Some (RecPatField _ None) => PVar label (Loc "" 0 0 0 0)
+  Some (RecPatField _ fl (Some sub)) => rewritePat fo sub
+  Some (RecPatField _ fl None) => PVar label fl
   None => PWild
 
 findRecField : String -> List RecPatField -> Option RecPatField
 findRecField _ [] = None
-findRecField label ((RecPatField l sub)::rest)
-  | l == label = Some (RecPatField l sub)
+findRecField label ((RecPatField l fl sub)::rest)
+  | l == label = Some (RecPatField l fl sub)
   | otherwise = findRecField label rest
 
 rewriteRecPatField : List (String, List String) -> RecPatField -> RecPatField
-rewriteRecPatField fo (RecPatField l (Some sub)) =
-  RecPatField l (Some (rewritePat fo sub))
-rewriteRecPatField _ (RecPatField l None) = RecPatField l None
+rewriteRecPatField fo (RecPatField l fl (Some sub)) =
+  RecPatField l fl (Some (rewritePat fo sub))
+rewriteRecPatField _ (RecPatField l fl None) = RecPatField l fl None
 
 -- ── apply the rewrite to every pattern position the lowered Core IR carries ───
 -- Walks the whole program (groups + impls), rewriting every pattern and — for a

@@ -209,9 +209,9 @@ toLit other = panic ("core_ir_sexp_parse: bad Lit: " ++ sexprToStr other)
 
 toRecPatField : SExp -> RecPatField
 toRecPatField (SList ((SAtom "rf")::[f, SAtom "None"])) =
-  RecPatField (toStr f) None
+  RecPatField (toStr f) (Loc "" 0 0 0 0) None
 toRecPatField (SList ((SAtom "rf")::[f, p])) =
-  RecPatField (toStr f) (Some (toPat p))
+  RecPatField (toStr f) (Loc "" 0 0 0 0) (Some (toPat p))
 toRecPatField other =
   panic ("core_ir_sexp_parse: bad RecPatField: " ++ sexprToStr other)
 
@@ -470,8 +470,8 @@ joinSexps (x::rest) = "\{sexprToStr x} \{joinSexps rest}"
 (DFunDef false "toLit" ((PCon "SAtom" (PLit (LString "LUnit")))) (EVar "LUnit"))
 (DFunDef false "toLit" ((PVar "other")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "core_ir_sexp_parse: bad Lit: ")) (EApp (EVar "sexprToStr") (EVar "other")))))
 (DTypeSig false "toRecPatField" (TyFun (TyCon "SExp") (TyCon "RecPatField")))
-(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PCon "SAtom" (PLit (LString "None"))))))) (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EVar "None")))
-(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PVar "p"))))) (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EApp (EVar "Some") (EApp (EVar "toPat") (EVar "p")))))
+(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PCon "SAtom" (PLit (LString "None"))))))) (EApp (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))) (EVar "None")))
+(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PVar "p"))))) (EApp (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))) (EApp (EVar "Some") (EApp (EVar "toPat") (EVar "p")))))
 (DFunDef false "toRecPatField" ((PVar "other")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "core_ir_sexp_parse: bad RecPatField: ")) (EApp (EVar "sexprToStr") (EVar "other")))))
 (DTypeSig false "toPat" (TyFun (TyCon "SExp") (TyCon "Pat")))
 (DFunDef false "toPat" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "PVar"))) (PList (PVar "n"))))) (EApp (EApp (EVar "PVar") (EApp (EVar "toStr") (EVar "n"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))
@@ -666,8 +666,8 @@ joinSexps (x::rest) = "\{sexprToStr x} \{joinSexps rest}"
 (DFunDef false "toLit" ((PCon "SAtom" (PLit (LString "LUnit")))) (EVar "LUnit"))
 (DFunDef false "toLit" ((PVar "other")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "core_ir_sexp_parse: bad Lit: ")) (EApp (EVar "sexprToStr") (EVar "other")))))
 (DTypeSig false "toRecPatField" (TyFun (TyCon "SExp") (TyCon "RecPatField")))
-(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PCon "SAtom" (PLit (LString "None"))))))) (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EVar "None")))
-(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PVar "p"))))) (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EApp (EVar "Some") (EApp (EVar "toPat") (EVar "p")))))
+(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PCon "SAtom" (PLit (LString "None"))))))) (EApp (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))) (EVar "None")))
+(DFunDef false "toRecPatField" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "rf"))) (PList (PVar "f") (PVar "p"))))) (EApp (EApp (EApp (EVar "RecPatField") (EApp (EVar "toStr") (EVar "f"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))) (EApp (EVar "Some") (EApp (EVar "toPat") (EVar "p")))))
 (DFunDef false "toRecPatField" ((PVar "other")) (EApp (EVar "panic") (EBinOp "++" (ELit (LString "core_ir_sexp_parse: bad RecPatField: ")) (EApp (EVar "sexprToStr") (EVar "other")))))
 (DTypeSig false "toPat" (TyFun (TyCon "SExp") (TyCon "Pat")))
 (DFunDef false "toPat" ((PCon "SList" (PCons (PCon "SAtom" (PLit (LString "PVar"))) (PList (PVar "n"))))) (EApp (EApp (EVar "PVar") (EApp (EVar "toStr") (EVar "n"))) (EApp (EApp (EApp (EApp (EApp (EVar "Loc") (ELit (LString ""))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0))) (ELit (LInt 0)))))

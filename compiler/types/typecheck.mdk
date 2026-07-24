@@ -3918,7 +3918,7 @@ inferPatRec env name fields = match lookupRecordByName name
 -- (the record itself is already-reported unknown; see inferPatRec error path)
 bindRecPatFieldsFresh : TcEnv -> List RecPatField -> List (String, Scheme)
 bindRecPatFieldsFresh _ [] = []
-bindRecPatFieldsFresh env ((RecPatField fname mp)::rest) = inferRecPatFieldWith env (freshVar ()) fname mp
+bindRecPatFieldsFresh env ((RecPatField fname _ mp)::rest) = inferRecPatFieldWith env (freshVar ()) fname mp
   ++ bindRecPatFieldsFresh env rest
 
 inferPatRecWith : TcEnv -> String -> RecordInfo -> List RecPatField -> (Mono, List (String, Scheme))
@@ -3928,7 +3928,7 @@ inferPatRecWith env rname ri fields =
 
 inferRecPatFields : TcEnv -> String -> List (String, Mono) -> List RecPatField -> List (String, Scheme)
 inferRecPatFields _ _ _ [] = []
-inferRecPatFields env rname fieldTypes ((RecPatField fname mp)::rest) = inferRecPatField env rname fieldTypes fname mp
+inferRecPatFields env rname fieldTypes ((RecPatField fname _ mp)::rest) = inferRecPatField env rname fieldTypes fname mp
   ++ inferRecPatFields env rname fieldTypes rest
 
 inferRecPatField : TcEnv -> String -> List (String, Mono) -> String -> Option Pat -> List (String, Scheme)
@@ -8860,7 +8860,7 @@ propParamNamesTc : List PropParam -> List String
 propParamNamesTc ps = map propParamName ps
 
 propParamName : PropParam -> String
-propParamName (PropParam n _) = n
+propParamName (PropParam n _ _) = n
 
 -- the core scope-threaded rewrite.  `bound` is the set of names in scope as
 -- locals at this node.  At an EVar: the rp arm is scope-blind (unchanged); the
@@ -9056,8 +9056,8 @@ patVarsListTc : List Pat -> List String
 patVarsListTc ps = flatMap patVarsTc ps
 
 recPatFieldVarsTc : RecPatField -> List String
-recPatFieldVarsTc (RecPatField label None) = [label]
-recPatFieldVarsTc (RecPatField _ (Some p)) = patVarsTc p
+recPatFieldVarsTc (RecPatField label _ None) = [label]
+recPatFieldVarsTc (RecPatField _ _ (Some p)) = patVarsTc p
 
 -- interface methods carrying a method-level constraint (a `=>` over a tyvar that is
 -- NOT the interface param, e.g. foldMap's `Monoid m`) — rewritten to EMethodAt
@@ -12217,7 +12217,7 @@ inferTestBodies env (_::rest) = inferTestBodies env rest
 -- for any free type variable in ty; props are normally concrete, e.g. `List Int`).
 extendPropParams : TcEnv -> List PropParam -> TcEnv
 extendPropParams env [] = env
-extendPropParams env ((PropParam x ty)::rest) =
+extendPropParams env ((PropParam x _ ty)::rest) =
   let scheme = monoScheme (fromAstType (freshTvMap (dedup (tyVarNames ty))) ty)
   extendPropParams (extendLocalVar env x scheme) rest
 

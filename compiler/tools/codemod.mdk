@@ -298,10 +298,10 @@ mapFieldsB f ((Field n t)::rest) =
 
 mapPropParamsB : (Ty -> (Ty, Bool)) -> List PropParam -> (List PropParam, Bool)
 mapPropParamsB _ [] = ([], False)
-mapPropParamsB f ((PropParam n t)::rest) =
+mapPropParamsB f ((PropParam n l t)::rest) =
   let (t2, c1) = mapTyFull f t
   let (rest2, c2) = mapPropParamsB f rest
-  (PropParam n t2 :: rest2, c1 || c2)
+  (PropParam n l t2 :: rest2, c1 || c2)
 
 mapIfaceMethodsB : (Ty -> (Ty, Bool)) -> List IfaceMethod -> (List IfaceMethod, Bool)
 mapIfaceMethodsB _ [] = ([], False)

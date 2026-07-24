@@ -283,8 +283,8 @@ patBindings (PRng _ _ _) = []
 patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 
 recFieldBindings : RecPatField -> List String
-recFieldBindings (RecPatField fname None) = [fname]
-recFieldBindings (RecPatField _ (Some p)) = patBindings p
+recFieldBindings (RecPatField fname _ None) = [fname]
+recFieldBindings (RecPatField _ _ (Some p)) = patBindings p
 
 patsBindings : List Pat -> List String
 patsBindings ps = flatMap patBindings ps
@@ -380,7 +380,7 @@ recPatHead cur env name =
     [UnknownType name cur (suggestType env name)]
 
 checkRecField : Option Loc -> Env -> String -> RecPatField -> List ResError
-checkRecField cur env owner (RecPatField fname popt) = fieldCheck cur env owner fname
+checkRecField cur env owner (RecPatField fname _ popt) = fieldCheck cur env owner fname
   ++ recFieldSub cur env popt
 
 fieldCheck : Option Loc -> Env -> String -> String -> List ResError
@@ -955,10 +955,10 @@ checkProp env params body = flatMap (checkPropParamTy env) params
   ++ checkExpr None env (map propParamName params) body
 
 checkPropParamTy : Env -> PropParam -> List ResError
-checkPropParamTy env (PropParam _ t) = checkType None env t
+checkPropParamTy env (PropParam _ _ t) = checkType None env t
 
 propParamName : PropParam -> String
-propParamName (PropParam x _) = x
+propParamName (PropParam x _ _) = x
 
 checkInterfaceDecl : Env -> List Super -> List IfaceMethod -> List ResError
 checkInterfaceDecl env supers methods = flatMap (checkSuper env) supers
@@ -2855,8 +2855,8 @@ stampBindingIds decls =
 (DFunDef false "patBindings" ((PCon "PRng" PWild PWild PWild)) (EListLit))
 (DFunDef false "patBindings" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EVar "flatMap") (EVar "recFieldBindings")) (EVar "fields")))
 (DTypeSig false "recFieldBindings" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") (PCon "None"))) (EListLit (EVar "fname")))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") PWild (PCon "None"))) (EListLit (EVar "fname")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
 (DTypeSig false "patsBindings" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "patsBindings" ((PVar "ps")) (EApp (EApp (EVar "flatMap") (EVar "patBindings")) (EVar "ps")))
 (DTypeSig false "patGroupDupErrors" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "ResError"))))))
@@ -2888,7 +2888,7 @@ stampBindingIds decls =
 (DTypeSig false "recPatHead" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError"))))))
 (DFunDef false "recPatHead" ((PVar "cur") (PVar "env") (PVar "name")) (EIf (EBinOp "||" (EApp (EApp (EVar "omHasKey") (EVar "name")) (EFieldAccess (EVar "env") "types")) (EApp (EApp (EVar "omHasKey") (EVar "name")) (EFieldAccess (EVar "env") "ctors"))) (EListLit) (EListLit (EApp (EApp (EApp (EVar "UnknownType") (EVar "name")) (EVar "cur")) (EApp (EApp (EVar "suggestType") (EVar "env")) (EVar "name"))))))
 (DTypeSig false "checkRecField" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "ResError")))))))
-(DFunDef false "checkRecField" ((PVar "cur") (PVar "env") (PVar "owner") (PCon "RecPatField" (PVar "fname") (PVar "popt"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "fieldCheck") (EVar "cur")) (EVar "env")) (EVar "owner")) (EVar "fname")) (EApp (EApp (EApp (EVar "recFieldSub") (EVar "cur")) (EVar "env")) (EVar "popt"))))
+(DFunDef false "checkRecField" ((PVar "cur") (PVar "env") (PVar "owner") (PCon "RecPatField" (PVar "fname") PWild (PVar "popt"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "fieldCheck") (EVar "cur")) (EVar "env")) (EVar "owner")) (EVar "fname")) (EApp (EApp (EApp (EVar "recFieldSub") (EVar "cur")) (EVar "env")) (EVar "popt"))))
 (DTypeSig false "fieldCheck" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "fieldCheck" ((PVar "cur") (PVar "env") (PVar "owner") (PVar "fname")) (EBlock (DoLet false false (PVar "owners") (EApp (EApp (EVar "ownersOf") (EVar "fname")) (EFieldAccess (EVar "env") "fieldOwners"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "fieldVerdict") (EVar "cur")) (EVar "env")) (EVar "owner")) (EVar "fname")) (EVar "owners")))))
 (DTypeSig false "fieldVerdict" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "ResError"))))))))
@@ -3092,9 +3092,9 @@ stampBindingIds decls =
 (DTypeSig false "checkProp" (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "ResError"))))))
 (DFunDef false "checkProp" ((PVar "env") (PVar "params") (PVar "body")) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EApp (EVar "checkPropParamTy") (EVar "env"))) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "checkExpr") (EVar "None")) (EVar "env")) (EApp (EApp (EVar "map") (EVar "propParamName")) (EVar "params"))) (EVar "body"))))
 (DTypeSig false "checkPropParamTy" (TyFun (TyCon "Env") (TyFun (TyCon "PropParam") (TyApp (TyCon "List") (TyCon "ResError")))))
-(DFunDef false "checkPropParamTy" ((PVar "env") (PCon "PropParam" PWild (PVar "t"))) (EApp (EApp (EApp (EVar "checkType") (EVar "None")) (EVar "env")) (EVar "t")))
+(DFunDef false "checkPropParamTy" ((PVar "env") (PCon "PropParam" PWild PWild (PVar "t"))) (EApp (EApp (EApp (EVar "checkType") (EVar "None")) (EVar "env")) (EVar "t")))
 (DTypeSig false "propParamName" (TyFun (TyCon "PropParam") (TyCon "String")))
-(DFunDef false "propParamName" ((PCon "PropParam" (PVar "x") PWild)) (EVar "x"))
+(DFunDef false "propParamName" ((PCon "PropParam" (PVar "x") PWild PWild)) (EVar "x"))
 (DTypeSig false "checkInterfaceDecl" (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "Super")) (TyFun (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyApp (TyCon "List") (TyCon "ResError"))))))
 (DFunDef false "checkInterfaceDecl" ((PVar "env") (PVar "supers") (PVar "methods")) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EApp (EVar "checkSuper") (EVar "env"))) (EVar "supers")) (EApp (EApp (EVar "flatMap") (EApp (EVar "checkIfaceMethod") (EVar "env"))) (EVar "methods"))))
 (DTypeSig false "checkSuper" (TyFun (TyCon "Env") (TyFun (TyCon "Super") (TyApp (TyCon "List") (TyCon "ResError")))))
@@ -3867,8 +3867,8 @@ stampBindingIds decls =
 (DFunDef false "patBindings" ((PCon "PRng" PWild PWild PWild)) (EListLit))
 (DFunDef false "patBindings" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EDictApp "flatMap") (EVar "recFieldBindings")) (EVar "fields")))
 (DTypeSig false "recFieldBindings" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") (PCon "None"))) (EListLit (EVar "fname")))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") PWild (PCon "None"))) (EListLit (EVar "fname")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
 (DTypeSig false "patsBindings" (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "patsBindings" ((PVar "ps")) (EApp (EApp (EDictApp "flatMap") (EVar "patBindings")) (EVar "ps")))
 (DTypeSig false "patGroupDupErrors" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "ResError"))))))
@@ -3900,7 +3900,7 @@ stampBindingIds decls =
 (DTypeSig false "recPatHead" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError"))))))
 (DFunDef false "recPatHead" ((PVar "cur") (PVar "env") (PVar "name")) (EIf (EBinOp "||" (EApp (EApp (EVar "omHasKey") (EVar "name")) (EFieldAccess (EVar "env") "types")) (EApp (EApp (EVar "omHasKey") (EVar "name")) (EFieldAccess (EVar "env") "ctors"))) (EListLit) (EListLit (EApp (EApp (EApp (EVar "UnknownType") (EVar "name")) (EVar "cur")) (EApp (EApp (EVar "suggestType") (EVar "env")) (EVar "name"))))))
 (DTypeSig false "checkRecField" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "ResError")))))))
-(DFunDef false "checkRecField" ((PVar "cur") (PVar "env") (PVar "owner") (PCon "RecPatField" (PVar "fname") (PVar "popt"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "fieldCheck") (EVar "cur")) (EVar "env")) (EVar "owner")) (EVar "fname")) (EApp (EApp (EApp (EVar "recFieldSub") (EVar "cur")) (EVar "env")) (EVar "popt"))))
+(DFunDef false "checkRecField" ((PVar "cur") (PVar "env") (PVar "owner") (PCon "RecPatField" (PVar "fname") PWild (PVar "popt"))) (EBinOp "++" (EApp (EApp (EApp (EApp (EVar "fieldCheck") (EVar "cur")) (EVar "env")) (EVar "owner")) (EVar "fname")) (EApp (EApp (EApp (EVar "recFieldSub") (EVar "cur")) (EVar "env")) (EVar "popt"))))
 (DTypeSig false "fieldCheck" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyApp (TyCon "List") (TyCon "ResError")))))))
 (DFunDef false "fieldCheck" ((PVar "cur") (PVar "env") (PVar "owner") (PVar "fname")) (EBlock (DoLet false false (PVar "owners") (EApp (EApp (EVar "ownersOf") (EVar "fname")) (EFieldAccess (EVar "env") "fieldOwners"))) (DoExpr (EApp (EApp (EApp (EApp (EApp (EVar "fieldVerdict") (EVar "cur")) (EVar "env")) (EVar "owner")) (EVar "fname")) (EVar "owners")))))
 (DTypeSig false "fieldVerdict" (TyFun (TyApp (TyCon "Option") (TyCon "Loc")) (TyFun (TyCon "Env") (TyFun (TyCon "String") (TyFun (TyCon "String") (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyApp (TyCon "List") (TyCon "ResError"))))))))
@@ -4104,9 +4104,9 @@ stampBindingIds decls =
 (DTypeSig false "checkProp" (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "ResError"))))))
 (DFunDef false "checkProp" ((PVar "env") (PVar "params") (PVar "body")) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EApp (EVar "checkPropParamTy") (EVar "env"))) (EVar "params")) (EApp (EApp (EApp (EApp (EVar "checkExpr") (EVar "None")) (EVar "env")) (EApp (EApp (EMethodRef "map") (EVar "propParamName")) (EVar "params"))) (EVar "body"))))
 (DTypeSig false "checkPropParamTy" (TyFun (TyCon "Env") (TyFun (TyCon "PropParam") (TyApp (TyCon "List") (TyCon "ResError")))))
-(DFunDef false "checkPropParamTy" ((PVar "env") (PCon "PropParam" PWild (PVar "t"))) (EApp (EApp (EApp (EVar "checkType") (EVar "None")) (EVar "env")) (EVar "t")))
+(DFunDef false "checkPropParamTy" ((PVar "env") (PCon "PropParam" PWild PWild (PVar "t"))) (EApp (EApp (EApp (EVar "checkType") (EVar "None")) (EVar "env")) (EVar "t")))
 (DTypeSig false "propParamName" (TyFun (TyCon "PropParam") (TyCon "String")))
-(DFunDef false "propParamName" ((PCon "PropParam" (PVar "x") PWild)) (EVar "x"))
+(DFunDef false "propParamName" ((PCon "PropParam" (PVar "x") PWild PWild)) (EVar "x"))
 (DTypeSig false "checkInterfaceDecl" (TyFun (TyCon "Env") (TyFun (TyApp (TyCon "List") (TyCon "Super")) (TyFun (TyApp (TyCon "List") (TyCon "IfaceMethod")) (TyApp (TyCon "List") (TyCon "ResError"))))))
 (DFunDef false "checkInterfaceDecl" ((PVar "env") (PVar "supers") (PVar "methods")) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EApp (EVar "checkSuper") (EVar "env"))) (EVar "supers")) (EApp (EApp (EDictApp "flatMap") (EApp (EVar "checkIfaceMethod") (EVar "env"))) (EVar "methods"))))
 (DTypeSig false "checkSuper" (TyFun (TyCon "Env") (TyFun (TyCon "Super") (TyApp (TyCon "List") (TyCon "ResError")))))

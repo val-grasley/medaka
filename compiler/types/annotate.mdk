@@ -77,8 +77,8 @@ patBindings (PRng _ _ _) = []
 patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 
 recFieldBindings : RecPatField -> List String
-recFieldBindings (RecPatField fname None) = [fname]
-recFieldBindings (RecPatField _ (Some p)) = patBindings p
+recFieldBindings (RecPatField fname _ None) = [fname]
+recFieldBindings (RecPatField _ _ (Some p)) = patBindings p
 
 startsWithAt : Array Char -> Bool
 -- Intentional cross-file duplicate of the same helper in resolve.mdk; not consolidating (tiny helper / divergent-by-design backend pair).
@@ -92,7 +92,7 @@ letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
 propParamName : PropParam -> String
-propParamName (PropParam x _) = x
+propParamName (PropParam x _ _) = x
 
 -- ── framed scope (innermost frame first; each frame its names in slot order) ──
 -- per-parameter frames for a closure's params: applyClosure pushes one frame per

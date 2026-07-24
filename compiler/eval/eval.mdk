@@ -748,7 +748,7 @@ charUpper c hi False = ordLt (stringCompare c hi)
 
 matchRecFields : List RecPatField -> List (String, Value e) -> Option (List (String, Value e))
 matchRecFields [] _ = Some []
-matchRecFields ((RecPatField fname mp)::rest) recFields = match lookupAssoc fname recFields
+matchRecFields ((RecPatField fname _ mp)::rest) recFields = match lookupAssoc fname recFields
   None => None
   Some v => matchRecField fname mp v rest recFields
 

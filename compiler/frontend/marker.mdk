@@ -375,8 +375,8 @@ patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 patBindings _ = []
 
 recFieldBindings : RecPatField -> List String
-recFieldBindings (RecPatField fname None) = [fname]
-recFieldBindings (RecPatField _ (Some p)) = patBindings p
+recFieldBindings (RecPatField fname _ None) = [fname]
+recFieldBindings (RecPatField _ _ (Some p)) = patBindings p
 
 -- Names bound by local patterns *within* an expression tree.
 localBoundExpr : Expr -> List String

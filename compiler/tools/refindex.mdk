@@ -190,9 +190,9 @@ headIsUpper s = match arrayGet 0 (stringToChars s)
 
 -- names bound by a pattern, each paired with its OWN name-token `Loc` (§9.4) so a
 -- param/local binder records at its own token, not the enclosing decl's loc.
--- `PVar`/`PAs` carry a real binder token from the parser; the `fb` (fallback) Loc
--- is used ONLY for a punned record field (`RecPatField name None`), whose name has
--- no `Loc` in the AST (a documented residual — see the report / §9.5 B-notes).
+-- `PVar`/`PAs` carry a real binder token from the parser; a punned record field
+-- (`RecPatField name l None`) now carries the field-name token `Loc` too (#913
+-- Inc 2b), so the `fb` (fallback) Loc is used only for compiler-synthetic binders.
 patBinders : Loc -> Pat -> List (String, Loc)
 patBinders _ (PVar x l) = [(x, l)]
 patBinders _ PWild = []
@@ -206,8 +206,8 @@ patBinders _ (PRng _ _ _) = []
 patBinders fb (PRec _ fields _) = flatMap (recFieldBinders fb) fields
 
 recFieldBinders : Loc -> RecPatField -> List (String, Loc)
-recFieldBinders fb (RecPatField name None) = [(name, fb)]
-recFieldBinders fb (RecPatField _ (Some p)) = patBinders fb p
+recFieldBinders _ (RecPatField name l None) = [(name, l)]
+recFieldBinders fb (RecPatField _ _ (Some p)) = patBinders fb p
 
 -- a bare name list (let-group binds, prop params — neither carries a token `Loc`
 -- in the AST) paired with the enclosing `Loc` as a fallback: those binder sites
@@ -540,8 +540,10 @@ locWithUriOf w l = withUri (uriOf w) l
 letBindName : LetBind -> String
 letBindName (LetBind n _) = n
 
-ppName : PropParam -> String
-ppName (PropParam n _) = n
+-- a prop param paired with its OWN name-token `Loc` (#913 Inc 2b): renaming a
+-- prop param must land on its token, not the prop's DProp decl loc.
+ppNameLoc : PropParam -> (String, Loc)
+ppNameLoc (PropParam n l _) = (n, l)
 
 ifName : IfaceMethod -> String
 ifName (IfaceMethod n _ _) = n
@@ -693,7 +695,7 @@ walkDeclBody w (DImpl { tys, methods, ... }) loc =
   let _ = walkTys w loc tys
   walkImplMethods w loc methods
 walkDeclBody w (DProp _ _ params body) loc =
-  let frame = mkNamedFrame w (namesAtLoc loc (map ppName params))
+  let frame = mkNamedFrame w (map ppNameLoc params)
   walkExpr w [frame] loc body
 walkDeclBody w (DTest _ _ body) loc = walkExpr w [] loc body
 walkDeclBody w (DBench _ _ body) loc = walkExpr w [] loc body

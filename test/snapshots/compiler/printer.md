@@ -423,8 +423,8 @@ printPat (PRng lo hi incl) =
   Cat (printLit lo) (Cat (text (if incl then "..=" else "..")) (printLit hi))
 
 recPatFieldDoc : RecPatField -> Doc
-recPatFieldDoc (RecPatField k None) = text k
-recPatFieldDoc (RecPatField k (Some q)) =
+recPatFieldDoc (RecPatField k _ None) = text k
+recPatFieldDoc (RecPatField k _ (Some q)) =
   Cat (text k) (Cat (text " = ") (printPat q))
 
 -- PCon with args already self-parenthesizes in printPat, so it is atom-safe.
@@ -1685,7 +1685,7 @@ printDecl (DAttrib attrs inner) =
 -- prop param: ` (name : ppTy ty)` — mirrors lib/ast.ml's pp_ty (a precedence
 -- type printer distinct from printType — see ppTy below).
 propParamDoc : PropParam -> Doc
-propParamDoc (PropParam x ty) = text " (\{x} : \{ppTy ty})"
+propParamDoc (PropParam x _ ty) = text " (\{x} : \{ppTy ty})"
 
 attrDoc : Attr -> Doc
 attrDoc (AttrDeprecated msg) =
@@ -1982,8 +1982,8 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printPat" ((PCon "PRec" (PVar "name") (PVar "fields") (PVar "rest"))) (EBlock (DoLet false false (PVar "fieldDocs") (EApp (EApp (EVar "map") (EVar "recPatFieldDoc")) (EVar "fields"))) (DoLet false false (PVar "all") (EIf (EVar "rest") (EBinOp "++" (EVar "fieldDocs") (EListLit (EApp (EVar "text") (ELit (LString "..."))))) (EVar "fieldDocs"))) (DoExpr (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "name"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " { ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EVar "all"))) (EApp (EVar "text") (ELit (LString " }")))))))))
 (DFunDef false "printPat" ((PCon "PRng" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EVar "Cat") (EApp (EVar "printLit") (EVar "lo"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EIf (EVar "incl") (ELit (LString "..=")) (ELit (LString ".."))))) (EApp (EVar "printLit") (EVar "hi")))))
 (DTypeSig false "recPatFieldDoc" (TyFun (TyCon "RecPatField") (TyCon "Doc")))
-(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") (PCon "None"))) (EApp (EVar "text") (EVar "k")))
-(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") (PCon "Some" (PVar "q")))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "k"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " = ")))) (EApp (EVar "printPat") (EVar "q")))))
+(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") PWild (PCon "None"))) (EApp (EVar "text") (EVar "k")))
+(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") PWild (PCon "Some" (PVar "q")))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "k"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " = ")))) (EApp (EVar "printPat") (EVar "q")))))
 (DTypeSig false "printPatAtom" (TyFun (TyCon "Pat") (TyCon "Doc")))
 (DFunDef false "printPatAtom" ((PCon "PVar" (PVar "x") (PVar "l"))) (EApp (EVar "printPat") (EApp (EApp (EVar "PVar") (EVar "x")) (EVar "l"))))
 (DFunDef false "printPatAtom" ((PCon "PWild")) (EApp (EVar "printPat") (EVar "PWild")))
@@ -2430,7 +2430,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printDecl" ((PCon "DBench" (PVar "pub") (PVar "benchName") (PVar "benchBody"))) (EApp (EApp (EVar "Cat") (EIf (EVar "pub") (EApp (EVar "text") (ELit (LString "export "))) (EVar "Nil"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "bench ")))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EApp (EVar "escStringLit") (EVar "benchName")))) (EApp (EVar "printDefRhs") (EVar "benchBody"))))))
 (DFunDef false "printDecl" ((PCon "DAttrib" (PVar "attrs") (PVar "inner"))) (EApp (EApp (EVar "Cat") (EApp (EVar "concatD") (EApp (EApp (EVar "map") (EVar "attrDoc")) (EVar "attrs")))) (EApp (EVar "printDecl") (EVar "inner"))))
 (DTypeSig false "propParamDoc" (TyFun (TyCon "PropParam") (TyCon "Doc")))
-(DFunDef false "propParamDoc" ((PCon "PropParam" (PVar "x") (PVar "ty"))) (EApp (EVar "text") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString " (")) (EApp (EVar "display") (EVar "x"))) (ELit (LString " : "))) (EApp (EVar "display") (EApp (EVar "ppTy") (EVar "ty")))) (ELit (LString ")")))))
+(DFunDef false "propParamDoc" ((PCon "PropParam" (PVar "x") PWild (PVar "ty"))) (EApp (EVar "text") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString " (")) (EApp (EVar "display") (EVar "x"))) (ELit (LString " : "))) (EApp (EVar "display") (EApp (EVar "ppTy") (EVar "ty")))) (ELit (LString ")")))))
 (DTypeSig false "attrDoc" (TyFun (TyCon "Attr") (TyCon "Doc")))
 (DFunDef false "attrDoc" ((PCon "AttrDeprecated" (PVar "msg"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EBinOp "++" (ELit (LString "@deprecated ")) (EApp (EVar "escStringLit") (EVar "msg"))))) (EApp (EVar "text") (ELit (LString "\n")))))
 (DFunDef false "attrDoc" ((PCon "AttrInline")) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "@inline")))) (EApp (EVar "text") (ELit (LString "\n")))))
@@ -2644,8 +2644,8 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printPat" ((PCon "PRec" (PVar "name") (PVar "fields") (PVar "rest"))) (EBlock (DoLet false false (PVar "fieldDocs") (EApp (EApp (EMethodRef "map") (EVar "recPatFieldDoc")) (EVar "fields"))) (DoLet false false (PVar "all") (EIf (EVar "rest") (EBinOp "++" (EVar "fieldDocs") (EListLit (EApp (EVar "text") (ELit (LString "..."))))) (EVar "fieldDocs"))) (DoExpr (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "name"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " { ")))) (EApp (EApp (EVar "Cat") (EApp (EApp (EVar "sepBy") (EApp (EVar "text") (ELit (LString ", ")))) (EDictApp "all"))) (EApp (EVar "text") (ELit (LString " }")))))))))
 (DFunDef false "printPat" ((PCon "PRng" (PVar "lo") (PVar "hi") (PVar "incl"))) (EApp (EApp (EVar "Cat") (EApp (EVar "printLit") (EVar "lo"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EIf (EVar "incl") (ELit (LString "..=")) (ELit (LString ".."))))) (EApp (EVar "printLit") (EVar "hi")))))
 (DTypeSig false "recPatFieldDoc" (TyFun (TyCon "RecPatField") (TyCon "Doc")))
-(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") (PCon "None"))) (EApp (EVar "text") (EVar "k")))
-(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") (PCon "Some" (PVar "q")))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "k"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " = ")))) (EApp (EVar "printPat") (EVar "q")))))
+(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") PWild (PCon "None"))) (EApp (EVar "text") (EVar "k")))
+(DFunDef false "recPatFieldDoc" ((PCon "RecPatField" (PVar "k") PWild (PCon "Some" (PVar "q")))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EVar "k"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString " = ")))) (EApp (EVar "printPat") (EVar "q")))))
 (DTypeSig false "printPatAtom" (TyFun (TyCon "Pat") (TyCon "Doc")))
 (DFunDef false "printPatAtom" ((PCon "PVar" (PVar "x") (PVar "l"))) (EApp (EVar "printPat") (EApp (EApp (EVar "PVar") (EVar "x")) (EVar "l"))))
 (DFunDef false "printPatAtom" ((PCon "PWild")) (EApp (EVar "printPat") (EVar "PWild")))
@@ -3092,7 +3092,7 @@ declLine d = render (printDecl d) ++ "\n"
 (DFunDef false "printDecl" ((PCon "DBench" (PVar "pub") (PVar "benchName") (PVar "benchBody"))) (EApp (EApp (EVar "Cat") (EIf (EVar "pub") (EApp (EVar "text") (ELit (LString "export "))) (EVar "Nil"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "bench ")))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EApp (EVar "escStringLit") (EVar "benchName")))) (EApp (EVar "printDefRhs") (EVar "benchBody"))))))
 (DFunDef false "printDecl" ((PCon "DAttrib" (PVar "attrs") (PVar "inner"))) (EApp (EApp (EVar "Cat") (EApp (EVar "concatD") (EApp (EApp (EMethodRef "map") (EVar "attrDoc")) (EVar "attrs")))) (EApp (EVar "printDecl") (EVar "inner"))))
 (DTypeSig false "propParamDoc" (TyFun (TyCon "PropParam") (TyCon "Doc")))
-(DFunDef false "propParamDoc" ((PCon "PropParam" (PVar "x") (PVar "ty"))) (EApp (EVar "text") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString " (")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString " : "))) (EApp (EMethodRef "display") (EApp (EVar "ppTy") (EVar "ty")))) (ELit (LString ")")))))
+(DFunDef false "propParamDoc" ((PCon "PropParam" (PVar "x") PWild (PVar "ty"))) (EApp (EVar "text") (EBinOp "++" (EBinOp "++" (EBinOp "++" (EBinOp "++" (ELit (LString " (")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString " : "))) (EApp (EMethodRef "display") (EApp (EVar "ppTy") (EVar "ty")))) (ELit (LString ")")))))
 (DTypeSig false "attrDoc" (TyFun (TyCon "Attr") (TyCon "Doc")))
 (DFunDef false "attrDoc" ((PCon "AttrDeprecated" (PVar "msg"))) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (EBinOp "++" (ELit (LString "@deprecated ")) (EApp (EVar "escStringLit") (EVar "msg"))))) (EApp (EVar "text") (ELit (LString "\n")))))
 (DFunDef false "attrDoc" ((PCon "AttrInline")) (EApp (EApp (EVar "Cat") (EApp (EVar "text") (ELit (LString "@inline")))) (EApp (EVar "text") (ELit (LString "\n")))))

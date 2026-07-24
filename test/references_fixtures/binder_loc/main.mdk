@@ -23,3 +23,19 @@ export shadowLet : Int
 shadowLet =
   let tmp = 99
   tmp + tmp
+
+-- S0-3 (#913 Inc 2b): the prop param `ys` must record its DEF at its OWN name
+-- token, NOT the prop's decl Loc (which is the prop NAME string). Before Inc 2b
+-- the DProp param was recorded at the whole prop's loc, so a rename of `ys`
+-- overwrote the prop's name string. The `ys` DEF col must be the param token col.
+prop "ys length is nonneg" (ys : List Int) = length ys >= 0
+
+-- S0-4 (#913 Inc 2b): a PUNNED record field `{ radius }` binds `radius`; its DEF
+-- must be the FIELD-NAME token, NOT the enclosing `match` Loc. Before Inc 2b the
+-- pun recorded at the match loc, so a rename of `radius` edited (deleted) the
+-- whole match expression. The `local radius` DEF must sit at the pun's own token.
+data Circ = MkCirc { radius : Int }
+
+export circArea : Circ -> Int
+circArea c = match c
+  MkCirc { radius } => radius * radius

@@ -268,7 +268,7 @@ findFailureStep _ evalEnv params body _ run inputs False =
 
 genInputs : List (String, TyDef) -> List PropParam -> <e> List (String, Value e)
 genInputs _ [] = []
-genInputs tydefs ((PropParam x ty)::rest) =
+genInputs tydefs ((PropParam x _ ty)::rest) =
   (x, genForType tydefs [] ty) :: genInputs tydefs rest
 
 printCounterexample : List (String, Value e) -> <IO> Unit
@@ -293,7 +293,7 @@ tryShrinkOne : List (String, Value e) -> List PropParam -> Expr -> List (String,
 tryShrinkOne evalEnv params body candidate i
   | i >= listLen params = None
   | otherwise =
-    let (PropParam x ty) = nthList params i
+    let (PropParam x _ ty) = nthList params i
     let currentV = assocVal x candidate
     let smaller = shrinkValue ty currentV
     match findSmaller evalEnv params body candidate x smaller

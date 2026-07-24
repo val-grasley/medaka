@@ -1528,16 +1528,17 @@ consField f (fs, rest) = (f::fs, rest)
 
 recordPatField : Parser RecPatField
 recordPatField = do
+  s <- getPos
   name <- identNameP
   t <- peekP
-  recordPatFieldRest name t
+  recordPatFieldRest name (locOfSpan s (s + 1)) t
 
-recordPatFieldRest : String -> Token -> Parser RecPatField
-recordPatFieldRest name TEqual = do
+recordPatFieldRest : String -> Loc -> Token -> Parser RecPatField
+recordPatFieldRest name nameLoc TEqual = do
   advance
   p <- parsePat
-  pure (RecPatField name (Some p))
-recordPatFieldRest name _ = pure (RecPatField name None)
+  pure (RecPatField name nameLoc (Some p))
+recordPatFieldRest name nameLoc _ = pure (RecPatField name nameLoc None)
 
 -- A reserved keyword sitting where a pattern-variable / identifier is expected is
 -- ALWAYS an error — no keyword starts a legal pattern — and the generic "expected
@@ -2515,11 +2516,12 @@ parseProp pub = do
 propParam : Parser PropParam
 propParam = do
   expectTok TLParen
+  s <- getPos
   name <- identNameP
   expectTok TColon
   ty <- parseTy
   expectTok TRParen
-  pure (PropParam name ty)
+  pure (PropParam name (locOfSpan s (s + 1)) ty)
 
 -- `TTest` at a decl head is ambiguous between the two things `test` can mean:
 -- the start of a `test "…" = …` block, or an ordinary (but reserved, so

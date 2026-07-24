@@ -1133,8 +1133,8 @@ patIrrefutable orc (PAs _ _ p) = patIrrefutable orc p
 patIrrefutable _ _ = False
 
 recPatFieldIrrefutable : Oracle -> RecPatField -> Bool
-recPatFieldIrrefutable _ (RecPatField _ None) = True
-recPatFieldIrrefutable orc (RecPatField _ (Some p)) = patIrrefutable orc p
+recPatFieldIrrefutable _ (RecPatField _ _ None) = True
+recPatFieldIrrefutable orc (RecPatField _ _ (Some p)) = patIrrefutable orc p
 
 -- the constructor `c` belongs to a type declared (or built-in) with EXACTLY one
 -- constructor — so a `c …` pattern can never fail to match.  An unknown ctor
@@ -1461,8 +1461,8 @@ refutablePat : Oracle -> Pat -> Bool
 refutablePat orc p = not (irrefutablePat orc p)
 
 refutableField : Oracle -> RecPatField -> Bool
-refutableField _ (RecPatField _ None) = False
-refutableField orc (RecPatField _ (Some p)) = refutablePat orc p
+refutableField _ (RecPatField _ _ None) = False
+refutableField orc (RecPatField _ _ (Some p)) = refutablePat orc p
 
 -- the bound-var/pattern/expr/body of a collapsible bind-then-match tail, plus the
 -- statements preceding it.  Returns None when the last two statements don't form

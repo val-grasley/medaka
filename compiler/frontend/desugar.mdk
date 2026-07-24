@@ -553,7 +553,8 @@ recPatFields : List Field -> List String -> List RecPatField
 recPatFields [] _ = []
 recPatFields _ [] = []
 recPatFields ((Field n _)::fs) (v::vs) =
-  RecPatField n (Some (PVar v (Loc "" 0 0 0 0))) :: recPatFields fs vs
+  RecPatField n (Loc "" 0 0 0 0) (Some (PVar v (Loc "" 0 0 0 0))) ::
+    recPatFields fs vs
 
 -- Debug and Display share the rendering ("Con " ++ <call> a0 ++ " " ++ …);
 -- only the interface + method-call name differ.

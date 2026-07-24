@@ -419,8 +419,8 @@ printPat (PRng lo hi incl) =
   Cat (printLit lo) (Cat (text (if incl then "..=" else "..")) (printLit hi))
 
 recPatFieldDoc : RecPatField -> Doc
-recPatFieldDoc (RecPatField k None) = text k
-recPatFieldDoc (RecPatField k (Some q)) =
+recPatFieldDoc (RecPatField k _ None) = text k
+recPatFieldDoc (RecPatField k _ (Some q)) =
   Cat (text k) (Cat (text " = ") (printPat q))
 
 -- PCon with args already self-parenthesizes in printPat, so it is atom-safe.
@@ -1681,7 +1681,7 @@ printDecl (DAttrib attrs inner) =
 -- prop param: ` (name : ppTy ty)` — mirrors lib/ast.ml's pp_ty (a precedence
 -- type printer distinct from printType — see ppTy below).
 propParamDoc : PropParam -> Doc
-propParamDoc (PropParam x ty) = text " (\{x} : \{ppTy ty})"
+propParamDoc (PropParam x _ ty) = text " (\{x} : \{ppTy ty})"
 
 attrDoc : Attr -> Doc
 attrDoc (AttrDeprecated msg) =

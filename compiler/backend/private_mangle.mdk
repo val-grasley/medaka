@@ -665,7 +665,7 @@ propParamNamesPM : List PropParam -> List String
 propParamNamesPM ps = map propParamNamePM ps
 
 propParamNamePM : PropParam -> String
-propParamNamePM (PropParam n _) = n
+propParamNamePM (PropParam n _ _) = n
 
 -- ── the scope-threaded reference rewrite ──────────────────────────────────────
 -- `bound` = names shadowed by a local binder at this node.  An EVar is renamed
@@ -853,13 +853,13 @@ renamePat rm (PRec n fields open) =
 renamePat _ p = p
 
 renameRecPatField : OrdMap String -> RecPatField -> RecPatField
-renameRecPatField _ (RecPatField label None) = RecPatField label None
-renameRecPatField rm (RecPatField label (Some p)) =
-  RecPatField label (Some (renamePat rm p))
+renameRecPatField _ (RecPatField label l None) = RecPatField label l None
+renameRecPatField rm (RecPatField label l (Some p)) =
+  RecPatField label l (Some (renamePat rm p))
 
 renamePatsPM : OrdMap String -> List Pat -> List Pat
 renamePatsPM rm ps = map (renamePat rm) ps
 
 recPatFieldVarsPM : RecPatField -> List String
-recPatFieldVarsPM (RecPatField label None) = [label]
-recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
+recPatFieldVarsPM (RecPatField label _ None) = [label]
+recPatFieldVarsPM (RecPatField _ _ (Some p)) = patVarsPM p

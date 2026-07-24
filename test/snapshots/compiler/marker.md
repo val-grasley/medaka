@@ -379,8 +379,8 @@ patBindings (PRec _ fields _) = flatMap recFieldBindings fields
 patBindings _ = []
 
 recFieldBindings : RecPatField -> List String
-recFieldBindings (RecPatField fname None) = [fname]
-recFieldBindings (RecPatField _ (Some p)) = patBindings p
+recFieldBindings (RecPatField fname _ None) = [fname]
+recFieldBindings (RecPatField _ _ (Some p)) = patBindings p
 
 -- Names bound by local patterns *within* an expression tree.
 localBoundExpr : Expr -> List String
@@ -694,8 +694,8 @@ markerFor preludeProg =
 (DFunDef false "patBindings" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EVar "flatMap") (EVar "recFieldBindings")) (EVar "fields")))
 (DFunDef false "patBindings" (PWild) (EListLit))
 (DTypeSig false "recFieldBindings" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") (PCon "None"))) (EListLit (EVar "fname")))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") PWild (PCon "None"))) (EListLit (EVar "fname")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
 (DTypeSig false "localBoundExpr" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "localBoundExpr" ((PCon "ELam" (PVar "ps") (PVar "b"))) (EBinOp "++" (EApp (EApp (EVar "flatMap") (EVar "patBindings")) (EVar "ps")) (EApp (EVar "localBoundExpr") (EVar "b"))))
 (DFunDef false "localBoundExpr" ((PCon "ELet" PWild PWild (PVar "p") (PVar "e1") (PVar "e2"))) (EBinOp "++" (EBinOp "++" (EApp (EVar "patBindings") (EVar "p")) (EApp (EVar "localBoundExpr") (EVar "e1"))) (EApp (EVar "localBoundExpr") (EVar "e2"))))
@@ -950,8 +950,8 @@ markerFor preludeProg =
 (DFunDef false "patBindings" ((PCon "PRec" PWild (PVar "fields") PWild)) (EApp (EApp (EDictApp "flatMap") (EVar "recFieldBindings")) (EVar "fields")))
 (DFunDef false "patBindings" (PWild) (EListLit))
 (DTypeSig false "recFieldBindings" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") (PCon "None"))) (EListLit (EVar "fname")))
-(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" (PVar "fname") PWild (PCon "None"))) (EListLit (EVar "fname")))
+(DFunDef false "recFieldBindings" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patBindings") (EVar "p")))
 (DTypeSig false "localBoundExpr" (TyFun (TyCon "Expr") (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "localBoundExpr" ((PCon "ELam" (PVar "ps") (PVar "b"))) (EBinOp "++" (EApp (EApp (EDictApp "flatMap") (EVar "patBindings")) (EVar "ps")) (EApp (EVar "localBoundExpr") (EVar "b"))))
 (DFunDef false "localBoundExpr" ((PCon "ELet" PWild PWild (PVar "p") (PVar "e1") (PVar "e2"))) (EBinOp "++" (EBinOp "++" (EApp (EVar "patBindings") (EVar "p")) (EApp (EVar "localBoundExpr") (EVar "e1"))) (EApp (EVar "localBoundExpr") (EVar "e2"))))

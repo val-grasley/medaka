@@ -669,7 +669,7 @@ propParamNamesPM : List PropParam -> List String
 propParamNamesPM ps = map propParamNamePM ps
 
 propParamNamePM : PropParam -> String
-propParamNamePM (PropParam n _) = n
+propParamNamePM (PropParam n _ _) = n
 
 -- ── the scope-threaded reference rewrite ──────────────────────────────────────
 -- `bound` = names shadowed by a local binder at this node.  An EVar is renamed
@@ -857,16 +857,16 @@ renamePat rm (PRec n fields open) =
 renamePat _ p = p
 
 renameRecPatField : OrdMap String -> RecPatField -> RecPatField
-renameRecPatField _ (RecPatField label None) = RecPatField label None
-renameRecPatField rm (RecPatField label (Some p)) =
-  RecPatField label (Some (renamePat rm p))
+renameRecPatField _ (RecPatField label l None) = RecPatField label l None
+renameRecPatField rm (RecPatField label l (Some p)) =
+  RecPatField label l (Some (renamePat rm p))
 
 renamePatsPM : OrdMap String -> List Pat -> List Pat
 renamePatsPM rm ps = map (renamePat rm) ps
 
 recPatFieldVarsPM : RecPatField -> List String
-recPatFieldVarsPM (RecPatField label None) = [label]
-recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
+recPatFieldVarsPM (RecPatField label _ None) = [label]
+recPatFieldVarsPM (RecPatField _ _ (Some p)) = patVarsPM p
 # DESUGAR
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" true) (mem "Expr" true) (mem "Pat" true) (mem "Arm" true) (mem "Guard" true) (mem "GuardArm" true) (mem "DoStmt" true) (mem "Section" true) (mem "InterpPart" true) (mem "FieldAssign" true) (mem "RecPatField" true) (mem "LetBind" true) (mem "FunClause" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "PropParam" true) (mem "UsePath" true) (mem "UseMember" true) (mem "useMemberOrigin" false) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "Variant" true))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "reverseL" false) (mem "isEmptyL" false) (mem "filterList" false) (mem "initList" false) (mem "joinDot" false) (mem "dedup" false))))
@@ -1059,7 +1059,7 @@ recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
 (DTypeSig false "propParamNamesPM" (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "propParamNamesPM" ((PVar "ps")) (EApp (EApp (EVar "map") (EVar "propParamNamePM")) (EVar "ps")))
 (DTypeSig false "propParamNamePM" (TyFun (TyCon "PropParam") (TyCon "String")))
-(DFunDef false "propParamNamePM" ((PCon "PropParam" (PVar "n") PWild)) (EVar "n"))
+(DFunDef false "propParamNamePM" ((PCon "PropParam" (PVar "n") PWild PWild)) (EVar "n"))
 (DTypeSig false "renameScoped" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "renameScoped" ((PVar "rm") (PVar "bound") (PCon "EVar" (PVar "n"))) (EIf (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound"))) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "rm")) (arm (PCon "Some" (PVar "n2")) () (EApp (EVar "EVar") (EVar "n2"))) (arm (PCon "None") () (EApp (EVar "EVar") (EVar "n")))) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "renameScoped" ((PVar "rm") (PVar "bound") (PCon "EVarId" (PVar "n") PWild)) (EIf (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound"))) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "rm")) (arm (PCon "Some" (PVar "n2")) () (EApp (EVar "EVar") (EVar "n2"))) (arm (PCon "None") () (EApp (EVar "EVar") (EVar "n")))) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -1145,13 +1145,13 @@ recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
 (DFunDef false "renamePat" ((PVar "rm") (PCon "PRec" (PVar "n") (PVar "fields") (PVar "open"))) (EApp (EApp (EApp (EVar "PRec") (EApp (EApp (EVar "renameDefName") (EVar "rm")) (EVar "n"))) (EApp (EApp (EVar "map") (EApp (EVar "renameRecPatField") (EVar "rm"))) (EVar "fields"))) (EVar "open")))
 (DFunDef false "renamePat" (PWild (PVar "p")) (EVar "p"))
 (DTypeSig false "renameRecPatField" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyCon "RecPatField") (TyCon "RecPatField"))))
-(DFunDef false "renameRecPatField" (PWild (PCon "RecPatField" (PVar "label") (PCon "None"))) (EApp (EApp (EVar "RecPatField") (EVar "label")) (EVar "None")))
-(DFunDef false "renameRecPatField" ((PVar "rm") (PCon "RecPatField" (PVar "label") (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "RecPatField") (EVar "label")) (EApp (EVar "Some") (EApp (EApp (EVar "renamePat") (EVar "rm")) (EVar "p")))))
+(DFunDef false "renameRecPatField" (PWild (PCon "RecPatField" (PVar "label") (PVar "l") (PCon "None"))) (EApp (EApp (EApp (EVar "RecPatField") (EVar "label")) (EVar "l")) (EVar "None")))
+(DFunDef false "renameRecPatField" ((PVar "rm") (PCon "RecPatField" (PVar "label") (PVar "l") (PCon "Some" (PVar "p")))) (EApp (EApp (EApp (EVar "RecPatField") (EVar "label")) (EVar "l")) (EApp (EVar "Some") (EApp (EApp (EVar "renamePat") (EVar "rm")) (EVar "p")))))
 (DTypeSig false "renamePatsPM" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "Pat")))))
 (DFunDef false "renamePatsPM" ((PVar "rm") (PVar "ps")) (EApp (EApp (EVar "map") (EApp (EVar "renamePat") (EVar "rm"))) (EVar "ps")))
 (DTypeSig false "recPatFieldVarsPM" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" (PVar "label") (PCon "None"))) (EListLit (EVar "label")))
-(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsPM") (EVar "p")))
+(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" (PVar "label") PWild (PCon "None"))) (EListLit (EVar "label")))
+(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsPM") (EVar "p")))
 # MARK
 (DUse false (UseGroup ("frontend" "ast") ((mem "Decl" true) (mem "Expr" true) (mem "Pat" true) (mem "Arm" true) (mem "Guard" true) (mem "GuardArm" true) (mem "DoStmt" true) (mem "Section" true) (mem "InterpPart" true) (mem "FieldAssign" true) (mem "RecPatField" true) (mem "LetBind" true) (mem "FunClause" true) (mem "IfaceMethod" true) (mem "MethodDefault" true) (mem "ImplMethod" true) (mem "PropParam" true) (mem "UsePath" true) (mem "UseMember" true) (mem "useMemberOrigin" false) (mem "useMemberLocal" false) (mem "qualifiedLocal" false) (mem "Variant" true))))
 (DUse false (UseGroup ("support" "util") ((mem "contains" false) (mem "reverseL" false) (mem "isEmptyL" false) (mem "filterList" false) (mem "initList" false) (mem "joinDot" false) (mem "dedup" false))))
@@ -1344,7 +1344,7 @@ recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
 (DTypeSig false "propParamNamesPM" (TyFun (TyApp (TyCon "List") (TyCon "PropParam")) (TyApp (TyCon "List") (TyCon "String"))))
 (DFunDef false "propParamNamesPM" ((PVar "ps")) (EApp (EApp (EMethodRef "map") (EVar "propParamNamePM")) (EVar "ps")))
 (DTypeSig false "propParamNamePM" (TyFun (TyCon "PropParam") (TyCon "String")))
-(DFunDef false "propParamNamePM" ((PCon "PropParam" (PVar "n") PWild)) (EVar "n"))
+(DFunDef false "propParamNamePM" ((PCon "PropParam" (PVar "n") PWild PWild)) (EVar "n"))
 (DTypeSig false "renameScoped" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "String")) (TyFun (TyCon "Expr") (TyCon "Expr")))))
 (DFunDef false "renameScoped" ((PVar "rm") (PVar "bound") (PCon "EVar" (PVar "n"))) (EIf (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound"))) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "rm")) (arm (PCon "Some" (PVar "n2")) () (EApp (EVar "EVar") (EVar "n2"))) (arm (PCon "None") () (EApp (EVar "EVar") (EVar "n")))) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
 (DFunDef false "renameScoped" ((PVar "rm") (PVar "bound") (PCon "EVarId" (PVar "n") PWild)) (EIf (EApp (EVar "not") (EApp (EApp (EVar "contains") (EVar "n")) (EVar "bound"))) (EMatch (EApp (EApp (EVar "omLookup") (EVar "n")) (EVar "rm")) (arm (PCon "Some" (PVar "n2")) () (EApp (EVar "EVar") (EVar "n2"))) (arm (PCon "None") () (EApp (EVar "EVar") (EVar "n")))) (EIf (EVar "otherwise") (EApp (EVar "EVar") (EVar "n")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
@@ -1430,10 +1430,10 @@ recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
 (DFunDef false "renamePat" ((PVar "rm") (PCon "PRec" (PVar "n") (PVar "fields") (PVar "open"))) (EApp (EApp (EApp (EVar "PRec") (EApp (EApp (EVar "renameDefName") (EVar "rm")) (EVar "n"))) (EApp (EApp (EMethodRef "map") (EApp (EVar "renameRecPatField") (EVar "rm"))) (EVar "fields"))) (EVar "open")))
 (DFunDef false "renamePat" (PWild (PVar "p")) (EVar "p"))
 (DTypeSig false "renameRecPatField" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyCon "RecPatField") (TyCon "RecPatField"))))
-(DFunDef false "renameRecPatField" (PWild (PCon "RecPatField" (PVar "label") (PCon "None"))) (EApp (EApp (EVar "RecPatField") (EVar "label")) (EVar "None")))
-(DFunDef false "renameRecPatField" ((PVar "rm") (PCon "RecPatField" (PVar "label") (PCon "Some" (PVar "p")))) (EApp (EApp (EVar "RecPatField") (EVar "label")) (EApp (EVar "Some") (EApp (EApp (EVar "renamePat") (EVar "rm")) (EVar "p")))))
+(DFunDef false "renameRecPatField" (PWild (PCon "RecPatField" (PVar "label") (PVar "l") (PCon "None"))) (EApp (EApp (EApp (EVar "RecPatField") (EVar "label")) (EVar "l")) (EVar "None")))
+(DFunDef false "renameRecPatField" ((PVar "rm") (PCon "RecPatField" (PVar "label") (PVar "l") (PCon "Some" (PVar "p")))) (EApp (EApp (EApp (EVar "RecPatField") (EVar "label")) (EVar "l")) (EApp (EVar "Some") (EApp (EApp (EVar "renamePat") (EVar "rm")) (EVar "p")))))
 (DTypeSig false "renamePatsPM" (TyFun (TyApp (TyCon "OrdMap") (TyCon "String")) (TyFun (TyApp (TyCon "List") (TyCon "Pat")) (TyApp (TyCon "List") (TyCon "Pat")))))
 (DFunDef false "renamePatsPM" ((PVar "rm") (PVar "ps")) (EApp (EApp (EMethodRef "map") (EApp (EVar "renamePat") (EVar "rm"))) (EVar "ps")))
 (DTypeSig false "recPatFieldVarsPM" (TyFun (TyCon "RecPatField") (TyApp (TyCon "List") (TyCon "String"))))
-(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" (PVar "label") (PCon "None"))) (EListLit (EVar "label")))
-(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsPM") (EVar "p")))
+(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" (PVar "label") PWild (PCon "None"))) (EListLit (EVar "label")))
+(DFunDef false "recPatFieldVarsPM" ((PCon "RecPatField" PWild PWild (PCon "Some" (PVar "p")))) (EApp (EVar "patVarsPM") (EVar "p")))
