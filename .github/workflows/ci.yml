@@ -607,7 +607,14 @@ jobs:
             # shard does. It needs ./medaka + the emitter (6 real `medaka build` + clang),
             # which this shard already provides for dispatch_shape's `build --keep-ir`
             # and prelude_obj.
-            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'diff_compiler_dispatch_shape' 'diff_compiler_prelude_obj' 'diff_compiler_slice_oob' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
+            #
+            # 'diff_compiler_ir_size' (#885, ~20s: four `medaka build --keep-ir` of tiny
+            # probes + clang) is the SIZE bound for emitted IR — the clang-bound analogue
+            # of dispatch_shape's SHAPE pin, guarding the SAME #129/#131 prelude-bloat
+            # class. It parks here next to its two siblings for the SAME cost reason: it
+            # needs only ./medaka + the emitter (which this shard already builds), and the
+            # heavier shards have no room. It is NOT in types/engines (the poles).
+            pattern: "'diff_compiler_eval*' 'diff_compiler_core_ir*' 'diff_compiler_dispatch_shape' 'diff_compiler_prelude_obj' 'diff_compiler_slice_oob' 'diff_compiler_ir_size' 'bootstrap_lex' 'bootstrap_resolve' 'bootstrap_typecheck' 'bootstrap_eval'"
           - name: backend
             # 'build_cmd' (T8): THE end-to-end gate for the SHIPPING `medaka build` CLI —
             # 14 real programs built through the actual CLI, each binary's stdout diffed
