@@ -621,8 +621,12 @@ gen_manyifaces() {
 # too). A DEEP-only resolve-TIME arm would catch it, but at that N typecheck/elaborate
 # TIME are also superlinear (the #907/#882 decl-count classes, over the floor) and would
 # need their own ledger rows — filed as a #880 follow-up rather than paid for in QUICK.
-# GRADED OP-ONLY (cheap, deterministic), with the loop's TOOSMALL=fail guard so a band
-# that drops resolve op1 under OP_FLOOR fails loudly instead of silent-passing.
+# GRADED OP-ONLY (cheap, deterministic). Because grade_op_stage SKIPs (never fails) a
+# below-OP_FLOOR reading, the SHAPES loop carries a DEDICATED widerecords resolve-op1 <
+# OP_FLOOR ⇒ fail guard (added per the #883 PR review — see the "widerecords silent-green
+# guard" block after the OP arm) so a band retune that blinds this guard fails loudly
+# instead of silent-passing "ok". (The generic loop does NOT self-guard this — only the
+# rshape and this explicit check do.)
 gen_widerecords() {
   n=$1; f=$2; : > "$f"
   {
@@ -1207,7 +1211,18 @@ TIME_STAGES="parse exhaust-guards desugar resolve mark typecheck elaborate dce m
 #     not subtracted), and it is a WEAKER bound than `emit`'s: wasm's constant is ~10x
 #     llvm's, so it dilutes harder.
 #
-KNOWN_SLOW_TIME="xref:wasm-emit xref:typecheck"
+# manydefs:lint (TIME) — the per-file lint tier is mildly SUPERLINEAR in TIME on the
+# `manydefs` shape (DEEP-only; QUICK skips manydefs, so this entry is inert per-PR).
+# Measured on a QUIET box (min-of-5, GC heap pinned, load ~1.5) at N=4000->8000->16000:
+# r1=2.82 r2=3.37 — r2 comfortably over the 3.0 threshold and strengthening (an
+# under-LOAD DEEP run read 3.04/3.31, the same signal). It is REAL, not a flap: TIME is
+# the only arm that sees it (lint's alloc dilutes to ~2.0, its op-scan quadratic is the
+# SEPARATE `manydefs:typecheck` OP entry). Pre-existing — unrelated to #883's shapes.
+# Ledgered self-drainingly, exactly like the xref:typecheck TIME entry below: ceiling 4.3
+# clears the observed r2=3.37 by ~28% (op counts... n/a here, TIME, so this absorbs
+# runner noise too — hence the wider margin), TFIXED 2.60 (file convention). Tracked in
+# #956 (the TIME-arm fragility issue); self-drains when the lint cost is made linear.
+KNOWN_SLOW_TIME="xref:wasm-emit xref:typecheck manydefs:lint"
 KNOWN_TCEIL_match_typecheck="4.6";    KNOWN_TFIXED_match_typecheck="2.60"
 KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # xref:typecheck (TIME) — the SAME #907 typecheck superquadratic already ledgered on the
@@ -1229,6 +1244,11 @@ KNOWN_TCEIL_listlit_typecheck="4.8";  KNOWN_TFIXED_listlit_typecheck="2.60"
 # root cause lands (which should drop the OP entry at the same time). Candidate #880 epic
 # follow-up: give the TIME arm the same ledger discipline the OP arm already has here.
 KNOWN_TCEIL_xref_typecheck="4.6";     KNOWN_TFIXED_xref_typecheck="2.60"
+# manydefs:lint (TIME) — see the block above KNOWN_SLOW_TIME. Ceiling 4.3 clears the
+# quiet-box r2=3.37 by ~28% (TIME is noisy, so the margin is wider than an op-arm ceiling);
+# TFIXED 2.60 (file convention) sits well under the observed band so a quiet runner cannot
+# false-PROMOTE it. Promotes out (#956) when the lint per-file cost is made linear.
+KNOWN_TCEIL_manydefs_lint="4.3";      KNOWN_TFIXED_manydefs_lint="2.60"
 # ⚠️ THIS ROW IS MEASURED AT TWO DIFFERENT BANDS depending on PERF_DEEP, and the entry
 # below has to hold for BOTH:
 #     DEEP  (nightly)  xref @ 4000->8000->16000   observed r2 3.85-4.15  (r1 3.57-3.82)
@@ -1865,6 +1885,27 @@ for shape in $SHAPES; do
       "$(awk -v s="$st" '$1==s{print $2}' "$OF3")" \
       "$n1" "$n2" "$n3"
   done
+
+  # ── widerecords silent-green guard (#883 PR review) ──────────────────────────
+  # widerecords is a `resolve` op regression-guard, and that reading is the ONLY thing
+  # it grades (its ownersOf target is uncounted — see gen_widerecords). But
+  # grade_op_stage treats a below-OP_FLOOR reading as a plain SKIP: it appends to
+  # op_lines and returns WITHOUT setting op_bad — so the overall verdict falls through
+  # to the ALLOC arm and prints "ok". The op arm can only PROMOTE an alloc-ok to a
+  # fail, never the reverse. So if a band retune (PERF_WIDERECORDS_N) drops resolve op1
+  # under OP_FLOOR (headroom is only ~2.8x: op1≈2783 vs 1000), the guard would silently
+  # stop checking while the shape still reported "ok" — the exact silent-green the
+  # rshape (starimports/reexports) loop already fails on. Mirror that TOOSMALL=fail here
+  # so widerecords can NEVER silent-pass. Narrow: widerecords' resolve reading only.
+  if [ "$shape" = "widerecords" ]; then
+    wr_ro1="$(awk '$1=="resolve"{print $2}' "$OF1")"
+    if [ "$(awk -v v="${wr_ro1:-0}" -v f="$OP_FLOOR" 'BEGIN{print (v+0 < f+0)?1:0}')" = "1" ]; then
+      fail=$((fail+1))
+      printf '%-10s %8s  ** N TOO SMALL — widerecords resolve-guard blind: resolve op1 %s < OP_FLOOR %s — raise PERF_WIDERECORDS_N **\n' \
+        "$shape" "$n1" "${wr_ro1:-0}" "$OP_FLOOR"
+      continue
+    fi
+  fi
 
   # Subtract the fixed prelude cost — see the BASELINE note above. Without this the
   # gate is blind.
