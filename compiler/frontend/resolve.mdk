@@ -56,6 +56,7 @@ import support.ordmap.{
   omFromNames,
   omFromPairs,
   omKeys,
+  omSize,
 }
 import support.util.{
   contains,
@@ -1771,10 +1772,6 @@ public export data ModuleExports = ModuleExports {
 -- iface → method names
 
 -- ── small generic helpers ──────────────────────────────────────────────────
-isNonEmpty : List a -> Bool
-isNonEmpty [] = False
-isNonEmpty _ = True
-
 -- keep the elements of `names` that are members of `domain`
 filterContains : List String -> List String -> List String
 filterContains _ [] = []
@@ -1790,11 +1787,15 @@ filterInSet domain (n::rest)
   | omHasKey n domain = n :: filterInSet domain rest
   | otherwise = filterInSet domain rest
 
-findExports : String -> List ModuleExports -> Option ModuleExports
-findExports _ [] = None
-findExports mid (e::rest)
-  | e.modId == mid = Some e
-  | otherwise = findExports mid rest
+-- #926: `known` is now a Map keyed by module id (was a `List ModuleExports`
+-- scanned linearly, O(N) per import → O(N^2) on a star import that resolves N
+-- imports against an N-long list).  `omLookup` is O(log N).  Byte-identical: module
+-- ids are unique across a module list, so the single keyed entry is exactly what the
+-- old first-match scan returned; and even under a (spurious) duplicate id the driver's
+-- `omInsert exp.modId exp known` is last-write-wins, matching the old `exp :: known`
+-- prepend + front-to-back scan (both return the most-recently-added module).
+findExports : String -> OrdMap ModuleExports -> Option ModuleExports
+findExports mid known = omLookup mid known
 
 -- exported under any value/type/ctor/interface category (lib's imported_names is_pub)
 isPubExp : ModuleExports -> String -> Bool
@@ -1932,44 +1933,56 @@ mergeAdds a b = ImportAdds {
   iaErrors = a.iaErrors ++ b.iaErrors,
 }
 
-collectImports : List ModuleExports -> List Decl -> ImportAdds
+collectImports : OrdMap ModuleExports -> List Decl -> ImportAdds
 collectImports known prog = foldImports known (usePathLocsOf prog)
 
 -- ── use-time ambiguity (MAP-SET-AMBIGUITY-DESIGN.md) ───────────────────────
 -- The VALUE names a single non-core import contributes, attributed to its
 -- DIRECTLY-imported module id (not the original definer → re-export safe).
-importValueNames : List ModuleExports -> UsePath -> List String
+importValueNames : OrdMap ModuleExports -> UsePath -> List String
 importValueNames known path =
   if useModId path == "core" then []
   else match findExports (useModId path) known
     None => []
     Some exp =>
       let (names, _) = importedNamesMM path exp
-      filterContains exp.expValues names
+      -- #925: `exp.expValues` GROWS with re-export depth, so the old
+      -- `filterContains` (O(len) per name) is O(depth^2) per module → cubic over the
+      -- re-export chain.  An OrdMap membership set makes it O(len log len) and — the
+      -- point for the op-count arm — routes the per-name test through `omHasKey`
+      -- instead of the counted `contains`, byte-identically (same kept names, order).
+      filterInSet (omFromNames exp.expValues omEmpty) names
 
--- Register one (name, mid) into a name→[mid] assoc, deduping mids.
-addProvenance : List (String, List String) -> String -> String -> List (String, List String)
-addProvenance [] n mid = [(n, [mid])]
-addProvenance ((k, mids)::rest) n mid
-  | k == n =
+-- Register one (name, mid) into a name→[mid] MAP, deduping mids (mids kept in
+-- append order).  #925/#926: this was a `List (String, List String)` assoc rescanned
+-- per name (`addProvenance rest` rebuilds the spine to find the key) → O(names^2) per
+-- module → CUBIC ALLOC over an `export import m.*` re-export chain (each module's
+-- provenance grows with depth).  An OrdMap keyed by name makes each insert O(log n).
+-- Byte-identical: `omLookup`/`omInsert` preserve exactly the (name → append-ordered,
+-- deduped mids) association the old assoc built; only the map's key ORDER differs from
+-- insertion order, and provenance is consumed ONLY by `lookupAssoc` (isAmbiguous /
+-- ambigMods and their ctor peers), which is order-independent.
+addProvenance : OrdMap (List String) -> String -> String -> OrdMap (List String)
+addProvenance prov n mid = match omLookup n prov
+  None => omInsert n [mid] prov
+  Some mids =>
     if contains mid mids then
-      (k, mids)::rest
+      prov
     else
-      (k, mids ++ [mid])::rest
-  | otherwise = (k, mids) :: addProvenance rest n mid
+      omInsert n (mids ++ [mid]) prov
 
 -- Fold the value names of one import (all tagged with the same mid) into prov.
-addImportProvenance : List (String, List String) -> String -> List String -> List (String, List String)
+addImportProvenance : OrdMap (List String) -> String -> List String -> OrdMap (List String)
 addImportProvenance prov _ [] = prov
 addImportProvenance prov mid (n::rest) =
   addImportProvenance (addProvenance prov n mid) mid rest
 
 -- Provenance over every non-core import in the program, in decl order
 -- (mirrors lib/resolve.ml's left-to-right List.iter so mod-id order matches).
-valueProvenance : List ModuleExports -> List UsePath -> List (String, List String)
-valueProvenance known paths = foldProvenance known [] paths
+valueProvenance : OrdMap ModuleExports -> List UsePath -> OrdMap (List String)
+valueProvenance known paths = foldProvenance known omEmpty paths
 
-foldProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+foldProvenance : OrdMap ModuleExports -> OrdMap (List String) -> List UsePath -> OrdMap (List String)
 foldProvenance _ prov [] = prov
 foldProvenance known prov (p::rest) =
   let mid = useModId p
@@ -1979,13 +1992,25 @@ foldProvenance known prov (p::rest) =
     addImportProvenance prov mid (importValueNames known p)
   foldProvenance known prov2 rest
 
+-- Materialize the name→mids provenance map into the (name, mids) assoc that
+-- `keepAmbiguous` filters and `env.ambiguous`/`env.ctorAmbiguous` store.  Key order is
+-- sorted (`omKeys`) rather than first-occurrence, which is byte-equivalent downstream
+-- because every consumer looks names up by key (`lookupAssoc`), never iterates in order.
+provToPairs : OrdMap (List String) -> List (String, List String)
+provToPairs prov = map (k => (k, provMidsOf k prov)) (omKeys prov)
+
+provMidsOf : String -> OrdMap (List String) -> List String
+provMidsOf k prov = match omLookup k prov
+  Some mids => mids
+  None => []
+
 -- Keep only names with ≥2 distinct provenances AND no same-module top-level
 -- value shadow (a real local def wins).
-ambiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+ambiguousSet : OrdMap ModuleExports -> List Decl -> List (String, List String)
 ambiguousSet known prog =
   let prov = valueProvenance known (usePathsOf prog)
   let sameMod = userValueNames prog
-  keepAmbiguous sameMod prov
+  keepAmbiguous sameMod (provToPairs prov)
 
 keepAmbiguous : List String -> List (String, List String) -> List (String, List String)
 keepAmbiguous _ [] = []
@@ -2005,19 +2030,20 @@ keepAmbiguous sameMod ((n, mids)::rest)
 
 -- the CONSTRUCTOR names one non-core import contributes, attributed to its
 -- directly-imported module id (re-export safe, like importValueNames).
-importCtorNames : List ModuleExports -> UsePath -> List String
+importCtorNames : OrdMap ModuleExports -> UsePath -> List String
 importCtorNames known path =
   if useModId path == "core" then []
   else match findExports (useModId path) known
     None => []
     Some exp =>
       let (names, _) = importedNamesMM path exp
-      filterContains exp.expCtors names
+      -- #925: same growing-export-list cubic as importValueNames, via expCtors.
+      filterInSet (omFromNames exp.expCtors omEmpty) names
 
-ctorProvenance : List ModuleExports -> List UsePath -> List (String, List String)
-ctorProvenance known paths = foldCtorProvenance known [] paths
+ctorProvenance : OrdMap ModuleExports -> List UsePath -> OrdMap (List String)
+ctorProvenance known paths = foldCtorProvenance known omEmpty paths
 
-foldCtorProvenance : List ModuleExports -> List (String, List String) -> List UsePath -> List (String, List String)
+foldCtorProvenance : OrdMap ModuleExports -> OrdMap (List String) -> List UsePath -> OrdMap (List String)
 foldCtorProvenance _ prov [] = prov
 foldCtorProvenance known prov (p::rest) =
   let mid = useModId p
@@ -2029,18 +2055,18 @@ foldCtorProvenance known prov (p::rest) =
 
 -- Keep only ctor names bound by ≥2 distinct modules AND not defined by a
 -- same-module top-level `data`/`newtype` (a real local ctor wins).
-ctorAmbiguousSet : List ModuleExports -> List Decl -> List (String, List String)
+ctorAmbiguousSet : OrdMap ModuleExports -> List Decl -> List (String, List String)
 ctorAmbiguousSet known prog =
   let prov = ctorProvenance known (usePathsOf prog)
   let sameMod = ctorNames prog
-  keepAmbiguous sameMod prov
+  keepAmbiguous sameMod (provToPairs prov)
 
-foldImports : List ModuleExports -> List (UsePath, Loc) -> ImportAdds
+foldImports : OrdMap ModuleExports -> List (UsePath, Loc) -> ImportAdds
 foldImports _ [] = emptyAdds
 foldImports known ((p, loc)::rest) =
   mergeAdds (oneImport known p loc) (foldImports known rest)
 
-oneImport : List ModuleExports -> UsePath -> Loc -> ImportAdds
+oneImport : OrdMap ModuleExports -> UsePath -> Loc -> ImportAdds
 oneImport known path loc =
   let mid = useModId path
   -- `core` binds NOTHING here: it is the implicit prelude, so every one of its names
@@ -2057,9 +2083,12 @@ oneImport known path loc =
 
 -- module not in `known`: in multi-module mode (known non-empty) this is an
 -- UnknownModule; the first module (known empty) keeps the single-file stub.
-stubOrUnknown : List ModuleExports -> UsePath -> String -> Loc -> ImportAdds
+stubOrUnknown : OrdMap ModuleExports -> UsePath -> String -> Loc -> ImportAdds
 stubOrUnknown known path mid loc =
-  if isNonEmpty known then ImportAdds {
+  -- #926: `known` is a Map now; "any prior module known" is `omSize known > 0`
+  -- (was `isNonEmpty` on the list).  Same predicate: the first module resolves with
+  -- an empty index (single-file stub); every later one has a non-empty index.
+  if omSize known > 0 then ImportAdds {
     iaImported = [],
     iaValues = [],
     iaTypes = [],
@@ -2085,7 +2114,11 @@ realImport exp path loc =
   let (names, errs) = importedNamesMM path exp
   ImportAdds {
     iaImported = names,
-    iaValues = filterContains exp.expValues names,
+    -- #925: a wildcard `export import m.*` re-export makes both `names` and
+    -- `exp.expValues` grow with depth, so this filter is O(depth^2) per module →
+    -- cubic over the chain.  Index the (growing) value set once; `filterInSet`'s
+    -- `omHasKey` is uncounted and byte-identical to the `contains` filter.
+    iaValues = filterInSet (omFromNames exp.expValues omEmpty) names,
     iaTypes = filterContains exp.expTypes names,
     iaCtors = filterContains exp.expCtors names,
     iaIfaces = filterContains exp.expInterfaces names,
@@ -2123,11 +2156,11 @@ ownedFieldOwners exp ((f, o)::rest)
 -- iface-method memberships for imported interfaces (so an `impl` of an imported
 -- interface validates against its real method set — Phase 130).  Only for
 -- interfaces actually in scope (baseIfaces = prelude + user + imported-by-name).
-importedIfaceMethods : List ModuleExports -> List Decl -> List String -> List (String, List String)
+importedIfaceMethods : OrdMap ModuleExports -> List Decl -> List String -> List (String, List String)
 importedIfaceMethods known prog baseIfaces =
   flatMap (oneImportIfaceMethods known baseIfaces) (usePathsOf prog)
 
-oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (String, List String)
+oneImportIfaceMethods : OrdMap ModuleExports -> List String -> UsePath -> List (String, List String)
 oneImportIfaceMethods known baseIfaces path =
   let mid = useModId path
   if mid == "core" then []
@@ -2143,10 +2176,10 @@ filterIfaceMethods baseIfaces ((iface, ms)::rest)
   | otherwise = filterIfaceMethods baseIfaces rest
 
 -- Install exported effect labels from all imported modules (Phase 146).
-importedEffects : List ModuleExports -> List Decl -> List String
+importedEffects : OrdMap ModuleExports -> List Decl -> List String
 importedEffects known prog = flatMap (oneImportEffects known) (usePathsOf prog)
 
-oneImportEffects : List ModuleExports -> UsePath -> List String
+oneImportEffects : OrdMap ModuleExports -> UsePath -> List String
 oneImportEffects known path =
   let mid = useModId path
   if mid == "core" then []
@@ -2155,7 +2188,7 @@ oneImportEffects known path =
     Some exp => exp.expEffects
 
 -- ── buildEnv (multi-module): like buildEnv but validating imports ──────────
-buildEnvMM : List Decl -> List Decl -> List ModuleExports -> List Decl -> List String -> (Env, List ResError)
+buildEnvMM : List Decl -> List Decl -> OrdMap ModuleExports -> List Decl -> List String -> (Env, List ResError)
 buildEnvMM runtimeDecls preludeDecls known prog internalGuard =
   let seed = not (programIsCore prog)
   let pTypes = whenL seed (dataRecordNames preludeDecls)
@@ -2190,11 +2223,11 @@ buildEnvMM runtimeDecls preludeDecls known prog internalGuard =
 -- regardless of import form (bare `UseName`, selective `UseGroup`, wildcard) —
 -- used only to answer "is this unbound name exported by a module I already
 -- import?" (audit #5), not to bind any names into scope.
-importedModuleValueSets : List ModuleExports -> List Decl -> List (String, List String)
+importedModuleValueSets : OrdMap ModuleExports -> List Decl -> List (String, List String)
 importedModuleValueSets known prog =
   flatMap (oneImportedModuleValues known) (usePathsOf prog)
 
-oneImportedModuleValues : List ModuleExports -> UsePath -> List (String, List String)
+oneImportedModuleValues : OrdMap ModuleExports -> UsePath -> List (String, List String)
 oneImportedModuleValues known path =
   let mid = useModId path
   if mid == "core" then []
@@ -2242,7 +2275,7 @@ typeCtorsAllOf ((DAttrib _ d)::rest) = typeCtorsAllOf (d::rest)
 typeCtorsAllOf (_::rest) = typeCtorsAllOf rest
 
 -- ── build_exports ──────────────────────────────────────────────────────────
-buildExports : ModuleExports -> List ModuleExports -> String -> List Decl -> Env -> ModuleExports
+buildExports : ModuleExports -> OrdMap ModuleExports -> String -> List Decl -> Env -> ModuleExports
 buildExports coreExp known modId prog env = ModuleExports {
   modId = modId,
   expValues = expValuesDirect prog ++ publicIfaceMethodVals prog env ++ reExpValues coreExp known prog,
@@ -2325,7 +2358,7 @@ expEffectsDirect [] = []
 expEffectsDirect ((DEffect True n _)::rest) = n :: expEffectsDirect rest
 expEffectsDirect (_::rest) = expEffectsDirect rest
 
-reExpEffects : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpEffects : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpEffects coreExp known prog =
   flatMap (overPubUse coreExp known reExpEffectsFrom) (pubUsePaths prog)
 
@@ -2368,9 +2401,14 @@ selfBinding n = (n, n)
 -- the relevant kind).  This is the aliased form of the old `filterContains`.
 localsExportedFrom : List String -> List (String, String) -> List String
 localsExportedFrom origins bindings =
-  map snd (filterList (b => contains (fst b) origins) bindings)
+  -- #925: `origins` is the source module's export list, which GROWS with re-export
+  -- depth; the old per-binding `contains` was O(len) each → O(depth^2) per module,
+  -- cubic over an `export import m.*` chain.  Build the membership set once and test
+  -- with `omHasKey` (uncounted, O(log len)) — same kept locals, same order.
+  let dom = omFromNames origins omEmpty
+  map snd (filterList (b => omHasKey (fst b) dom) bindings)
 
-reExpValues : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpValues : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpValues coreExp known prog =
   flatMap (overPubUse coreExp known reExpValuesFrom) (pubUsePaths prog)
 
@@ -2387,7 +2425,7 @@ ifaceValsOf src n =
   else
     []
 
-reExpTypes : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpTypes : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpTypes coreExp known prog =
   flatMap (overPubUse coreExp known reExpTypesFrom) (pubUsePaths prog)
 
@@ -2395,7 +2433,7 @@ reExpTypesFrom : UsePath -> ModuleExports -> List String
 reExpTypesFrom path src =
   localsExportedFrom src.expTypes (reexportBindings path src)
 
-reExpCtors : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpCtors : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpCtors coreExp known prog =
   flatMap (overPubUse coreExp known reExpCtorsFrom) (pubUsePaths prog)
 
@@ -2403,7 +2441,7 @@ reExpCtorsFrom : UsePath -> ModuleExports -> List String
 reExpCtorsFrom path src =
   localsExportedFrom src.expCtors (reexportBindings path src)
 
-reExpInterfaces : ModuleExports -> List ModuleExports -> List Decl -> List String
+reExpInterfaces : ModuleExports -> OrdMap ModuleExports -> List Decl -> List String
 reExpInterfaces coreExp known prog =
   flatMap (overPubUse coreExp known reExpInterfacesFrom) (pubUsePaths prog)
 
@@ -2418,7 +2456,7 @@ reExpInterfacesFrom : UsePath -> ModuleExports -> List String
 reExpInterfacesFrom path src =
   filterContains src.expInterfaces (reexportOrigins path src)
 
-reExpIfaceMethods : ModuleExports -> List ModuleExports -> List Decl -> List (String, List String)
+reExpIfaceMethods : ModuleExports -> OrdMap ModuleExports -> List Decl -> List (String, List String)
 reExpIfaceMethods coreExp known prog =
   flatMap (overPubUse coreExp known reExpIfaceMethodsFrom) (pubUsePaths prog)
 
@@ -2433,7 +2471,7 @@ ifaceMethodPairs _ [] = []
 ifaceMethodPairs src (i::rest) =
   (i, ifaceMethodsOf i src.expIfaceMethods) :: ifaceMethodPairs src rest
 
-reExpFieldOwners : ModuleExports -> List ModuleExports -> List Decl -> List (String, String)
+reExpFieldOwners : ModuleExports -> OrdMap ModuleExports -> List Decl -> List (String, String)
 reExpFieldOwners coreExp known prog =
   flatMap (overPubUse coreExp known reExpFieldOwnersFrom) (pubUsePaths prog)
 
@@ -2458,7 +2496,7 @@ ownersForTypes types ((f, o)::rest)
 -- so `stdlib/list.mdk`'s `export import core.{Filterable, filter, filterMap}`
 -- re-exported NOTHING and `import list.{filter}` failed with "Module 'list' has no
 -- exported name 'filter'", while `medaka check stdlib/list.mdk` stayed clean.
-overPubUse : ModuleExports -> List ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
+overPubUse : ModuleExports -> OrdMap ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
 overPubUse coreExp known f path =
   let mid = useModId path
   if mid == "core" then f path coreExp
@@ -2467,13 +2505,13 @@ overPubUse coreExp known f path =
     Some src => f path src
 
 -- ── resolve_module + multi-module driver ───────────────────────────────────
-export resolveModule : List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
+export resolveModule : List Decl -> List Decl -> OrdMap ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModule runtimeDecls preludeDecls known modId prog =
   resolveModuleG [] runtimeDecls preludeDecls known modId prog
 
 -- Like resolveModule but with an explicit internal-extern guard list for this
 -- module (empty ⇒ trusted: a stdlib module, or `--allow-internal`).
-export resolveModuleG : List String -> List Decl -> List Decl -> List ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
+export resolveModuleG : List String -> List Decl -> List Decl -> OrdMap ModuleExports -> String -> List Decl -> (ModuleExports, List ResError)
 resolveModuleG internalGuard runtimeDecls preludeDecls known modId prog =
   let (env, importErrs) = buildEnvMM runtimeDecls preludeDecls known prog internalGuard
   let errs = dedupResErrors (buildErrors preludeDecls prog ++ importErrs ++ flatMap (checkDecl env) prog)
@@ -2482,7 +2520,7 @@ resolveModuleG internalGuard runtimeDecls preludeDecls known modId prog =
 
 -- thread resolveModule over modules in dependency-first order, accumulating
 -- exports; collect the union of every module's errors (the harness sorts).
-resolveModulesErrors : List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesErrors : List Decl -> List Decl -> OrdMap ModuleExports -> List (String, List Decl) -> List ResError
 resolveModulesErrors rt pre known mods =
   resolveModulesErrorsG True [] rt pre known mods
 
@@ -2490,7 +2528,7 @@ resolveModulesErrors rt pre known mods =
 -- `allowInternal` is set OR its modId is in `trustedMods` (the stdlib-owned
 -- modules, per the loader's owning-root).  Untrusted modules get the
 -- internalExterns guard list.
-resolveModulesErrorsG : Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List ResError
+resolveModulesErrorsG : Bool -> List String -> List Decl -> List Decl -> OrdMap ModuleExports -> List (String, List Decl) -> List ResError
 resolveModulesErrorsG _ _ _ _ _ [] = []
 resolveModulesErrorsG allowInternal trustedMods rt pre known ((mid, prog)::rest) =
   let guard = if allowInternal || contains mid trustedMods then
@@ -2499,7 +2537,7 @@ resolveModulesErrorsG allowInternal trustedMods rt pre known ((mid, prog)::rest)
     internalExterns
   let (exp, errs) = resolveModuleG guard rt pre known mid prog
   errs
-    ++ resolveModulesErrorsG allowInternal trustedMods rt pre (exp::known) rest
+    ++ resolveModulesErrorsG allowInternal trustedMods rt pre (omInsert exp.modId exp known) rest
 
 -- one S-expression per diagnostic (the harness sorts); matches
 -- `diagdump --resolve-modules` over the same ordered module list.
@@ -2507,12 +2545,12 @@ export resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl
 resolveModulesToLines runtimeDecls preludeDecls mods =
   joinNl (map
     resErrorSexp
-    (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+    (resolveModulesErrors runtimeDecls preludeDecls omEmpty mods))
 
 -- Guarded variant of resolveModulesToLines (S-expr output) for the `medaka check`
 -- exit-code predicate: `allowInternal` / `trustedMods` decide per-module trust.
 export resolveModulesToLinesG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToLinesG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map resErrorSexp (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
+resolveModulesToLinesG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map resErrorSexp (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods))
 
 -- HUMANE multi-module resolve diagnostics for the `medaka check` CLI (vs the
 -- S-expression `resolveModulesToLines`, which the differential resolve-modules
@@ -2525,12 +2563,12 @@ export resolveModulesToHumane : List Decl -> List Decl -> List (String, List Dec
 resolveModulesToHumane runtimeDecls preludeDecls mods =
   joinNl (map
     ppResErrorLocated
-    (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+    (resolveModulesErrors runtimeDecls preludeDecls omEmpty mods))
 
 -- Guarded variant of resolveModulesToHumane for the run/build/check CLI:
 -- `allowInternal` / `trustedMods` decide per-module internal-extern trust.
 export resolveModulesToHumaneG : Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map ppResErrorLocated (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
+resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map ppResErrorLocated (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods))
 
 -- Like resolveModulesToHumaneG but with an explicit fallback FILE for a loc
 -- whose own `file` is empty (F3 Chunk B: `DUse`'s captured Loc is always ""
@@ -2543,7 +2581,7 @@ resolveModulesToHumaneG allowInternal trustedMods runtimeDecls preludeDecls mods
 -- import still degrades gracefully to the entry file rather than the old
 -- `<unknown location>`.
 export resolveModulesToHumaneGF : String -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map (ppResErrorLocatedF fallbackFile) (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls [] mods))
+resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (map (ppResErrorLocatedF fallbackFile) (resolveModulesErrorsG allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods))
 
 -- Like resolveModulesToHumaneGF but attributing each module's located resolve
 -- errors to that module's OWN file, looked up in `modPaths` (a modId → real file
@@ -2556,9 +2594,9 @@ resolveModulesToHumaneGF fallbackFile allowInternal trustedMods runtimeDecls pre
 -- module's path.  A modId absent from `modPaths` degrades to "" (`<unknown
 -- location>`), never to another module's file.
 export resolveModulesToHumaneByPath : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List (String, List Decl) -> String
-resolveModulesToHumaneByPath modPaths allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (resolveModulesErrorsByPathGo modPaths allowInternal trustedMods runtimeDecls preludeDecls [] mods)
+resolveModulesToHumaneByPath modPaths allowInternal trustedMods runtimeDecls preludeDecls mods = joinNl (resolveModulesErrorsByPathGo modPaths allowInternal trustedMods runtimeDecls preludeDecls omEmpty mods)
 
-resolveModulesErrorsByPathGo : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> List ModuleExports -> List (String, List Decl) -> List String
+resolveModulesErrorsByPathGo : List (String, String) -> Bool -> List String -> List Decl -> List Decl -> OrdMap ModuleExports -> List (String, List Decl) -> List String
 resolveModulesErrorsByPathGo _ _ _ _ _ _ [] = []
 resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre known ((mid, prog)::rest) =
   let guard = if allowInternal || contains mid trustedMods then
@@ -2570,7 +2608,7 @@ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre known ((m
     Some p => p
     None => ""
   map (ppResErrorLocatedF file) errs
-    ++ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre (exp::known) rest
+    ++ resolveModulesErrorsByPathGo modPaths allowInternal trustedMods rt pre (omInsert exp.modId exp known) rest
 
 -- A single located humane line for a resolve error.
 export ppResErrorLocated : ResError -> String
