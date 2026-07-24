@@ -1,5 +1,12 @@
+main|ctor|MkCirc  DEF main.mdk:37:5  USES 0  
+main|field|radius  DEF main.mdk:37:5  USES 0  
+main|local|c|4  DEF main.mdk:40:9  USES 1  main.mdk:40:19
 main|local|p|1  DEF main.mdk:14:9  USES 1  main.mdk:14:13
+main|local|radius|5  DEF main.mdk:41:11  USES 2  main.mdk:41:23 main.mdk:41:32
 main|local|tmp|2  DEF main.mdk:24:6  USES 2  main.mdk:25:2 main.mdk:25:8
+main|local|ys|3  DEF main.mdk:31:28  USES 1  main.mdk:31:52
+main|ty|Circ  DEF main.mdk:37:5  USES 1  main.mdk:39:18
 main|val|callIncByOne  DEF main.mdk:17:0  USES 0  
+main|val|circArea  DEF main.mdk:40:0  USES 0  
 main|val|incByOne  DEF main.mdk:14:0  USES 1  main.mdk:17:15
 main|val|shadowLet  DEF main.mdk:23:0  USES 0  
