@@ -33,8 +33,9 @@
 #   OP-COUNT   (secondary) util.contains/util.lookupAssoc scan steps (support/opcount.mdk,
 #                         the emitPhaseAO 5th column). Noise-free like allocation but
 #                         ALSO sees a pure O(n^2) SCAN that allocates nothing — the
-#                         List-as-set class. This is what catches the Core-IR lowering
-#                         quadratic the `bigmatch` shape exercises (see the ledger).
+#                         List-as-set class. This is how the Core-IR lowering quadratic
+#                         the `bigmatch` shape once exercised (dedupHeads, #960 — now
+#                         fixed) was caught; the ledger it seeded is now empty (below).
 #
 # Both are deterministic ⇒ ONE run per size suffices (no min-of-K, no heap-pin, no
 # floor). A stage whose net op-delta is below OP_FLOOR is graded on ALLOCATION alone
@@ -50,14 +51,19 @@
 #   listbuild — a list BUILDER (non-tail `range`) + a fold. Stresses cons allocation
 #               and list traversal. ALLOC linear (~2.0).
 #   bigmatch  — a value classified by an N-arm `match` over an N-constructor data
-#               type, driven a FIXED number of times. The TREE-WALKER interprets the
-#               match directly (op-count FLAT). The CORE-IR evaluator LOWERS it first
-#               (lowerGroups → core_ir_lower.distinctConHeads → dedupHeads), and that
-#               lowering is a LEDGERED O(arms^2) scan — see KNOWN_SLOW_OPS below.
+#               type, driven a FIXED number of times. Both interpreters lower/interpret
+#               it in ALLOC-linear time; the ALLOC arm is the live regression guard here.
+#               The CORE-IR evaluator LOWERS it first (lowerGroups →
+#               core_ir_lower.distinctConHeads → dedupHeads); that lowering WAS an
+#               O(arms^2) List-as-set scan (dedupHeads), FIXED in #960, so its op-count
+#               is now flat and its op arm self-skips (see KNOWN_SLOW_OPS below).
 #
 # NON-ZERO-GRADED ASSERTION (PERF-CI-COVERAGE.md §8): the gate refuses to exit 0 if
-# the ALLOC arm graded nothing OR the OP arm (ledger included) graded nothing — a
-# blind spot must name itself, never pass silently.
+# the ALLOC arm graded nothing — a blind spot must name itself, never pass silently.
+# The OP arm additionally hard-fails on graded-nothing ONLY while a quadratic is
+# LEDGERED (that entry MUST grade). With an empty ledger (post-#960) a healthy tree
+# drives no counted scan above the floor, so the op arm grades nothing and says so
+# (a NOTE) — a real op-scan quadratic above the floor still fails per-shape in grade().
 #
 # Usage:  sh test/diff_compiler_eval_scaling.sh
 # Exit:   0 both interpreters scale as expected; 1 a shape regressed (or a ledgered
@@ -94,29 +100,25 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 
 # ── KNOWN SUPERLINEAR (a self-draining LEDGER, NOT a skip-list) ───────────────
 # Same model as perf_scaling's KNOWN_SUPERLINEAR / references_scaling's design: an
-# entry asserts the CURRENT, WRONG behaviour so (a) it cannot get worse silently and
-# (b) an ACCIDENTAL FIX is DETECTED and demands promotion. (b) is the whole point.
+# entry asserts the CURRENT, WRONG behaviour of a KNOWN-unfixed op-scan quadratic so
+# (a) it cannot get worse silently and (b) an ACCIDENTAL FIX is DETECTED and demands
+# promotion. (b) is the whole point. The list is EMPTY right now — it self-drained:
 #
-#   ceval:bigmatch (op) — the CORE-IR evaluator's op-count is O(arms^2) when it lowers
-#     an N-arm match over an N-constructor type. Localized: cevalModules (core_ir_eval.mdk)
-#     calls lowerGroups (core_ir_lower.mdk), whose match compiler calls distinctConHeads →
-#     dedupHeads, which does `contains c seen` against a GROWING `seen` list — a textbook
-#     List-as-set scan, O(arms^2). The TREE-WALKER (eval.mdk) interprets the AST match
-#     directly and never lowers, so its op-count is FLAT — this is a CORE-IR-lowering
-#     quadratic surfaced through ceval, and it is on the `medaka build` lowering path too
-#     (lowerProgramEmit shares core_ir_lower). Filed as #960 (a #880 follow-up).
-#     MEASURED (this box, deterministic net op-count, N=500/1000/2000/4000):
-#       124750 → 499500 → 1999000 → 7998000   r = 4.004 / 4.002 / 4.001  (pure n^2)
-#     ALLOCATION is blind to it (ceval:bigmatch net alloc reads a clean ~1.97x linear —
-#     the scan allocates ~nothing), which is exactly why the op arm exists.
+#   ceval:bigmatch (op) was the sole entry — the CORE-IR match lowering's `dedupHeads`
+#   (core_ir_lower.mdk) did `contains c seen` against a GROWING `seen` List, an O(arms^2)
+#   List-as-set scan (measured 124750→499500→1999000, r≈4.0, pure n^2). FIXED in #960:
+#   `dedupHeads` now tests membership through an OrdMap-backed set (O(log n), UNcounted),
+#   so the net op-count collapsed to ~0 and the shape's op arm now self-skips below the
+#   floor. #960 CLOSED; the entry was promoted out. The MECHANISM below stays live so the
+#   NEXT op-scan quadratic can be ledgered the same way.
 # A ledgered "<stage>:<shape>" entry is graded against a WINDOW [PROMOTE_BELOW, CEIL]
 # on its worst doubling ratio: below PROMOTE_BELOW ⇒ FIXED, promote out (FAIL); above
 # CEIL ⇒ worsened (FAIL); inside ⇒ ledgered-OK.
-KNOWN_SLOW_OPS="ceval:bigmatch"
-# ratio window for the ledgered quadratic: it must stay quadratic (>= PROMOTE_BELOW)
-# but not get worse than CEIL. 4.0 is pure-n^2; 3.0 would mean it dropped toward
-# linear (fixed). Generous CEIL headroom over the measured 4.004 for runner variance
-# (op-count is deterministic, so this is belt-and-braces, not noise tolerance).
+KNOWN_SLOW_OPS=""
+# ratio window for a ledgered quadratic: it must stay quadratic (>= PROMOTE_BELOW) but
+# not get worse than CEIL. 4.0 is pure-n^2; 3.0 would mean it dropped toward linear
+# (fixed). Retained for the next op-scan quadratic (op-count is deterministic, so the
+# CEIL headroom is belt-and-braces, not noise tolerance).
 LEDGER_PROMOTE_BELOW="${EVAL_LEDGER_PROMOTE_BELOW:-3.0}"
 LEDGER_CEIL="${EVAL_LEDGER_CEIL:-4.5}"
 
@@ -154,7 +156,8 @@ gen_bigmatch() {
   # data T with N NULLARY constructors; classify is an N-arm match hitting the LAST
   # arm (worst-case linear scan in the tree-walker), driven a FIXED number of times.
   # The tree-walker interprets the match directly (op FLAT); the Core-IR evaluator
-  # LOWERS it, hitting the ledgered dedupHeads O(arms^2) scan.
+  # LOWERS it via distinctConHeads/dedupHeads (the #960 O(arms^2) scan, now fixed —
+  # op FLAT, ALLOC linear). The ALLOC arm is the live scaling guard for this shape.
   printf 'data T =\n' > "$f"
   i=0; while [ "$i" -lt "$n" ]; do
     if [ "$i" -eq 0 ]; then printf '  C%s\n' "$i"; else printf '  | C%s\n' "$i"; fi
@@ -271,7 +274,7 @@ EOF
     # ledgered quadratic: must stay inside the [PROMOTE_BELOW, CEIL] window.
     worst="$(awk -v s1="$s1" -v s2="$s2" 'BEGIN{ print (s1>s2)?s1:s2 }')"
     if awk -v w="$worst" -v lo="$LEDGER_PROMOTE_BELOW" 'BEGIN{ exit !(w < lo) }'; then
-      echo "  FAIL: LEDGER $stage:$shape dropped to ~linear (worst r=$worst < $LEDGER_PROMOTE_BELOW) — the Core-IR lowering quadratic (dedupHeads) was FIXED. PROMOTE it out of KNOWN_SLOW_OPS and close #960."
+      echo "  FAIL: LEDGER $stage:$shape dropped to ~linear (worst r=$worst < $LEDGER_PROMOTE_BELOW) — the ledgered op-scan quadratic was FIXED. PROMOTE it out of KNOWN_SLOW_OPS and close the tracking issue."
       fail=1
     elif awk -v w="$worst" -v hi="$LEDGER_CEIL" 'BEGIN{ exit !(w > hi) }'; then
       echo "  FAIL: LEDGER $stage:$shape WORSENED (worst r=$worst > $LEDGER_CEIL) — the known quadratic got worse."
@@ -312,13 +315,23 @@ if [ "$alloc_graded" -eq 0 ]; then
   echo "FAIL: the ALLOCATION arm graded NOTHING — a blind spot must name itself, not pass silently."
   fail=1
 fi
+# The op arm hard-fails on graded-NOTHING ONLY when a quadratic is LEDGERED (that entry
+# MUST grade, else its measurement broke). With an EMPTY ledger (the #960 dedupHeads scan
+# is fixed) a healthy tree legitimately drives no counted util.contains/lookupAssoc scan
+# above the floor at these sizes, so grading nothing is EXPECTED — a loud NOTE, not a fail.
+# Any REAL op-scan quadratic above the floor still hard-fails per-shape in grade(); this
+# guard governs only the graded-NOTHING meta-case.
 if [ "$op_graded" -eq 0 ]; then
-  echo "FAIL: the OP-COUNT arm graded NOTHING (not even the ledgered ceval:bigmatch) — the op tripwire is dead."
-  fail=1
+  if [ -n "$KNOWN_SLOW_OPS" ]; then
+    echo "FAIL: the OP-COUNT arm graded NOTHING but [$KNOWN_SLOW_OPS] is LEDGERED — the ledgered quadratic's op measurement is broken (a ledgered entry MUST grade). The op tripwire is dead."
+    fail=1
+  else
+    echo "NOTE: the OP-COUNT arm graded nothing (ledger empty; no counted scan above op-floor $OP_FLOOR at these sizes). The op tripwire is armed but idle — a NEW super-linear op scan would still fail per-shape."
+  fi
 fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "PASS: both interpreters scale as expected (alloc linear; the Core-IR lowering quadratic stays ledgered)."
+  echo "PASS: both interpreters scale as expected (alloc linear; op ledger empty — no op-scan quadratic)."
   exit 0
 fi
 exit 1
