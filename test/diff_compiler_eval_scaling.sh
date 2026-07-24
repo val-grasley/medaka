@@ -57,6 +57,23 @@
 #               core_ir_lower.distinctConHeads → dedupHeads); that lowering WAS an
 #               O(arms^2) List-as-set scan (dedupHeads), FIXED in #960, so its op-count
 #               is now flat and its op arm self-skips (see KNOWN_SLOW_OPS below).
+#   bigmatch_lits — the LITERAL sibling of bigmatch: N arms are distinct INTEGER
+#               LITERALS (0..N-1) + a wildcard default, so the CORE-IR evaluator lowers
+#               it through the LITERAL switch (buildLitSwitch → distinctLits/dedupLits
+#               and specLitRow), NOT the constructor path. That lowering compared
+#               literals with the derived `Eq Lit`, which ALLOCATES on every call
+#               (verified by profiling: GC_malloc_kind ← mdk_alloc ← mdk_impl_Lit_eq
+#               dominated a wide literal match's lowering). It ran once per
+#               (row × distinct-literal): dedupLits' List-as-set dedup scan AND
+#               specLitRow's per-branch matrix rescan were BOTH O(arms^2) — and,
+#               unlike dedupHeads' counted `contains` (#960), used the UNcounted
+#               `anyList`/raw `==`, so the quadratic was invisible to the OP arm yet
+#               STARK in ALLOCATION (the compare allocates). #970 made it linear: an
+#               OrdMap-set dedup (litKey-keyed) + an alloc-free `litEq` in specLitRow
+#               (mirroring the constructor path's alloc-free `String ==`). The ALLOC
+#               arm on `ceval` is the live guard: reverting either fix to the derived
+#               allocating `==` reddens it (dedupLits alone worst-r≈3.1; specLitRow
+#               alone ≈3.5; both ≈3.7 at N=3000/6000/12000). Op stays flat (uncounted).
 #
 # NON-ZERO-GRADED ASSERTION (PERF-CI-COVERAGE.md §8): the gate refuses to exit 0 if
 # the ALLOC arm graded nothing — a blind spot must name itself, never pass silently.
@@ -94,6 +111,13 @@ OP_FLOOR="${EVAL_OP_FLOOR:-1000}"
 TAILREC_N="${EVAL_TAILREC_N:-4000}"      # 4000/8000/16000  (16000 < eval's 25000 guard)
 LISTBUILD_N="${EVAL_LISTBUILD_N:-4000}"  # 4000/8000/16000
 BIGMATCH_N="${EVAL_BIGMATCH_N:-500}"     # 500/1000/2000
+# bigmatch_lits scales the distinct-LITERAL arm count. N is larger than bigmatch's
+# because the residual per-branch matrix rescan (specLitRow) is O(arms^2) in TIME
+# (alloc-free, like the constructor path) — so the ALLOC signal of a regression only
+# clears the linear base at these sizes: at 3000/6000/12000 reverting even the
+# minority dedupLits fix alone lands worst-r≈3.1 (> the 3.0 FAIL line), with margin
+# for the specLitRow/both reverts. Deterministic (alloc), so the margin is stable.
+BIGMATCH_LITS_N="${EVAL_BIGMATCH_LITS_N:-3000}"  # 3000/6000/12000
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT INT TERM
@@ -168,6 +192,24 @@ gen_bigmatch() {
   last=$((n - 1))
   printf 'drive : Int -> Int -> Int\n' >> "$f"
   printf 'drive k acc = match k\n  0 => acc\n  _ => drive (k - 1) (acc + classify C%s)\n' "$last" >> "$f"
+  printf 'main = println (drive 400 0)\n' >> "$f"
+}
+
+gen_bigmatch_lits() {
+  n=$1; f=$2
+  # classify is an N-arm match over N distinct INTEGER LITERALS (0..N-1) + a wildcard
+  # default (an Int literal match needs one for exhaustiveness), hitting the LAST
+  # literal, driven a FIXED number of times. This drives the CORE-IR evaluator's
+  # LITERAL switch lowering (buildLitSwitch → distinctLits/dedupLits + specLitRow) —
+  # the derived-`Eq Lit`-allocates O(arms^2) that #970 fixed — NOT the constructor
+  # path bigmatch exercises. The tree-walker interprets the match directly (op/alloc
+  # ~flat in N); the ALLOC arm on `ceval` (which does the lowering) is the live guard.
+  printf 'classify : Int -> Int\nclassify v = match v\n' > "$f"
+  i=0; while [ "$i" -lt "$n" ]; do printf '  %s => %s\n' "$i" "$i"; i=$((i+1)); done >> "$f"
+  printf '  _ => 0\n' >> "$f"
+  last=$((n - 1))
+  printf 'drive : Int -> Int -> Int\n' >> "$f"
+  printf 'drive k acc = match k\n  0 => acc\n  _ => drive (k - 1) (acc + classify %s)\n' "$last" >> "$f"
   printf 'main = println (drive 400 0)\n' >> "$f"
 }
 
@@ -298,6 +340,7 @@ run_shape() {
     tailrec)   gen_tailrec   "$base" "$WORK/a.mdk"; gen_tailrec   "$n2" "$WORK/b.mdk"; gen_tailrec   "$n4" "$WORK/c.mdk" ;;
     listbuild) gen_listbuild "$base" "$WORK/a.mdk"; gen_listbuild "$n2" "$WORK/b.mdk"; gen_listbuild "$n4" "$WORK/c.mdk" ;;
     bigmatch)  gen_bigmatch  "$base" "$WORK/a.mdk"; gen_bigmatch  "$n2" "$WORK/b.mdk"; gen_bigmatch  "$n4" "$WORK/c.mdk" ;;
+    bigmatch_lits) gen_bigmatch_lits "$base" "$WORK/a.mdk"; gen_bigmatch_lits "$n2" "$WORK/b.mdk"; gen_bigmatch_lits "$n4" "$WORK/c.mdk" ;;
   esac
   echo "── $shape  (N=$base, $n2, $n4) ──"
   oN="$(measure "$WORK/a.mdk")"; o2N="$(measure "$WORK/b.mdk")"; o4N="$(measure "$WORK/c.mdk")"
@@ -306,9 +349,10 @@ run_shape() {
   echo
 }
 
-run_shape tailrec   "$TAILREC_N"
-run_shape listbuild "$LISTBUILD_N"
-run_shape bigmatch  "$BIGMATCH_N"
+run_shape tailrec       "$TAILREC_N"
+run_shape listbuild     "$LISTBUILD_N"
+run_shape bigmatch      "$BIGMATCH_N"
+run_shape bigmatch_lits "$BIGMATCH_LITS_N"
 
 # ── NON-ZERO-GRADED assertion (PERF-CI-COVERAGE.md §8) ───────────────────────
 if [ "$alloc_graded" -eq 0 ]; then
