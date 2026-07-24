@@ -395,11 +395,73 @@ fnReturnsFloat name = match lookupAssoc name declRetTypesRef.value
   Some (_, ret) => ret == "Float"
   None => False
 
+-- ── fn/val NAME INDEX (perf #382/#664 — the `ctorOrdMapW` model) ──────────────
+-- The `Prog` carries `progFnNames`/`progValNames`/`progFnArs` as plain lists, and the
+-- emitter consults them PER CVar / PER app head / PER var-ref: `contains n (progFnNames
+-- prog)` and `lookupAssoc n (progFnArs prog)` are O(names), so on cross-reference-heavy
+-- code the whole emit degrades to O(nodes · names) (#382, the wasm peer of #352).  These
+-- three memos hold the SAME sets as O(log n) OrdMaps; every membership/arity lookup below
+-- routes through them.  `installFnIndexW` builds them once per program (in emitProgram /
+-- emitProgramGaps, before any scan or emit), exactly as `installCtorTablesW` builds the
+-- ctor indices.  When a memo is None (a probe reaching an emit helper without going
+-- through emitProgram), each helper FALLS BACK to the original linear scan, so the
+-- answer — and thus every byte of emitted text — is identical either way.
+fnNameSetW : Ref (Option (OrdMap Unit))
+fnNameSetW = Ref None
+
+valNameSetW : Ref (Option (OrdMap Unit))
+valNameSetW = Ref None
+
+fnArMapW : Ref (Option (OrdMap Int))
+fnArMapW = Ref None
+
+installFnIndexW : List String -> List String -> List (String, Int) -> Unit
+installFnIndexW fnNames valNames fnArs =
+  let _ = setRef fnNameSetW (Some (omFromNames fnNames omEmpty))
+  let _ = setRef valNameSetW (Some (omFromNames valNames omEmpty))
+  -- `reverseL` so a duplicate key keeps its FIRST arity: `omFromPairs` folds left and is
+  -- last-write-wins, so reversing reproduces `lookupAssoc`'s first-match exactly — the
+  -- same discipline `installCtorTablesW` uses for the ctor tables.
+  setRef fnArMapW (Some (omFromPairs (reverseL fnArs) omEmpty))
+
+-- fn-name membership against the memo (falls back to the `Prog`'s list when uninstalled).
+progFnMemberW : Prog -> String -> Bool
+progFnMemberW prog n = match fnNameSetW.value
+  Some m => omHasKey n m
+  None => contains n (progFnNames prog)
+
+-- val-name membership against the memo (falls back to the `Prog`'s list when uninstalled).
+progValMemberW : Prog -> String -> Bool
+progValMemberW prog x = match valNameSetW.value
+  Some m => omHasKey x m
+  None => contains x (progValNames prog)
+
+-- fn-name membership against the memo, for the whole-program SCANS (fnsUsedAsValuesRef /
+-- programUsesClosures) that carry a local `fnNames` list rather than a `Prog`.  That list
+-- IS `collectFnNames groups` — the same set the memo is built from — so the memo answer
+-- equals the list answer; the fallback keeps the original scan when the memo is None.
+fnMemberL : List String -> String -> Bool
+fnMemberL fnNames n = match fnNameSetW.value
+  Some m => omHasKey n m
+  None => contains n fnNames
+
+-- fn arity against the memo, for those same list-carrying scans (peer of `arityOf`).
+arityOfW : List (String, Int) -> String -> Int
+arityOfW fnArs f = match fnArMapW.value
+  Some m => match omLookup f m
+    Some a => a
+    None => -1
+  None => arityOf fnArs f
+
 -- the declared arity (param count) of a top-level function, or -1 if not a fn.
 progFnArity : Prog -> String -> Int
-progFnArity prog n = match lookupAssoc n (progFnArs prog)
-  Some a => a
-  None => -1
+progFnArity prog n = match fnArMapW.value
+  Some m => match omLookup n m
+    Some a => a
+    None => -1
+  None => match lookupAssoc n (progFnArs prog)
+    Some a => a
+    None => -1
 
 -- W9: canonicalize a referenced fn name against the defined-fn set, mirroring DCE's
 -- canonRef + the LLVM emitter's canonFnName.  `mangleUnits` renames prelude defs to
@@ -410,9 +472,9 @@ progFnArity prog n = match lookupAssoc n (progFnArs prog)
 -- bare name isn't a defined fn but its `core__` form is, use the mangled name.
 canonFn : Prog -> String -> String
 canonFn prog n =
-  if contains n (progFnNames prog) then
+  if progFnMemberW prog n then
     n
-  else if contains ("core__" ++ n) (progFnNames prog) then
+  else if progFnMemberW prog ("core__" ++ n) then
     "core__" ++ n
   else
     n
@@ -897,6 +959,9 @@ emitProgram (CProgram groups ctorArs ctorTypes impls) =
   let fnNames = collectFnNames groups
   let valNames = collectValNames groups
   let fnArs = collectFnArities groups
+  -- perf #382/#664: index the fn/val name sets + arity map ONCE, before the whole-program
+  -- scans below (and every later emit) route their membership/arity lookups through it.
+  let _ = installFnIndexW fnNames valNames fnArs
   let _ = setRef fnsUsedAsValuesRef (scanFnValueUses fnNames fnArs ctorArs groups ++ scanImplValueUses fnNames fnArs ctorArs impls)
   let useClos = programUsesClosures groups ctorArs
   -- closures force the uniform (ref eq) rep (a closure captures heterogeneous
@@ -971,6 +1036,9 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes impls) =
   let fnNames = collectFnNames groups
   let valNames = collectValNames groups
   let fnArs = collectFnArities groups
+  -- perf #382/#664: index the fn/val name sets + arity map ONCE, before the whole-program
+  -- scans below (and every later emit) route their membership/arity lookups through it.
+  let _ = installFnIndexW fnNames valNames fnArs
   let _ = setRef fnsUsedAsValuesRef (scanFnValueUses fnNames fnArs ctorArs groups ++ scanImplValueUses fnNames fnArs ctorArs impls)
   let useClos = programUsesClosures groups ctorArs
   -- force the ref path: the census measures the full (ref eq) emitter surface.
@@ -1697,9 +1765,9 @@ scanBindValueUses fnNames fnArs ctorArs (CBind _ clauses) = flatMap
 
 scanExprValueUses : List String -> List (String, Int) -> List (String, Int) -> CExpr -> List String
 scanExprValueUses fnNames fnArs ctorArs (CVar x _) =
-  if contains x fnNames then
+  if fnMemberL fnNames x then
     [x]
-  else if contains ("core__" ++ x) fnNames then
+  else if fnMemberL fnNames ("core__" ++ x) then
     ["core__" ++ x]
   else
     []
@@ -1707,14 +1775,14 @@ scanExprValueUses fnNames fnArs ctorArs (CApp f a) =
   let (hd, args) = flattenApp (CApp f a) []
   let here = match hd
     CVar fn0 _ =>
-      let fn = if contains fn0 fnNames then
+      let fn = if fnMemberL fnNames fn0 then
         fn0
-      else if contains ("core__" ++ fn0) fnNames then
+      else if fnMemberL fnNames ("core__" ++ fn0) then
         "core__" ++ fn0
       else
         fn0
-      if contains fn fnNames then
-        if arityOf fnArs fn == listLen args then [] else [fn]
+      if fnMemberL fnNames fn then
+        if arityOfW fnArs fn == listLen args then [] else [fn]
       else
         []
     -- P1: an RLocal method-ref head is a DIRECT call to a shadowing standalone top-level
@@ -1727,7 +1795,7 @@ scanExprValueUses fnNames fnArs ctorArs (CApp f a) =
     -- emitMethodRef's RLocal arm, including the `sym == ""` bare-name fallback.
     CMethod mname (RLocal sym dicts) _ _ =>
       let target = if sym == "" then mname else sym
-      if isEmpty dicts && contains target fnNames && arityOf fnArs target != listLen args then
+      if isEmpty dicts && fnMemberL fnNames target && arityOfW fnArs target != listLen args then
         [target]
       else
         []
@@ -1813,7 +1881,7 @@ exprUsesClosures fnNames fnArs ctorArs locals (CLam _ _) = True
 exprUsesClosures fnNames fnArs ctorArs locals (CApp f a) =
   appUsesClosures fnNames fnArs ctorArs locals (CApp f a)
 exprUsesClosures fnNames fnArs ctorArs locals (CVar x _) = not (contains x locals)
-  && contains x fnNames
+  && fnMemberL fnNames x
 exprUsesClosures fnNames fnArs ctorArs locals (CLit _) = False
 exprUsesClosures fnNames fnArs ctorArs locals (CBinPrim _ l r _) = exprUsesClosures fnNames fnArs ctorArs locals l
   || exprUsesClosures fnNames fnArs ctorArs locals r
@@ -1853,8 +1921,8 @@ appUsesClosures fnNames fnArs ctorArs locals app =
   match hd
     CVar f _ =>
       if contains f locals then True   -- a shadowing local/param head → indirect (closure) call
-      else if contains f fnNames then
-        arityOf fnArs f != listLen args || argsClos
+      else if fnMemberL fnNames f then
+        arityOfW fnArs f != listLen args || argsClos
       else if isSome (lookupAssoc f ctorArs) || isReservedCtor f then argsClos
       else True   -- a local/param/let-bound head → an indirect (closure) call
     _ => True
@@ -3430,7 +3498,7 @@ emitMethodRef prog env d name RNone implRoutes methRoutes args =
 emitMethodRef prog env d name (RLocal sym dicts) implRoutes methRoutes args =
   let target = if sym == "" then name else sym
   if isEmpty dicts then
-    if contains target (progFnNames prog) && listLen args != progFnArity prog target then emitIndirectApp prog env d (CVar target AGlobal) args
+    if progFnMemberW prog target && listLen args != progFnArity prog target then emitIndirectApp prog env d (CVar target AGlobal) args
     else
       let argInstrs = flatMap (a => emitRefExpr prog env d a) args
       argInstrs ++ ["call $" ++ gname target]
@@ -3636,7 +3704,7 @@ routeWitness _ _ _ (RScalar _) = ["i32.const 0", "ref.i31"]
 -- the lifted $name (whose leading params are the $dict_* the dict-pass injected).
 emitDictRef : Prog -> List String -> Int -> String -> List Route -> List CExpr -> List String
 emitDictRef prog env d name routes args =
-  if contains name (progFnNames prog) then
+  if progFnMemberW prog name then
     -- P2 (over/under-application, #729): the direct `call` is only legal when the
     -- application EXACTLY saturates the define's VALUE arity — `progFnArity` (which the
     -- dict-pass already widened by the leading dict params) minus the dict routes we
@@ -3740,7 +3808,7 @@ methodValArityByName prog name =
 -- constrained fn takes no value args) degenerates to the saturated dict call.
 emitDictValueRef : Prog -> List String -> Int -> String -> List Route -> List String
 emitDictValueRef prog env d name routes =
-  if contains name (progFnNames prog) then
+  if progFnMemberW prog name then
     let valArity = progFnArity prog name - listLen routes
     if valArity <= 0 then emitDictRef prog env d name routes []
     else
@@ -4755,8 +4823,10 @@ emitVarRefPlain prog env d x =
   -- `call $force_<x>` memoises into $<x> and black-holes a re-entrant force into
   -- E-CYCLIC-VALUE.  A LOCAL of the same name still shadows (env checked first, above).
   -- The result is a non-null (ref eq), same as the eager `global.get; ref.as_non_null`.
-  else if contains x (progValNames prog) && isLazyGlobalW x then ["call $force_" ++ gname x]
-  else if contains x (progValNames prog) then ["global.get $" ++ gname x, "ref.as_non_null"]
+  -- #664: a single memo membership check (was two linear `contains … (progValNames prog)`
+  -- scans on this hot path); the lazy/eager choice nests under it, byte-identical.
+  else if progValMemberW prog x then
+    (if isLazyGlobalW x then ["call $force_" ++ gname x] else ["global.get $" ++ gname x, "ref.as_non_null"])
   -- the Bool constructors used as VALUES (e.g. an `eq` impl body `… = True`) are
   -- i31 immediates 1/0 — the same rep as `emitLitRef (LBool _)`, so `if` reads them
   -- via `i31.get_u` uniformly.  (Surface `True`/`False` literals desugar to CLit;
@@ -4800,7 +4870,7 @@ emitVarRefPlain prog env d x =
     else emitCtorEtaClosure prog x
   else if isDeferredFloatExternW x then floatExternStub x
   else if isUnimplStrExternW x then floatExternStub x
-  else if contains x (progFnNames prog) then
+  else if progFnMemberW prog x then
     let _ = noteFuncRef ("$mdk_w_" ++ x)
     ["ref.func $mdk_w_" ++ x, "i32.const " ++ intToString (progFnArity prog x),
      "array.new_fixed $argarr 0", "struct.new $clos"]
@@ -5350,7 +5420,7 @@ emitAppRef prog env d app =
       else if isArrayExternW f then emitArrayExternRef prog env d f args
       else if isDeferredFloatExternW f then floatExternStub f
       else if isUnimplStrExternW f then floatExternStub f
-      else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
+      else if progFnMemberW prog f && listLen args == progFnArity prog f then
         let argInstrs = flatMap (a => emitRefExpr prog env d a) args
         argInstrs ++ ["call $" ++ gname f]
       else
@@ -6713,7 +6783,7 @@ wDispGlobalLines grp =
 wDetectDispatchGroups : Prog -> List CBind -> List DispGroup
 wDetectDispatchGroups prog allBinds = detectDispatchGroups
   (n => canonFn prog n)
-  (n => contains n (progFnNames prog))
+  (n => progFnMemberW prog n)
   (n => progFnArity prog n)
   (nm ar cs => wDispStage1Claims prog nm ar cs)
   (userFnBinds allBinds)
@@ -6738,7 +6808,7 @@ wDispStage1Claims prog name arity clauses =
 wDispSpineParts : Prog -> (String -> Bool) -> CExpr -> Option (List CExpr, String, List CExpr)
 wDispSpineParts prog ok e = dispSpineParts
   (n => canonFn prog n)
-  (n => contains n (progFnNames prog))
+  (n => progFnMemberW prog n)
   (n => progFnArity prog n)
   ok
   e
@@ -6919,7 +6989,7 @@ emitAppTail prog env arity app =
       else if isNetExternW f then gapL ("wasm: net extern '" ++ f ++ "' is native-only — the `net` module cannot target wasm (raw BSD sockets have no WasmGC equivalent). Build for a native target instead.")
       else if f == "Ref" || f == "setRef" || isStrExternW f || isLeafExternW f || isArrayExternW f || isDeferredFloatExternW f || isUnimplStrExternW f then
         emitAppRef prog env 0 app ++ ["return"]
-      else if contains f (progFnNames prog) && listLen args == progFnArity prog f then
+      else if progFnMemberW prog f && listLen args == progFnArity prog f then
         flatMap (a => emitRefExpr prog env 0 a) args ++ ["return_call $" ++ gname f]
       else
         let hi = emitRefExpr prog env 0 hd
@@ -6958,7 +7028,7 @@ emitAppTail prog env arity app =
     -- arm's return_call).  An unsaturated/partial CDict tail app fails the gate and keeps
     -- the ordinary `call`+`return`.
     CDict name routes =>
-      if contains name (progFnNames prog) && listLen args == progFnArity prog name - listLen routes then
+      if progFnMemberW prog name && listLen args == progFnArity prog name - listLen routes then
         let dictWords = flatMap (routeWitness prog env 0) routes
         let argInstrs = flatMap (a => emitRefExpr prog env 0 a) args
         dictWords ++ argInstrs ++ ["return_call $" ++ gname name]
