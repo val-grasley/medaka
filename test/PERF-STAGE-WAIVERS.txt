@@ -1,0 +1,26 @@
+# PERF-STAGE-WAIVERS.txt — the pass-coverage census's waiver ledger (#886, epic #880).
+#
+# The census (test/diff_compiler_perf_stage_census.sh) DERIVES the authoritative list of
+# pipeline stages by parsing the `emitPhaseAO … "<stage>"` labels out of
+#   compiler/entries/profile_main.mdk
+#   compiler/entries/profile_modules_main.mdk
+# and asserts every derived stage is either
+#   GRADED  — its name appears in diff_compiler_perf_scaling.sh's TIME_STAGES or OP_STAGES, OR
+#   WAIVED  — it has a line HERE, with a reason.
+# A derived stage that is NEITHER reds CI, naming the stage and its file:line. That is the
+# self-drain: a new profiler stage with no grading and no waiver cannot slip in unmeasured.
+#
+# This ledger is itself RATCHETED (mirroring diff_compiler_ci_shard_coverage.sh):
+#   * a waiver for a stage the profilers no longer emit  -> FAIL (stale — remove it)
+#   * a waiver for a stage that is now GRADED            -> FAIL (orphan — grading superseded it)
+#
+# Format:  <stage>  <reason>   (first token = stage name; the rest is the reason)
+# Lines beginning with # and blank lines are ignored.
+#
+# ⚠️ A waiver is a claim that a stage does NOT need N-scaling grading, or is graded by a
+# DIFFERENT arm. It is not a place to park a real coverage gap — if a stage scales with N and
+# no arm measures it, GRADE it (add it to a *_STAGES list or a bespoke arm), do not waive it.
+
+parse-prelude  fixed one-time cost: parses runtime.mdk+core.mdk (the prelude), constant in program size N; not an N-scaling stage.
+wasm-emit  graded by grade_wasm_row on the TIME signal — a separate wasm arm in diff_compiler_perf_scaling.sh (XREF_WASM_N band, self-draining ledger row xref:wasm-emit), deliberately NOT in TIME_STAGES/OP_STAGES.
+load  multi-module loader (topo-sort + disk read, IO-bound). Multi-module perf coverage is tracked under #881 (the resolve arm); this stage is not alloc/N-scaling-graded.
