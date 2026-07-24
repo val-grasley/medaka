@@ -1,0 +1,40 @@
+issue: 948
+what: A cross-module interface method whose only in-scope impl INHERITS the
+what: interface's DEFAULT body (does not override it), reached through a
+what: constrained-polymorphic forwarding helper (`use : Speak a => a -> String`),
+what: is emitted with an ARM-LESS runtime dispatcher: `@mdk_disp_speak_0_1` loads
+what: the dict tag and falls straight to `unreachable` with no `icmp`/branch arm,
+what: and the default body's `"woof"` literal is absent from the whole module (no
+what: `@mdk_impl_Dog_speak`, no `@mdk_default_speak` is emitted). The dict-passing
+what: call inside `use` hits `unreachable` -> the native binary SEGFAULTS.
+what: `medaka check main.mdk` exits 0; `medaka run main.mdk` (eval) prints `woof`
+what: at exit 0; only the built native binary faults. A 3-engine divergence
+what: (eval OK / native SIGSEGV) on a program with no unsafe surface.
+what: Removing ANY one of the three features fixes native: (1) impl OVERRIDES the
+what: method (control.mdk); (2) call `speak Dog` directly in main instead of via
+what: `use`; (3) put interface+impl in ONE file. The effect callback / `<e>` row
+what: in the shape this was first spotted through are confounds, not required.
+cmd: build-run main.mdk
+exit: 139
+stdout-bytes:
+control: build-run control.mdk
+why-fixture: MULTI-MODULE PIN. main.mdk imports the default-bearing interface from
+why-fixture: the sibling iface.mdk in this same directory -- `medaka build` resolves
+why-fixture: same-directory sibling imports with no medaka.toml. The `build-run`
+why-fixture: verb builds main.mdk to a per-process temp binary and grades THAT
+why-fixture: binary's exit + stdout, which is where the bug lives (build succeeds,
+why-fixture: exit 0; the produced binary segfaults, exit 139). stdout-bytes is
+why-fixture: EMPTY: the fault is inside the dispatcher, before `putStrLn` prints,
+why-fixture: so the crashing binary emits nothing on stdout (the E-FATAL-SIGNAL
+why-fixture: message goes to stderr).
+why-control: control.mdk is byte-identical to main.mdk except the impl OVERRIDES
+why-control: `speak` (`speak d = "woof"`) instead of inheriting the default. That
+why-control: flips exactly one feature -- inherit-vs-override -- and it must
+why-control: build-run clean (exit 0, prints `woof`), isolating the defect to the
+why-control: inherited-default dispatch synthesis and not to cross-module impls,
+why-control: constrained helpers, or dict-passing in general.
+why-note: A fix that synthesizes the inherited default into the dispatcher (a real
+why-note: arm, or a monomorphized direct call) makes main.bin print `woof` and
+why-note: exit 0 -- both the exit (139 -> 0) and stdout (empty -> `woof`) flip,
+why-note: draining this row. Close #948 and delete this fixture when that happens.
+why-note: Not tested on the wasm backend.

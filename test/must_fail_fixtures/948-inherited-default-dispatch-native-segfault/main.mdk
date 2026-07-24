@@ -1,0 +1,18 @@
+-- issue #948: cross-module INHERITED default interface method, reached through a
+-- dict-passing (constrained-polymorphic) helper, emits an ARM-LESS dispatcher that
+-- terminates in `unreachable` -> the native binary segfaults. check + eval are fine.
+import iface.{Speak(..), speak}
+
+data Dog = Dog
+
+-- INHERITS the default `speak` (empty impl body). This is load-bearing: overriding
+-- it (see control.mdk) emits a real impl body and the crash disappears.
+impl Speak Dog where
+
+
+-- Constrained-polymorphic forwarding helper. Also load-bearing: a direct monomorphic
+-- `speak Dog` call in main resolves statically and never hits the empty dispatcher.
+use : Speak a => a -> String
+use x = speak x
+
+main = putStrLn (use Dog)
