@@ -413,6 +413,23 @@ gen_listlit() {
   printf 'main = println 1\n' >> "$f"
 }
 
+gen_wasm_listlit() {
+  # LIVE peer of gen_listlit, for the wasm-listlit ALLOC row below. gen_listlit's `xs`
+  # is DEAD (`main = println 1`), so DCE prunes it before the backend and the cons spine
+  # is NEVER emitted — fine for the front-end signal that shape grades, but it means
+  # wasm_emit.emitListRef is never reached. Here `main` REFERENCES `xs`, so DCE keeps the
+  # binding and wasm-emit renders the full N-wide list literal through emitListRef (the
+  # #522 site). Used ONLY by the dedicated wasm-ON alloc row.
+  n=$1; f=$2; : > "$f"
+  printf 'xs : List Int\nxs = [' >> "$f"
+  i=0; while [ "$i" -lt "$n" ]; do
+    [ "$i" -gt 0 ] && printf ', '
+    printf '%s' "$i"
+    i=$((i+1))
+  done >> "$f"
+  printf ']\nmain = println (length xs)\n' >> "$f"
+}
+
 gen_nesting() {
   n=$1; f=$2; : > "$f"
   # N-deep let nesting: stresses recursion depth in every tree-walking pass
@@ -1935,6 +1952,87 @@ for shape in $SHAPES; do
     printf '%s' "$op_lines"
   fi
 done
+
+# ── ROW: wasm-listlit — WASM-EMIT ALLOCATION over a wide list literal (#522/#382) ──
+#
+# THE HOLE THIS CLOSES: the ALLOC arm above strips wasm (`env -u MEDAKA_PERF_WASM`,
+# deliberately — see that note), and the wasm TIME arm (grade_wasm_row) only grades the
+# `xref`/`match` shapes, whose live decls hold NO wide list literal. So
+# wasm_emit.emitListRef — the list-literal cons-spine emitter — was graded by NOTHING,
+# and #522's O(n^2) right-append (`tl ++ ["struct.new $C_Cons"]` copied the growing
+# accumulator at each of N cons levels) hid there while the LLVM peer (emitList /
+# emitRtList, which prepends via `::`) stayed linear.
+#
+# A DEDICATED wasm-ON alloc row, ISOLATED so it perturbs no other shape's numbers. It
+# reads the `wasm-emit` STAGE allocation (per-stage MB, NOT `total`: that keeps the fixed
+# ~253 MB wasm-prelude-emit constant out of the ratio and pins the signal to emitListRef)
+# from a fresh MEDAKA_PERF_WASM=1 run. DETERMINISTIC ⇒ ONE run per size — no min-of-K, no
+# heap-pin, no floor (allocation is noise-free, same contract as the alloc arm above).
+# Cost: 3 wasm-ON single-file compiles at N=1500/3000/6000 (+1 wasm-ON baseline), ~5 s
+# total on this box — per-PR-cheap. NO time-based shape is added (a wasm TIME row would
+# need min-of-K + a heap pin; alloc needs neither and catches this class outright).
+# gen_wasm_listlit ROOTS the list (`main = println (length xs)`) so DCE keeps it and
+# wasm-emit actually renders it — gen_listlit's `xs` is dead and never reaches emitListRef.
+# Graded exactly like the single-file / modules alloc arm: net = stage - wasm baseline,
+# then r2 > THRESH (or a CLIMBING ratio) FAILS as SUPERLINEAR; a too-small net is a
+# harness failure, never a silent pass. Self-drains the instant emitListRef regresses.
+# MEASURED (this box): with the #522 fix net = 21.9 -> 43.6 -> 87.1 MB (r1 1.99, r2 2.00,
+# ok); reverting it to the right-append net = 236 -> 901 -> 3519 MB (r1 3.82, r2 3.90,
+# SUPERLINEAR) — so this row is proven to go RED on the regression it guards.
+WL_N="${PERF_WASM_LISTLIT_N:-1500}"
+wln1="$WL_N"; wln2=$((WL_N * 2)); wln3=$((WL_N * 4))
+wlf1="$WORK/wasm_listlit_$wln1.mdk"; wlf2="$WORK/wasm_listlit_$wln2.mdk"; wlf3="$WORK/wasm_listlit_$wln3.mdk"
+gen_wasm_listlit "$wln1" "$wlf1"
+gen_wasm_listlit "$wln2" "$wlf2"
+gen_wasm_listlit "$wln3" "$wlf3"
+
+# wasm-emit STAGE allocation (MB), wasm ON. Field 4 is the per-stage MB — the SAME
+# column alloc_of reads on the `total` line (`[perf] wasm-emit  <t>s  <MB>MB  <ops>...`).
+wasm_emit_alloc_of() {
+  MEDAKA_PERF=1 MEDAKA_PERF_WASM=1 "$PROFILE" "$RUNTIME" "$CORE" "$1" 2>&1 \
+    | awk '$1=="[perf]" && $2=="wasm-emit" { gsub(/MB/,"",$4); print $4; exit }'
+}
+
+# Own baseline: the wasm-emit stage's FIXED prelude-emit cost (main = println 1, no list).
+WLBASE_ALLOC="$(wasm_emit_alloc_of "$BASE_FIX")"
+wla1="$(wasm_emit_alloc_of "$wlf1")"
+wla2="$(wasm_emit_alloc_of "$wlf2")"
+wla3="$(wasm_emit_alloc_of "$wlf3")"
+
+# A shape that cannot be measured is a HARNESS failure, never a silent pass. An empty
+# reading here means MEDAKA_PERF_WASM is not wiring the stage on, or the wasm-emit
+# [perf] line vanished — either way the row is DEAD and must fail loudly, not exit 0.
+case "$WLBASE_ALLOC$wla1$wla2$wla3" in
+  *[!0-9.]*|"")
+    echo "FAIL wasm-listlit: profiler produced no wasm-emit allocation figure (harness bug — MEDAKA_PERF_WASM not wiring the stage on, or the [perf] wasm-emit line is gone)"
+    fail=$((fail+1)) ;;
+  *)
+    wlnet1="$(awk -v a="$wla1" -v b="$WLBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
+    wlnet2="$(awk -v a="$wla2" -v b="$WLBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
+    wlnet3="$(awk -v a="$wla3" -v b="$WLBASE_ALLOC" 'BEGIN{printf "%.1f", a-b}')"
+    wlverdict="$(awk -v n1="$wlnet1" -v n2="$wlnet2" -v n3="$wlnet3" -v th="$THRESH" 'BEGIN {
+      if (n1 + 0 < 1.0) { printf "0 0 TOOSMALL"; exit }
+      r1 = n2 / n1; r2 = n3 / n2
+      climbing = (r2 > r1 * 1.15 && r2 > 2.45)
+      printf "%.2f %.2f %s", r1, r2, ((r2 > th || climbing) ? "QUADRATIC" : "ok")
+    }')"
+    wlr1="$(echo "$wlverdict" | cut -d' ' -f1)"
+    wlr2="$(echo "$wlverdict" | cut -d' ' -f2)"
+    wlword="$(echo "$wlverdict" | cut -d' ' -f3)"
+    if [ "$wlword" = "TOOSMALL" ]; then
+      fail=$((fail+1))
+      printf '%-12s %8s %8s MB %8s MB %8s MB  %6s %6s  ** N TOO SMALL — raise PERF_WASM_LISTLIT_N **\n' \
+        "wasm-listlit" "$wln1" "$wlnet1" "$wlnet2" "$wlnet3" "-" "-"
+    elif [ "$wlword" = "QUADRATIC" ]; then
+      fail=$((fail+1))
+      printf '%-12s %8s %8s MB %8s MB %8s MB  %6s %6s  ** SUPERLINEAR (WASM-EMIT ALLOC) — emitListRef, #522/#382 **\n' \
+        "wasm-listlit" "$wln1" "$wlnet1" "$wlnet2" "$wlnet3" "$wlr1" "$wlr2"
+    else
+      pass=$((pass+1))
+      printf '%-12s %8s %8s MB %8s MB %8s MB  %6s %6s  ok  (wasm-emit stage alloc)\n' \
+        "wasm-listlit" "$wln1" "$wlnet1" "$wlnet2" "$wlnet3" "$wlr1" "$wlr2"
+    fi ;;
+esac
 
 # ── SHAPE: modules — the O(modules^2) family (issue #153) ─────────────────────
 #
