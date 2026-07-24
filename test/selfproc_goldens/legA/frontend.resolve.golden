@@ -100,6 +100,7 @@ filterInSet : Map String Unit -> List String -> List String
 filterKeepOpen : List String -> List String -> List String
 filterOutNamesIn : List String -> (ResError -> String) -> List ResError -> List ResError
 findDups : List String -> List String -> List String
+findDupsGo : Map String Unit -> List String -> List String
 findExports : String -> List ModuleExports -> Option ModuleExports
 firstExprLoc : Expr -> Option Loc
 firstLocList : List Expr -> Option Loc
